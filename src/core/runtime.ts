@@ -19,7 +19,8 @@ import type {
   Usage,
 } from "../shared/schemas";
 import { agentSummary, executeNative, nativeDefinitions } from "./agents";
-import { projectSummary, summarize } from "./context";
+import { projectSummary, summarize, summaryBoundary } from "./context";
+import { budgetUsage, measureContext, reportedContext, resolveContextBudget, resolveContextWindow } from "../shared/context-usage";
 
 type EventBody = {
   [K in AgentEvent["type"]]: Omit<
@@ -55,6 +56,7 @@ const isHumanTurn = (message: Message | undefined): boolean =>
 export const compactContext = (
   messages: readonly Message[],
   budget: number,
+  size: (messages: readonly Message[]) => number = messages => JSON.stringify(messages).length,
 ): Readonly<{
   messages: readonly Message[];
   beforeChars: number;
@@ -63,7 +65,7 @@ export const compactContext = (
 }> => {
   const beforeChars = JSON.stringify(messages).length;
   let view = [...messages];
-  while (JSON.stringify(view).length > budget) {
+  while (size(view) > budget) {
     const first = view.findIndex(isHumanTurn);
     const next = view.findIndex(
       (message, index) => index > first && isHumanTurn(message),
@@ -153,9 +155,9 @@ export const compactContext = (
         { role: "assistant", content },
         ...view.slice(start + removed),
       ];
-      if (JSON.stringify(projected).length <= budget) break;
+      if (size(projected) <= budget) break;
     }
-    if (!projected || JSON.stringify(projected).length > budget) {
+    if (!projected || size(projected) > budget) {
       throw new ForgeError(
         "budget",
         "Required instructions, request and recent or unresolved exchanges exceed the context budget.",
@@ -208,7 +210,7 @@ const instructions = (
 export const createAgentRuntime = (
   deps: AgentRuntimeDependencies,
 ): AgentRuntime => ({
-  async run(rawInput, onEvent, approve, signal) {
+  async run(rawInput, onEvent, approve, signal, control?: RunControl) {
     const input = runInputSchema.parse(rawInput);
     const release = await deps.store.acquire(input.sessionId, signal);
     let snapshot: SessionSnapshot | undefined;
@@ -253,6 +255,34 @@ export const createAgentRuntime = (
     };
     const check = (): void => {
       if (signal.aborted) throw new ForgeError("cancelled", "Run cancelled.");
+    };
+    const drainSteering = async (): Promise<boolean> => {
+      check();
+      if (!control) return false;
+      const drained = control.drainSteering();
+      check();
+      if (drained.length === 0) return false;
+      const prompts: string[] = [];
+      for (const prompt of drained) {
+        const parsed = runInputSchema.safeParse({ ...input, prompt });
+        if (!parsed.success)
+          throw new ForgeError(
+            "invalid_input",
+            "Steering prompt failed validation.",
+          );
+        prompts.push(parsed.data.prompt);
+      }
+      if (!snapshot)
+        throw new ForgeError("internal", "Session has not loaded.");
+      snapshot = {
+        ...snapshot,
+        messages: [
+          ...snapshot.messages,
+          ...prompts.map((content): Message => ({ role: "user", content })),
+        ],
+      };
+      await save();
+      return true;
     };
     const finish = async (
       requestedStatus: "completed" | "cancelled" | "failed",
@@ -363,38 +393,44 @@ export const createAgentRuntime = (
       await save();
       event({ type: "run_started", model: snapshot.model, permission });
       await save();
+      let reportedWindow: number | null = null;
+      if (!deps.settings.modelContextWindows?.[snapshot.model]) {
+        const metadataSignal = AbortSignal.any([signal, AbortSignal.timeout(2000)]);
+        try { reportedWindow = await withCancellation(deps.provider.getModelContextWindow?.(snapshot.model, metadataSignal) ?? Promise.resolve(null), metadataSignal); }
+        catch { /* Optional metadata must not prevent a model request. */ }
+      }
+      const windowTokens = resolveContextWindow(snapshot.model, deps.settings, reportedWindow);
+      const definitions = [...deps.tools.definitions, ...nativeDefinitions];
+      const budget = resolveContextBudget(windowTokens, deps.settings);
+      const contextSize = (messages: readonly Message[]) => budget.unit === "tokens"
+        ? measureContext(messages, windowTokens, definitions).usedTokens
+        : JSON.stringify(messages).length;
       while (true) {
         check();
-        if (turns >= deps.settings.maxTurns)
-          throw new ForgeError("budget", "Completion budget exhausted.");
-        if (
-          JSON.stringify(projectSummary(snapshot)).length >
-          deps.settings.contextBudgetChars
-        ) {
-          let boundary = snapshot.messages.length - 1;
-          while (
-            boundary > (snapshot.contextSummary?.boundary ?? 0) &&
-            !isHumanTurn(snapshot.messages[boundary])
-          )
-            boundary--;
-          if (boundary > (snapshot.contextSummary?.boundary ?? 0)) {
-            snapshot = await summarize(
-              snapshot,
-              deps.provider,
-              signal,
-              boundary,
-            );
+        await drainSteering();
+        check();
+        const project = (state: SessionSnapshot) => projectSummary(state).map((message, index) =>
+          index === 0 && message.role === "system"
+            ? { role: "system" as const, content: currentInstructions } : message);
+        const before = project(snapshot);
+        if (contextSize(before) > budget.limit) {
+          let boundary = summaryBoundary(snapshot, messages => contextSize(messages.map((m, i) =>
+            i === 0 && m.role === "system" ? { role: "system", content: currentInstructions } : m)), budget.target);
+          // If three recent turns alone exceed the hard budget, retain fewer
+          // whole turns rather than silently discarding their meaning.
+          if (boundary === null) {
+            const latest = snapshot.messages.findLastIndex(isHumanTurn);
+            if (latest > (snapshot.contextSummary?.boundary ?? 0) &&
+                snapshot.messages.slice(snapshot.contextSummary?.boundary ?? 0, latest).some(m => m.role !== "system")) boundary = latest;
+          }
+          if (boundary !== null) {
+            snapshot = await summarize(snapshot, deps.provider, signal, boundary, windowTokens ? Math.floor(windowTokens * 0.8) : 32000);
             await save();
+            event({ type: "context_compacted", removedMessages: Math.max(0, before.length - project(snapshot).length),
+              beforeChars: JSON.stringify(before).length, afterChars: JSON.stringify(project(snapshot)).length });
           }
         }
-        const context = compactContext(
-          projectSummary(snapshot).map((message, index) =>
-            index === 0 && message.role === "system"
-              ? { role: "system" as const, content: currentInstructions }
-              : message,
-          ),
-          deps.settings.contextBudgetChars,
-        );
+        const context = compactContext(project(snapshot), budget.limit, contextSize);
         if (context.removedMessages > 0)
           event({
             type: "context_compacted",
@@ -402,6 +438,8 @@ export const createAgentRuntime = (
             beforeChars: context.beforeChars,
             afterChars: context.afterChars,
           });
+        const projectedUsage = { ...measureContext(context.messages, windowTokens, definitions), ...budgetUsage(budget) };
+        event({ type: "context_usage", usage: projectedUsage });
         let partial = "";
         let emittedChars = 0;
         let streaming = true;
@@ -420,7 +458,7 @@ export const createAgentRuntime = (
         const response = await withCancellation(
           deps.provider.complete(
             context.messages,
-            [...deps.tools.definitions, ...nativeDefinitions],
+            definitions,
             {
               model: snapshot.model,
               signal,
@@ -445,6 +483,9 @@ export const createAgentRuntime = (
           });
         check();
         const incoming = response.usage;
+        event({ type: "context_usage", usage: incoming
+          ? reportedContext(projectedUsage, incoming, response.message)
+          : { ...measureContext([...context.messages, response.message], windowTokens, definitions), ...budgetUsage(budget) } });
         if (incoming) {
           // Aggregate only provider-reported cache counts; never invent cached usage.
           const cached =
@@ -493,6 +534,7 @@ export const createAgentRuntime = (
             await save();
             continue;
           }
+          if (await drainSteering()) continue;
           return await finish("completed");
         }
         if (new Set(calls.map((call) => call.id)).size !== calls.length)

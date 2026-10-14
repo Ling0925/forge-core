@@ -1,5 +1,9 @@
 import { randomUUID } from "node:crypto";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, expect, it } from "vitest";
+import { createHarness } from "../src/core/harness";
 import { createAgentRuntime } from "../src/core/runtime";
 import type {
   AgentRuntimeDependencies,
@@ -144,16 +148,20 @@ describe("runtime steering", () => {
     const queue = ["  first steer  ", "second steer"];
     let providerUsers: string[] = [];
     let persistedUsers: string[] = [];
-    let f!: ReturnType<typeof fixture>;
+    let savedMessages: readonly Message[] = [];
     const provider: ModelProvider = {
       listModels: async () => [],
       complete: async (messages) => {
         providerUsers = users(messages);
-        persistedUsers = users(f.current().messages);
+        persistedUsers = users(savedMessages);
         return { message: { role: "assistant", content: "done" } };
       },
     };
-    f = fixture(provider);
+    const f = fixture(provider, emptyTools, {
+      onSave: (snapshot) => {
+        savedMessages = snapshot.messages;
+      },
+    });
 
     const result = await f.runtime.run(
       input,
@@ -226,7 +234,8 @@ describe("runtime steering", () => {
       (message) => message.role === "assistant" && message.tool_calls?.length,
     );
     const toolIndex = result.messages.findIndex(
-      (message) => message.role === "tool" && message.tool_call_id === "inspect-once",
+      (message) =>
+        message.role === "tool" && message.tool_call_id === "inspect-once",
     );
     expect(assistantIndex).toBeGreaterThanOrEqual(0);
     expect(toolIndex).toBe(assistantIndex + 1);
@@ -304,10 +313,12 @@ describe("runtime steering", () => {
     expect(result.status).toBe("failed");
     expect(completions).toBe(0);
     expect(users(result.messages)).toEqual(["work"]);
-    expect(result.events.find((event) => event.type === "error")).toMatchObject({
-      type: "error",
-      error: { code: "invalid_input" },
-    });
+    expect(result.events.find((event) => event.type === "error")).toMatchObject(
+      {
+        type: "error",
+        error: { code: "invalid_input" },
+      },
+    );
   });
 
   it("does not drain or consume steering when cancellation is already requested", async () => {
@@ -340,14 +351,20 @@ describe("runtime steering", () => {
     expect(queue).toEqual(["keep this for a later run"]);
   });
 
-  it("counts steered follow-up requests against the normal turn budget", async () => {
+  it("continues steered follow-up requests past the legacy turn limit", async () => {
     const queue: string[] = [];
     let completions = 0;
     const provider: ModelProvider = {
       listModels: async () => [],
       complete: async () => {
         completions += 1;
-        return { message: { role: "assistant", content: "draft" } };
+        if (completions > 2) throw new Error("Unexpected extra completion");
+        return {
+          message: {
+            role: "assistant",
+            content: completions === 1 ? "draft" : "final",
+          },
+        };
       },
     };
     const f = fixture(provider, emptyTools, {
@@ -370,12 +387,15 @@ describe("runtime steering", () => {
       controlFor(queue),
     );
 
-    expect(result.status).toBe("failed");
-    expect(completions).toBe(1);
+    expect(result.status).toBe("completed");
+    expect(completions).toBe(2);
     expect(users(result.messages)).toEqual(["work", "one more turn"]);
-    expect(result.events.find((event) => event.type === "error")).toMatchObject({
-      type: "error",
-      error: { code: "budget" },
+    expect(assistantTexts(result.messages)).toEqual(["draft", "final"]);
+    expect(result.events.filter((event) => event.type === "error")).toEqual([]);
+    expect(result.events.at(-1)).toMatchObject({
+      type: "run_finished",
+      turns: 2,
+      toolCalls: 0,
     });
   });
 
@@ -428,9 +448,63 @@ describe("runtime steering", () => {
     expect(childRequests[0]).toEqual([
       "child task\nOwnership: child-owned files only",
     ]);
-    expect(parentRequests.some((request) => request.includes("root-only steering while child will run"))).toBe(
-      true,
-    );
+    expect(
+      parentRequests.some((request) =>
+        request.includes("root-only steering while child will run"),
+      ),
+    ).toBe(true);
     expect(JSON.stringify(childRequests)).not.toContain("root-only steering");
+  });
+});
+
+describe("harness steering", () => {
+  it("forwards optional run control to the runtime", async () => {
+    const state = await mkdtemp(join(tmpdir(), "forge-steering-state-"));
+    const workspace = await mkdtemp(
+      join(tmpdir(), "forge-steering-workspace-"),
+    );
+    const queue = ["steered through harness"];
+    const providerRequests: string[][] = [];
+    const service = await createHarness({
+      stateDir: state,
+      providerFactory: (): ModelProvider => ({
+        listModels: async () => ["fixture-model"],
+        complete: async (messages) => {
+          providerRequests.push(users(messages));
+          return { message: { role: "assistant", content: "done" } };
+        },
+      }),
+      toolFactory: async () => emptyTools,
+    });
+    try {
+      await service.updateSettings({
+        apiKey: "fixture-key",
+        settings: {
+          baseUrl: "http://127.0.0.1:1",
+          model: "fixture-model",
+        },
+      });
+      const session = await service.createSession({ workspace });
+
+      const result = await service.run(
+        { sessionId: session.id, prompt: "work" },
+        () => undefined,
+        async () => false,
+        signal(),
+        controlFor(queue),
+      );
+
+      expect(result.status).toBe("completed");
+      expect(providerRequests).toEqual([["work", "steered through harness"]]);
+      expect(users(result.messages)).toEqual([
+        "work",
+        "steered through harness",
+      ]);
+      expect(queue).toEqual([]);
+    } finally {
+      await service.dispose();
+      await rm(state, { recursive: true, force: true });
+      await rm(workspace, { recursive: true, force: true });
+    }
   });
 });

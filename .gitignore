@@ -10,3 +10,18 @@ coverage/
 .env.*
 !.env.example
 .DS_Store
+
+# Local runtime/environment artifacts.
+# The harness may run with HOME set to the workspace, so XDG dirs, Forge state
+# (which can contain real credentials) and Playwright/Chromium artifacts appear
+# at the repository root. Never commit these.
+.cache/
+.config/
+.local/
+.npm/
+node-compile-cache/
+/tmp.*/
+/ctx-*/
+playwright-artifacts-*/
+playwright_chromiumdev_profile-*/
+org.chromium.Chromium.*/

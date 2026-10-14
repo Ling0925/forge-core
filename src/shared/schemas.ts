@@ -75,7 +75,11 @@ export const settingsFields = {
   maxTurns: z.number().int().min(1).max(1000),
   maxToolCalls: z.number().int().min(1).max(10000),
   requestTimeoutMs: z.number().int().min(1000).max(600000),
+  // Legacy fallback for unknown model windows, not a cap on known windows.
   contextBudgetChars: z.number().int().min(4096).max(2000000),
+  contextBudgetTokens: z.number().int().min(4096).max(10000000).nullable().optional(),
+  // Per-model overrides: gateways/aliases need not have the upstream window.
+  modelContextWindows: z.record(z.string().min(1).max(256), z.number().int().positive().max(10000000).nullable()).optional(),
   browserAllowedOrigins: z.array(browserOriginSchema).max(32).readonly(),
   browserExecutablePath: z
     .string()
@@ -343,9 +347,41 @@ export const contextSummarySchema = z
     fallback: z.boolean(),
   })
   .strict();
+export const contextUsageSchema = z.object({
+  windowTokens: z.number().int().positive().nullable(),
+  budgetTokens: z.number().int().positive().optional(),
+  budgetChars: z.number().int().positive().optional(),
+  usedTokens: z.number().int().nonnegative(),
+  estimated: z.boolean(),
+  basis: z.enum(["projected", "request", "request-with-output"]),
+  // Provider input count for this request, never the accumulated billing total.
+  promptTokens: z.number().int().nonnegative().optional(),
+  completionTokens: z.number().int().nonnegative().optional(),
+  parts: z.object({
+    instructions: z.number().int().nonnegative(),
+    memory: z.number().int().nonnegative(),
+    conversation: z.number().int().nonnegative(),
+    tools: z.number().int().nonnegative(),
+  }).strict(),
+}).strict().readonly();
+export type ContextUsage = z.infer<typeof contextUsageSchema>;
+// Read existing sessions without reinterpreting their old character counts as tokens.
+const persistedContextUsageSchema = z.union([
+  contextUsageSchema,
+  z.object({ budgetChars: z.number().int().positive(), usedChars: z.number().int().nonnegative(),
+    parts: z.object({ instructions: z.number().int().nonnegative(), memory: z.number().int().nonnegative(),
+      conversation: z.number().int().nonnegative(), tools: z.number().int().nonnegative() }).strict(),
+  }).strict().transform((): ContextUsage => ({ windowTokens: null, usedTokens: 0, estimated: true,
+    basis: "projected", parts: { instructions: 0, memory: 0, conversation: 0, tools: 0 } })),
+]);
 const eventBase = { sessionId: sessionIdSchema, timestamp: timestampSchema };
 export const agentEventSchema = z
   .discriminatedUnion("type", [
+    z.object({
+      ...eventBase,
+      type: z.literal("context_usage"),
+      usage: persistedContextUsageSchema,
+    }).strict(),
     z
       .object({
         ...eventBase,

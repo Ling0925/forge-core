@@ -141,6 +141,15 @@ describe("original runtime", () => {
       signal(),
     );
     expect(result.status).toBe("completed");
+    const usageEvents = events.filter((event) => event.type === "context_usage").filter(event => event.usage.basis === "projected");
+    expect(usageEvents.length).toBeGreaterThanOrEqual(received.length);
+    for (const usageEvent of usageEvents) {
+      expect(usageEvent.usage.windowTokens).toBeNull();
+      expect(usageEvent.usage.estimated).toBe(true);
+      expect(Object.values(usageEvent.usage.parts).reduce((sum, value) => sum + value, 0))
+        .toBe(usageEvent.usage.usedTokens);
+    }
+    expect(usageEvents[1]?.usage.parts.tools).toBeGreaterThan(0);
     expect(result.pendingTool).toBeUndefined();
     expect(result.changes).toHaveLength(1);
     expect(result.messages.at(-1)).toEqual({
@@ -164,6 +173,104 @@ describe("original runtime", () => {
     expect(
       received.at(-1)?.filter((message) => message.role === "user"),
     ).toHaveLength(2);
+  });
+
+  it.each([1, 20])(
+    "completes beyond the legacy maxTurns setting of %i while retaining turn accounting",
+    async (maxTurns) => {
+      let completions = 0;
+      let executions = 0;
+      const f = fixture(
+        {
+          ...finalProvider,
+          complete: async () => {
+            completions += 1;
+            if (completions > 26) throw new Error("Unexpected extra completion");
+            return completions <= 25
+              ? {
+                  message: {
+                    role: "assistant",
+                    content: null,
+                    tool_calls: [call(`inspect-${completions}`)],
+                  },
+                }
+              : { message: { role: "assistant", content: "done" } };
+          },
+        },
+        {
+          ...emptyTools,
+          execute: async () => {
+            executions += 1;
+            return { content: "ok", isError: false };
+          },
+        },
+      );
+      const runtime = createAgentRuntime({
+        ...f.deps,
+        settings: { ...defaultPublicSettings, maxTurns },
+      });
+
+      const result = await runtime.run(
+        input,
+        () => undefined,
+        async () => false,
+        signal(),
+      );
+
+      expect(result.status).toBe("completed");
+      expect(completions).toBe(26);
+      expect(executions).toBe(25);
+      expect(result.messages.at(-1)).toEqual({
+        role: "assistant",
+        content: "done",
+      });
+      expect(result.events.filter((event) => event.type === "error")).toEqual([]);
+      expect(result.events.at(-1)).toMatchObject({
+        type: "run_finished",
+        status: "completed",
+        turns: 26,
+        toolCalls: 25,
+      });
+    },
+  );
+
+  it("still cancels a continuing run beyond the former default turn limit", async () => {
+    const controller = new AbortController();
+    let completions = 0;
+    const f = fixture(
+      {
+        ...finalProvider,
+        complete: async () => {
+          completions += 1;
+          if (completions === 25) controller.abort();
+          if (completions > 25) throw new Error("Completion after cancellation");
+          return {
+            message: {
+              role: "assistant",
+              content: null,
+              tool_calls: [call(`inspect-${completions}`)],
+            },
+          };
+        },
+      },
+      emptyTools,
+    );
+
+    const result = await f.runtime.run(
+      input,
+      () => undefined,
+      async () => false,
+      controller.signal,
+    );
+
+    expect(result.status).toBe("cancelled");
+    expect(completions).toBe(25);
+    expect(result.events.at(-1)).toMatchObject({
+      type: "run_finished",
+      status: "cancelled",
+      turns: 25,
+      toolCalls: 24,
+    });
   });
 
   it("recovers all orphan multi-call messages without executing them", async () => {
@@ -580,4 +687,41 @@ it("recovers and compacts a long persisted turn without replaying earlier effect
   );
   expect(recovered.status).toBe("completed");
   expect(executions).toBe(1);
+});
+
+it("uses a known token window beyond 100k chars and reports its actual trigger", async () => {
+  let calls = 0;
+  const f = fixture({ ...finalProvider, complete: async (messages) => {
+    calls++;
+    expect(messages.some(m => m.content?.includes("x".repeat(150000)))).toBe(true);
+    return { message: { role: "assistant", content: "done" } };
+  } }, emptyTools);
+  const result = await f.runtime.run({ ...input, model: "gpt-4o", prompt: "x".repeat(150000) }, () => {}, async () => false, signal());
+  expect(result.status).toBe("completed");
+  expect(calls).toBe(1);
+  expect(result.contextSummary).toBeUndefined();
+  expect(result.events.filter(e => e.type === "context_usage")).toEqual(expect.arrayContaining([
+    expect.objectContaining({ usage: expect.objectContaining({ windowTokens: 128000, budgetTokens: 102400 }) }),
+  ]));
+});
+
+it("summarizes old history while keeping three recent human turns in the real request", async () => {
+  const messages: Message[] = [];
+  for (let i = 0; i < 7; i++) messages.push({ role: "user", content: `request-${i}` }, { role: "assistant", content: "中".repeat(5000) });
+  let summaryCalls = 0;
+  let request: readonly Message[] = [];
+  const f = fixture({ ...finalProvider, getModelContextWindow: async () => 32000, complete: async (incoming, definitions) => {
+    if (!definitions.length) {
+      summaryCalls++;
+      return { message: { role: "assistant", content: "older decisions and verified work" } };
+    }
+    request = incoming;
+    return { message: { role: "assistant", content: "done" } };
+  } }, emptyTools, { ...initial(), messages });
+  const result = await f.runtime.run(input, () => {}, async () => false, signal());
+  expect(result.status).toBe("completed");
+  expect(summaryCalls).toBeGreaterThan(0);
+  expect(request.filter(m => m.role === "user").map(m => m.content)).toEqual(["request-5", "request-6", "work"]);
+  expect(result.messages).toHaveLength(messages.length + 3); // inserted system, current user, response
+  expect(result.contextSummary?.fallback).toBe(false);
 });

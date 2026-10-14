@@ -117,7 +117,12 @@ const jsonResponseSchema = z.object({
   usage: usageWire.nullable().optional(),
 });
 const modelsSchema = z.object({
-  data: z.array(z.object({ id: z.string().trim().min(1).max(256) })).max(10000),
+  data: z.array(z.object({
+    id: z.string().trim().min(1).max(256),
+    context_length: z.unknown().optional(),
+    context_window: z.unknown().optional(),
+    max_model_len: z.unknown().optional(),
+  })).max(10000),
 });
 const unsupportedSchema = z.object({
   error: z.object({
@@ -457,8 +462,9 @@ export function createModelProvider(config: ProviderConfig): ModelProvider {
       controller.abort();
     }
   };
-  return {
-    listModels: (signal) =>
+  const windows = new Map<string, number | null>();
+  let catalogLoaded = false;
+  const listModels = (signal?: AbortSignal) =>
       execute(signal, async (combined) => {
         const response = await ky.get(`${base}/models`, {
           headers,
@@ -480,8 +486,20 @@ export function createModelProvider(config: ProviderConfig): ModelProvider {
           parseJson(await readText(response)),
         );
         if (!parsed.success) throw protocol();
+        for (const model of parsed.data.data) {
+          const value = [model.context_length, model.context_window, model.max_model_len]
+            .find((v): v is number => typeof v === "number" && Number.isInteger(v) && v > 0 && v <= 10000000);
+          windows.set(model.id, value ?? null);
+        }
+        catalogLoaded = true;
         return [...new Set(parsed.data.data.map((model) => model.id))].sort();
-      }),
+      });
+  return {
+    listModels,
+    async getModelContextWindow(model, signal) {
+      if (!catalogLoaded) await listModels(signal);
+      return windows.get(model) ?? null;
+    },
     complete: (messages, tools, options) => {
       const model = settingsFields.model.safeParse(options.model);
       const history = z.array(messageSchema).max(100000).safeParse(messages);

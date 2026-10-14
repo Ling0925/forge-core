@@ -56,6 +56,18 @@ const success = {
 };
 
 describe("original HTTP provider", () => {
+  it("reads context-window metadata and caches a loaded catalog without inventing unknown limits", async () => {
+    let calls = 0;
+    const provider = await fixture((_request, response) => {
+      calls++;
+      json(response, { data: [{ id: "alias", context_length: 32768 }, { id: "other", context_window: 64000 }, { id: "bad", max_model_len: -5 }] });
+    });
+    expect(await provider.getModelContextWindow!("alias")).toBe(32768);
+    expect(await provider.getModelContextWindow!("other")).toBe(64000);
+    expect(await provider.getModelContextWindow!("bad")).toBeNull();
+    expect(await provider.getModelContextWindow!("missing")).toBeNull();
+    expect(calls).toBe(1);
+  });
   it("joins paths, sends optional auth, deduplicates stable model IDs", async () => {
     const provider = await fixture((request, response) => {
       expect(request.url).toBe("/v1/models");

@@ -10,6 +10,7 @@ import type {
   HarnessService,
   LocalToolRegistry,
 } from "../shared/contracts";
+import { resolveContextWindow } from "../shared/context-usage";
 import { ForgeError } from "../shared/errors";
 import {
   configureInputSchema,
@@ -32,7 +33,7 @@ import { createLocalToolRegistry } from "../tools/local";
 import { createMcpToolRegistry } from "../tools/mcp";
 import { createSkillTool } from "../tools/skills";
 import { assertBoundary, projectSummary, summarize } from "./context";
-import { createAgentRuntime } from "./runtime";
+import { createAgentRuntime, withCancellation } from "./runtime";
 
 // Default per-run tools: local registry with configured-key redaction, plus a
 // browser registry only when exact allowed origins are configured. Chromium is
@@ -250,7 +251,14 @@ export const createHarness = async (
         const config = providerConfigSchema.parse(
           await settingsStore.getProviderConfig(),
         );
-        return summarize(s, providerFactory(config), signal, s.messages.length);
+        const provider = providerFactory(config);
+        const settings = await settingsStore.getPublic();
+        let reported: number | null = null;
+        const metadataSignal = AbortSignal.any([signal, AbortSignal.timeout(2000)]);
+        try { reported = await withCancellation(provider.getModelContextWindow?.(s.model, metadataSignal) ?? Promise.resolve(null), metadataSignal); }
+        catch { /* Optional metadata must not prevent compaction. */ }
+        const window = resolveContextWindow(s.model, settings, reported);
+        return summarize(s, provider, signal, s.messages.length, window ? Math.floor(window * 0.8) : 32000);
       });
       track(id, controller, work);
       return work;
@@ -391,6 +399,15 @@ export const createHarness = async (
       check();
       return settingsStore.update(configureInputSchema.parse(input));
     },
+    async getModelContextWindow(model, signal) {
+      check();
+      const settings = await settingsStore.getPublic();
+      endpoint(settings.baseUrl);
+      const config = providerConfigSchema.parse(await settingsStore.getProviderConfig());
+      check();
+      return await providerFactory(config).getModelContextWindow?.(model,
+        AbortSignal.any(signal ? [signal, disposal.signal] : [disposal.signal])) ?? null;
+    },
     async listModels(signal) {
       check();
       const settings = await settingsStore.getPublic();
@@ -446,7 +463,7 @@ export const createHarness = async (
         model: settingsFields.model.parse(model),
       });
     },
-    run(raw, onEvent, approve, callerSignal) {
+    run(raw, onEvent, approve, callerSignal, control) {
       check();
       const input = runInputSchema.parse(raw);
       if (controls.has(input.sessionId))
@@ -501,7 +518,7 @@ export const createHarness = async (
               return (await buildTools(workspace, settings, config.apiKey))
                 .tools;
             },
-          }).run(input, onEvent, approve, signal);
+          }).run(input, onEvent, approve, signal, control);
         } finally {
           try {
             if (tools) await tools.dispose();

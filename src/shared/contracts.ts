@@ -29,6 +29,7 @@ export interface RunControl {
 }
 export interface ModelProvider {
   listModels(signal?: AbortSignal): Promise<readonly string[]>;
+  getModelContextWindow?(model: string, signal?: AbortSignal): Promise<number | null>;
   complete(
     messages: readonly Message[],
     toolDefinitions: readonly ToolDefinition[],
@@ -73,6 +74,7 @@ export interface HarnessService {
   getSettings(): Promise<PublicSettings>;
   updateSettings(input: ConfigureInput): Promise<PublicSettings>;
   listModels(signal?: AbortSignal): Promise<readonly string[]>;
+  getModelContextWindow?(model: string, signal?: AbortSignal): Promise<number | null>;
   listSessions(): Promise<readonly SessionSummary[]>;
   createSession(input: CreateSessionInput): Promise<SessionSnapshot>;
   getSession(id: SessionId): Promise<SessionSnapshot>;
