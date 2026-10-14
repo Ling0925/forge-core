@@ -8,6 +8,7 @@ import type { ModelProvider, SessionStore } from "../../src/shared/contracts";
 import {
   defaultPublicSettings,
   sessionSnapshotSchema,
+  sessionIdSchema,
   type Message,
 } from "../../src/shared/schemas";
 
@@ -88,7 +89,9 @@ describe("system instructions", () => {
       ...base,
       session: {
         workspace,
-        parentSessionId: "parent",
+        parentSessionId: sessionIdSchema.parse(
+          "22345678-1234-4234-8234-123456789abc",
+        ),
         agentTask: task,
         ownership: "src/core",
       },
@@ -195,7 +198,9 @@ it("uses inherited child ceilings and scope when projecting a legacy summarized 
   const f = fixture({
     ...fixture().state,
     messages: legacy,
-    parentSessionId: "22345678-1234-4234-8234-123456789abc",
+    parentSessionId: sessionIdSchema.parse(
+      "22345678-1234-4234-8234-123456789abc",
+    ),
     permissionCeiling: "readonly",
     agentTask: "inspect prompts",
     ownership: "src/core",

@@ -33,7 +33,7 @@ export interface PromptContext {
   readonly mode: RunInput["mode"];
   readonly maxToolCalls: number;
   /** Already bounded by the project-context service; includes skill metadata, not bodies. */
-  readonly projectInstructions?: string;
+  readonly projectInstructions?: string | undefined;
 }
 
 /** Build the current request's instructions without rewriting persisted history. */
