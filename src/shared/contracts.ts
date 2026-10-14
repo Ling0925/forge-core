@@ -59,7 +59,7 @@ export interface SessionStore {
   list(): Promise<readonly SessionSummary[]>;
   get(id: SessionId): Promise<SessionSnapshot>;
   create(
-    input: Readonly<{ workspace: string; title: string; model: string }>,
+    input: Readonly<{ workspace: string; title: string; model: string; titleSource?: "default" | "user" }>,
   ): Promise<SessionSnapshot>;
   save(snapshot: SessionSnapshot): Promise<void>;
   acquire(id: SessionId, signal?: AbortSignal): Promise<() => Promise<void>>;

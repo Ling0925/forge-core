@@ -419,3 +419,24 @@ describe("default harness tool integration", () => {
     expect(reached).toBe(1);
   });
 });
+
+it("persists automatic title provenance and protects explicit titles across reopen", async () => {
+  const {state, workspace} = await configured();
+  const providerFactory = (): ModelProvider => ({listModels: async () => [], complete: async messages => ({message: {role: "assistant", content: messages[0]?.content?.startsWith("Generate only") ? "登录修复" : "done"}})});
+  const service = await createHarness({stateDir: state, providerFactory});
+  cleanups.push(() => service.dispose());
+  const created = await service.createSession({workspace});
+  expect(created.titleSource).toBe("default");
+  const result = await service.run({sessionId: created.id, prompt: "修复登录问题"}, () => {}, async () => false, new AbortController().signal);
+  expect(result.status).toBe("completed");
+  for (let i = 0; i < 100 && (await service.getSession(created.id)).title !== "登录修复"; i++) await new Promise(resolve => setTimeout(resolve, 10));
+  expect((await service.getSession(created.id)).title).toBe("登录修复");
+  const renamed = await service.renameSession(created.id, "  手动标题  ");
+  expect(renamed).toMatchObject({title: "手动标题", titleSource: "user"});
+  await service.dispose();
+  const reopened = await createHarness({stateDir: state, providerFactory});
+  cleanups.push(() => reopened.dispose());
+  expect((await reopened.getSession(created.id)).autoTitleAttempted).toBe(true);
+  await reopened.run({sessionId: created.id, prompt: "继续"}, () => {}, async () => false, new AbortController().signal);
+  expect((await reopened.getSession(created.id)).title).toBe("手动标题");
+});

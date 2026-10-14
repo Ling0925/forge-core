@@ -472,10 +472,11 @@ export const agentEventSchema = z
   ])
   .readonly();
 export type AgentEvent = z.infer<typeof agentEventSchema>;
+export const sessionTitleSchema = z.string().trim().min(1).max(256);
 const summaryFields = {
   version: z.literal(1),
   id: sessionIdSchema,
-  title: z.string().min(1).max(256),
+  title: sessionTitleSchema,
   workspace: z.string().min(1).max(4096),
   model: settingsFields.model,
   createdAt: timestampSchema,
@@ -492,6 +493,8 @@ export const sessionSnapshotSchema = z
     messages: z.array(messageSchema).max(100000).readonly(),
     events: z.array(agentEventSchema).max(1000000).readonly(),
     changes: z.array(fileChangeSchema).max(100000).readonly(),
+    titleSource: z.enum(["default", "user", "auto"]).optional(),
+    autoTitleAttempted: z.boolean().optional(),
     pendingTool: toolCallSchema.optional(),
     plan: taskPlanSchema.optional(),
     parentSessionId: sessionIdSchema.optional(),

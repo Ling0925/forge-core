@@ -18,6 +18,7 @@ import {
   providerConfigSchema,
   runInputSchema,
   sessionIdSchema,
+  sessionTitleSchema,
   settingsFields,
 } from "../shared/schemas";
 import type {
@@ -33,6 +34,7 @@ import { createLocalToolRegistry } from "../tools/local";
 import { createMcpToolRegistry } from "../tools/mcp";
 import { createSkillTool } from "../tools/skills";
 import { assertBoundary, projectSummary, summarize } from "./context";
+import { autoTitle } from "./session-title";
 import { createAgentRuntime, withCancellation } from "./runtime";
 
 // Default per-run tools: local registry with configured-key redaction, plus a
@@ -199,6 +201,12 @@ export const createHarness = async (
       })
       .catch(() => undefined);
   };
+  const titleTasks = new Set<Promise<void>>();
+  const titleOperations = new Map<SessionId, { controller: AbortController; work: Promise<void> }>();
+  const stopTitle = async (id: SessionId) => {
+    const pending = titleOperations.get(id);
+    if (pending) { pending.controller.abort(); await pending.work; }
+  };
   let disposed = false;
   let closing: Promise<void> | undefined;
   const check = (): void => {
@@ -216,6 +224,7 @@ export const createHarness = async (
     fn: (s: SessionSnapshot) => Promise<SessionSnapshot>,
   ): Promise<SessionSnapshot> => {
     check();
+    await stopTitle(id);
     const release = await store.acquire(sessionIdSchema.parse(id));
     try {
       const next = await fn(await store.get(id));
@@ -265,6 +274,7 @@ export const createHarness = async (
     },
     async forkSession(id, boundary) {
       check();
+      await stopTitle(id);
       const release = await store.acquire(sessionIdSchema.parse(id));
       try {
         const source = await store.get(id);
@@ -304,7 +314,8 @@ export const createHarness = async (
     renameSession(id, title) {
       return mutate(id, async (s) => ({
         ...s,
-        title: settingsFields.model.parse(title),
+        title: sessionTitleSchema.parse(title),
+        titleSource: "user",
       }));
     },
     archiveSession(id, archived) {
@@ -460,6 +471,7 @@ export const createHarness = async (
       return store.create({
         workspace,
         title: input.title ?? "New session",
+        titleSource: input.title === undefined ? "default" : "user",
         model: settingsFields.model.parse(model),
       });
     },
@@ -484,6 +496,7 @@ export const createHarness = async (
       const operation = Promise.resolve().then(async () => {
         let tools: LocalToolRegistry | undefined;
         try {
+          await stopTitle(input.sessionId);
           if (signal.aborted)
             throw new ForgeError("cancelled", "Run cancelled.");
           const [settings, config, snapshot] = await Promise.all([
@@ -507,7 +520,7 @@ export const createHarness = async (
             config.apiKey,
           );
           tools = built.tools;
-          return await createAgentRuntime({
+          const result = await createAgentRuntime({
             store,
             settings,
             provider,
@@ -519,6 +532,15 @@ export const createHarness = async (
                 .tools;
             },
           }).run(input, onEvent, approve, signal, control);
+          const titleController = new AbortController();
+          const naming = autoTitle({ snapshot: result, store, provider, signal: AbortSignal.any([disposal.signal, titleController.signal]), secrets: [config.apiKey, config.baseUrl] }).catch(() => {});
+          titleOperations.set(result.id, { controller: titleController, work: naming });
+          titleTasks.add(naming);
+          void naming.finally(() => {
+            titleTasks.delete(naming);
+            if (titleOperations.get(result.id)?.work === naming) titleOperations.delete(result.id);
+          });
+          return result;
         } finally {
           try {
             if (tools) await tools.dispose();
@@ -537,7 +559,7 @@ export const createHarness = async (
       disposal.abort();
       closing = Promise.allSettled(
         [...controls.values()].map((c) => c.work),
-      ).then(() => mcp.dispose());
+      ).then(async () => { await Promise.allSettled([...titleTasks]); await mcp.dispose(); });
       return closing;
     },
   };

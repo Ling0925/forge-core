@@ -115,7 +115,8 @@ export async function openSessionStore(
       }
     },
     async create(input) {
-      const parsed = createSessionInputSchema.safeParse(input);
+      const { titleSource, ...creation } = input;
+      const parsed = createSessionInputSchema.safeParse(creation);
       if (!parsed.success || !parsed.data.model || !parsed.data.title)
         throw new ForgeError(
           "invalid_input",
@@ -138,6 +139,7 @@ export async function openSessionStore(
           id: randomUUID(),
           workspace,
           title: parsed.data.title,
+          ...(titleSource ? { titleSource } : {}),
           model: parsed.data.model,
           createdAt: now,
           updatedAt: now,
