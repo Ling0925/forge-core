@@ -261,7 +261,7 @@ export function createResponsesAdapter(h: Helpers, baseUrl: string) {
       const added = new Map<number, unknown>();
       const textParts = new Map<string, string>();
       let eventSize = 0;
-      let reasoningLength = 0;
+      let reasoning = "";
       const dispatch = () => {
         if (!data.length) {
           eventName = "";
@@ -476,7 +476,7 @@ export function createResponsesAdapter(h: Helpers, baseUrl: string) {
           }
         } else if (e.type === "response.reasoning_summary_text.delta") {
           // Opaque reasoning is replayed via providerState; this summary text is a
-          // live display preview only and never becomes assistant content.
+          // bounded display preview persisted on the assistant message.
           const p = z
             .object({
               item_id: id,
@@ -484,8 +484,8 @@ export function createResponsesAdapter(h: Helpers, baseUrl: string) {
             })
             .passthrough()
             .parse(e);
-          reasoningLength += p.delta.length;
-          if (reasoningLength > 2_000_000) throw h.protocol();
+          if (reasoning.length < 131072)
+            reasoning += p.delta.slice(0, 131072 - reasoning.length);
           for (let start = 0; start < p.delta.length; start += 65536)
             h.notify(onReasoning, p.delta.slice(start, start + 65536));
         } else if (
@@ -563,6 +563,7 @@ export function createResponsesAdapter(h: Helpers, baseUrl: string) {
         message: {
           role: "assistant",
           content: text || null,
+          ...(reasoning ? { reasoning } : {}),
           ...(calls.length ? { tool_calls: calls } : {}),
           providerState: {
             version: 1,

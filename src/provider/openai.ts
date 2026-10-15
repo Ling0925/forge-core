@@ -51,6 +51,9 @@ const MAX_BODY = 8_000_000;
 const MAX_EVENT = 1_200_000;
 const MAX_LINE = 1_200_000;
 const MAX_TEXT = 2_000_000;
+// Persisted display-only reasoning preview; bounded so a chatty gateway cannot
+// inflate the session transcript. Must match assistantMessageSchema.reasoning.
+const MAX_REASONING = 131072;
 const usageWire = z.object({
   prompt_tokens: z.number().int().nonnegative(),
   completion_tokens: z.number().int().nonnegative(),
@@ -264,7 +267,7 @@ async function readStream(
   let data: string[] = [];
   let eventSize = 0;
   let text = "";
-  let reasoningLength = 0;
+  let reasoning = "";
   let finish: string | undefined;
   let usage: Usage | undefined;
   let done = false;
@@ -311,8 +314,9 @@ async function readStream(
       }
       // Reasoning preview is display-only: bounded and never part of content.
       if (delta.reasoning_content) {
-        reasoningLength += delta.reasoning_content.length;
-        if (reasoningLength > MAX_TEXT) throw protocol();
+        if (reasoning.length < MAX_REASONING) {
+          reasoning += delta.reasoning_content.slice(0, MAX_REASONING - reasoning.length);
+        }
         for (let start = 0; start < delta.reasoning_content.length; start += 65536)
           notify(onReasoning, delta.reasoning_content.slice(start, start + 65536));
       }
@@ -392,6 +396,7 @@ async function readStream(
     message: {
       role: "assistant",
       content: text || null,
+      ...(reasoning ? { reasoning } : {}),
       ...(assembled.length ? { tool_calls: assembled } : {}),
     },
     ...(usage ? { usage } : {}),
@@ -643,7 +648,10 @@ export function createModelProvider(config: ProviderConfig): ModelProvider {
         const text = choice.message.content ?? "";
         const calls = choice.message.tool_calls ?? [];
         checkFinish(choice.finish_reason, calls, text);
-        const reasoning = choice.message.reasoning_content;
+        const reasoningRaw = choice.message.reasoning_content;
+        const reasoning = reasoningRaw
+          ? reasoningRaw.slice(0, MAX_REASONING)
+          : "";
         if (reasoning)
           for (let start = 0; start < reasoning.length; start += 65536)
             notify(options.onReasoning ?? (() => {}), reasoning.slice(start, start + 65536));
@@ -654,6 +662,7 @@ export function createModelProvider(config: ProviderConfig): ModelProvider {
           message: {
             role: "assistant",
             content: text || null,
+            ...(reasoning ? { reasoning } : {}),
             ...(calls.length ? { tool_calls: calls } : {}),
           },
           ...(usage ? { usage } : {}),

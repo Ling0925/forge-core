@@ -188,6 +188,7 @@ it("forwards reasoning summary deltas as a display preview without touching cont
   );
   expect(reasoning.join("")).toBe("weighing options");
   expect(result.message.content).toBe("answer");
+  expect(result.message.reasoning).toBe("weighing options");
 });
 
 it("streams text, native function call arguments and tool output continuation, retaining opaque reasoning", async () => {

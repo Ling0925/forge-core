@@ -8,7 +8,10 @@ export function projectToolContext(messages: readonly Message[]): readonly Messa
   return messages.map((message): Message => {
     if (message.role === "assistant") {
       for (const call of message.tool_calls ?? []) names.set(call.id, call.function.name);
-      return message;
+      // Persisted display-only reasoning is never sent to the provider.
+      if (message.reasoning === undefined) return message;
+      const { reasoning: _reasoning, ...rest } = message;
+      return rest;
     }
     if (message.role !== "tool") return message;
     const nativeEdit = ["write_file", "edit_file"].includes(names.get(message.tool_call_id) ?? "");

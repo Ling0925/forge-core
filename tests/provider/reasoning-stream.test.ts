@@ -110,4 +110,47 @@ it("delivers non-streaming fallback reasoning_content without adding it to conte
   expect(requests).toBe(2);
   expect(reasoning.join("")).toBe("thought");
   expect(result.message.content).toBe("answer");
+  expect(result.message.reasoning).toBe("thought");
+});
+
+it("persists streamed reasoning on the assistant message without folding it into content", async () => {
+  const provider = await fixture((_body, response) => {
+    response.setHeader("content-type", "text/event-stream");
+    response.write(wire({ role: "assistant", reasoning_content: "step one " }));
+    response.write(wire({ reasoning_content: "step two" }));
+    response.write(wire({ content: "answer" }, "stop"));
+    response.end("data: [DONE]\n\n");
+  });
+  const result = await provider.complete([{ role: "user", content: "x" }], [], {
+    model: "m",
+    signal: new AbortController().signal,
+    onText: () => {},
+  });
+  expect(result.message.reasoning).toBe("step one step two");
+  expect(result.message.content).toBe("answer");
+});
+
+it("never sends a stored assistant reasoning field back to the provider", async () => {
+  const bodies: Record<string, unknown>[] = [];
+  const provider = await fixture((body, response) => {
+    bodies.push(body as Record<string, unknown>);
+    response.setHeader("content-type", "text/event-stream");
+    response.write(wire({ content: "ok" }, "stop"));
+    response.end("data: [DONE]\n\n");
+  });
+  await provider.complete(
+    [
+      { role: "user", content: "first" },
+      { role: "assistant", content: "answer", reasoning: "secret reasoning" },
+      { role: "user", content: "second" },
+    ],
+    [],
+    { model: "m", signal: new AbortController().signal, onText: () => {} },
+  );
+  expect(JSON.stringify(bodies[0])).not.toContain("secret reasoning");
+  expect((bodies[0] as { messages: unknown[] }).messages).toEqual([
+    { role: "user", content: "first" },
+    { role: "assistant", content: "answer" },
+    { role: "user", content: "second" },
+  ]);
 });

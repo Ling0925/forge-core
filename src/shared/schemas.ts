@@ -208,6 +208,9 @@ export const assistantMessageSchema = z
   .object({
     role: z.literal("assistant"),
     content: z.string().max(2000000).nullable(),
+    // Display-only reasoning persisted so a resumed session can show it again.
+    // Bounded, never sent back to the provider, and not part of assistant content.
+    reasoning: z.string().max(131072).optional(),
     providerState: providerStateSchema.optional(),
     tool_calls: z.array(toolCallSchema).max(256).readonly().optional(),
   })

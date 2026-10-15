@@ -32,7 +32,7 @@ const emptyTools: LocalToolRegistry = {
   dispose: async () => undefined,
 };
 
-it("forwards reasoning as a transient display event and never persists it", async () => {
+it("forwards live reasoning events and persists reasoning on the saved assistant message", async () => {
   let current = initial();
   const store: SessionStore = {
     list: async () => [],
@@ -49,7 +49,9 @@ it("forwards reasoning as a transient display event and never persists it", asyn
       options.onReasoning?.("thinking hard ");
       options.onReasoning?.("about the answer");
       options.onText("answer");
-      return { message: { role: "assistant", content: "answer" } };
+      return {
+        message: { role: "assistant", content: "answer", reasoning: "thinking hard about the answer" },
+      };
     },
   };
   const runtime = createAgentRuntime({
@@ -68,8 +70,16 @@ it("forwards reasoning as a transient display event and never persists it", asyn
   const reasoning = events.filter((event) => event.type === "reasoning_delta");
   expect(reasoning.length).toBeGreaterThan(0);
   expect(reasoning.map((event) => event.text).join("")).toContain("thinking hard");
-  // Persisted transcript and event log must not contain the ephemeral preview.
-  expect(result.messages.some((message) => message.content?.includes("thinking hard"))).toBe(false);
+  // Live reasoning is a transient event, not durable event-log state.
   expect(result.events.some((event) => event.type === "reasoning_delta")).toBe(false);
   expect(current.events.some((event) => event.type === "reasoning_delta")).toBe(false);
+  // The reasoning is persisted on the saved assistant message for a resumed view.
+  const assistant = result.messages.find((message) => message.role === "assistant");
+  expect(assistant?.role === "assistant" && assistant.reasoning).toBe("thinking hard about the answer");
+  // The durable store snapshot carries it too, so a fresh load sees it.
+  const stored = current.messages.find((message) => message.role === "assistant");
+  expect(stored?.role === "assistant" && stored.reasoning).toBe("thinking hard about the answer");
+  expect(assistant?.content).toBe("answer");
+  // It is display-only metadata, never folded into the assistant content.
+  expect(result.messages.some((message) => message.content?.includes("thinking hard"))).toBe(false);
 });
