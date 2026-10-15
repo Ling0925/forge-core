@@ -37,6 +37,8 @@ export interface ModelProvider {
       model: string;
       signal: AbortSignal;
       onText: (text: string) => void;
+      /** Optional live reasoning display; never persisted as assistant content. */
+      onReasoning?: (text: string) => void;
     }>,
   ): Promise<ProviderResponse>;
 }

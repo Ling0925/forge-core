@@ -150,6 +150,46 @@ const run = (
 const classification = (kind: string) => (e: unknown) =>
   e instanceof ProviderError && e.classification === kind;
 
+it("forwards reasoning summary deltas as a display preview without touching content", async () => {
+  const provider = await setup((_req, res) => {
+    const m = msg("m_1", "answer");
+    send(
+      res,
+      wire("response.created", { response: { id: "resp_1", status: "in_progress" } }) +
+        wire("response.reasoning_summary_text.delta", { item_id: "r_1", delta: "weighing " }) +
+        wire("response.reasoning_summary_text.delta", { item_id: "r_1", delta: "options" }) +
+        item(0, { ...m, content: [] }) +
+        wire("response.output_text.delta", {
+          output_index: 0,
+          item_id: "m_1",
+          content_index: 0,
+          delta: "answer",
+        }) +
+        wire("response.output_text.done", {
+          output_index: 0,
+          content_index: 0,
+          item_id: "m_1",
+          text: "answer",
+        }) +
+        done(0, m) +
+        completed([m]),
+    );
+  });
+  const reasoning: string[] = [];
+  const result = await provider.complete(
+    [{ role: "user", content: "hi" }],
+    [],
+    {
+      model: "m",
+      signal: new AbortController().signal,
+      onText: () => {},
+      onReasoning: (value) => reasoning.push(value),
+    },
+  );
+  expect(reasoning.join("")).toBe("weighing options");
+  expect(result.message.content).toBe("answer");
+});
+
 it("streams text, native function call arguments and tool output continuation, retaining opaque reasoning", async () => {
   const bodies: unknown[] = [];
   const reason = {

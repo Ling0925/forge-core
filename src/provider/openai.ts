@@ -85,6 +85,8 @@ const chunkSchema = z.object({
         delta: z.object({
           role: z.literal("assistant").optional(),
           content: z.string().max(MAX_TEXT).nullable().optional(),
+          // Live reasoning preview some gateways stream; never assistant content.
+          reasoning_content: z.string().max(MAX_TEXT).nullable().optional(),
           tool_calls: z.array(fragment).max(256).nullable().optional(),
           function_call: z
             .object({
@@ -108,6 +110,7 @@ const jsonResponseSchema = z.object({
         message: z.object({
           role: z.literal("assistant"),
           content: z.string().max(MAX_TEXT).nullable(),
+          reasoning_content: z.string().max(MAX_TEXT).nullable().optional(),
           tool_calls: z.array(toolCallSchema).max(256).optional(),
         }),
         finish_reason: z.string().max(64),
@@ -254,12 +257,14 @@ async function readText(response: Response): Promise<string> {
 async function readStream(
   response: Response,
   observer: (text: string) => void,
+  onReasoning: (text: string) => void = () => {},
 ): Promise<ProviderResponse> {
   const decoder = new TextDecoder("utf-8", { fatal: true });
   let pending = "";
   let data: string[] = [];
   let eventSize = 0;
   let text = "";
+  let reasoningLength = 0;
   let finish: string | undefined;
   let usage: Usage | undefined;
   let done = false;
@@ -303,6 +308,13 @@ async function readStream(
         // Shared event text deltas have a smaller bound than final content.
         for (let start = 0; start < delta.content.length; start += 65536)
           notify(observer, delta.content.slice(start, start + 65536));
+      }
+      // Reasoning preview is display-only: bounded and never part of content.
+      if (delta.reasoning_content) {
+        reasoningLength += delta.reasoning_content.length;
+        if (reasoningLength > MAX_TEXT) throw protocol();
+        for (let start = 0; start < delta.reasoning_content.length; start += 65536)
+          notify(onReasoning, delta.reasoning_content.slice(start, start + 65536));
       }
       for (const part of delta.tool_calls ?? []) {
         const previous = calls.get(part.index) ?? {
@@ -543,7 +555,12 @@ export function createModelProvider(config: ProviderConfig): ModelProvider {
             await response.body?.cancel();
             throw protocol();
           }
-          return responses.read(response, options.onText, model.data);
+          return responses.read(
+            response,
+            options.onText,
+            model.data,
+            options.onReasoning,
+          );
         }
         const request = async (stream: boolean): Promise<Response> =>
           ky.post(`${base}/chat/completions`, {
@@ -577,6 +594,9 @@ export function createModelProvider(config: ProviderConfig): ModelProvider {
               ),
               ...(definitions.data.length ? { tools: definitions.data } : {}),
               stream,
+              // Ask spec-compliant gateways to report usage in the stream; without
+              // this the footer never receives a real cache rate during a run.
+              ...(stream ? { stream_options: { include_usage: true } } : {}),
             },
           });
         let response = await request(true);
@@ -609,7 +629,7 @@ export function createModelProvider(config: ProviderConfig): ModelProvider {
           ?.trim()
           .toLowerCase();
         if (contentType === "text/event-stream")
-          return readStream(response, options.onText);
+          return readStream(response, options.onText, options.onReasoning);
         if (contentType !== "application/json") {
           await response.body?.cancel();
           throw protocol();
@@ -623,6 +643,10 @@ export function createModelProvider(config: ProviderConfig): ModelProvider {
         const text = choice.message.content ?? "";
         const calls = choice.message.tool_calls ?? [];
         checkFinish(choice.finish_reason, calls, text);
+        const reasoning = choice.message.reasoning_content;
+        if (reasoning)
+          for (let start = 0; start < reasoning.length; start += 65536)
+            notify(options.onReasoning ?? (() => {}), reasoning.slice(start, start + 65536));
         for (let start = 0; start < text.length; start += 65536)
           notify(options.onText, text.slice(start, start + 65536));
         const usage = normalizeUsage(parsed.data.usage);

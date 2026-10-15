@@ -242,6 +242,7 @@ export function createResponsesAdapter(h: Helpers, baseUrl: string) {
       response: Response,
       observer: (text: string) => void,
       model: string,
+      onReasoning: (text: string) => void = () => {},
     ): Promise<ProviderResponse> {
       const decoder = new TextDecoder("utf-8", { fatal: true });
       let pending = "";
@@ -260,6 +261,7 @@ export function createResponsesAdapter(h: Helpers, baseUrl: string) {
       const added = new Map<number, unknown>();
       const textParts = new Map<string, string>();
       let eventSize = 0;
+      let reasoningLength = 0;
       const dispatch = () => {
         if (!data.length) {
           eventName = "";
@@ -472,13 +474,26 @@ export function createResponsesAdapter(h: Helpers, baseUrl: string) {
               throw h.protocol();
             responseId = p.response.id;
           }
+        } else if (e.type === "response.reasoning_summary_text.delta") {
+          // Opaque reasoning is replayed via providerState; this summary text is a
+          // live display preview only and never becomes assistant content.
+          const p = z
+            .object({
+              item_id: id,
+              delta: z.string().max(1_000_000),
+            })
+            .passthrough()
+            .parse(e);
+          reasoningLength += p.delta.length;
+          if (reasoningLength > 2_000_000) throw h.protocol();
+          for (let start = 0; start < p.delta.length; start += 65536)
+            h.notify(onReasoning, p.delta.slice(start, start + 65536));
         } else if (
           ![
             "response.content_part.added",
             "response.content_part.done",
             "response.reasoning_summary_part.added",
             "response.reasoning_summary_part.done",
-            "response.reasoning_summary_text.delta",
             "response.reasoning_summary_text.done",
           ].includes(e.type)
         )

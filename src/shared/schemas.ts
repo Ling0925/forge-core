@@ -408,6 +408,15 @@ export const agentEventSchema = z
         text: z.string().max(131072),
       })
       .strict(),
+    // Display-only reasoning preview. Ephemeral: emitted for live UI and never
+    // persisted to the session transcript as assistant content.
+    z
+      .object({
+        ...eventBase,
+        type: z.literal("reasoning_delta"),
+        text: z.string().max(131072),
+      })
+      .strict(),
     z
       .object({
         ...eventBase,

@@ -238,6 +238,16 @@ export const createAgentRuntime = (
       snapshot = { ...snapshot, events: [...snapshot.events, event] };
       notify(event);
     };
+    // Display-only, never persisted: live reasoning preview is not transcript state.
+    const ephemeral = (body: EventBody): void => {
+      notify(
+        agentEventSchema.parse({
+          ...body,
+          sessionId: input.sessionId,
+          timestamp: now(),
+        }),
+      );
+    };
     const save = async (): Promise<void> => {
       if (!snapshot)
         throw new ForgeError("internal", "Session has not loaded.");
@@ -439,8 +449,20 @@ export const createAgentRuntime = (
         event({ type: "context_usage", usage: projectedUsage });
         let partial = "";
         let emittedChars = 0;
+        let reasoningPartial = "";
+        let reasoningChars = 0;
         let streaming = true;
         let flushTimer: ReturnType<typeof setTimeout> | undefined;
+        let reasoningTimer: ReturnType<typeof setTimeout> | undefined;
+        const flushReasoning = (): void => {
+          clearTimeout(reasoningTimer);
+          reasoningTimer = undefined;
+          if (reasoningPartial !== "") {
+            ephemeral({ type: "reasoning_delta", text: reasoningPartial });
+            reasoningChars += reasoningPartial.length;
+            reasoningPartial = "";
+          }
+        };
         const flush = (): void => {
           clearTimeout(flushTimer);
           flushTimer = undefined;
@@ -469,6 +491,17 @@ export const createAgentRuntime = (
                 else if (partial && flushTimer === undefined)
                   flushTimer = setTimeout(flush, 80);
               },
+              onReasoning: (text) => {
+                if (!streaming || typeof text !== "string") return;
+                // Display-only preview, bounded and never persisted.
+                reasoningPartial += text.slice(
+                  0,
+                  Math.max(0, 131072 - reasoningChars - reasoningPartial.length),
+                );
+                if (reasoningPartial.length >= 4096) flushReasoning();
+                else if (reasoningPartial && reasoningTimer === undefined)
+                  reasoningTimer = setTimeout(flushReasoning, 120);
+              },
             },
           ),
           signal,
@@ -477,6 +510,7 @@ export const createAgentRuntime = (
           .finally(() => {
             streaming = false;
             flush();
+            flushReasoning();
           });
         check();
         const incoming = response.usage;
