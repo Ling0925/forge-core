@@ -398,6 +398,7 @@ export const agentEventSchema = z
         status: sessionStatusSchema,
         model: settingsFields.model,
         summary: z.string().max(4096),
+        currentTool: z.object({ name: z.string().max(256), target: z.string().max(1024) }).strict().optional(),
       })
       .strict(),
     z

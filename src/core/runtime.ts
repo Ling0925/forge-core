@@ -5,6 +5,7 @@ import type {
   RunControl,
 } from "../shared/contracts";
 import { ForgeError, toErrorInfo } from "../shared/errors";
+import { toolActivity } from "../shared/tool-activity";
 import {
   agentEventSchema,
   providerResponseSchema,
@@ -639,6 +640,14 @@ export const createAgentRuntime = (
                             }).run(
                               childInput,
                               (childEvent) => {
+                                if (childEvent.type === "tool_started" || childEvent.type === "tool_finished") {
+                                  // Only bounded activity metadata crosses into the parent;
+                                  // arguments/results remain in the child's own transcript.
+                                  event({ type: "agent_update", childSessionId: childInput.sessionId,
+                                    model: childInput.model ?? toolSnapshot.model, status: "running", summary: "",
+                                    ...(childEvent.type === "tool_started" ? { currentTool: toolActivity(childEvent.call) } : {}),
+                                  });
+                                }
                                 if (
                                   childEvent.type === "run_started" ||
                                   childEvent.type === "run_finished"
