@@ -356,6 +356,7 @@ export const contextUsageSchema = z.object({
   basis: z.enum(["projected", "request", "request-with-output"]),
   // Provider input count for this request, never the accumulated billing total.
   promptTokens: z.number().int().nonnegative().optional(),
+  cachedPromptTokens: z.number().int().nonnegative().optional(),
   completionTokens: z.number().int().nonnegative().optional(),
   parts: z.object({
     instructions: z.number().int().nonnegative(),

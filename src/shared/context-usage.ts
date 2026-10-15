@@ -71,7 +71,9 @@ export function reportedContext(estimated: ContextUsage, usage: Usage, output: M
   }
   parts.tools = remaining;
   parts[output.role === "assistant" && output.tool_calls?.length ? "tools" : "conversation"] += usage.completionTokens;
-  return { ...estimated, parts, usedTokens: usage.promptTokens + usage.completionTokens,
+  const { cachedPromptTokens: _previousCache, ...projection } = estimated;
+  return { ...projection, parts, usedTokens: usage.promptTokens + usage.completionTokens,
     promptTokens: usage.promptTokens, completionTokens: usage.completionTokens,
+    ...(usage.cachedPromptTokens !== undefined ? { cachedPromptTokens: usage.cachedPromptTokens } : {}),
     estimated: true, basis: "request-with-output" };
 }
