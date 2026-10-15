@@ -29,8 +29,11 @@
     "@fontsource-variable/geist": "^5.3.0",
     "@fontsource-variable/geist-mono": "^5.3.0",
     "@phosphor-icons/react": "^2.1.7",
+    "cli-highlight": "^2.1.11",
     "commander": "^13.1.0",
     "ky": "^1.8.1",
+    "marked": "^15.0.12",
+    "marked-terminal": "^7.3.0",
     "playwright": "^1.51.1",
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
@@ -40,6 +43,7 @@
   },
   "devDependencies": {
     "@biomejs/biome": "^1.9.4",
+    "@types/marked-terminal": "^6.1.1",
     "@types/node": "^22.14.0",
     "@types/react": "^19.0.12",
     "@types/react-dom": "^19.0.4",
@@ -65,10 +69,17 @@
     "directories": {
       "output": "release"
     },
-    "files": ["dist/**/*", "package.json", "node_modules/**/*", "!.build/**/*"],
+    "files": [
+      "dist/**/*",
+      "package.json",
+      "node_modules/**/*",
+      "!.build/**/*"
+    ],
     "npmRebuild": false,
     "linux": {
-      "target": ["dir"],
+      "target": [
+        "dir"
+      ],
       "category": "Development",
       "executableName": "forge-desktop"
     }

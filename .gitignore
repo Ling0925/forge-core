@@ -25,3 +25,6 @@ node-compile-cache/
 playwright-artifacts-*/
 playwright_chromiumdev_profile-*/
 org.chromium.Chromium.*/
+
+# Local upstream checkout for reference only; not part of Forge sources.
+/references/CometixCode/

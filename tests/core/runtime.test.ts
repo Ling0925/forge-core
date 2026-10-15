@@ -90,6 +90,25 @@ const input = { sessionId: initial().id, prompt: "work" };
 const signal = () => new AbortController().signal;
 
 describe("original runtime", () => {
+  it("projects edit previews out of provider requests but keeps stored tool evidence", async () => {
+    const preview = "original-file-content".repeat(100);
+    const state = initial();
+    const messages: Message[] = [
+      { role: "user", content: "previous task" },
+      { role: "assistant", content: null, tool_calls: [{ id: "edit-1", type: "function", function: { name: "edit_file", arguments: '{"path":"a.ts","old_text":"a","new_text":"b"}' } }] },
+      { role: "tool", tool_call_id: "edit-1", content: JSON.stringify({ content: '{"edited":true}', isError: false, changes: [{ path: "a.ts", kind: "modified", before: preview, after: preview + "b", truncated: false }] }) },
+    ];
+    let sent: readonly Message[] = [];
+    const provider: ModelProvider = { ...finalProvider, complete: async incoming => {
+      sent = incoming;
+      return { message: { role: "assistant", content: "done" } };
+    } };
+    const f = fixture(provider, emptyTools, { ...state, messages });
+    await f.runtime.run(input, () => {}, async () => false, signal());
+    expect(JSON.stringify(sent)).not.toContain(preview);
+    expect(JSON.stringify(sent)).toContain("previews omitted");
+    expect(f.current().messages.find(m => m.role === "tool")?.content).toBe(messages[2]?.content);
+  });
   it("checkpoints native calls before effects and retains final text, model and history", async () => {
     let completions = 0;
     const received: (readonly Message[])[] = [];

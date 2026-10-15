@@ -109,6 +109,53 @@ describe("original local tools", () => {
     expect(events).toEqual([]);
   });
 
+  it("describes native editing first without weakening schemas or safety boundaries", () => {
+    const get = (name: string) => {
+      const tool = tools.definitions.find(item => item.function.name === name);
+      if (!tool) throw new Error(`Missing tool ${name}`);
+      return tool.function;
+    };
+    const write = get("write_file");
+    const edit = get("edit_file");
+    const command = get("run_command");
+    for (const tool of [write, edit]) {
+      expect(tool.description).toMatch(/^Default tool/);
+      expect(tool.description).toContain("when a checkpoint store is configured");
+      expect(tool.description).toContain("previews");
+      expect(tool.description).toContain("Workspace-relative only");
+      expect(tool.description).toContain("no symlinks or sensitive files");
+      expect(tool.description).toContain("Files at most 2 MiB");
+      expect(tool.description).toContain("Readonly forbids mutations");
+      expect(tool.parameters.additionalProperties).toBe(false);
+    }
+    expect(write.description).toContain("make_directory");
+    expect(edit.description).toContain("exactly one occurrence");
+    expect(edit.description).toContain("replace_all");
+    expect(write.parameters).toEqual({
+      type: "object", additionalProperties: false, required: ["path", "content"],
+      properties: {
+        path: { type: "string", minLength: 1, maxLength: 4096 },
+        content: { type: "string", maxLength: 2097152 },
+      },
+    });
+    expect(edit.parameters).toEqual({
+      type: "object", additionalProperties: false, required: ["path", "old_text", "new_text"],
+      properties: {
+        path: { type: "string", minLength: 1, maxLength: 4096 },
+        old_text: { type: "string", minLength: 1, maxLength: 2097152 },
+        new_text: { type: "string", maxLength: 2097152 },
+        replace_all: { type: "boolean", default: false },
+      },
+    });
+    for (const rule of [
+      "builds, tests, git and package managers", "write_file/edit_file",
+      "command effects are not checkpointed", "Readonly denied",
+      "per-call approval under the host policy", "NOT an OS sandbox",
+      "cwd is guarded", "64 KiB", "128 KiB", "120s",
+    ]) expect(command.description).toContain(rule);
+    expect(command.description.length).toBeLessThan(850);
+  });
+
   it("reads numbered pages, hits cache, and invalidates on real changes", async () => {
     await writeFile(join(root, "a.txt"), "first\nsecond\nthird");
     const first = output(

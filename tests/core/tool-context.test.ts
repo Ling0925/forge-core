@@ -1,0 +1,57 @@
+import { expect, it } from "vitest";
+import type { Message } from "../../src/shared/schemas";
+import { projectToolContext } from "../../src/core/tool-context";
+import { assertBoundary, projectSummary } from "../../src/core/context";
+import { sessionSnapshotSchema } from "../../src/shared/schemas";
+import { measureContext } from "../../src/shared/context-usage";
+
+it("applies the same projection after saved semantic memory without touching the snapshot", () => {
+  const snapshot = sessionSnapshotSchema.parse({ version: 1, id: "12345678-1234-4234-8234-123456789abc", title: "test", workspace: "/workspace", model: "test", createdAt: "2026-01-01T00:00:00Z", updatedAt: "2026-01-01T00:00:00Z", status: "idle", events: [], changes: [], messages: [{role:"user",content:"old"},{role:"assistant",content:"done"},{role:"user",content:"current"},...exchange("new")], contextSummary: {content:"memory",boundary:2,fallback:false} });
+  const original = JSON.stringify(snapshot);
+  const projected = projectSummary(snapshot);
+  expect(projected[0]?.content).toContain("memory");
+  expect(JSON.stringify(projected)).toContain("previews omitted");
+  expect(JSON.stringify(snapshot)).toBe(original);
+  expect(projectToolContext(projected)).toEqual(projected);
+});
+
+function exchange(id: string, name = "edit_file", error = false): Message[] {
+  return [{role:"assistant",content:null,tool_calls:[{id,type:"function",function:{name,arguments:'{"path":"file.ts","old_text":"a","new_text":"b"}'}}]},
+    {role:"tool",tool_call_id:id,content:JSON.stringify({content:JSON.stringify({edited:true}),isError:error,changes:[{path:"file.ts",kind:"modified",before:"a".repeat(8192),after:"b".repeat(8192),truncated:true}]})}];
+}
+it("omits repeated edit previews only in requests, retaining calls and persisted evidence", () => {
+  const messages: Message[] = [{role:"system",content:"rules"},{role:"user",content:"fix files"},...Array.from({length:60},(_,i)=>exchange(String(i))).flat()];
+  const original = JSON.stringify(messages);
+  const projected = projectToolContext(messages);
+  expect(JSON.stringify(messages)).toBe(original);
+  expect(projected).toHaveLength(messages.length);
+  expect(projected[0]).toBe(messages[0]); expect(projected[2]).toBe(messages[2]);
+  expect(()=>assertBoundary(projected,projected.length)).not.toThrow();
+  expect(JSON.stringify(projected)).not.toContain("a".repeat(8192));
+  expect(JSON.stringify(projected)).toContain("previews omitted");
+  const before = measureContext(messages,872000).usedTokens;
+  const after = measureContext(projected,872000).usedTokens;
+  expect(after).toBeLessThan(before * 0.1);
+  console.info(`Synthetic 60 edits: estimated context ${before} -> ${after} tokens`);
+});
+it("preserves long results regardless of age and keeps every appended prefix byte-stable", () => {
+  const messages: Message[] = [{role:"system",content:"stable rules"},{role:"user",content:"task"}];
+  for (let i = 0; i < 24; i++) {
+    const before = JSON.stringify(projectToolContext(messages));
+    messages.push(...exchange(`edit-${i}`));
+    messages.push({role:"tool",tool_call_id:`read-${i}`,content:JSON.stringify({content:"HEAD"+"x".repeat(20000)+"TAIL",isError:i===0})});
+    const after = projectToolContext(messages);
+    expect(JSON.stringify(after.slice(0, -3))).toBe(before);
+    expect(after.at(-1)).toBe(messages.at(-1));
+  }
+  const projected = projectToolContext(messages);
+  messages.forEach((message,index) => {
+    if (message.role === "tool" && message.tool_call_id.startsWith("read-")) expect(projected[index]).toBe(message);
+  });
+  expect(projectToolContext(projected)).toEqual(projected);
+});
+it("leaves unknown envelopes, failed edits and non-edit change payloads untouched", () => {
+  const messages: Message[] = [...exchange("bad","edit_file",true),...exchange("other","custom_tool"),{role:"tool",tool_call_id:"legacy",content:"raw legacy"}];
+  const projected = projectToolContext(messages);
+  projected.forEach((m,i)=>expect(m).toBe(messages[i]));
+});

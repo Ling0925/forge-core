@@ -129,8 +129,10 @@ function definition(
     }),
   });
 }
-const policies =
-  "Workspace-relative only; no symlinks or sensitive files (.env*, credentials, private keys, .ssh, .config, .git). Files at most 2 MiB. Readonly forbids mutations and commands. ";
+const fileBoundaries =
+  "Workspace-relative only; no symlinks or sensitive files (.env*, credentials, private keys, .ssh, .config, .git). Files at most 2 MiB. ";
+const policies = `${fileBoundaries}Readonly forbids mutations and commands. `;
+const writePolicies = `${fileBoundaries}Readonly forbids mutations. `;
 const definitions: readonly ToolDefinition[] = Object.freeze([
   definition(
     "git_status",
@@ -171,7 +173,7 @@ const definitions: readonly ToolDefinition[] = Object.freeze([
   ),
   definition(
     "write_file",
-    `${policies}Atomically create/replace a file. Parent must exist: use make_directory first. Returns bounded real before/after previews, not backups.`,
+    `Default tool for creating files or replacing their complete content; use edit_file for targeted changes, not run_command scripts or redirection. Atomic writes use restorable checkpoints when a checkpoint store is configured. Returns bounded before/after previews; restore uses checkpoints, not previews. Fails if the parent directory does not exist (create it with make_directory). ${writePolicies}`,
     {
       path: stringParameter,
       content: { type: "string", maxLength: FILE_LIMIT },
@@ -180,7 +182,7 @@ const definitions: readonly ToolDefinition[] = Object.freeze([
   ),
   definition(
     "edit_file",
-    `${policies}Atomically replace literal old_text (nonempty). Exactly one occurrence required unless replace_all is true. Returns bounded real previews.`,
+    `Default tool for targeted file edits instead of shell, node/python or sed scripts. Atomically replace literal old_text (nonempty); exactly one occurrence is required unless replace_all is true. Read the relevant file content first. Edits use restorable checkpoints when a checkpoint store is configured; bounded before/after previews are separate from checkpoint backups. ${writePolicies}`,
     {
       path: stringParameter,
       old_text: { type: "string", minLength: 1, maxLength: FILE_LIMIT },
@@ -197,7 +199,7 @@ const definitions: readonly ToolDefinition[] = Object.freeze([
   ),
   definition(
     "run_command",
-    "Execute explicit argv, never implicit shell interpolation. Readonly denied; workspace requires fresh per-call approval; unrestricted permits automatic execution. NOT an OS sandbox: approved commands can access outside the workspace or network. cwd is guarded. Minimal environment, no inherited credentials/private config; HOME is workspace. PATH includes system tools, the host Node directory and existing absolute caller PATH directories. Network configuration requires a future explicit tool-environment policy, never inherited proxies. Timeout defaults to 30000ms, maximum 120000ms. Combined stdout/stderr ceiling 64 KiB; overflow terminates the process group and withholds partial output. Encoded result ceiling 128 KiB, with explicit truncation. UTF-8 partial sequences use replacement decoding. Timeout/cancellation waits for actual close. Explicit shell argv is allowed under this policy.",
+    "Run builds, tests, git and package managers with explicit argv (no implicit shell; explicit shell argv allowed). For authored file content, use write_file/edit_file instead of scripts or redirection; command effects are not checkpointed. Readonly denied; workspace requests per-call approval under the host policy; unrestricted permits execution. NOT an OS sandbox: commands can access outside the workspace and network; cwd is guarded. Minimal environment without inherited credentials, private config or proxies; HOME is workspace. Timeout 30s by default, 120s maximum; combined output cap 64 KiB (overflow terminates the process group and withholds partial output); encoded result cap 128 KiB. Cancellation waits for process close.",
     {
       argv: {
         type: "array",
