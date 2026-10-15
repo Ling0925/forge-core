@@ -51,10 +51,15 @@ export interface ToolContext {
   readonly signal: AbortSignal;
   readonly approve: ApprovalHandler;
   readonly onEvent: EventSink;
+  /** Host-owned observers; not model tools and never permission grants. */
+  readonly onCommandStarted?: () => void;
+  readonly onCommandOutput?: (stream: "stdout" | "stderr", text: string) => void;
 }
 export interface LocalToolRegistry {
   readonly definitions: readonly ToolDefinition[];
   execute(call: ToolCall, context: ToolContext): Promise<ToolResult>;
+  /** Join and report only undelivered background work before model finalization. */
+  settleBackground?(sessionId: SessionId, signal: AbortSignal): Promise<ToolResult | undefined>;
   dispose(): Promise<void>;
 }
 export type ToolArguments = Readonly<Record<string, JsonValue>>;

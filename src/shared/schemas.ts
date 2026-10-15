@@ -47,6 +47,17 @@ const browserOriginSchema = z
       return false;
     }
   }, "Expected an exact canonical HTTP(S) origin (scheme, host and optional port only; no credentials, path, query, fragment or wildcard)");
+export const lspServerSchema = z.object({
+  id: z.string().regex(/^[a-z][a-z0-9_-]{0,31}$/),
+  command: z.string().min(1).max(4096).refine(value => !/[\x00-\x1f]/.test(value)),
+  args: z.array(z.string().max(1024).refine(value => !value.includes("\0"))).max(32).readonly(),
+  extensions: z.array(z.string().regex(/^\.[a-zA-Z0-9_-]{1,16}$/)).min(1).max(32).readonly(),
+}).strict().readonly();
+export const lspServersSchema = z.array(lspServerSchema).max(8).readonly().refine(servers =>
+  new Set(servers.map(server => server.id)).size === servers.length
+  && new Set(servers.flatMap(server => server.extensions.map(ext => ext.toLowerCase()))).size === servers.reduce((sum, server) => sum + server.extensions.length, 0),
+  "LSP server IDs and file extensions must be unique",
+).refine(servers => JSON.stringify(servers).length <= 24000, "LSP configuration is too large");
 export const settingsFields = {
   apiMode: z.enum(["chat-completions", "responses"]).optional(),
   reasoningEffort: z
@@ -80,6 +91,7 @@ export const settingsFields = {
   contextBudgetTokens: z.number().int().min(4096).max(10000000).nullable().optional(),
   // Per-model overrides: gateways/aliases need not have the upstream window.
   modelContextWindows: z.record(z.string().min(1).max(256), z.number().int().positive().max(10000000).nullable()).optional(),
+  lspServers: lspServersSchema.optional(),
   browserAllowedOrigins: z.array(browserOriginSchema).max(32).readonly(),
   browserExecutablePath: z
     .string()

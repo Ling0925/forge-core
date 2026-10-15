@@ -28,10 +28,20 @@ export function createCombinedToolRegistry(
         };
       return owner.execute(call, context);
     },
+    async settleBackground(sessionId, signal) {
+      const reports = (await Promise.all(registries.map(registry => registry.settleBackground?.(sessionId, signal))))
+        .filter((report): report is ToolResult => report !== undefined);
+      if (!reports.length) return undefined;
+      if (reports.length === 1) return reports[0];
+      return { content: JSON.stringify(reports), isError: reports.some(report => report.isError) };
+    },
     async dispose(): Promise<void> {
       disposal ??= Promise.allSettled(
         registries.map((registry) => registry.dispose()),
-      ).then(() => undefined);
+      ).then(results => {
+        if (results.some(result => result.status === "rejected"))
+          throw new Error("Tool registry cleanup failed; inspect remaining resources.");
+      });
       await disposal;
     },
   };

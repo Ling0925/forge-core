@@ -18,6 +18,7 @@ import type {
 } from "../shared/schemas";
 import type { CheckpointStore } from "../store/checkpoints";
 import { gitInspect } from "./git";
+import { createLineMatcher, globMatcher, pageEntries, relativeQueryPath } from "./file-query";
 import { WorkspacePathError, createWorkspacePathGuard } from "./path-guard";
 
 const FILE_LIMIT = 2 * 1024 * 1024;
@@ -47,12 +48,18 @@ const commandSchema = z
   })
   .strict()
   .readonly();
+const queryPageSchema = {
+  glob: z.string().min(1).max(1024).optional(),
+  offset: z.number().int().min(0).max(Number.MAX_SAFE_INTEGER).default(0),
+};
 const argumentsSchema = z.discriminatedUnion("tool", [
   z
     .object({
       tool: z.literal("list_files"),
       path: pathSchema.default("."),
       recursive: z.boolean().default(false),
+      ...queryPageSchema,
+      limit: z.number().int().min(1).max(ENTRY_LIMIT).default(ENTRY_LIMIT),
     })
     .strict()
     .readonly()
@@ -63,6 +70,7 @@ const argumentsSchema = z.discriminatedUnion("tool", [
       path: pathSchema,
       offset: z.number().int().min(0).max(FILE_LIMIT).default(0),
       limit: z.number().int().min(1).max(200).default(100),
+      if_version: z.string().max(128).optional(),
     })
     .strict()
     .readonly()
@@ -101,6 +109,12 @@ const argumentsSchema = z.discriminatedUnion("tool", [
       tool: z.literal("search_files"),
       query: z.string().min(1).max(1024),
       path: pathSchema.default("."),
+      ...queryPageSchema,
+      limit: z.number().int().min(1).max(100).default(100),
+      mode: z.enum(["content", "files", "count"]).default("content"),
+      case_sensitive: z.boolean().default(true),
+      regex: z.boolean().default(false),
+      context_lines: z.number().int().min(0).max(3).default(0),
     })
     .strict()
     .readonly()
@@ -156,20 +170,24 @@ const definitions: readonly ToolDefinition[] = Object.freeze([
   ),
   definition(
     "list_files",
-    `${policies}List at most 1000 entries; recursive traversal at most 8 levels. Excludes dependency/build/cache directories.`,
+    `${policies}List paginated entries; optional root-relative glob (*, **, ?). Bounded traversal (1000 entries, 8 levels); dependency/build/cache directories excluded. scan_truncated marks incomplete traversal, truncated remaining page results.`,
     {
       path: { ...stringParameter, default: "." },
       recursive: { type: "boolean", default: false },
+      glob: { type: "string", minLength: 1, maxLength: 1024 },
+      offset: { type: "integer", minimum: 0, maximum: Number.MAX_SAFE_INTEGER, default: 0 },
+      limit: { type: "integer", minimum: 1, maximum: ENTRY_LIMIT, default: ENTRY_LIMIT },
     },
     [],
   ),
   definition(
     "read_file",
-    `${policies}Read UTF-8 text with 1-based line numbers, zero-based line offset, up to 200 lines and 12000 characters. Returns pagination, explicit truncation, SHA-256 version, byte size, lines returned and LRU cache hit status. A successful nonempty page authorizes write/edit of this version in this session; read again after a write or external change. Binary/oversize files rejected.`,
+    `${policies}Numbered UTF-8 pages with zero-based offset, SHA-256 version, byte size, inclusive end_line and cache status. Matching if_version returns unchanged:true without content or new write authority. A nonempty page authorizes write/edit in this session; reread after changes. Binary rejected; output bounded.`,
     {
       path: stringParameter,
       offset: { type: "integer", minimum: 0, maximum: FILE_LIMIT, default: 0 },
       limit: { type: "integer", minimum: 1, maximum: 200, default: 100 },
+      if_version: { type: "string", maxLength: 128 },
     },
     ["path"],
   ),
@@ -221,10 +239,17 @@ const definitions: readonly ToolDefinition[] = Object.freeze([
   ),
   definition(
     "search_files",
-    `${policies}Literal case-sensitive search, no regex/glob. At most 1000 entries, 8 levels, 100 bounded matches. Binary/oversize/sensitive files skipped.`,
+    `${policies}Literal search by default; optional bounded regex, root-relative glob (*, **, ?), context and pagination. Modes return line matches, files or per-file matching-line counts in matches. Traversal capped at 1000 entries/8 levels; binary/oversize/sensitive files skipped. scan_truncated marks incomplete scan, truncated remaining page results.`,
     {
       query: { type: "string", minLength: 1, maxLength: 1024 },
       path: { ...stringParameter, default: "." },
+      glob: { type: "string", minLength: 1, maxLength: 1024 },
+      mode: { type: "string", enum: ["content", "files", "count"], default: "content" },
+      case_sensitive: { type: "boolean", default: true },
+      regex: { type: "boolean", default: false },
+      context_lines: { type: "integer", minimum: 0, maximum: 3, default: 0 },
+      offset: { type: "integer", minimum: 0, maximum: Number.MAX_SAFE_INTEGER, default: 0 },
+      limit: { type: "integer", minimum: 1, maximum: 100, default: 100 },
     },
     ["query"],
   ),
@@ -809,8 +834,17 @@ export async function createLocalToolRegistry(
         timedOut = true;
         kill();
       }, args.timeout_ms);
-      child.stdout.on("data", (chunk: Buffer) => capture(stdout, chunk));
-      child.stderr.on("data", (chunk: Buffer) => capture(stderr, chunk));
+      child.once("spawn", () => {
+        try { context.onCommandStarted?.(); } catch { /* Observers cannot fail execution. */ }
+      });
+      child.stdout.on("data", (chunk: Buffer) => {
+        capture(stdout, chunk);
+        try { context.onCommandOutput?.("stdout", chunk.toString("utf8")); } catch { /* Observer only. */ }
+      });
+      child.stderr.on("data", (chunk: Buffer) => {
+        capture(stderr, chunk);
+        try { context.onCommandOutput?.("stderr", chunk.toString("utf8")); } catch { /* Observer only. */ }
+      });
       child.on("error", () => {
         spawnFailed = true;
       });
@@ -892,6 +926,19 @@ export async function createLocalToolRegistry(
         case "read_file": {
           const file = await read(args.path, signal);
           const lines = file.text.split("\n");
+          const version = createHash("sha256").update(file.text).digest("hex");
+          if (args.if_version !== undefined && /^[a-f\d]{64}$/i.test(args.if_version) &&
+              args.if_version.toLowerCase() === version) {
+            check(signal);
+            // A SHA is not proof that this session has seen a model-visible page.
+            return result({
+              path: targetName(file.path), version, unchanged: true,
+              size_bytes: Buffer.byteLength(file.text, "utf8"), lines_returned: 0,
+              offset: args.offset, end_line: null, next_offset: null,
+              total_lines: lines.length, truncated: false, partial_line: false,
+              cache_hit: file.cacheHit,
+            });
+          }
           const selected: string[] = [];
           let characters = 0;
           let index = args.offset;
@@ -925,7 +972,8 @@ export async function createLocalToolRegistry(
           return result({
             path: targetName(file.path),
             content: selected.join("\n"),
-            version: createHash("sha256").update(file.text).digest("hex"),
+            version,
+            end_line: selected.length > 0 ? index : null,
             size_bytes: Buffer.byteLength(file.text, "utf8"),
             lines_returned: selected.length,
             offset: args.offset,
@@ -937,18 +985,14 @@ export async function createLocalToolRegistry(
           });
         }
         case "list_files": {
+          const accept = globMatcher(args.glob);
           const listing = await walk(args.path, args.recursive, signal);
-          const entries: JsonValue[] = [];
-          let length = 0;
-          for (const entry of listing.entries) {
-            length += JSON.stringify(entry).length;
-            if (length > 90000) break;
-            entries.push(entry);
-          }
+          const root = targetName(await guard.resolveRead(args.path));
+          const filtered = listing.entries.filter(entry =>
+            accept(relativeQueryPath(root, entry.path))).sort((a, b) => a.path.localeCompare(b.path));
           return result({
-            entries,
-            truncated:
-              listing.truncated || entries.length !== listing.entries.length,
+            ...pageEntries(filtered, args.offset, args.limit),
+            scan_truncated: listing.truncated,
           });
         }
         case "write_file":
@@ -1016,41 +1060,67 @@ export async function createLocalToolRegistry(
         case "run_command":
           return await command(args, context, signal);
         case "search_files": {
+          const accept = globMatcher(args.glob);
           const listing = await walk(args.path, true, signal);
+          const root = targetName(await guard.resolveRead(args.path));
+          const candidates = listing.entries.filter(entry => entry.kind === "file" &&
+            accept(relativeQueryPath(root, entry.path))).sort((a, b) => a.path.localeCompare(b.path));
+          const matcher = createLineMatcher(args.query, args.regex, args.case_sensitive, signal);
           const matches: JsonValue[] = [];
-          let truncated = listing.truncated;
+          let seen = 0;
           let length = 0;
-          for (const entry of listing.entries) {
-            check(signal);
-            if (entry.kind !== "file") continue;
-            let text: string;
-            try {
-              text = (await read(entry.path, signal)).text;
-            } catch (error: unknown) {
-              if (error instanceof ForgeError && error.code === "cancelled")
-                throw error;
-              continue;
-            }
-            for (const [index, line] of text.split("\n").entries()) {
-              const column = line.indexOf(args.query);
-              if (column < 0) continue;
-              const match = {
-                path: entry.path,
-                line: index + 1,
-                column: column + 1,
-                excerpt: line.slice(Math.max(0, column - 80), column + 240),
-                excerpt_truncated: line.length > 320,
-              };
-              length += JSON.stringify(match).length;
-              if (matches.length >= 100 || length > 90000) {
-                truncated = true;
+          let more = false;
+          let scanTruncated = listing.truncated;
+          let skippedFiles = 0;
+          try {
+            for (const [fileIndex, entry] of candidates.entries()) {
+              check(signal);
+              let text: string;
+              try { text = (await read(entry.path, signal)).text; }
+              catch (error: unknown) {
+                if (error instanceof ForgeError && error.code === "cancelled") throw error;
+                skippedFiles += 1;
+                continue;
+              }
+              const content = args.mode === "content";
+              const found = await matcher.find(text, content ? Math.max(0, args.offset - seen) : 0,
+                content ? args.limit - matches.length + 1 : args.mode === "files" ? 1 : 0,
+                args.mode === "files");
+              const lines = content ? text.split("\n") : [];
+              const values: JsonValue[] = content ? found.hits.map(({ index, column }) => {
+                const line = lines[index] ?? "";
+                const start = Math.max(0, column - 80);
+                return {
+                  path: entry.path, line: index + 1, column: column + 1,
+                  excerpt: line.slice(start, column + 240),
+                  excerpt_truncated: start > 0 || column + 240 < line.length,
+                  ...(args.context_lines === 0 ? {} : {
+                    context: lines.slice(Math.max(0, index - args.context_lines), index + args.context_lines + 1)
+                      .map((value, offset) => ({ line: Math.max(0, index - args.context_lines) + offset + 1,
+                        text: value.slice(0, 320), truncated: value.length > 320 })),
+                  }),
+                };
+              }) : found.count > 0 ? [args.mode === "files" ? { path: entry.path }
+                : { path: entry.path, count: found.count }] : [];
+              if (content) seen += found.count;
+              for (const value of values) {
+                if (!content && seen++ < args.offset) continue;
+                if (matches.length >= args.limit || length + JSON.stringify(value).length > 90000) {
+                  more = true;
+                  break;
+                }
+                length += JSON.stringify(value).length;
+                matches.push(value);
+              }
+              if (more) {
+                scanTruncated ||= !found.complete || fileIndex < candidates.length - 1;
                 break;
               }
-              matches.push(match);
             }
-            if (truncated && (matches.length >= 100 || length > 90000)) break;
-          }
-          return result({ matches, truncated });
+          } finally { await matcher.dispose(); }
+          return result({ matches, mode: args.mode, offset: args.offset,
+            next_offset: more ? args.offset + matches.length : null,
+            truncated: more, scan_truncated: scanTruncated, skipped_files: skippedFiles });
         }
         default: {
           const unreachable: never = args;

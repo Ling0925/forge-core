@@ -31,6 +31,8 @@ import { openSessionStore } from "../store/sessions";
 import { openSettingsStore } from "../store/settings";
 import { createCombinedToolRegistry } from "../tools/combined";
 import { createLocalToolRegistry } from "../tools/local";
+import { withCommandTasks } from "../tools/command-tasks";
+import { createLspToolRegistry } from "../tools/lsp";
 import { createMcpToolRegistry } from "../tools/mcp";
 import { createSkillTool } from "../tools/skills";
 import { assertBoundary, projectSummary, summarize } from "./context";
@@ -61,7 +63,10 @@ const createDefaultTools = async (
         { protectedStateRoot: stateDirectory },
       ),
     });
-    registries.push(local);
+    registries.push(withCommandTasks(local, { redactValues: [apiKey] }));
+    if (settings.lspServers?.length) registries.push(await createLspToolRegistry(workspace, settings.lspServers, {
+      protectedRoots: [stateDirectory], redactValues: [apiKey],
+    }));
     registries.push(
       await createMcpToolRegistry(mcp, { redactValues: [apiKey] }),
     );
@@ -143,6 +148,7 @@ export const createHarness = async (
         tools: {
           definitions: combined.definitions,
           execute: combined.execute,
+          ...(combined.settleBackground ? { settleBackground: combined.settleBackground } : {}),
           async dispose() {
             try {
               await combined.dispose();
