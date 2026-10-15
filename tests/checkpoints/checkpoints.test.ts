@@ -48,6 +48,11 @@ it("restores full original beyond previews after reload and refuses changed file
   const t = await setup();
   const original = `${"a".repeat(9000)}\nTAIL_MARKER\n`;
   await writeFile(join(t.workspace, "large.txt"), original);
+  // The read-before-write contract requires a model-visible read of the
+  // current file in this session before an existing file may be edited.
+  expect(
+    (await t.execute("read_file", { path: "large.txt" })).isError,
+  ).toBe(false);
   const outcome = await t.execute("edit_file", {
     path: "large.txt",
     old_text: "TAIL_MARKER",

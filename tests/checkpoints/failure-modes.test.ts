@@ -67,6 +67,10 @@ it("preserves executable mode on edit and restore, including persisted reload", 
   const file = join(t.workspace, "script.sh");
   await writeFile(file, "#!/bin/sh\necho before\n", { mode: 0o755 });
   await chmod(file, 0o755);
+  // Editing an existing file now requires a prior successful read_file.
+  expect((await t.execute("read_file", { path: "script.sh" })).isError).toBe(
+    false,
+  );
   expect(
     (
       await t.execute("edit_file", {
@@ -215,6 +219,11 @@ it("refuses backup failure for an existing file without changing bytes or creati
   const t = await fixture();
   const file = join(t.workspace, "existing.txt");
   await writeFile(file, "original");
+  // Satisfy the read receipt so the failure under test is the backup store,
+  // not a missing read.
+  expect((await t.execute("read_file", { path: "existing.txt" })).isError).toBe(
+    false,
+  );
   await rm(t.directory, { recursive: true });
   const output = await t.execute("edit_file", {
     path: "existing.txt",

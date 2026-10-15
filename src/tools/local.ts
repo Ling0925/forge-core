@@ -1,5 +1,5 @@
 import { spawn } from "node:child_process";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { constants } from "node:fs";
 import { lstat, mkdir, open, realpath, rename, unlink } from "node:fs/promises";
 import { homedir } from "node:os";
@@ -164,7 +164,7 @@ const definitions: readonly ToolDefinition[] = Object.freeze([
   ),
   definition(
     "read_file",
-    `${policies}Read UTF-8 text with 1-based line numbers, zero-based line offset, up to 200 lines and 12000 characters. Returns pagination, explicit truncation, and LRU cache hit status. Binary/oversize files rejected.`,
+    `${policies}Read UTF-8 text with 1-based line numbers, zero-based line offset, up to 200 lines and 12000 characters. Returns pagination, explicit truncation, SHA-256 version, byte size, lines returned and LRU cache hit status. A successful nonempty page authorizes write/edit of this version in this session; read again after a write or external change. Binary/oversize files rejected.`,
     {
       path: stringParameter,
       offset: { type: "integer", minimum: 0, maximum: FILE_LIMIT, default: 0 },
@@ -174,7 +174,7 @@ const definitions: readonly ToolDefinition[] = Object.freeze([
   ),
   definition(
     "write_file",
-    `Default tool for creating files or replacing their complete content; use edit_file for targeted changes, not run_command scripts or redirection. Atomic writes use restorable checkpoints when a checkpoint store is configured. Returns bounded before/after previews; restore uses checkpoints, not previews. Fails if the parent directory does not exist (create it with make_directory). ${writePolicies}`,
+    `Default tool for creating files or replacing their complete content; use edit_file for targeted changes, not run_command scripts or redirection. Overwriting requires a prior read_file of the current version in this session; new files need no read. Unchanged content is a no-op. Atomic writes use restorable checkpoints when a checkpoint store is configured. Returns bounded before/after previews; restore uses checkpoints, not previews. Fails if the parent directory does not exist (create it with make_directory). ${writePolicies}`,
     {
       path: stringParameter,
       content: { type: "string", maxLength: FILE_LIMIT },
@@ -183,7 +183,7 @@ const definitions: readonly ToolDefinition[] = Object.freeze([
   ),
   definition(
     "edit_file",
-    `Default tool for targeted file edits instead of shell, node/python or sed scripts. Atomically replace literal old_text (nonempty); exactly one occurrence is required unless replace_all is true. Read the relevant file content first. Edits use restorable checkpoints when a checkpoint store is configured; bounded before/after previews are separate from checkpoint backups. ${writePolicies}`,
+    `Default tool for targeted file edits instead of shell, node/python or sed scripts. Atomically replace literal old_text (nonempty); exactly one occurrence is required unless replace_all is true. A prior read_file of the current version in this session is required; read again after each write or external change. Identical replacement is a no-op. Edits use restorable checkpoints when a checkpoint store is configured; bounded before/after previews are separate from checkpoint backups. ${writePolicies}`,
     {
       path: stringParameter,
       old_text: { type: "string", minLength: 1, maxLength: FILE_LIMIT },
@@ -331,6 +331,16 @@ export async function createLocalToolRegistry(
     string,
     Readonly<{ signature: string; text: string; bytes: number }>
   >();
+  // Only successful, model-visible read_file calls authorize overwrites.
+  // Keep receipts separate from the internal read/search cache and session-scoped.
+  const readReceipts = new Map<string, string>();
+  function receiptKey(sessionId: string, path: string): string {
+    return JSON.stringify([sessionId, path]);
+  }
+  function requireRead(sessionId: string, path: string, stamp: string): void {
+    if (readReceipts.get(receiptKey(sessionId, path)) !== stamp)
+      fail("Read the current file with read_file in this session before writing or editing; the file may have changed since the last read.");
+  }
   let cacheBytes = 0;
   let disposal: Promise<void> | undefined;
   let writeTail: Promise<void> = Promise.resolve();
@@ -505,9 +515,14 @@ export async function createLocalToolRegistry(
     } catch (error: unknown) {
       if (errorCode(error) !== "ENOENT") throw error;
     }
+    if (beforeStamp !== undefined) {
+      if (!sessionId) fail("Session identity is required for file writes.");
+      requireRead(sessionId, path, beforeStamp);
+    }
     if (expected !== undefined && expected !== beforeStamp)
-      fail("File changed before editing; retry.");
+      fail("File changed before editing; read_file again and retry.");
     check(signal);
+    if (before === text) return [];
     const temporary = join(parent, `.forge-${randomUUID()}.tmp`);
     const handle = await open(
       temporary,
@@ -557,8 +572,9 @@ export async function createLocalToolRegistry(
       check(signal);
       await rename(temporary, path);
       renamed = true;
-      await checkpoint?.complete();
+      if (sessionId) readReceipts.delete(receiptKey(sessionId, path));
       invalidate(path);
+      await checkpoint?.complete();
       return [
         {
           path: name,
@@ -891,9 +907,22 @@ export async function createLocalToolRegistry(
             characters += numbered.length + 1;
             index += 1;
           }
+          check(signal);
+          if (selected.length > 0) {
+            const key = receiptKey(context.sessionId, file.path);
+            readReceipts.delete(key);
+            if (readReceipts.size >= 4096) {
+              const first = readReceipts.keys().next();
+              if (!first.done) readReceipts.delete(first.value);
+            }
+            readReceipts.set(key, file.stamp);
+          }
           return result({
             path: targetName(file.path),
             content: selected.join("\n"),
+            version: createHash("sha256").update(file.text).digest("hex"),
+            size_bytes: Buffer.byteLength(file.text, "utf8"),
+            lines_returned: selected.length,
             offset: args.offset,
             next_offset: index < lines.length ? index : null,
             total_lines: lines.length,
@@ -918,39 +947,46 @@ export async function createLocalToolRegistry(
           });
         }
         case "write_file":
-          return await serialized(async () =>
-            result(
-              { written: true },
+          return await serialized(async () => {
+            const changes = await commit(
+              args.path,
+              args.content,
+              signal,
+              undefined,
+              call.id,
+              context.sessionId,
+            );
+            return result(
+              { written: changes.length > 0, unchanged: changes.length === 0 },
               false,
-              await commit(
-                args.path,
-                args.content,
-                signal,
-                undefined,
-                call.id,
-                context.sessionId,
-              ),
-            ),
-          );
+              changes,
+            );
+          });
         case "edit_file":
           return await serialized(async () => {
             const original = await read(args.path, signal);
+            requireRead(context.sessionId, original.path, original.stamp);
             const pieces = original.text.split(args.old_text);
             const count = pieces.length - 1;
             if (count === 0) fail("old_text was not found.");
             if (!args.replace_all && count !== 1)
               fail("old_text is ambiguous; use replace_all explicitly.");
+            const changes = await commit(
+              args.path,
+              pieces.join(args.new_text),
+              signal,
+              original.stamp,
+              call.id,
+              context.sessionId,
+            );
             return result(
-              { edited: true, replacements: count },
+              {
+                edited: changes.length > 0,
+                unchanged: changes.length === 0,
+                replacements: changes.length > 0 ? count : 0,
+              },
               false,
-              await commit(
-                args.path,
-                pieces.join(args.new_text),
-                signal,
-                original.stamp,
-                call.id,
-                context.sessionId,
-              ),
+              changes,
             );
           });
         case "make_directory":
@@ -1054,6 +1090,7 @@ export async function createLocalToolRegistry(
       shutdown.abort();
       disposal = Promise.allSettled([...active]).then(() => {
         cache.clear();
+        readReceipts.clear();
         cacheBytes = 0;
       });
       return disposal;

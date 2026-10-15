@@ -27,22 +27,24 @@ it("runs readonly without tools when a home-shaped workspace contains managed st
     listModels: async () => [],
     complete: async () => ({
       message:
-        editing && ++turns === 1
+        editing && ++turns <= 2
           ? {
               role: "assistant",
               content: null,
               tool_calls: [
                 {
-                  id: "edit",
+                  id: turns === 1 ? "read" : "edit",
                   type: "function",
-                  function: {
-                    name: "edit_file",
-                    arguments: JSON.stringify({
-                      path: "ordinary.txt",
-                      old_text: "before",
-                      new_text: "after",
-                    }),
-                  },
+                  function: turns === 1
+                    ? { name: "read_file", arguments: JSON.stringify({ path: "ordinary.txt" }) }
+                    : {
+                        name: "edit_file",
+                        arguments: JSON.stringify({
+                          path: "ordinary.txt",
+                          old_text: "before",
+                          new_text: "after",
+                        }),
+                      },
                 },
               ],
             }

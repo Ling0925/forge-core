@@ -43,6 +43,7 @@ describe("original local tools", () => {
   let events: AgentEvent[];
   let approvals = 0;
   let allow = true;
+  const sessionId = parseSessionId(randomUUID());
   beforeEach(async () => {
     root = await mkdtemp(join(tmpdir(), "forge-tools-"));
     tools = await createLocalToolRegistry(root);
@@ -57,7 +58,7 @@ describe("original local tools", () => {
   });
   function context(permission: Permission = "workspace"): ToolContext {
     return {
-      sessionId: parseSessionId(randomUUID()),
+      sessionId,
       toolCallId: "call",
       workspace: root,
       permission,
@@ -199,6 +200,7 @@ describe("original local tools", () => {
 
   it("rejects ambiguous/empty edits and records true previews on explicit replace_all", async () => {
     await writeFile(join(root, "a"), "same same");
+    await execute("read_file", { path: "a" });
     expect(
       (
         await execute("edit_file", {
@@ -226,6 +228,7 @@ describe("original local tools", () => {
     });
     expect(output(edited).replacements).toBe(2);
     expect(await readFile(join(root, "a"), "utf8")).toBe("new new");
+    await execute("read_file", { path: "a" });
     expect(
       (
         await execute("edit_file", {

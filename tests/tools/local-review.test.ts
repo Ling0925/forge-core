@@ -42,6 +42,7 @@ describe("original local tools", () => {
   let events: AgentEvent[];
   let approvals = 0;
   let allow = true;
+  const sessionId = parseSessionId(randomUUID());
   beforeEach(async () => {
     root = await mkdtemp(join(tmpdir(), "forge-tools-"));
     tools = await createLocalToolRegistry(root);
@@ -56,7 +57,7 @@ describe("original local tools", () => {
   });
   function context(permission: Permission = "workspace"): ToolContext {
     return {
-      sessionId: parseSessionId(randomUUID()),
+      sessionId,
       toolCallId: "call",
       workspace: root,
       permission,
