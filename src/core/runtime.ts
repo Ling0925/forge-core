@@ -498,9 +498,9 @@ export const createAgentRuntime = (
                   0,
                   Math.max(0, 131072 - reasoningChars - reasoningPartial.length),
                 );
-                if (reasoningPartial.length >= 4096) flushReasoning();
+                if (reasoningPartial.length >= 256) flushReasoning();
                 else if (reasoningPartial && reasoningTimer === undefined)
-                  reasoningTimer = setTimeout(flushReasoning, 120);
+                  reasoningTimer = setTimeout(flushReasoning, 22);
               },
             },
           ),
