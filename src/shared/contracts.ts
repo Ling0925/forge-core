@@ -25,7 +25,8 @@ export type ApprovalHandler = (
   signal: AbortSignal,
 ) => Promise<boolean>;
 export interface RunControl {
-  readonly drainSteering: () => readonly string[];
+  /** final=true atomically closes an empty child queue before terminal cleanup. */
+  readonly drainSteering: (final?: boolean) => readonly string[];
 }
 export interface ModelProvider {
   listModels(signal?: AbortSignal): Promise<readonly string[]>;

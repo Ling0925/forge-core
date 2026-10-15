@@ -303,6 +303,7 @@ export const createHarness = async (
           parentSessionId: source.parentSessionId,
           agentTask: source.agentTask,
           ownership: source.ownership,
+          writePaths: source.writePaths,
           forkedFrom: id,
         };
         await store.save(next);

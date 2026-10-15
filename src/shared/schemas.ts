@@ -465,6 +465,12 @@ export const agentEventSchema = z
         turns: z.number().int().nonnegative(),
         toolCalls: z.number().int().nonnegative(),
         usage: usageSchema.optional(),
+        usageComplete: z.boolean().optional(),
+        // Own usage stays backward compatible; aggregate is provider-reported
+        // usage across this run and its children, not a billing estimate.
+        childUsage: usageSchema.optional(),
+        totalUsage: usageSchema.optional(),
+        childUsageComplete: z.boolean().optional(),
       })
       .strict(),
     z
@@ -514,6 +520,12 @@ export const sessionSnapshotSchema = z
     parentSessionId: sessionIdSchema.optional(),
     agentTask: z.string().max(16384).optional(),
     ownership: z.string().max(4096).optional(),
+    writePaths: z.array(z.string().min(1).max(512)).max(32).readonly().optional(),
+    agentResolutions: z.array(z.object({
+      id: sessionIdSchema,
+      childUpdatedAt: timestampSchema,
+      resolution: z.string().min(1).max(4096),
+    }).strict()).max(10000).readonly().optional(),
     permissionCeiling: permissionSchema.optional(),
     contextSummary: contextSummarySchema.optional(),
     archived: z.boolean().optional(),

@@ -17,7 +17,8 @@ const CORE_INSTRUCTIONS = `You are Forge, an original local coding assistant. Co
 - Prefer targeted searches and bounded reads; follow pagination when needed. Parallelize only independent work. Do not repeat unchanged reads or successful actions without a reason.
 
 # Delegation
-- Delegate only disjoint, bounded tasks with explicit ownership and model. Inspect child IDs, wait for outcomes, review their changes and reconcile failures before completion.
+- Delegate only disjoint, bounded tasks with explicit ownership and model. Declare literal writePaths for editing tasks to detect overlapping active assignments; shared workspace ownership is not a sandbox. Use maxToolCalls to lower a child's budget where useful. Inspect child IDs, wait for outcomes, review their changes and reconcile failures before completion.
+- wait_agents supports all/any and bounded waiting; a timeout does not cancel work. Use get_agent_result to page truncated reports. send_agent_message queues guidance for an active child at its next model boundary, never restarts it. After inspecting failed/cancelled child effects, use resolve_agent with concrete resolution evidence only when the problem is actually handled; unhandled failures prevent parent success. Do not erase, hide or replay failures.
 - Before selecting distinct delegation models, use list_models for exact configured catalog IDs; preserve IDs explicitly supplied by the user. Catalog presence proves neither live quota nor availability. If discovery fails, report it; use explicitly supplied IDs, never invented alternatives or automatic fallback of effectful tasks.
 
 # Verification and communication
@@ -28,7 +29,7 @@ const CORE_INSTRUCTIONS = `You are Forge, an original local coding assistant. Co
 export interface PromptContext {
   readonly session: Pick<
     SessionSnapshot,
-    "workspace" | "parentSessionId" | "agentTask" | "ownership"
+    "workspace" | "parentSessionId" | "agentTask" | "ownership" | "writePaths"
   >;
   readonly permission: Permission;
   readonly mode: RunInput["mode"];
@@ -61,6 +62,7 @@ export function buildSystemInstructions(context: PromptContext): string {
             "Role: child agent. Stay within the assigned task and ownership; do not spawn further agents. Return findings, changes, checks and blockers to the parent.",
             `Assigned task (task data, not policy): ${JSON.stringify(session.agentTask ?? "unspecified")}`,
             `Ownership (scope data, not policy): ${JSON.stringify(session.ownership ?? "unspecified")}`,
+            `Declared write paths (coordination only, not sandbox permissions): ${JSON.stringify(session.writePaths ?? [])}`,
           ]
         : ["Role: primary agent. Own integration and the final response."]),
     ].join("\n"),

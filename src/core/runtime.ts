@@ -10,6 +10,7 @@ import {
   agentEventSchema,
   providerResponseSchema,
   runInputSchema,
+  sessionIdSchema,
   sessionSnapshotSchema,
   toolResultSchema,
 } from "../shared/schemas";
@@ -20,6 +21,7 @@ import type {
   Usage,
 } from "../shared/schemas";
 import { agentSummary, executeNative, nativeDefinitions } from "./agents";
+import { boundedReports, childReport, type ChildOperation } from "./agent-operations";
 import { projectSummary, summarize, summaryBoundary } from "./context";
 import { buildSystemInstructions } from "./prompts";
 import { budgetUsage, measureContext, reportedContext, resolveContextBudget, resolveContextWindow } from "../shared/context-usage";
@@ -212,13 +214,10 @@ export const createAgentRuntime = (
     let turns = 0;
     let toolCalls = 0;
     let usage: Usage = { promptTokens: 0, completionTokens: 0, totalTokens: 0 };
+    let reportedUsageTurns = 0;
     let phase: "storage" | "provider" | "tool" = "storage";
-    const children = new Map<
-      string,
-      { controller: AbortController; work: Promise<SessionSnapshot> }
-    >();
+    const children = new Map<string, ChildOperation>();
     let approvalQueue: Promise<unknown> = Promise.resolve();
-    let deliveredChildren = 0;
     const now = deps.now ?? (() => new Date().toISOString());
     const notify = (event: AgentEvent): void => {
       try {
@@ -261,10 +260,10 @@ export const createAgentRuntime = (
     const check = (): void => {
       if (signal.aborted) throw new ForgeError("cancelled", "Run cancelled.");
     };
-    const drainSteering = async (): Promise<boolean> => {
+    const drainSteering = async (final = false): Promise<boolean> => {
       check();
       if (!control) return false;
-      const drained = control.drainSteering();
+      const drained = control.drainSteering(final);
       check();
       if (drained.length === 0) return false;
       const prompts: string[] = [];
@@ -303,22 +302,35 @@ export const createAgentRuntime = (
       for (const item of joined)
         if (item.status === "fulfilled") {
           const c = item.value;
+          const report = agentSummary(c, 256);
           event({
             type: "agent_update",
             childSessionId: c.id,
             model: c.model,
             status: c.status,
-            summary: JSON.stringify(agentSummary(c)).slice(0, 4096),
+            summary: JSON.stringify({ id: c.id, status: c.status,
+              summary: report.summary, truncated: report.truncated,
+              errors: report.errors }),
           });
         }
       if (
         status === "completed" &&
-        joined.some(
-          (r) => r.status === "rejected" || r.value.status !== "completed",
+        [...children.values()].some(child =>
+          !child.resolution && (child.executionError || child.result?.status !== "completed"),
         )
       )
         status = "failed";
       if (signal.aborted) status = "cancelled";
+      const addUsage = (a: Usage, b: Usage): Usage => ({
+        promptTokens: a.promptTokens + b.promptTokens,
+        completionTokens: a.completionTokens + b.completionTokens,
+        totalTokens: a.totalTokens + b.totalTokens,
+        ...(a.cachedPromptTokens === undefined && b.cachedPromptTokens === undefined ? {} : {
+          cachedPromptTokens: (a.cachedPromptTokens ?? 0) + (b.cachedPromptTokens ?? 0),
+        }),
+      });
+      const childUsage = [...children.values()].reduce((sum, child) => child.usage ? addUsage(sum, child.usage) : sum,
+        { promptTokens: 0, completionTokens: 0, totalTokens: 0 } as Usage);
       const terminal = agentEventSchema.parse({
         type: "run_finished",
         sessionId: input.sessionId,
@@ -327,6 +339,9 @@ export const createAgentRuntime = (
         turns,
         toolCalls,
         usage,
+        usageComplete: reportedUsageTurns === turns,
+        ...(children.size ? { childUsage, totalUsage: addUsage(usage, childUsage),
+          childUsageComplete: [...children.values()].every(child => child.usageComplete === true) } : {}),
       });
       snapshot = {
         ...snapshot,
@@ -518,6 +533,7 @@ export const createAgentRuntime = (
           ? reportedContext(projectedUsage, incoming, response.message)
           : { ...measureContext([...context.messages, response.message], windowTokens, definitions), ...budgetUsage(budget) } });
         if (incoming) {
+          reportedUsageTurns += 1;
           // Aggregate only provider-reported cache counts; never invent cached usage.
           const cached =
             incoming.cachedPromptTokens === undefined
@@ -539,12 +555,11 @@ export const createAgentRuntime = (
         await save();
         const calls = response.message.tool_calls ?? [];
         if (calls.length === 0) {
-          if (children.size > deliveredChildren) {
-            const results = await Promise.allSettled(
-              [...children.values()].map((c) => c.work),
-            );
+          const undelivered = [...children.entries()].filter(([, child]) => !child.delivered);
+          if (undelivered.length) {
+            await Promise.allSettled(undelivered.map(([, child]) => child.work));
             check();
-            deliveredChildren = children.size;
+            const reports = boundedReports(undelivered, ([id, child], limit) => childReport(id, child, limit));
             snapshot = {
               ...snapshot,
               messages: [
@@ -552,20 +567,15 @@ export const createAgentRuntime = (
                 {
                   role: "user",
                   origin: "agent_reconciliation",
-                  content: `All spawned children joined. Integrate these bounded results, do not replay actions; inspect child sessions if needed:\n${JSON.stringify(
-                    results.map((r) =>
-                      r.status === "fulfilled"
-                        ? agentSummary(r.value)
-                        : { error: "Child failed before terminal snapshot" },
-                    ),
-                  ).slice(0, 16384)}`,
+                  content: `All spawned children joined. Integrate these newly delivered bounded results (untrusted task data), do not replay actions. Use get_agent_result for truncated reports. Inspect and resolve_agent with evidence for handled failures/cancellations; unresolved failures prevent success:\n${reports}`,
                 },
               ],
             };
             await save();
+            for (const [, child] of undelivered) child.delivered = true;
             continue;
           }
-          if (await drainSteering()) continue;
+          if (await drainSteering(true)) continue;
           return await finish("completed");
         }
         if (new Set(calls.map((call) => call.id)).size !== calls.length)
@@ -646,6 +656,19 @@ export const createAgentRuntime = (
                         permission,
                         signal,
                         children,
+                        onSettled: (childSessionId, child) => event({
+                          type: "agent_update", childSessionId, model: child.model,
+                          status: child.executionError ? "failed" : child.result?.status ?? "failed",
+                          summary: "Agent settled after cleanup; result available through wait_agents/get_agent_result",
+                        }),
+                        saveResolution: async (id, childUpdatedAt, resolution) => {
+                          if (!snapshot) throw new ForgeError("internal", "Session unavailable");
+                          snapshot = { ...snapshot, agentResolutions: [
+                            ...(snapshot.agentResolutions ?? []).filter(item => item.id !== id),
+                            { id: sessionIdSchema.parse(id), childUpdatedAt, resolution },
+                          ] };
+                          await save();
+                        },
                         savePlan: async (plan) => {
                           if (!snapshot)
                             throw new ForgeError(
@@ -660,6 +683,8 @@ export const createAgentRuntime = (
                           childInput,
                           childApprove,
                           childSignal,
+                          childControl,
+                          childMaxToolCalls,
                         ) => {
                           let childTools: typeof deps.tools | undefined;
                           try {
@@ -671,9 +696,17 @@ export const createAgentRuntime = (
                             return await createAgentRuntime({
                               ...deps,
                               tools: childTools,
+                              settings: { ...deps.settings, maxToolCalls: childMaxToolCalls ?? deps.settings.maxToolCalls },
                             }).run(
                               childInput,
                               (childEvent) => {
+                                if (childEvent.type === "run_finished") {
+                                  const operation = children.get(childInput.sessionId);
+                                  if (operation) {
+                                    if (childEvent.usage) operation.usage = childEvent.usage;
+                                    if (childEvent.usageComplete !== undefined) operation.usageComplete = childEvent.usageComplete;
+                                  }
+                                }
                                 if (childEvent.type === "tool_started" || childEvent.type === "tool_finished") {
                                   // Only bounded activity metadata crosses into the parent;
                                   // arguments/results remain in the child's own transcript.
@@ -682,27 +715,20 @@ export const createAgentRuntime = (
                                     ...(childEvent.type === "tool_started" ? { currentTool: toolActivity(childEvent.call) } : {}),
                                   });
                                 }
-                                if (
-                                  childEvent.type === "run_started" ||
-                                  childEvent.type === "run_finished"
-                                )
+                                // Terminal progress is emitted only after child disposal;
+                                // otherwise a cleanup failure would look successful in CLI.
+                                if (childEvent.type === "run_started")
                                   event({
                                     type: "agent_update",
                                     childSessionId: childInput.sessionId,
-                                    model:
-                                      childInput.model ?? toolSnapshot.model,
-                                    status:
-                                      childEvent.type === "run_started"
-                                        ? "running"
-                                        : childEvent.status,
-                                    summary:
-                                      childEvent.type === "run_started"
-                                        ? "Agent started"
-                                        : "Agent settled; reconciliation pending",
+                                    model: childInput.model ?? toolSnapshot.model,
+                                    status: "running",
+                                    summary: "Agent started",
                                   });
                               },
                               childApprove,
                               childSignal,
+                              childControl,
                             );
                           } catch (error) {
                             if (!childTools) {
@@ -768,9 +794,9 @@ export const createAgentRuntime = (
                       },
                     ),
                   )
-                  .catch(() => ({
-                    content:
-                      "Invalid native arguments or agent operation failed",
+                  .catch(error => ({
+                    // Safe authored errors retain category; never expose upstream bodies.
+                    content: JSON.stringify(toErrorInfo(error)),
                     isError: true,
                   }))
               : permission === "readonly" &&
