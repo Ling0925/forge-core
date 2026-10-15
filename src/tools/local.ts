@@ -2,6 +2,7 @@ import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { constants } from "node:fs";
 import { lstat, mkdir, open, realpath, rename, unlink } from "node:fs/promises";
+import { homedir } from "node:os";
 import { delimiter, dirname, isAbsolute, join, relative, sep } from "node:path";
 import { TextDecoder } from "node:util";
 import { z } from "zod";
@@ -199,7 +200,7 @@ const definitions: readonly ToolDefinition[] = Object.freeze([
   ),
   definition(
     "run_command",
-    "Run builds, tests, git and package managers with explicit argv (no implicit shell; explicit shell argv allowed). For authored file content, use write_file/edit_file instead of scripts or redirection; command effects are not checkpointed. Readonly denied; workspace requests per-call approval under the host policy; unrestricted permits execution. NOT an OS sandbox: commands can access outside the workspace and network; cwd is guarded. Minimal environment without inherited credentials, private config or proxies; HOME is workspace. Timeout 30s by default, 120s maximum; combined output cap 64 KiB (overflow terminates the process group and withholds partial output); encoded result cap 128 KiB. Cancellation waits for process close.",
+    "Run builds, tests, git and package managers with explicit argv (no implicit shell; explicit shell argv allowed). For authored file content, use write_file/edit_file instead of scripts or redirection; command effects are not checkpointed. Readonly denied; workspace requests per-call approval under the host policy; unrestricted permits execution. NOT an OS sandbox: commands can access outside the workspace and network; cwd is guarded. Minimal environment without inherited credential or proxy variables; HOME is the host user's home, so commands can use local config and authentication. Timeout 30s by default, 120s maximum; combined output cap 64 KiB (overflow terminates the process group and withholds partial output); encoded result cap 128 KiB. Cancellation waits for process close.",
     {
       argv: {
         type: "array",
@@ -740,7 +741,7 @@ export async function createLocalToolRegistry(
         stdio: ["ignore", "pipe", "pipe"],
         env: {
           PATH: path,
-          HOME: guard.root,
+          HOME: homedir(),
           LANG: "C.UTF-8",
           TMPDIR: guard.root,
           TMP: guard.root,

@@ -322,11 +322,13 @@ describe("original local tools", () => {
     expect(approvals).toBe(1);
   });
 
-  it("does not inherit keys, tokens, proxies or ambient HOME; resolves host Node via PATH", async () => {
-    const names = ["FORGE_TEST_API_KEY", "FORGE_TEST_TOKEN", "HTTPS_PROXY"];
+  it("preserves host HOME, filters keys/tokens/proxies and resolves host Node via PATH", async () => {
+    const home = await mkdtemp(join(tmpdir(), "forge-command-home-"));
+    const names = ["FORGE_TEST_API_KEY", "FORGE_TEST_TOKEN", "HTTPS_PROXY", "HOME"];
     const old = names.map((name) => process.env[name]);
     try {
       for (const name of names) process.env[name] = "nonsecret-fixture";
+      process.env.HOME = home;
       const run = await execute("run_command", {
         argv: [
           basename(process.execPath),
@@ -346,7 +348,8 @@ describe("original local tools", () => {
           path: z.string(),
         })
         .parse(parsed);
-      expect(env.home).toBe(root);
+      expect(env.home).toBe(home);
+      expect(env.home).not.toBe(root);
       expect(env.path).toContain(dirname(process.execPath));
     } finally {
       for (const [index, name] of names.entries()) {
@@ -354,6 +357,7 @@ describe("original local tools", () => {
         if (value === undefined) delete process.env[name];
         else process.env[name] = value;
       }
+      await rm(home, { recursive: true, force: true });
     }
   });
 
