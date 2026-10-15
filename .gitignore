@@ -26,5 +26,11 @@ playwright-artifacts-*/
 playwright_chromiumdev_profile-*/
 org.chromium.Chromium.*/
 
+# Ad-hoc terminal probes and their captured output (repository root only).
+/tmp-pty-probe.py
+/tmp-pty-probe.bin
+/tmp-startup-raw.bin
+/tmp-tty.log
+
 # Local upstream checkout for reference only; not part of Forge sources.
 /references/CometixCode/
