@@ -292,11 +292,11 @@ describe("original runtime", () => {
     });
   });
 
-  it("recovers all orphan multi-call messages without executing them", async () => {
+  it.each(["running", "awaiting_approval"] as const)("recovers orphan multi-call messages from a %s session without executing them", async status => {
     let executions = 0;
     const orphan: SessionSnapshot = {
       ...initial(),
-      status: "running",
+      status,
       pendingTool: call("a"),
       messages: [
         { role: "user", content: "old" },
@@ -340,6 +340,9 @@ describe("original runtime", () => {
     expect(executions).toBe(0);
     expect(f.checkpoints[0]?.status).toBe("interrupted");
     expect(f.checkpoints[0]?.pendingTool?.id).toBe("a");
+    expect(f.current().status).toBe("completed");
+    expect(f.current().pendingTool).toBeUndefined();
+    expect(f.current().messages.filter(message => message.role === "user").map(message => message.content)).toEqual(["old", input.prompt]);
   });
 
   it("cancels mid-tool, preserves uncertain checkpoint and releases the lock", async () => {
