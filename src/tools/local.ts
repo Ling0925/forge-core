@@ -8,6 +8,7 @@ import { TextDecoder } from "node:util";
 import { z } from "zod";
 import type { LocalToolRegistry, ToolContext } from "../shared/contracts";
 import { ForgeError } from "../shared/errors";
+import { createDiffPatch } from "../shared/diff";
 import type {
   FileChange,
   JsonValue,
@@ -523,6 +524,9 @@ export async function createLocalToolRegistry(
       fail("File changed before editing; read_file again and retry.");
     check(signal);
     if (before === text) return [];
+    // Compute on complete originals before mutation, not truncated display previews.
+    // The shared generator reports budget exhaustion without inventing a rewrite.
+    const patch = createDiffPatch(before ?? "", text);
     const temporary = join(parent, `.forge-${randomUUID()}.tmp`);
     const handle = await open(
       temporary,
@@ -581,6 +585,7 @@ export async function createLocalToolRegistry(
           kind: before === null ? "created" : "modified",
           before: before === null ? null : before.slice(0, PREVIEW_LIMIT),
           after: text.slice(0, PREVIEW_LIMIT),
+          patch,
           truncated:
             (before?.length ?? 0) > PREVIEW_LIMIT ||
             text.length > PREVIEW_LIMIT,

@@ -180,13 +180,14 @@ describe("original local tools", () => {
       content: "updated",
     });
     expect(written.isError).toBe(false);
-    expect(written.changes).toEqual([
+    expect(written.changes).toMatchObject([
       {
         path: "a.txt",
         kind: "modified",
         before: "first\nsecond\nthird",
         after: "updated",
         truncated: false,
+        patch: { status: "complete", added: 1, removed: 3 },
       },
     ]);
     expect(output(await execute("read_file", { path: "a.txt" }))).toMatchObject(
