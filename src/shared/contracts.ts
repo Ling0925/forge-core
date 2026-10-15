@@ -60,6 +60,7 @@ export interface LocalToolRegistry {
   execute(call: ToolCall, context: ToolContext): Promise<ToolResult>;
   /** Join and report only undelivered background work before model finalization. */
   settleBackground?(sessionId: SessionId, signal: AbortSignal): Promise<ToolResult | undefined>;
+  readonly commandTasks?: import("./task-view").CommandTaskAccess;
   dispose(): Promise<void>;
 }
 export type ToolArguments = Readonly<Record<string, JsonValue>>;
@@ -78,6 +79,8 @@ export interface SettingsStore {
   update(input: ConfigureInput): Promise<PublicSettings>;
 }
 export interface HarnessService {
+  /** Local task UI only; optional for older hosts and desktop adapters. */
+  readonly tasks?: import("./task-view").TaskService;
   cancelSession(sessionId: SessionId): Promise<boolean>;
   getSettings(): Promise<PublicSettings>;
   updateSettings(input: ConfigureInput): Promise<PublicSettings>;

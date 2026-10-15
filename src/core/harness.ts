@@ -37,6 +37,8 @@ import { createMcpToolRegistry } from "../tools/mcp";
 import { createSkillTool } from "../tools/skills";
 import { assertBoundary, projectSummary, summarize } from "./context";
 import { autoTitle } from "./session-title";
+import { createTaskService } from "./task-service";
+import type { CommandTaskAccess } from "../shared/task-view";
 import { createAgentRuntime, withCancellation } from "./runtime";
 
 // Default per-run tools: local registry with configured-key redaction, plus a
@@ -105,6 +107,10 @@ export const createHarness = async (
   ]);
   const mcp = await createMcpService({ home: directory });
   const liveMcp = new Set<Awaited<ReturnType<typeof createMcpService>>>();
+  // Keep live access and a bounded recent history without retaining disposed tools.
+  const taskAccess = new Set<CommandTaskAccess>();
+  const recentTaskAccess: CommandTaskAccess[] = [];
+  const taskSecrets = new Set<string>();
   const buildTools = async (
     workspace: string,
     settings: PublicSettings,
@@ -143,6 +149,10 @@ export const createHarness = async (
       );
       const ownedService = service;
       const ownedContext = context;
+      const access = combined.commandTasks;
+      if (access) taskAccess.add(access);
+      if (apiKey) taskSecrets.add(apiKey);
+      let accessReleased = false;
       return {
         instructions: context.getSystemContext(),
         tools: {
@@ -153,6 +163,12 @@ export const createHarness = async (
             try {
               await combined.dispose();
             } finally {
+              if (access && !accessReleased) {
+                accessReleased = true;
+                taskAccess.delete(access);
+                recentTaskAccess.push(access);
+                if (recentTaskAccess.length > 8) recentTaskAccess.shift();
+              }
               try {
                 await ownedContext.dispose();
               } finally {
@@ -240,7 +256,30 @@ export const createHarness = async (
       await release();
     }
   };
+  const taskService = createTaskService({
+    store,
+    commands: () => [...taskAccess, ...recentTaskAccess],
+    owns: id => controls.has(id),
+    cancel: async id => {
+      check();
+      const owned = controls.get(id);
+      if (!owned) return false;
+      owned.controller.abort();
+      await Promise.allSettled([owned.work]);
+      return true;
+    },
+    redact: text => {
+      let result = text;
+      for (const secret of taskSecrets) result = result.split(secret).join("[REDACTED]");
+      return result;
+    },
+  });
   return {
+    tasks: {
+      listTasks: (...args) => { check(); return taskService.listTasks(...args); },
+      getTask: (...args) => { check(); return taskService.getTask(...args); },
+      stopTask: (...args) => { check(); return taskService.stopTask(...args); },
+    },
     async cancelSession(rawId) {
       const id = sessionIdSchema.parse(rawId);
       const owned = controls.get(id);

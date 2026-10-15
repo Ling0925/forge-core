@@ -15,8 +15,18 @@ export function createCombinedToolRegistry(
     (registry) => [...registry.definitions],
   );
   let disposal: Promise<void> | undefined;
+  const commandAccess = registries.flatMap(registry => registry.commandTasks ? [registry.commandTasks] : []);
   return {
     definitions,
+    ...(commandAccess.length ? { commandTasks: {
+      list: (id: import("../shared/schemas").SessionId) => commandAccess.flatMap(access => [...access.list(id)]),
+      read: (id: import("../shared/schemas").SessionId, taskId: string, offset: number, limit: number) =>
+        commandAccess.map(access => access.read(id, taskId, offset, limit)).find(Boolean),
+      async stop(id: import("../shared/schemas").SessionId, taskId: string) {
+        for (const access of commandAccess) if (await access.stop(id, taskId)) return true;
+        return false;
+      },
+    } } : {}),
     async execute(call: ToolCall, context: ToolContext): Promise<ToolResult> {
       if (disposal)
         return { content: "Tool registry is disposed.", isError: true };

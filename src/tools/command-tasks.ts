@@ -3,6 +3,8 @@ import { z } from "zod";
 import type { LocalToolRegistry, ToolContext } from "../shared/contracts";
 import { ForgeError } from "../shared/errors";
 import type { ToolCall, ToolDefinition, ToolResult } from "../shared/schemas";
+import type { CommandTaskAccess, TaskView } from "../shared/task-view";
+import { redactCommandArguments } from "../shared/tool-activity";
 
 const RESULT_LIMIT = 128 * 1024;
 const taskArguments = z.object({
@@ -42,7 +44,9 @@ const taskDefinition: ToolDefinition = {
 type Outcome = { result: ToolResult } | { error: unknown };
 type Task = {
   id: string;
-  sessionId: string;
+  sessionId: ToolContext["sessionId"];
+  startedAt: string;
+  title: string;
   controller: AbortController;
   started: boolean;
   delivered: boolean;
@@ -97,6 +101,27 @@ export function withCommandTasks(
     let clean = text;
     for (const value of known) clean = clean.split(value).join("[REDACTED]");
     return clean;
+  }
+  function commandTitle(call: ToolCall): string {
+    try {
+      const args: unknown = JSON.parse(call.function.arguments);
+      if (!args || typeof args !== "object" || !("argv" in args) || !Array.isArray(args.argv)) return "Command";
+      const argv = args.argv.slice(0, 4).filter((arg): arg is string => typeof arg === "string");
+      const safe = redactCommandArguments(argv.map(redact));
+      const parts: string[] = [];
+      for (const [index, arg] of safe.entries()) {
+        const item = index === 0 ? arg.split(/[\\/]/).at(-1) ?? "Command" : arg;
+        if (item.length > 40 || /[\s\x00-\x1f\x7f]/.test(item)) { parts.push("…"); break; }
+        // Never display shell source or inline scripts, even when they are short.
+        if (index > 0 && /^(?:-[a-z]*[cep].*|--(?:eval|command)(?:=.*)?)$/i.test(item)) {
+          parts.push(item.startsWith("--") ? item.split("=")[0]! : item.length <= 3 ? item : "-…", "…");
+          break;
+        }
+        parts.push(item);
+      }
+      if (args.argv.length > argv.length) parts.push("…");
+      return redactCommandArguments([redact(parts.join(" "))])[0]?.slice(0, 160) || "Command";
+    } catch { return "Command"; }
   }
   function safeContent(content: string): string {
     // Decode first: a configured secret may contain newlines/quotes escaped in JSON.
@@ -194,6 +219,7 @@ export function withCommandTasks(
     const started = new Promise<void>((resolve) => { signalStarted = resolve; });
     const task: Task = {
       id: randomUUID(), sessionId: context.sessionId, controller,
+      startedAt: new Date().toISOString(), title: commandTitle(call),
       started: false, delivered: false, metadata: {}, status: "starting", outputTruncated: false,
       done: Promise.resolve({ result: result({}) }),
     };
@@ -209,6 +235,7 @@ export function withCommandTasks(
       signal: controller.signal,
       onCommandStarted: () => {
         task.started = true;
+        task.startedAt = new Date().toISOString();
         task.status = "running";
         signalStarted();
         context.onCommandStarted?.();
@@ -254,8 +281,50 @@ export function withCommandTasks(
     return result({ ...summary(task), background: true });
   }
 
+  function view(task: Task): TaskView {
+    const active = pending(task);
+    return {
+      id: task.id, kind: "command", sessionId: task.sessionId, title: task.title,
+      status: task.status, active, controllable: active && !disposal,
+      historical: !!disposal, startedAt: task.startedAt,
+      ...(task.metadata.exit_code === undefined ? {} : { exitCode: task.metadata.exit_code }),
+    };
+  }
+  function owned(sessionId: ToolContext["sessionId"], id: string): Task | undefined {
+    const task = tasks.get(id);
+    return task?.started && task.sessionId === sessionId ? task : undefined;
+  }
+  const commandTasks: CommandTaskAccess = {
+    list(sessionId) {
+      return [...tasks.values()].filter((task) => task.started && task.sessionId === sessionId).map(view);
+    },
+    read(sessionId, id, offset, limit) {
+      const task = owned(sessionId, id);
+      if (!task) return undefined;
+      const start = Number.isSafeInteger(offset) && offset >= 0 ? offset : 0;
+      const size = Number.isSafeInteger(limit) && limit > 0 ? Math.min(limit, 12000) : 12000;
+      // UI observation never consumes model delivery and never exposes running chunks.
+      const output = pending(task) ? "" : task.output ?? "";
+      const end = Math.min(output.length, start + size);
+      return {
+        task: view(task), content: output.slice(start, end), offset: start,
+        nextOffset: end < output.length ? end : null, truncated: end < output.length,
+        ...(pending(task) ? { note: "Command is running; output is available only after completion." }
+          : task.outputTruncated ? { note: "Command output was truncated or withheld." } : {}),
+      };
+    },
+    async stop(sessionId, id) {
+      const task = owned(sessionId, id);
+      if (!task || disposal || !pending(task)) return false;
+      task.controller.abort();
+      await task.done;
+      return true;
+    },
+  };
+
   return {
     definitions,
+    commandTasks,
     async execute(call, context) {
       if (disposal) return result({ error: "Tool registry is disposed." }, true);
       if (call.function.name === "command_task") return manage(call, context);
