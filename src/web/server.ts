@@ -66,17 +66,12 @@ export async function createWebHost(options: {
   let bytes = 0;
   let overflow = false;
   const events: { cursor: number; data: RunEvent; bytes: number }[] = [];
-  const active = new Set<string>();
   const pending = new Map<string, (response: RpcResponse) => void>();
   const requestIds = new Set<string>();
   const controller = createWorkerController(options.service, (message) => {
     if (message.kind === "response") {
-      if (message.response.ok && message.response.method === "startRun")
-        active.add(message.response.result.runId);
       pending.get(message.response.id)?.(message.response);
     } else if (message.kind === "event") {
-      if (message.data.event.type === "run_finished")
-        active.delete(message.data.runId);
       const length = Buffer.byteLength(JSON.stringify(message.data));
       events.push({ cursor: ++sequence, data: message.data, bytes: length });
       bytes += length;
@@ -85,7 +80,6 @@ export async function createWebHost(options: {
         events.length = 0;
         bytes = 0;
         eventSocket?.close(1013, "Event buffer exceeded");
-        void cancelRuns();
       } else sendEvents([message.data]);
     }
   });
@@ -106,17 +100,6 @@ export async function createWebHost(options: {
       });
       void controller.handle(request).catch(reject);
     });
-  }
-  async function cancelRuns(): Promise<void> {
-    await Promise.all(
-      [...active].map(async (runId) => {
-        await controller.handle({
-          id: randomUUID(),
-          method: "cancelRun",
-          runId,
-        });
-      }),
-    );
   }
   const authenticated = (request: IncomingMessage): boolean => {
     return (
@@ -140,7 +123,6 @@ export async function createWebHost(options: {
     if (socket.bufferedAmount > MAX_EVENT_BYTES) {
       overflow = true;
       socket.terminate();
-      void cancelRuns();
       return;
     }
     socket.send(
@@ -221,10 +203,6 @@ export async function createWebHost(options: {
     else if (eventSocket.readyState === WebSocket.OPEN) eventSocket.ping();
   }, 5000);
   heartbeat.unref();
-  const lease = setInterval(() => {
-    if (active.size && Date.now() - lastHeartbeat > LEASE_MS) void cancelRuns();
-  }, 1000);
-  lease.unref();
 
   async function handle(
     request: IncomingMessage,
@@ -262,13 +240,12 @@ export async function createWebHost(options: {
           clientId = "";
           eventSocket?.close(4001, "Another page took control");
           eventSocket = undefined;
-          await cancelRuns();
           clientId = randomUUID();
           lastHeartbeat = 0;
           events.length = 0;
           bytes = 0;
           overflow = false;
-          return json(response, 200, { workspace, cursor: sequence, clientId });
+          return json(response, 200, { workspace, cursor: sequence, clientId, recovery: controller.recoveryEvents() });
         }
         if (!clientId || request.headers["x-forge-client"] !== clientId)
           return json(response, 409, {
@@ -374,7 +351,6 @@ export async function createWebHost(options: {
     next();
   }
   async function close(): Promise<void> {
-    clearInterval(lease);
     clearInterval(heartbeat);
     for (const socket of sockets.clients) socket.terminate();
     sockets.close();

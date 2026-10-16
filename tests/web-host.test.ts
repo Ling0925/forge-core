@@ -269,8 +269,8 @@ describe("Web development host", () => {
 
   it("writes a real workspace file through the shared runtime and Web event pipe", async () => {
     const { url, directory, login } = await setup();
-    const auth = await login();
-    const stream = await connectEvents(url, auth);
+    let auth = await login();
+    let stream = await connectEvents(url, auth);
     const rpc = async (data: object) =>
       (
         await fetch(`${url}/api/rpc`, {
@@ -306,6 +306,13 @@ describe("Web development host", () => {
     )?.event;
     if (approval?.type !== "approval_requested")
       throw new Error("Missing approval");
+    const handshake = await (await fetch(`${url}/api/connect`, {
+      method: "POST", headers: auth, body: "{}",
+    })).json();
+    const recovery = z.array(runEventSchema).parse(handshake.recovery);
+    expect(recovery.filter((item) => item.event.type === "approval_requested").map((item) => item.event)).toEqual([expect.objectContaining({ request: approval.request })]);
+    auth = { ...auth, "X-Forge-Client": handshake.clientId };
+    stream = await connectEvents(url, auth, handshake.cursor);
     await rpc({
       id: randomUUID(),
       method: "answerApproval",
@@ -329,6 +336,10 @@ describe("Web development host", () => {
     expect(await readFile(join(directory, "web-fixture.txt"), "utf8")).toBe(
       "written through Web RPC",
     );
+    const completed = await (await fetch(`${url}/api/connect`, {
+      method: "POST", headers: auth, body: "{}",
+    })).json();
+    expect(completed.recovery).toEqual([]);
   });
 
   it("gives a new page control and validates event cursors", async () => {
@@ -420,7 +431,7 @@ describe("Web development host", () => {
     ).toBe(false);
   });
 
-  it("requires a live stream to start and cancels disconnected runs after the lease", async () => {
+  it("keeps disconnected runs alive beyond the heartbeat timeout and restores control after refresh", async () => {
     const { url, directory, login } = await setup();
     const auth = await login();
     const rpc = async (data: object) =>
@@ -448,7 +459,8 @@ describe("Web development host", () => {
       });
     expect((await start()).status).toBe(409);
     const stream = await connectEvents(url, auth);
-    expect((await start()).status).toBe(200);
+    const started = await (await start()).json();
+    expect(started.ok).toBe(true);
     await expect
       .poll(() =>
         stream.received.some((item) => item.event.type === "text_delta"),
@@ -472,6 +484,22 @@ describe("Web development host", () => {
         },
         { timeout: 3000 },
       )
-      .toBe("cancelled");
+      .toBe("running");
+    await new Promise((done) => setTimeout(done, 1200));
+    const handshake = await (await fetch(`${url}/api/connect`, {
+      method: "POST", headers: auth, body: "{}",
+    })).json();
+    const recovery = z.array(runEventSchema).parse(handshake.recovery);
+    expect(recovery.some((item) => item.runId === started.result.runId && item.event.type === "run_started")).toBe(true);
+    expect(recovery.some((item) => item.event.type === "text_delta" && item.event.text === "fixture response")).toBe(true);
+    const nextAuth = { ...auth, "X-Forge-Client": handshake.clientId };
+    const resumed = await connectEvents(url, nextAuth, handshake.cursor);
+    expect((await rpc({ id: randomUUID(), method: "cancelRun", runId: started.result.runId })).status).toBe(409);
+    const cancelled = await fetch(`${url}/api/rpc`, {
+      method: "POST", headers: nextAuth,
+      body: JSON.stringify({ id: randomUUID(), method: "cancelRun", runId: started.result.runId }),
+    });
+    expect((await cancelled.json()).ok).toBe(true);
+    await expect.poll(() => resumed.received.find((item) => item.event.type === "run_finished")?.event).toMatchObject({ status: "cancelled" });
   });
 });

@@ -19,7 +19,7 @@ export function createTransportBridge(transport: BridgeTransport): ForgeBridge {
   const events: RunEvent[] = [];
   let starting = 0;
   const deliver = (): void => {
-    if (starting) return;
+    if (starting || !listeners.size) return;
     for (const event of events.splice(0)) for (const listener of listeners) {
       try { listener(event); } catch { /* Consumer isolation. */ }
     }
@@ -69,6 +69,6 @@ export function createTransportBridge(transport: BridgeTransport): ForgeBridge {
     cancelRun: async (runId) => { await request("cancelRun", { runId }); },
     setRunPermission: (runId, permission) => request("setRunPermission", { runId, permission }),
     answerApproval: async (runId, approvalId, approved) => { await request("answerApproval", { runId, approvalId, approved }); },
-    onEvent(listener) { listeners.add(listener); return () => { listeners.delete(listener); }; },
+    onEvent(listener) { listeners.add(listener); setTimeout(deliver, 0); return () => { listeners.delete(listener); }; },
   } satisfies ForgeBridge);
 }
