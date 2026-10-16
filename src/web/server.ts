@@ -10,6 +10,8 @@ import { WebSocket, WebSocketServer } from "ws";
 import { z } from "zod";
 import { createWorkerController } from "../desktop/controller";
 import type { HarnessService } from "../shared/contracts";
+import type { SessionSnapshot } from "../shared/schemas";
+import { SessionDeltaCache } from "./session-delta";
 import {
   type RpcRequest,
   type RpcResponse,
@@ -55,6 +57,7 @@ export async function createWebHost(options: {
 }) {
   const workspace = await realpath(resolve(options.workspace));
   const token = options.token ?? randomBytes(24).toString("hex");
+  const sessionDeltas = new SessionDeltaCache();
   const cookie = randomBytes(32).toString("hex");
   const authority = `${options.host}:${options.port}`;
   const origin = `http://${authority}`;
@@ -280,6 +283,7 @@ export async function createWebHost(options: {
           return json(response, 403, {
             error: "This server is restricted to its launch workspace",
           });
+        let authorizedSnapshot: SessionSnapshot | undefined;
         if ("sessionId" in rpc || rpc.method === "startRun") {
           const id =
             rpc.method === "startRun"
@@ -290,6 +294,7 @@ export async function createWebHost(options: {
                   }
                 ).sessionId;
           const session = await options.service.getSession(id);
+          authorizedSnapshot = session;
           if ((await realpath(session.workspace)) !== workspace)
             return json(response, 403, {
               error: "Session belongs to another workspace",
@@ -317,7 +322,15 @@ export async function createWebHost(options: {
         const oldestRequest = requestIds.values().next().value;
         if (requestIds.size > 8192 && oldestRequest)
           requestIds.delete(oldestRequest);
-        const result = await dispatch(rpc);
+        const result = rpc.method === "getSession" && authorizedSnapshot
+          ? { id: rpc.id, ok: true as const, method: rpc.method, result: authorizedSnapshot }
+          : await dispatch(rpc);
+        if (result.ok && result.method === "getSession") {
+          const base = request.headers["x-forge-snapshot"];
+          const update = sessionDeltas.encode(result.result, typeof base === "string" ? base : undefined);
+          response.setHeader("X-Forge-Snapshot", update.revision);
+          if (update.delta) return json(response, 200, { ...result, result: { sessionDelta: update.delta } });
+        }
         if (result.ok && result.method === "listSessions") {
           return json(response, 200, {
             ...result,
