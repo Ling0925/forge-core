@@ -146,6 +146,10 @@ export interface HarnessOptions {
   readonly toolFactory?: ToolFactory;
 }
 export interface AgentRuntimeDependencies {
+  readonly runMemory?: {
+    readonly record: (snapshot: SessionSnapshot) => Promise<void>;
+    readonly restore: (snapshot: SessionSnapshot, at: string) => Promise<SessionSnapshot>;
+  };
   readonly store: SessionStore;
   readonly provider: ModelProvider;
   readonly tools: LocalToolRegistry;

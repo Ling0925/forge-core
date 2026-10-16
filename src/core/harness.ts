@@ -37,6 +37,7 @@ import { createMcpToolRegistry } from "../tools/mcp";
 import { createSkillTool } from "../tools/skills";
 import { assertBoundary, projectSummary } from "./context";
 import { summarizeWorkingState } from "./working-memory";
+import { openRunMemory } from "./run-memory";
 import { autoTitle } from "./session-title";
 import { createTaskService } from "./task-service";
 import type { CommandTaskAccess } from "../shared/task-view";
@@ -102,9 +103,10 @@ export const createHarness = async (
       process.env.FORGE_HOME ??
       join(homedir(), ".local", "share", "forge"),
   );
-  const [store, settingsStore] = await Promise.all([
+  const [store, settingsStore, runMemory] = await Promise.all([
     openSessionStore(directory),
     openSettingsStore(directory),
+    openRunMemory(directory),
   ]);
   const mcp = await createMcpService({ home: directory });
   const liveMcp = new Set<Awaited<ReturnType<typeof createMcpService>>>();
@@ -569,6 +571,7 @@ export const createHarness = async (
           tools = built.tools;
           const result = await createAgentRuntime({
             store,
+            runMemory,
             settings,
             provider,
             tools,

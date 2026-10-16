@@ -350,6 +350,12 @@ export const createAgentRuntime = (
         events: [...snapshot.events, terminal],
       };
       await save();
+      try {
+        await deps.runMemory?.record(snapshot);
+      } catch {
+        notify(agentEventSchema.parse({ type: "error", sessionId: snapshot.id, timestamp: now(),
+          error: { code: "storage", message: "Recent-state checkpoint could not be saved; original session history is intact.", retryable: true } }));
+      }
       notify(terminal);
       return snapshot;
     };
@@ -357,6 +363,7 @@ export const createAgentRuntime = (
       snapshot = sessionSnapshotSchema.parse(
         await deps.store.get(input.sessionId),
       );
+      if (deps.runMemory) snapshot = await deps.runMemory.restore(snapshot, now());
       if (
         snapshot.status === "running" ||
         snapshot.status === "awaiting_approval"
