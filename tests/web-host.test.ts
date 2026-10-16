@@ -1,27 +1,79 @@
+import { randomUUID } from "node:crypto";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { request } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { randomUUID } from "node:crypto";
-import { request } from "node:http";
 
 // Node fetch rewrites Host; use HTTP directly to exercise DNS-rebinding protection.
-function fetch(url: string, init: { method?: string; headers?: Record<string, string>; body?: string } = {}): Promise<Response> {
+function fetch(
+  url: string,
+  init: {
+    method?: string;
+    headers?: Record<string, string>;
+    body?: string;
+  } = {},
+): Promise<Response> {
   return new Promise((done, reject) => {
-    const req = request(url, { method: init.method ?? "GET", headers: init.headers }, (res) => {
-      const chunks: Buffer[] = [];
-      res.on("data", (chunk: Buffer) => chunks.push(chunk));
-      res.on("end", () => done(new Response(Buffer.concat(chunks), { status: res.statusCode!, headers: res.headers as Record<string, string> })));
-    });
+    const req = request(
+      url,
+      { method: init.method ?? "GET", headers: init.headers },
+      (res) => {
+        const chunks: Buffer[] = [];
+        res.on("data", (chunk: Buffer) => chunks.push(chunk));
+        res.on("end", () =>
+          done(
+            new Response(Buffer.concat(chunks), {
+              status: res.statusCode ?? 500,
+              headers: res.headers as Record<string, string>,
+            }),
+          ),
+        );
+      },
+    );
     req.on("error", reject);
     req.end(init.body);
   });
 }
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { WebSocket } from "ws";
+import { z } from "zod";
 import { createHarness } from "../src/core/harness";
+import { type RunEvent, runEventSchema } from "../src/shared/ipc";
 import { createWebHost } from "../src/web/server";
 
 const cleanup: (() => Promise<unknown>)[] = [];
-afterEach(async () => { for (const fn of cleanup.reverse()) await fn(); cleanup.length = 0; });
+afterEach(async () => {
+  for (const fn of cleanup.reverse()) await fn();
+  cleanup.length = 0;
+  vi.useRealTimers();
+});
+
+async function connectEvents(
+  url: string,
+  auth: Record<string, string>,
+  cursor = 0,
+) {
+  const ws = new WebSocket(
+    `${url.replace("http:", "ws:")}/api/events?clientId=${auth["X-Forge-Client"]}&cursor=${cursor}`,
+    { headers: auth },
+  );
+  cleanup.push(async () => ws.terminate());
+  const received: RunEvent[] = [];
+  const cursors: number[] = [];
+  await new Promise<void>((done, reject) => {
+    ws.on("error", reject);
+    ws.on("message", (raw) => {
+      const batch = z
+        .object({ cursor: z.number(), events: z.array(runEventSchema) })
+        .parse(JSON.parse(raw.toString()));
+      received.push(...batch.events);
+      cursors.push(batch.cursor);
+      ws.send(JSON.stringify({ cursor: batch.cursor }));
+      done();
+    });
+  });
+  return { ws, received, cursors };
+}
 
 async function setup() {
   const directory = await mkdtemp(join(tmpdir(), "forge-web-test-"));
@@ -31,28 +83,99 @@ async function setup() {
     providerFactory: () => ({
       listModels: async () => ["test-model"],
       complete: async (messages, _tools, options) => {
-        if (messages.some((message) => message.role === "user" && message.content === "write fixture") && !messages.some((message) => message.role === "tool")) {
-          return { message: { role: "assistant", content: null, tool_calls: [{ id: "fixture-write", type: "function", function: { name: "write_file", arguments: JSON.stringify({ path: "web-fixture.txt", content: "written through Web RPC" }) } }] } };
+        if (
+          messages.some(
+            (message) =>
+              message.role === "user" && message.content === "write fixture",
+          ) &&
+          !messages.some((message) => message.role === "tool")
+        ) {
+          return {
+            message: {
+              role: "assistant",
+              content: null,
+              tool_calls: [
+                {
+                  id: "fixture-command",
+                  type: "function",
+                  function: {
+                    name: "run_command",
+                    arguments: JSON.stringify({
+                      argv: [process.execPath, "--version"],
+                    }),
+                  },
+                },
+                {
+                  id: "fixture-write",
+                  type: "function",
+                  function: {
+                    name: "write_file",
+                    arguments: JSON.stringify({
+                      path: "web-fixture.txt",
+                      content: "written through Web RPC",
+                    }),
+                  },
+                },
+              ],
+            },
+          };
         }
         options.onText("fixture response");
+        if (
+          messages.some(
+            (message) => message.content === "wait for cancellation",
+          )
+        ) {
+          await new Promise<void>((done) =>
+            options.signal?.addEventListener("abort", () => done(), {
+              once: true,
+            }),
+          );
+        }
         return { message: { role: "assistant", content: "fixture response" } };
       },
     }),
   });
-  await service.updateSettings({ settings: { baseUrl: "http://localhost:1234/v1", model: "test-model" } });
+  await service.updateSettings({
+    settings: { baseUrl: "http://localhost:1234/v1", model: "test-model" },
+  });
   // Host is deliberately fixed; listen(0) below keeps tests independent of port availability.
-  const web = await createWebHost({ service, workspace: directory, host: "127.0.0.1", port: 5173, token: "test-passphrase" });
-  web.server.on("request", (req, res) => { void web.handle(req, res, () => { res.end("vite content"); }); });
+  const web = await createWebHost({
+    service,
+    workspace: directory,
+    host: "127.0.0.1",
+    port: 5173,
+    token: "test-passphrase",
+  });
+  web.server.on("request", (req, res) => {
+    void web.handle(req, res, () => {
+      res.end("vite content");
+    });
+  });
   await new Promise<void>((done) => web.server.listen(0, "127.0.0.1", done));
   cleanup.push(() => web.close());
   const address = web.server.address() as { port: number };
   const url = `http://127.0.0.1:${address.port}`;
-  const headers = { Host: "127.0.0.1:5173", Origin: web.origin, "Content-Type": "application/json" };
+  const headers = {
+    Host: "127.0.0.1:5173",
+    Origin: web.origin,
+    "Content-Type": "application/json",
+  };
   async function login() {
-    const response = await fetch(`${url}/api/connect`, { method: "POST", headers: { ...headers, Authorization: "Bearer test-passphrase" }, body: "{}" });
+    const response = await fetch(`${url}/api/connect`, {
+      method: "POST",
+      headers: { ...headers, Authorization: "Bearer test-passphrase" },
+      body: "{}",
+    });
     expect(response.status).toBe(200);
     const data = await response.json();
-    return { ...headers, Cookie: response.headers.get("set-cookie")!.split(";")[0]!, "X-Forge-Client": data.clientId as string };
+    const cookie = response.headers.get("set-cookie")?.split(";")[0];
+    if (!cookie) throw new Error("Missing cookie");
+    return {
+      ...headers,
+      Cookie: cookie,
+      "X-Forge-Client": data.clientId as string,
+    };
   }
   return { web, directory, url, headers, login };
 }
@@ -62,73 +185,293 @@ describe("Web development host", () => {
     const { url, headers, login } = await setup();
     expect((await fetch(url, { headers })).status).toBe(200);
     expect((await fetch(`${url}/main.tsx`, { headers })).status).toBe(401);
-    expect((await fetch(`${url}/api/rpc`, { method: "POST", headers, body: "{}" })).status).toBe(401);
+    expect(
+      (await fetch(`${url}/api/rpc`, { method: "POST", headers, body: "{}" }))
+        .status,
+    ).toBe(401);
     expect((await fetch(url)).status).toBe(403);
     const auth = await login();
-    expect((await fetch(`${url}/main.tsx`, { headers: auth })).status).toBe(200);
-    expect((await fetch(`${url}/api/rpc`, { method: "POST", headers: { ...auth, Origin: "http://evil.invalid" }, body: "{}" })).status).toBe(403);
+    expect((await fetch(`${url}/main.tsx`, { headers: auth })).status).toBe(
+      200,
+    );
+    expect(
+      (
+        await fetch(`${url}/api/rpc`, {
+          method: "POST",
+          headers: { ...auth, Origin: "http://evil.invalid" },
+          body: "{}",
+        })
+      ).status,
+    ).toBe(403);
   });
 
   it("uses real Harness CRUD, limits workspace and rejects duplicate effects", async () => {
     const { url, directory, login } = await setup();
     const auth = await login();
-    const rpc = async (data: object) => fetch(`${url}/api/rpc`, { method: "POST", headers: auth, body: JSON.stringify(data) });
-    const create = { id: randomUUID(), method: "createSession", input: { workspace: directory, title: "Web test", model: "test-model" } };
+    const stream = await connectEvents(url, auth);
+    const rpc = async (data: object) =>
+      fetch(`${url}/api/rpc`, {
+        method: "POST",
+        headers: auth,
+        body: JSON.stringify(data),
+      });
+    const create = {
+      id: randomUUID(),
+      method: "createSession",
+      input: { workspace: directory, title: "Web test", model: "test-model" },
+    };
     const response = await rpc(create);
     expect(response.status).toBe(200);
     const session = await response.json();
     expect(session.ok).toBe(true);
     expect(session.result.workspace).toBe(directory);
     expect((await rpc(create)).status).toBe(409);
-    expect((await rpc({ ...create, id: randomUUID(), input: { workspace: tmpdir() } })).status).toBe(403);
-    const list = await (await rpc({ id: randomUUID(), method: "listSessions" })).json();
+    expect(
+      (
+        await rpc({
+          ...create,
+          id: randomUUID(),
+          input: { workspace: tmpdir() },
+        })
+      ).status,
+    ).toBe(403);
+    const list = await (
+      await rpc({ id: randomUUID(), method: "listSessions" })
+    ).json();
     expect(list.result).toHaveLength(1);
-    expect((await rpc({ id: randomUUID(), method: "chooseWorkspace" })).status).toBe(403);
-    const started = await (await rpc({ id: randomUUID(), method: "startRun", input: { sessionId: session.result.id, prompt: "fixture", permission: "readonly" } })).json();
+    expect(
+      (await rpc({ id: randomUUID(), method: "chooseWorkspace" })).status,
+    ).toBe(403);
+    const started = await (
+      await rpc({
+        id: randomUUID(),
+        method: "startRun",
+        input: {
+          sessionId: session.result.id,
+          prompt: "fixture",
+          permission: "readonly",
+        },
+      })
+    ).json();
     expect(started.ok).toBe(true);
-    const received: { event: { type: string; status?: string } }[] = [];
-    let cursor = 0;
-    for (let attempt = 0; attempt < 50; attempt++) {
-      const batch = await (await fetch(`${url}/api/events`, { method: "POST", headers: auth, body: JSON.stringify({ cursor }) })).json();
-      received.push(...batch.events);
-      cursor = batch.cursor;
-      if (received.some((item) => item.event.type === "run_finished")) break;
-      await new Promise((done) => setTimeout(done, 10));
-    }
-    expect(received.some((item) => item.event.type === "text_delta")).toBe(true);
-    expect(received.find((item) => item.event.type === "run_finished")?.event.status).toBe("completed");
+    await expect
+      .poll(
+        () =>
+          stream.received.find((item) => item.event.type === "run_finished")
+            ?.event,
+      )
+      .toMatchObject({ status: "completed" });
+    expect(
+      stream.received.some((item) => item.event.type === "text_delta"),
+    ).toBe(true);
+    expect(stream.cursors).toEqual(stream.cursors.map((_, index) => index));
   });
 
   it("writes a real workspace file through the shared runtime and Web event pipe", async () => {
     const { url, directory, login } = await setup();
     const auth = await login();
-    const rpc = async (data: object) => (await fetch(`${url}/api/rpc`, { method: "POST", headers: auth, body: JSON.stringify(data) })).json();
-    const session = await rpc({ id: randomUUID(), method: "createSession", input: { workspace: directory, model: "test-model" } });
-    const started = await rpc({ id: randomUUID(), method: "startRun", input: { sessionId: session.result.id, prompt: "write fixture", permission: "workspace" } });
+    const stream = await connectEvents(url, auth);
+    const rpc = async (data: object) =>
+      (
+        await fetch(`${url}/api/rpc`, {
+          method: "POST",
+          headers: auth,
+          body: JSON.stringify(data),
+        })
+      ).json();
+    const session = await rpc({
+      id: randomUUID(),
+      method: "createSession",
+      input: { workspace: directory, model: "test-model" },
+    });
+    const started = await rpc({
+      id: randomUUID(),
+      method: "startRun",
+      input: {
+        sessionId: session.result.id,
+        prompt: "write fixture",
+        permission: "workspace",
+      },
+    });
     expect(started.ok).toBe(true);
-    let cursor = 0;
-    let finished = false;
-    for (let attempt = 0; attempt < 100; attempt++) {
-      const batch = await (await fetch(`${url}/api/events`, { method: "POST", headers: auth, body: JSON.stringify({ cursor }) })).json();
-      cursor = batch.cursor;
-      for (const { event } of batch.events) {
-        if (event.type === "approval_requested") await rpc({ id: randomUUID(), method: "answerApproval", runId: started.result.runId, approvalId: event.request.id, approved: true });
-        if (event.type === "run_finished") { expect(event.status).toBe("completed"); finished = true; }
-      }
-      if (finished) break;
-      await new Promise((done) => setTimeout(done, 10));
-    }
-    expect(finished).toBe(true);
-    expect(await readFile(join(directory, "web-fixture.txt"), "utf8")).toBe("written through Web RPC");
+    await expect
+      .poll(() =>
+        stream.received.some(
+          (item) => item.event.type === "approval_requested",
+        ),
+      )
+      .toBe(true);
+    const approval = stream.received.find(
+      (item) => item.event.type === "approval_requested",
+    )?.event;
+    if (approval?.type !== "approval_requested")
+      throw new Error("Missing approval");
+    await rpc({
+      id: randomUUID(),
+      method: "answerApproval",
+      runId: started.result.runId,
+      approvalId: approval.request.id,
+      approved: true,
+    });
+    await expect
+      .poll(
+        () =>
+          stream.received.find((item) => item.event.type === "run_finished")
+            ?.event,
+      )
+      .toMatchObject({ status: "completed" });
+    expect(
+      stream.received.some((item) => item.event.type === "tool_started"),
+    ).toBe(true);
+    expect(
+      stream.received.some((item) => item.event.type === "tool_finished"),
+    ).toBe(true);
+    expect(await readFile(join(directory, "web-fixture.txt"), "utf8")).toBe(
+      "written through Web RPC",
+    );
   });
 
   it("gives a new page control and validates event cursors", async () => {
     const { url, login } = await setup();
     const oldAuth = await login();
+    const oldStream = await connectEvents(url, oldAuth);
     const auth = await login();
-    const poll = (headers: Record<string, string>, cursor: number) => fetch(`${url}/api/events`, { method: "POST", headers, body: JSON.stringify({ cursor }) });
+    const poll = (headers: Record<string, string>, cursor: number) =>
+      fetch(`${url}/api/events`, {
+        method: "POST",
+        headers,
+        body: JSON.stringify({ cursor }),
+      });
     expect((await poll(oldAuth, 0)).status).toBe(409);
-    expect((await poll(auth, -1)).status).toBe(400);
-    expect(await (await poll(auth, 0)).json()).toEqual({ cursor: 0, events: [] });
+    expect((await poll(auth, 0)).status).toBe(426);
+    await expect.poll(() => oldStream.ws.readyState).toBe(WebSocket.CLOSED);
+    await expect(connectEvents(url, oldAuth)).rejects.toThrow();
+    await expect(connectEvents(url, auth, -1)).rejects.toThrow();
+    const stream = await connectEvents(url, auth);
+    expect(stream.cursors).toEqual([0]);
+  });
+
+  it("rejects unauthenticated and cross-origin WebSocket upgrades", async () => {
+    const { url, headers, login } = await setup();
+    await expect(connectEvents(url, headers)).rejects.toThrow();
+    const auth = await login();
+    await expect(
+      connectEvents(url, { ...auth, Origin: "http://evil.invalid" }),
+    ).rejects.toThrow();
+    await expect(
+      connectEvents(url, { ...auth, Host: "evil.invalid" }),
+    ).rejects.toThrow();
+  });
+
+  it("closes invalid acknowledgements and preserves events queued while disconnected", async () => {
+    const { url, directory, login } = await setup();
+    const auth = await login();
+    const invalid = await connectEvents(url, auth);
+    const closed = new Promise<number>((done) =>
+      invalid.ws.once("close", (code) => done(code)),
+    );
+    invalid.ws.send(JSON.stringify({ cursor: 100 }));
+    expect(await closed).toBe(1008);
+    const stream = await connectEvents(url, auth);
+    const rpc = async (data: object) =>
+      (
+        await fetch(`${url}/api/rpc`, {
+          method: "POST",
+          headers: auth,
+          body: JSON.stringify(data),
+        })
+      ).json();
+    const session = await rpc({
+      id: randomUUID(),
+      method: "createSession",
+      input: { workspace: directory, model: "test-model" },
+    });
+    const run = await rpc({
+      id: randomUUID(),
+      method: "startRun",
+      input: {
+        sessionId: session.result.id,
+        prompt: "wait for cancellation",
+        permission: "readonly",
+      },
+    });
+    await expect
+      .poll(() =>
+        stream.received.some((item) => item.event.type === "text_delta"),
+      )
+      .toBe(true);
+    const cursor = stream.cursors.at(-1);
+    if (cursor === undefined) throw new Error("Missing event cursor");
+    stream.ws.terminate();
+    await expect.poll(() => stream.ws.readyState).toBe(WebSocket.CLOSED);
+    await rpc({
+      id: randomUUID(),
+      method: "cancelRun",
+      runId: run.result.runId,
+    });
+    const resumed = await connectEvents(url, auth, cursor);
+    await expect
+      .poll(() =>
+        resumed.received.some((item) => item.event.type === "run_finished"),
+      )
+      .toBe(true);
+    expect(
+      resumed.received.some((item) => item.event.type === "text_delta"),
+    ).toBe(false);
+  });
+
+  it("requires a live stream to start and cancels disconnected runs after the lease", async () => {
+    const { url, directory, login } = await setup();
+    const auth = await login();
+    const rpc = async (data: object) =>
+      fetch(`${url}/api/rpc`, {
+        method: "POST",
+        headers: auth,
+        body: JSON.stringify(data),
+      });
+    const session = await (
+      await rpc({
+        id: randomUUID(),
+        method: "createSession",
+        input: { workspace: directory, model: "test-model" },
+      })
+    ).json();
+    const start = () =>
+      rpc({
+        id: randomUUID(),
+        method: "startRun",
+        input: {
+          sessionId: session.result.id,
+          prompt: "wait for cancellation",
+          permission: "readonly",
+        },
+      });
+    expect((await start()).status).toBe(409);
+    const stream = await connectEvents(url, auth);
+    expect((await start()).status).toBe(200);
+    await expect
+      .poll(() =>
+        stream.received.some((item) => item.event.type === "text_delta"),
+      )
+      .toBe(true);
+    stream.ws.terminate();
+    await expect.poll(() => stream.ws.readyState).toBe(WebSocket.CLOSED);
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(Date.now() + 21_000);
+    await expect
+      .poll(
+        async () => {
+          const snapshot = await (
+            await rpc({
+              id: randomUUID(),
+              method: "getSession",
+              sessionId: session.result.id,
+            })
+          ).json();
+          return snapshot.result.status;
+        },
+        { timeout: 3000 },
+      )
+      .toBe("cancelled");
   });
 });
