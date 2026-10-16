@@ -4,6 +4,9 @@ settings:
   autoInstallPeers: true
   excludeLinksFromLockfile: false
 
+patchedDependencies:
+  ink@6.6.0: 80a8bd65f17cbf05cc4f49e2327432a267d67d2d7710260d9d1dac90ccdc7e20
+
 importers:
 
   .:
@@ -25,7 +28,7 @@ importers:
         version: 13.1.0
       ink:
         specifier: 6.6.0
-        version: 6.6.0(@types/react@19.3.0)(react@19.3.0)
+        version: 6.6.0(patch_hash=80a8bd65f17cbf05cc4f49e2327432a267d67d2d7710260d9d1dac90ccdc7e20)(@types/react@19.3.0)(react@19.3.0)
       ky:
         specifier: ^1.8.1
         version: 1.14.3
@@ -6003,7 +6006,7 @@ snapshots:
 
   inherits@2.0.4: {}
 
-  ink@6.6.0(@types/react@19.3.0)(react@19.3.0):
+  ink@6.6.0(patch_hash=80a8bd65f17cbf05cc4f49e2327432a267d67d2d7710260d9d1dac90ccdc7e20)(@types/react@19.3.0)(react@19.3.0):
     dependencies:
       '@alcalzone/ansi-tokenize': 0.2.5
       ansi-escapes: 7.3.0
