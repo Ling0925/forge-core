@@ -416,6 +416,7 @@ const persistedContextUsageSchema = z.union([
 const eventBase = { sessionId: sessionIdSchema, timestamp: timestampSchema };
 export const agentEventSchema = z
   .discriminatedUnion("type", [
+    z.object({ ...eventBase, type: z.literal("permission_changed"), permission: permissionSchema }).strict(),
     z.object({
       ...eventBase,
       type: z.literal("context_usage"),

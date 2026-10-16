@@ -97,7 +97,8 @@ describe("system instructions", () => {
       "command effects are not checkpointed",
       "run_command for builds, tests, git, package managers",
       "generated build artifacts are distinct from authored file edits",
-    ]) expect(policy).toContain(rule);
+    ])
+      expect(policy).toContain(rule);
     expect(buildSystemInstructions(base)).toBe(prompt);
   });
 
@@ -180,6 +181,57 @@ function fixture(
     runtime: createAgentRuntime(deps),
   };
 }
+
+it("uses live permissions for each tool and refreshes the next model request", async () => {
+  const f = fixture();
+  let permission: "readonly" | "workspace" | "unrestricted" = "workspace";
+  let turn = 0;
+  const executed: string[] = [];
+  const runtime = createAgentRuntime({
+    ...f.deps,
+    provider: {
+      listModels: async () => [],
+      complete: async (messages) => {
+        if (turn++ === 0)
+          return {
+            message: {
+              role: "assistant",
+              content: null,
+              tool_calls: ["one", "two", "three"].map((id) => ({
+                id,
+                type: "function" as const,
+                function: { name: "run_command", arguments: "{}" },
+              })),
+            },
+          };
+        expect(messages[0]?.content).toContain(
+          "Effective permission: readonly",
+        );
+        return { message: { role: "assistant", content: "done" } };
+      },
+    },
+    tools: {
+      ...f.deps.tools,
+      execute: async (_call, context) => {
+        executed.push(context.permission);
+        return { content: "ok", isError: false };
+      },
+    },
+  });
+  await runtime.run(
+    { sessionId: f.state.id, prompt: "test", permission: "workspace" },
+    (event) => {
+      if (event.type === "tool_started" && event.call.id === "two")
+        permission = "unrestricted";
+      if (event.type === "tool_started" && event.call.id === "three")
+        permission = "readonly";
+    },
+    async () => false,
+    new AbortController().signal,
+    { drainSteering: () => [], getPermission: () => permission },
+  );
+  expect(executed).toEqual(["workspace", "unrestricted"]);
+});
 
 it("refreshes mode, effective permissions and project context without rewriting history", async () => {
   const f = fixture();

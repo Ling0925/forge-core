@@ -25,6 +25,7 @@ export type ApprovalHandler = (
   signal: AbortSignal,
 ) => Promise<boolean>;
 export interface RunControl {
+  readonly getPermission?: () => Permission | undefined;
   /** final=true atomically closes an empty child queue before terminal cleanup. */
   readonly drainSteering: (final?: boolean) => readonly string[];
 }

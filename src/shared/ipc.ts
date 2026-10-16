@@ -4,6 +4,7 @@ import {
   configureInputSchema,
   createSessionInputSchema,
   errorInfoSchema,
+  permissionSchema,
   publicSettingsSchema,
   runInputSchema,
   sessionIdSchema,
@@ -13,6 +14,7 @@ import {
 import type {
   ConfigureInput,
   CreateSessionInput,
+  Permission,
   PublicSettings,
   RunInput,
   SessionId,
@@ -312,6 +314,7 @@ export const rpcRequestSchema = z
         runId: runIdSchema,
       })
       .strict(),
+    z.object({ ...requestBase, method: z.literal("setRunPermission"), runId: runIdSchema, permission: permissionSchema }).strict(),
     z
       .object({
         ...requestBase,
@@ -389,6 +392,7 @@ export const rpcResponseSchema = z.union([
   success("cancelSession", z.boolean()),
   success("startRun", runHandleSchema),
   success("cancelRun", z.null()),
+  success("setRunPermission", permissionSchema),
   success("answerApproval", z.null()),
   z
     .object({
@@ -421,6 +425,7 @@ export const rpcResponseSchema = z.union([
         "cancelSession",
         "startRun",
         "cancelRun",
+        "setRunPermission",
         "answerApproval",
       ]),
       error: errorInfoSchema,
@@ -489,6 +494,7 @@ export interface ForgeBridge {
   cancelSession(sessionId: SessionId): Promise<boolean>;
   startRun(input: RunInput): Promise<RunHandle>;
   cancelRun(runId: RunId): Promise<void>;
+  setRunPermission(runId: RunId, permission: Permission): Promise<Permission>;
   answerApproval(
     runId: RunId,
     approvalId: string,

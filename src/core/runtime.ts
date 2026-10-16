@@ -370,13 +370,15 @@ export const createAgentRuntime = (
         input.mode === "plan"
           ? "readonly"
           : (input.permission ?? deps.settings.defaultPermission);
-      const permission =
+      const permissionCeiling = snapshot.permissionCeiling;
+      const effectivePermission = () =>
         levels[
           Math.min(
-            levels.indexOf(requestedPermission),
-            levels.indexOf(snapshot.permissionCeiling ?? requestedPermission),
+            levels.indexOf(input.mode === "plan" ? "readonly" : control?.getPermission?.() ?? requestedPermission),
+            levels.indexOf(permissionCeiling ?? "unrestricted"),
           )
         ] ?? "readonly";
+      const permission = effectivePermission();
       const { pendingTool: _pending, ...settled } = snapshot;
       snapshot = {
         ...settled,
@@ -386,7 +388,7 @@ export const createAgentRuntime = (
           "prior execution was interrupted; inspect effects before retry",
         ),
       };
-      const currentInstructions = buildSystemInstructions({
+      let currentInstructions = buildSystemInstructions({
         session: snapshot,
         permission,
         mode: input.mode,
@@ -429,6 +431,8 @@ export const createAgentRuntime = (
         : JSON.stringify(messages).length;
       while (true) {
         check();
+        currentInstructions = buildSystemInstructions({ session: snapshot, permission: effectivePermission(), mode: input.mode,
+          maxToolCalls: deps.settings.maxToolCalls, projectInstructions: deps.projectInstructions });
         await drainSteering();
         check();
         const project = (state: SessionSnapshot) => projectSummary(state).map((message, index) =>
@@ -663,7 +667,7 @@ export const createAgentRuntime = (
                         deps,
                         snapshot: toolSnapshot,
                         input,
-                        permission,
+                        get permission() { return effectivePermission(); },
                         signal,
                         children,
                         onSettled: (childSessionId, child) => event({
@@ -809,7 +813,7 @@ export const createAgentRuntime = (
                     content: JSON.stringify(toErrorInfo(error)),
                     isError: true,
                   }))
-              : permission === "readonly" &&
+              : effectivePermission() === "readonly" &&
                   ![
                     "list_files",
                     "read_file",
@@ -829,7 +833,7 @@ export const createAgentRuntime = (
                     sessionId: input.sessionId,
                     toolCallId: call.id,
                     workspace: snapshot.workspace,
-                    permission,
+                    get permission() { return effectivePermission(); },
                     signal,
                     approve: approval,
                     onEvent: (raw) => {
