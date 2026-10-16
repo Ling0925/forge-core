@@ -6,9 +6,9 @@ const knownWindows: Readonly<Record<string, number>> = {
   "gpt-4.1": 1047576, "gpt-4.1-mini": 1047576, "gpt-4.1-nano": 1047576,
   "o3": 200000, "o4-mini": 200000,
 };
-export function resolveContextWindow(model: string, settings: Pick<PublicSettings, "modelContextWindows">, reported?: number | null): number | null {
+export function resolveContextWindow(model: string, settings: Pick<PublicSettings, "modelContextWindows">, reported?: number | null): number {
   const override = settings.modelContextWindows?.[model];
-  return override ?? reported ?? (Object.hasOwn(knownWindows, model) ? knownWindows[model]! : null);
+  return override ?? reported ?? (Object.hasOwn(knownWindows, model) ? knownWindows[model] : undefined) ?? 300000;
 }
 
 export type ContextBudget = Readonly<{ unit: "tokens" | "chars"; limit: number; target: number }>;

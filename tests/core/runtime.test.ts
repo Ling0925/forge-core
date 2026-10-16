@@ -10,6 +10,7 @@ import type {
   SessionStore,
 } from "../../src/shared/contracts";
 import { ForgeError } from "../../src/shared/errors";
+import { measureContext } from "../../src/shared/context-usage";
 import {
   defaultPublicSettings,
   sessionSnapshotSchema,
@@ -163,7 +164,8 @@ describe("original runtime", () => {
     const usageEvents = events.filter((event) => event.type === "context_usage").filter(event => event.usage.basis === "projected");
     expect(usageEvents.length).toBeGreaterThanOrEqual(received.length);
     for (const usageEvent of usageEvents) {
-      expect(usageEvent.usage.windowTokens).toBeNull();
+      expect(usageEvent.usage.windowTokens).toBe(300000);
+      expect(usageEvent.usage.budgetTokens).toBe(240000);
       expect(usageEvent.usage.estimated).toBe(true);
       expect(Object.values(usageEvent.usage.parts).reduce((sum, value) => sum + value, 0))
         .toBe(usageEvent.usage.usedTokens);
@@ -655,7 +657,7 @@ it("recovers and compacts a long persisted turn without replaying earlier effect
           };
         completions += 1;
         if (completions === 1)
-          expect(JSON.stringify(context).length).toBeLessThanOrEqual(10000);
+          expect(measureContext(context, 300000).usedTokens).toBeLessThanOrEqual(8000);
         if (completions === 1)
           expect(
             f
@@ -681,7 +683,7 @@ it("recovers and compacts a long persisted turn without replaying earlier effect
       execute: async (tool) => {
         expect(tool.id).toBe("new");
         executions += 1;
-        return { content: "y".repeat(12000), isError: false };
+        return { content: "y".repeat(40000), isError: false };
       },
     },
     { ...state, status: "running", pendingTool: call("orphan"), messages },
@@ -690,7 +692,7 @@ it("recovers and compacts a long persisted turn without replaying earlier effect
   // with a larger budget without replaying it.
   const small = createAgentRuntime({
     ...f.deps,
-    settings: { ...defaultPublicSettings, contextBudgetChars: 10000 },
+    settings: { ...defaultPublicSettings, contextBudgetTokens: 8000 },
   });
   const result = await small.run(
     input,
