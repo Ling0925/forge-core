@@ -21,6 +21,7 @@
     "desktop": "electron .",
     "cli": "node dist/cli.mjs",
     "dev": "node scripts/dev.mjs",
+    "dev:web": "node scripts/dev-web.mjs",
     "package": "pnpm build && electron-builder --linux --dir",
     "audit:react": "react-doctor .",
     "browser:install": "playwright install chromium"
