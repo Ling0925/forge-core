@@ -224,22 +224,37 @@ const notify = (observer: (text: string) => void, text: string): void => {
   }
 };
 
+// Per-response request activity; weak keys cannot retain completed response bodies.
+const responseActivity = new WeakMap<Response, { signal: AbortSignal; touch: () => void }>();
+
 async function consumeBytes(
   response: Response,
   onBytes: (bytes: Uint8Array) => void,
 ): Promise<void> {
   if (!response.body) throw protocol();
   const reader = response.body.getReader();
+  const activity = responseActivity.get(response);
+  // Explicitly cancel the locked reader too: some transports do not promptly
+  // reject an outstanding body read when their request signal is aborted.
+  const cancel = (): void => { void reader.cancel().catch(() => {}); };
+  activity?.signal.addEventListener("abort", cancel, { once: true });
   let total = 0;
   try {
     for (;;) {
+      activity?.signal.throwIfAborted();
       const item = await reader.read();
+      activity?.signal.throwIfAborted();
       if (item.done) break;
+      // Includes reasoning, tool arguments, partial UTF-8/SSE frames and comments.
+      // UI animation is not network activity and cannot extend this deadline.
+      if (item.value.byteLength) activity?.touch();
       total += item.value.byteLength;
       if (total > MAX_BODY) throw protocol();
       onBytes(item.value);
     }
   } finally {
+    activity?.signal.removeEventListener("abort", cancel);
+    responseActivity.delete(response);
     try {
       await reader.cancel();
     } catch {
@@ -422,10 +437,15 @@ export function createModelProvider(config: ProviderConfig): ModelProvider {
     : {};
   const execute = async <T>(
     signal: AbortSignal | undefined,
-    operation: (combined: AbortSignal) => Promise<T>,
+    operation: (combined: AbortSignal, trackResponse: (response: Response) => Response) => Promise<T>,
+    idleTimeout = false,
   ): Promise<T> => {
     const controller = new AbortController();
     let timedOut = false;
+    let settled = false;
+    const timeoutMessage = idleTimeout
+      ? `The provider sent no data for ${settings.requestTimeoutMs} ms (idle timeout).`
+      : "The provider request timed out.";
     const abort = (): void => controller.abort();
     signal?.addEventListener("abort", abort, { once: true });
     if (signal?.aborted) controller.abort();
@@ -433,18 +453,26 @@ export function createModelProvider(config: ProviderConfig): ModelProvider {
       timedOut = true;
       controller.abort();
     }, settings.requestTimeoutMs);
+    const activity = (): void => {
+      if (idleTimeout && !settled && !controller.signal.aborted) timer.refresh();
+    };
+    const trackResponse = (response: Response): Response => {
+      activity(); // Headers arrived; start the body idle interval.
+      responseActivity.set(response, { signal: controller.signal, touch: activity });
+      return response;
+    };
     try {
       if (controller.signal.aborted)
         throw new ProviderError(
           "aborted",
           "The provider request was cancelled.",
         );
-      const result = await operation(controller.signal);
+      const result = await operation(controller.signal, trackResponse);
       if (controller.signal.aborted)
         throw new ProviderError(
           timedOut ? "timeout" : "aborted",
           timedOut
-            ? "The provider request timed out."
+            ? timeoutMessage
             : "The provider request was cancelled.",
           timedOut,
         );
@@ -459,7 +487,7 @@ export function createModelProvider(config: ProviderConfig): ModelProvider {
       if (timedOut || (error instanceof Error && error.name === "TimeoutError"))
         throw new ProviderError(
           "timeout",
-          "The provider request timed out.",
+          timeoutMessage,
           true,
         );
       if (
@@ -474,6 +502,7 @@ export function createModelProvider(config: ProviderConfig): ModelProvider {
         true,
       );
     } finally {
+      settled = true;
       clearTimeout(timer);
       signal?.removeEventListener("abort", abort);
       controller.abort();
@@ -482,7 +511,7 @@ export function createModelProvider(config: ProviderConfig): ModelProvider {
   const windows = new Map<string, number | null>();
   let catalogLoaded = false;
   const listModels = (signal?: AbortSignal) =>
-      execute(signal, async (combined) => {
+      execute(signal, async (combined, trackResponse) => {
         const response = await ky.get(`${base}/models`, {
           headers,
           signal: combined,
@@ -494,7 +523,7 @@ export function createModelProvider(config: ProviderConfig): ModelProvider {
             retryOnTimeout: false,
           },
           throwHttpErrors: false,
-        });
+        }).then(trackResponse);
         if (!response.ok) {
           await response.body?.cancel();
           throw httpError(response.status);
@@ -530,7 +559,7 @@ export function createModelProvider(config: ProviderConfig): ModelProvider {
           "Provide a valid model, message history and tool definitions.",
           false,
         );
-      return execute(options.signal, async (combined) => {
+      return execute(options.signal, async (combined, trackResponse) => {
         if (settings.apiMode === "responses") {
           const response = await ky.post(`${base}/responses`, {
             headers,
@@ -545,7 +574,7 @@ export function createModelProvider(config: ProviderConfig): ModelProvider {
                 ? { reasoning: { effort: settings.reasoningEffort } }
                 : {}),
             },
-          });
+          }).then(trackResponse);
           if (!response.ok) {
             await response.body?.cancel();
             throw httpError(response.status);
@@ -603,7 +632,7 @@ export function createModelProvider(config: ProviderConfig): ModelProvider {
               // this the footer never receives a real cache rate during a run.
               ...(stream ? { stream_options: { include_usage: true } } : {}),
             },
-          });
+          }).then(trackResponse);
         let response = await request(true);
         if (response.status === 400 || response.status === 422) {
           const raw = await readText(response);
@@ -667,7 +696,7 @@ export function createModelProvider(config: ProviderConfig): ModelProvider {
           },
           ...(usage ? { usage } : {}),
         });
-      });
+      }, true);
     },
   };
 }
