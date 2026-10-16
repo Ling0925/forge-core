@@ -27,7 +27,7 @@ Parse unknown persisted, HTTP, IPC and tool-argument data at the receiving bound
 | `src/cli/index.ts` | bootstrap/service disposal/exit code |
 | `src/desktop/main.ts` | privileged window/chooser and validated worker routing |
 | `src/desktop/preload.ts` | sandbox-compatible contextBridge implementing ForgeBridge |
-| `src/desktop/worker.ts` | utilityProcess, one HarnessService, cancellation/approval maps |
+| `src/desktop/worker.ts` | Node worker_threads worker, one HarnessService, cancellation/approval maps |
 | `src/renderer/index.html` | Vite HTML referencing `./main.tsx` |
 | `src/renderer/main.tsx` | React bootstrap, fonts/styles, optional development diagnostics |
 | `src/renderer/App.tsx` | named `App`; privileged operations only through window.forge |
@@ -107,7 +107,7 @@ FileChange previews are bounded, not backups or rollback guarantees; null means 
 
 ## Desktop protocol and security
 
-Main forks the absolute `dist/desktop/worker.cjs` through utilityProcess and waits for ready. Worker receives validated WorkerRequest; chooseWorkspace remains main-only. Main/preload validate both directions, match UUID request IDs and methods, and validate result variants. A method check is required to narrow WorkerRequest after schema refinement. Renderer receives only ForgeBridge, never ipcRenderer, executable paths, raw channels or generic RPC.
+Main forks the absolute `dist/desktop/worker.cjs` through a Node `worker_threads` Worker and waits for ready. Worker receives validated WorkerRequest; chooseWorkspace remains main-only. Main/preload validate both directions, match UUID request IDs and methods, and validate result variants. A method check is required to narrow WorkerRequest after schema refinement. Renderer receives only ForgeBridge, never ipcRenderer, executable paths, raw channels or generic RPC.
 
 Main handles directory selection and null cancellation. Worker reserves UUID RunId and active session slot, replies with RunHandle before starting asynchronous events; conflicts reject busy. cancelRun aborts its controller and acknowledges null without claiming settlement. answerApproval matches runId and approvalId, resolves once, acknowledges null; stale/foreign IDs reject not_found. Approval requests use approval_requested events. Main binds requests/runs/approvals to trusted originating webContents. Event subscriptions filter correctly and return idempotent unsubscribers. After terminal run_finished fetch getSession for final checkpoint. Pre-start rejection is an RPC error, not a run event.
 
