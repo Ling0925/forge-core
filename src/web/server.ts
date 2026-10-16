@@ -256,6 +256,11 @@ export async function createWebHost(options: {
             error: "WebSocket required; reload the page.",
           });
         }
+        if (path === "/api/connection") {
+          const { cursor } = ackSchema.parse(input);
+          const oldest = events[0]?.cursor ?? sequence + 1;
+          return json(response, 200, { resumable: !overflow && cursor >= oldest - 1 && cursor <= sequence });
+        }
         if (path !== "/api/rpc")
           return json(response, 404, { error: "Not found" });
         const parsed = rpcRequestSchema.safeParse(input);
