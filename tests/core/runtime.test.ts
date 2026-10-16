@@ -737,7 +737,7 @@ it("summarizes old history while keeping three recent human turns in the real re
   const f = fixture({ ...finalProvider, getModelContextWindow: async () => 32000, complete: async (incoming, definitions) => {
     if (!definitions.length) {
       summaryCalls++;
-      return { message: { role: "assistant", content: "older decisions and verified work" } };
+      return { message: { role: "assistant", content: JSON.stringify({ goal: "continue", constraints: [], decisions: [], completed: [], nextSteps: [], verification: [], uncertainties: [] }) } };
     }
     request = incoming;
     return { message: { role: "assistant", content: "done" } };

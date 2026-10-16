@@ -1,6 +1,7 @@
 import { z } from "zod";
 import type { ToolDefinition, ToolResult } from "../shared/schemas";
 import { taskPlanSchema } from "../shared/schemas";
+import { executeHistory, historyDefinitions } from "./history";
 import { executeAgentOperation, type AgentEnvironment } from "./agent-operations";
 export { agentSummary } from "./agent-operations";
 const modelListArgs = z
@@ -13,6 +14,7 @@ const modelListArgs = z
 const MODEL_CATALOG_BYTES = 32768;
 
 export const nativeDefinitions: readonly ToolDefinition[] = [
+  ...historyDefinitions,
   {
     name: "list_models",
     description:
@@ -137,6 +139,9 @@ export async function executeNative(
   });
   const { deps } = env;
   switch (name) {
+    case "history_search":
+    case "history_read":
+      return executeHistory(name, args, env.snapshot);
     case "list_models": {
       const parsed = modelListArgs.safeParse(args);
       if (!parsed.success)

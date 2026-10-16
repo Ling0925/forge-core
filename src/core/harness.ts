@@ -35,7 +35,8 @@ import { withCommandTasks } from "../tools/command-tasks";
 import { createLspToolRegistry } from "../tools/lsp";
 import { createMcpToolRegistry } from "../tools/mcp";
 import { createSkillTool } from "../tools/skills";
-import { assertBoundary, projectSummary, summarize } from "./context";
+import { assertBoundary, projectSummary } from "./context";
+import { summarizeWorkingState } from "./working-memory";
 import { autoTitle } from "./session-title";
 import { createTaskService } from "./task-service";
 import type { CommandTaskAccess } from "../shared/task-view";
@@ -312,7 +313,7 @@ export const createHarness = async (
         try { reported = await withCancellation(provider.getModelContextWindow?.(s.model, metadataSignal) ?? Promise.resolve(null), metadataSignal); }
         catch { /* Optional metadata must not prevent compaction. */ }
         const window = resolveContextWindow(s.model, settings, reported);
-        return summarize(s, provider, signal, s.messages.length, window ? Math.floor(window * 0.8) : 32000);
+        return summarizeWorkingState(s, provider, signal, s.messages.length, Math.floor(window * 0.8));
       });
       track(id, controller, work);
       return work;

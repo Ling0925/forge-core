@@ -22,7 +22,8 @@ import type {
 } from "../shared/schemas";
 import { agentSummary, executeNative, nativeDefinitions } from "./agents";
 import { boundedReports, childReport, type ChildOperation } from "./agent-operations";
-import { projectSummary, summarize, summaryBoundary } from "./context";
+import { projectSummary, summaryBoundary } from "./context";
+import { summarizeWorkingState } from "./working-memory";
 import { buildSystemInstructions } from "./prompts";
 import { budgetUsage, measureContext, reportedContext, resolveContextBudget, resolveContextWindow } from "../shared/context-usage";
 
@@ -395,7 +396,7 @@ export const createAgentRuntime = (
         maxToolCalls: deps.settings.maxToolCalls,
         projectInstructions: deps.projectInstructions,
       });
-      if (!snapshot.messages.some((message) => message.role === "system"))
+      if (!snapshot.contextSummary && !snapshot.messages.some((message) => message.role === "system"))
         snapshot = {
           ...snapshot,
           messages: [
@@ -435,9 +436,12 @@ export const createAgentRuntime = (
           maxToolCalls: deps.settings.maxToolCalls, projectInstructions: deps.projectInstructions });
         await drainSteering();
         check();
-        const project = (state: SessionSnapshot) => projectSummary(state).map((message, index) =>
+        const project = (state: SessionSnapshot) => {
+          const projected = projectSummary(state).map((message, index) =>
           index === 0 && message.role === "system"
             ? { role: "system" as const, content: currentInstructions } : message);
+          return projected[0]?.role === "system" ? projected : [{ role: "system" as const, content: currentInstructions }, ...projected];
+        };
         const before = project(snapshot);
         if (contextSize(before) > budget.limit) {
           let boundary = summaryBoundary(snapshot, messages => contextSize(messages.map((m, i) =>
@@ -450,7 +454,7 @@ export const createAgentRuntime = (
                 snapshot.messages.slice(snapshot.contextSummary?.boundary ?? 0, latest).some(m => m.role !== "system")) boundary = latest;
           }
           if (boundary !== null) {
-            snapshot = await summarize(snapshot, deps.provider, signal, boundary, windowTokens ? Math.floor(windowTokens * 0.8) : 32000);
+            snapshot = await summarizeWorkingState(snapshot, deps.provider, signal, boundary, Math.floor(windowTokens * 0.8));
             await save();
             event({ type: "context_compacted", removedMessages: Math.max(0, before.length - project(snapshot).length),
               beforeChars: JSON.stringify(before).length, afterChars: JSON.stringify(project(snapshot)).length });
