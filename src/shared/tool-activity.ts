@@ -16,17 +16,53 @@ export function redactCommandArguments(command: readonly string[] = []): readonl
   });
 }
 
-/** Never forward file bodies, edit text, MCP arguments or tool output. */
+// Scalar keys surfaced as a tool's human-readable target, in priority order.
+const targetKeys = ["path", "argv", "command", "query", "url", "id", "cwd"];
+
+/** Never forward file bodies, edit text, MCP arguments or tool output. Only a
+ * bounded scalar target is surfaced; an unmatched payload adds nothing rather
+ * than dumping raw JSON onto the activity line. */
 export function toolActivity(call: ToolCall): { name: string; target: string } {
   let target = "";
   try {
-    const args: unknown = JSON.parse(call.function.arguments);
-    if (typeof args === "object" && args !== null) {
-      if (call.function.name === "run_command" && "argv" in args && Array.isArray(args.argv)) {
-        target = redactCommandArguments(args.argv.filter((a): a is string => typeof a === "string")).join(" ");
-      } else if (["read_file", "write_file", "edit_file", "make_directory", "list_files"].includes(call.function.name)
-        && "path" in args && typeof args.path === "string") target = args.path;
+    const parsed: unknown = JSON.parse(call.function.arguments);
+    if (typeof parsed === "object" && parsed !== null) {
+      const args = parsed as Record<string, unknown>;
+      if (call.function.name === "run_command" && Array.isArray(args.argv)) {
+        const argv = args.argv.filter((a): a is string => typeof a === "string");
+        target = redactCommandArguments(argv).join(" ");
+      } else {
+        for (const key of targetKeys) {
+          const field = args[key];
+          if (typeof field === "string" && field) { target = field; break; }
+          if (Array.isArray(field)) {
+            const parts = field.filter((a): a is string => typeof a === "string");
+            if (parts.length) { target = parts.join(" "); break; }
+          }
+        }
+      }
     }
   } catch { /* Malformed arguments still show the tool name. */ }
   return { name: call.function.name.slice(0, 256), target: target.slice(0, 1024) };
+}
+
+/** Redacted command line and working directory for a command tool's expanded
+ * evidence. Returns empties for non-command tools or malformed arguments. */
+export function commandActivity(call: ToolCall): { command: string; cwd: string } {
+  let command = "";
+  let cwd = "";
+  try {
+    const parsed: unknown = JSON.parse(call.function.arguments);
+    if (typeof parsed === "object" && parsed !== null) {
+      const args = parsed as Record<string, unknown>;
+      const argv = Array.isArray(args.argv)
+        ? args.argv.filter((a): a is string => typeof a === "string")
+        : typeof args.command === "string"
+          ? [args.command]
+          : [];
+      command = redactCommandArguments(argv).join(" ");
+      if (typeof args.cwd === "string") cwd = args.cwd;
+    }
+  } catch { /* Expanded view simply omits the command. */ }
+  return { command: command.slice(0, 4096), cwd: cwd.slice(0, 2048) };
 }
