@@ -168,10 +168,15 @@ describe("original local tools", () => {
       new_text: "new",
       replace_all: true,
     });
-    expect(edit.changes?.[0]).toMatchObject({
-      before: "same\nsame",
-      after: "new\nnew",
+    expect(edit.changes?.[0]?.patch).toMatchObject({
+      status: "complete", added: 2, removed: 2,
+      hunks: [{ lines: [
+        { op: "delete", text: "same\n" }, { op: "delete", text: "same" },
+        { op: "insert", text: "new\n" }, { op: "insert", text: "new" },
+      ] }],
     });
+    expect(edit.changes?.[0]).not.toHaveProperty("before");
+    expect(edit.changes?.[0]).not.toHaveProperty("after");
     expect(output(await execute("read_file", { path: "a" })).cache_hit).toBe(
       false,
     );
@@ -195,7 +200,7 @@ describe("original local tools", () => {
       content: source,
     });
     expect(written.isError).toBe(false);
-    expect(written.changes?.[0]?.after).toBe(source);
+    expect(written.changes?.[0]?.patch?.status).toBe("complete");
     expect((await execute("read_file", { path: "harness.ts" })).isError).toBe(
       false,
     );

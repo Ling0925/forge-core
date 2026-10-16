@@ -122,7 +122,8 @@ describe("original local tools", () => {
     for (const tool of [write, edit]) {
       expect(tool.description).toMatch(/^Default tool/);
       expect(tool.description).toContain("when a checkpoint store is configured");
-      expect(tool.description).toContain("previews");
+      expect(tool.description).toContain("diff patch");
+      expect(tool.description).not.toContain("before/after previews");
       expect(tool.description).toContain("Workspace-relative only");
       expect(tool.description).toContain("no symlinks or sensitive files");
       expect(tool.description).toContain("Files at most 2 MiB");
@@ -184,9 +185,6 @@ describe("original local tools", () => {
       {
         path: "a.txt",
         kind: "modified",
-        before: "first\nsecond\nthird",
-        after: "updated",
-        truncated: false,
         patch: { status: "complete", added: 1, removed: 3 },
       },
     ]);
@@ -199,7 +197,7 @@ describe("original local tools", () => {
     );
   });
 
-  it("rejects ambiguous/empty edits and records true previews on explicit replace_all", async () => {
+  it("rejects ambiguous/empty edits and records the patch on explicit replace_all", async () => {
     await writeFile(join(root, "a"), "same same");
     await execute("read_file", { path: "a" });
     expect(
@@ -222,10 +220,17 @@ describe("original local tools", () => {
       new_text: "new",
       replace_all: true,
     });
-    expect(edited.changes?.[0]).toMatchObject({
-      before: "same same",
-      after: "new new",
+    expect(edited.changes?.[0]).toEqual({
+      path: "a",
       kind: "modified",
+      patch: {
+        version: 1, status: "complete", added: 1, removed: 1,
+        omittedLines: 0, omittedHunks: 0,
+        hunks: [{
+          oldStart: 1, oldLines: 1, newStart: 1, newLines: 1,
+          lines: [{ op: "delete", text: "same same" }, { op: "insert", text: "new new" }],
+        }],
+      },
     });
     expect(output(edited).replacements).toBe(2);
     expect(await readFile(join(root, "a"), "utf8")).toBe("new new");
@@ -348,14 +353,15 @@ describe("original local tools", () => {
     ]);
   });
 
-  it("explicitly truncates huge lines and bounds real change previews", async () => {
+  it("explicitly truncates huge lines and bounds real change patches", async () => {
     const text = "x".repeat(20000);
     const written = await execute("write_file", {
       path: "long",
       content: text,
     });
-    expect(written.changes?.[0]?.truncated).toBe(true);
-    expect(written.changes?.[0]?.after?.length).toBe(8192);
+    // The patch is computed from full originals and bounds retained rows.
+    expect(written.changes?.[0]?.patch?.status).toBe("truncated");
+    expect(written.changes?.[0]?.patch?.added).toBe(1);
     expect(output(await execute("read_file", { path: "long" }))).toMatchObject({
       truncated: true,
       partial_line: true,

@@ -59,7 +59,9 @@ it("restores full original beyond previews after reload and refuses changed file
     new_text: "REPLACED",
   });
   expect(outcome.isError).toBe(false);
-  expect(outcome.changes?.[0]?.truncated).toBe(true);
+  // A 9000-char line exceeds the retained row budget, so the patch is honestly
+  // truncated even though the edit itself succeeded.
+  expect(outcome.changes?.[0]?.patch?.status).toBe("truncated");
   const reloaded = await createCheckpointStore(
     t.workspace,
     join(t.root, "private"),

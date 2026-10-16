@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { createDiffPatch, unavailablePatch } from "./diff";
 
 export type JsonValue =
   | null
@@ -293,18 +294,51 @@ export const diffPatchSchema = z.object({
 }).strict().readonly();
 export type DiffPatch = z.infer<typeof diffPatchSchema>;
 
-export const fileChangeSchema = z
+/**
+ * A file change carries only the exact hunk diff (`patch`). Older sessions
+ * persisted bounded `before`/`after` display previews plus a `truncated` flag;
+ * those are migrated into `patch` on read and never written again.
+ */
+const migrateFileChange = (value: unknown): unknown => {
+  if (typeof value !== "object" || value === null) return value;
+  const record = value as Record<string, unknown>;
+  if (
+    !("before" in record) &&
+    !("after" in record) &&
+    !("truncated" in record)
+  )
+    return value;
+  const { before, after, truncated, ...rest } = record;
+  if (rest.patch !== undefined) return rest;
+  // Only explicitly complete previews can yield an exact diff. A missing side
+  // is empty only for a creation/deletion, never for an unknown modification.
+  const complete =
+    truncated === false &&
+    (typeof before === "string" || (rest.kind === "created" && before === null)) &&
+    (typeof after === "string" || (rest.kind === "deleted" && after === null));
+  const patch = complete
+    ? createDiffPatch(
+        typeof before === "string" ? before : "",
+        typeof after === "string" ? after : "",
+      )
+    : unavailablePatch();
+  return { ...rest, patch };
+};
+
+const fileChangeObjectSchema = z
   .object({
     path: z.string().min(1).max(4096),
     kind: z.enum(["created", "modified", "deleted"]),
-    before: z.string().max(65536).nullable(),
-    after: z.string().max(65536).nullable(),
-    truncated: z.boolean(),
-    // Independent of before/after preview truncation; generated from full originals.
+    // Generated from the full originals; absent only when it could not be computed.
     patch: diffPatchSchema.optional(),
   })
   .strict()
   .readonly();
+
+export const fileChangeSchema = z.preprocess(
+  migrateFileChange,
+  fileChangeObjectSchema,
+);
 export type FileChange = z.infer<typeof fileChangeSchema>;
 export const toolResultSchema = z
   .object({

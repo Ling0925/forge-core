@@ -10,16 +10,16 @@ it("applies the same projection after saved semantic memory without touching the
   const original = JSON.stringify(snapshot);
   const projected = projectSummary(snapshot);
   expect(projected[0]?.content).toContain("memory");
-  expect(JSON.stringify(projected)).toContain("previews omitted");
+  expect(JSON.stringify(projected)).toContain("omitted from model context");
   expect(JSON.stringify(snapshot)).toBe(original);
   expect(projectToolContext(projected)).toEqual(projected);
 });
 
 function exchange(id: string, name = "edit_file", error = false): Message[] {
   return [{role:"assistant",content:null,tool_calls:[{id,type:"function",function:{name,arguments:'{"path":"file.ts","old_text":"a","new_text":"b"}'}}]},
-    {role:"tool",tool_call_id:id,content:JSON.stringify({content:JSON.stringify({edited:true}),isError:error,changes:[{path:"file.ts",kind:"modified",before:"a".repeat(8192),after:"b".repeat(8192),truncated:true}]})}];
+    {role:"tool",tool_call_id:id,content:JSON.stringify({content:JSON.stringify({edited:true}),isError:error,changes:[{path:"file.ts",kind:"modified",patch:{version:1,status:"complete",added:1,removed:1,omittedLines:0,omittedHunks:0,hunks:[{oldStart:1,oldLines:1,newStart:1,newLines:1,lines:[{op:"delete",text:"a".repeat(8000)},{op:"insert",text:"b".repeat(8000)}]}]}}]})}];
 }
-it("omits repeated edit previews only in requests, retaining calls and persisted evidence", () => {
+it("omits repeated edit patches only in requests, retaining calls and persisted evidence", () => {
   const messages: Message[] = [{role:"system",content:"rules"},{role:"user",content:"fix files"},...Array.from({length:60},(_,i)=>exchange(String(i))).flat()];
   const original = JSON.stringify(messages);
   const projected = projectToolContext(messages);
@@ -27,8 +27,9 @@ it("omits repeated edit previews only in requests, retaining calls and persisted
   expect(projected).toHaveLength(messages.length);
   expect(projected[0]).toBe(messages[0]); expect(projected[2]).toBe(messages[2]);
   expect(()=>assertBoundary(projected,projected.length)).not.toThrow();
-  expect(JSON.stringify(projected)).not.toContain("a".repeat(8192));
-  expect(JSON.stringify(projected)).toContain("previews omitted");
+  expect(JSON.stringify(projected)).not.toContain("a".repeat(8000));
+  expect(JSON.stringify(projected)).not.toContain('"patch"');
+  expect(JSON.stringify(projected)).toContain("omitted from model context");
   const before = measureContext(messages,872000).usedTokens;
   const after = measureContext(projected,872000).usedTokens;
   expect(after).toBeLessThan(before * 0.1);

@@ -28,8 +28,12 @@ export function projectToolContext(messages: readonly Message[]): readonly Messa
       content: JSON.stringify({
         content: result.content,
         isError: result.isError,
-        changes: result.changes.map(change => ({ path: change.path, kind: change.kind, truncated: change.truncated })),
-        contextNote: "Before/after file previews omitted from model context (not backups). Full tool event and configured checkpoints are retained; read the file if current content is needed.",
+        changes: result.changes.map((change) => ({
+          path: change.path,
+          kind: change.kind,
+        })),
+        contextNote:
+          "File diff details omitted from model context (not backups). Full tool event and configured checkpoints are retained; read the file if current content is needed.",
       }),
     };
   });

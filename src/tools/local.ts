@@ -25,7 +25,6 @@ const FILE_LIMIT = 2 * 1024 * 1024;
 const CACHE_LIMIT = 16 * 1024 * 1024;
 const OUTPUT_LIMIT = 64 * 1024;
 const RESULT_LIMIT = 128 * 1024;
-const PREVIEW_LIMIT = 8192;
 const ENTRY_LIMIT = 1000;
 const DEPTH_LIMIT = 8;
 const pathSchema = z.string().min(1).max(4096);
@@ -193,7 +192,7 @@ const definitions: readonly ToolDefinition[] = Object.freeze([
   ),
   definition(
     "write_file",
-    `Default tool for creating files or replacing their complete content; use edit_file for targeted changes, not run_command scripts or redirection. Overwriting requires a prior read_file of the current version in this session; new files need no read. Unchanged content is a no-op. Atomic writes use restorable checkpoints when a checkpoint store is configured. Returns bounded before/after previews; restore uses checkpoints, not previews. Fails if the parent directory does not exist (create it with make_directory). ${writePolicies}`,
+    `Default tool for creating files or replacing their complete content; use edit_file for targeted changes, not run_command scripts or redirection. Overwriting requires a prior read_file of the current version in this session; new files need no read. Unchanged content is a no-op. Atomic writes use restorable checkpoints when a checkpoint store is configured. Records a bounded diff patch for display; restore uses checkpoints, not the patch. Fails if the parent directory does not exist (create it with make_directory). ${writePolicies}`,
     {
       path: stringParameter,
       content: { type: "string", maxLength: FILE_LIMIT },
@@ -202,7 +201,7 @@ const definitions: readonly ToolDefinition[] = Object.freeze([
   ),
   definition(
     "edit_file",
-    `Default tool for targeted file edits instead of shell, node/python or sed scripts. Atomically replace literal old_text (nonempty); exactly one occurrence is required unless replace_all is true. A prior read_file of the current version in this session is required; read again after each write or external change. Identical replacement is a no-op. Edits use restorable checkpoints when a checkpoint store is configured; bounded before/after previews are separate from checkpoint backups. ${writePolicies}`,
+    `Default tool for targeted file edits instead of shell, node/python or sed scripts. Atomically replace literal old_text (nonempty); exactly one occurrence is required unless replace_all is true. A prior read_file of the current version in this session is required; read again after each write or external change. Identical replacement is a no-op. Edits use restorable checkpoints when a checkpoint store is configured; the bounded display diff patch is separate from checkpoint backups. ${writePolicies}`,
     {
       path: stringParameter,
       old_text: { type: "string", minLength: 1, maxLength: FILE_LIMIT },
@@ -608,12 +607,7 @@ export async function createLocalToolRegistry(
         {
           path: name,
           kind: before === null ? "created" : "modified",
-          before: before === null ? null : before.slice(0, PREVIEW_LIMIT),
-          after: text.slice(0, PREVIEW_LIMIT),
           patch,
-          truncated:
-            (before?.length ?? 0) > PREVIEW_LIMIT ||
-            text.length > PREVIEW_LIMIT,
         },
       ];
     } finally {

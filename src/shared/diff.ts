@@ -7,8 +7,22 @@ const MAX_INPUT_LINES = 100_000;
 const MAX_PATCH_LINES = 400;
 const MAX_HUNKS = 64;
 const MAX_LINE_CHARS = 8192;
-// Reserve room for legacy before/after previews within the tool result envelope.
+// Bound the retained patch bytes so a tool result envelope stays small.
 export const MAX_PATCH_BYTES = 24 * 1024;
+
+// Isomorphic UTF-8 byte length: this module is also bundled into the renderer.
+const utf8 = new TextEncoder();
+const byteLength = (text: string): number => utf8.encode(text).length;
+
+/** Unknown content has no reason; computation limits are explicitly budget failures. */
+export const unavailablePatch = (reason?: DiffPatch["reason"]): DiffPatch => ({
+  version: 1,
+  status: "unavailable",
+  ...(reason ? { reason } : {}),
+  omittedLines: 0,
+  omittedHunks: 0,
+  hunks: [],
+});
 
 /** Preserve line endings in comparisons. Display normalization must happen later. */
 const linesOf = (text: string): string[] | null => {
@@ -23,9 +37,7 @@ const linesOf = (text: string): string[] | null => {
   }
   return lines;
 };
-const unavailable = (): DiffPatch => ({
-  version: 1, status: "unavailable", reason: "budget", omittedLines: 0, omittedHunks: 0, hunks: [],
-});
+const unavailable = (): DiffPatch => unavailablePatch("budget");
 
 /** Generate once from full tool-operation content; never read disk during rendering.
  * Counts describe the complete edit script. Storage bounds remove a suffix of
@@ -71,7 +83,7 @@ export function createDiffPatch(before: string, after: string): DiffPatch {
     bytes += 128; // Bounded integer fields and array punctuation.
     while (cursor < range.to) {
       const step = script[cursor]!;
-      const cost = Buffer.byteLength(JSON.stringify(step), "utf8") + 1;
+      const cost = byteLength(JSON.stringify(step)) + 1;
       if (retained >= MAX_PATCH_LINES || step.text.length > MAX_LINE_CHARS || bytes + cost > MAX_PATCH_BYTES) {
         exhausted = true;
         break;
