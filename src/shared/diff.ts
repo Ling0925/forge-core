@@ -1,7 +1,7 @@
 import { editScript } from "./edit-script";
 import type { DiffPatch } from "./schemas";
 
-const CONTEXT = 3;
+const CONTEXT = 5;
 const MAX_INPUT_CHARS = 2 * 1024 * 1024;
 const MAX_INPUT_LINES = 100_000;
 const MAX_PATCH_LINES = 400;

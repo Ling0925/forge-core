@@ -7,7 +7,7 @@ it("finds changes beyond a file preview with correct source line numbers", () =>
   const updated = [...lines]; updated[4500] = "changed late\n";
   const patch = createDiffPatch(lines.join(""), updated.join(""));
   expect(patch).toMatchObject({ status: "complete", added: 1, removed: 1, omittedLines: 0 });
-  expect(patch.hunks[0]).toMatchObject({ oldStart: 4498, newStart: 4498, oldLines: 7, newLines: 7 });
+  expect(patch.hunks[0]).toMatchObject({ oldStart: 4496, newStart: 4496, oldLines: 11, newLines: 11 });
   expect(patch.hunks[0]?.lines).toContainEqual({ op: "insert", text: "changed late\n" });
   expect(diffPatchSchema.parse(patch)).toEqual(patch);
 });
