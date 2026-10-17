@@ -70,6 +70,48 @@ Some requests failed, were interrupted or were superseded; not every listed mode
 
 ## Evidence and honest limits
 
+### Local design corrections (2026-10-17)
+
+The repository's current `AGENTS.md` explicitly permits the main agent to take
+over when the required child model cannot be called. The native child tool
+rejected `cbcn/deepseek-v4.1-flash`; three proposal-only API requests then failed
+at transport without returning product code. No substitute child model or
+automatic replay was used. The main agent authored the session-source binding,
+incremental storage, stream persistence, worker/bridge changes and regression
+checks under that exception. Earlier statements that root authored no product
+source describe the earlier workstreams, not these local corrections.
+
+The user subsequently requested UI authorship through `forge` using Gemini 3.8
+Flash. The catalogue-confirmed route was `ag/gemini-3.8-flash`, with an isolated
+`FORGE_HOME`. The first run failed at the provider protocol without any edits.
+After explicit same-model retry authorization, the second run completed with
+exit code 0. Its manifest and sanitized transcript are retained locally under
+`.build/gemini-design-fixes-ui/authorized-retry/`.
+
+The interface draft existed before that request. Gemini then authored the live
+input controls' placement in `Composer.tsx`, the new `composer-live-input.css`,
+and the final composer source argument. The main agent retained ownership of
+the earlier queue/state/bridge draft and regression tests; the record does not
+attribute those earlier changes to Gemini.
+
+The main agent independently observed 14 passing focused tests across six
+files, including real Chromium interaction with the production composer and
+state provider, a controlled bridge fixture, and worker/harness steering tests.
+The checks cover durable steering acknowledgement, retained drafts, queue
+pause/resume and reload, session isolation, explicit source selection, keyboard
+behavior and stable stop-button coordinates. Fresh 390/1440 light/dark component
+captures are under `.build/design-fixes-ui/`; these are component evidence, not
+installed Electron or physical-device acceptance. Earlier focused core/store/
+CLI verification passed 109 tests across ten files. The CLI was compiled with
+`node scripts/build-core.mjs` and its real launcher passed isolated-home startup
+checks; no desktop package or installation was produced.
+
+Full typechecking still reports the same 27 diagnostics as the unchanged base,
+with no new diagnostic locations/codes. Two existing core tests also failed on
+both the base and worktree (`module-wiring` write-before-read and `agent-runtime`
+guidance timing); they were not changed or reported as passing. Their comparison
+logs remain under `.build/design-fixes-checks/`.
+
 - Local raw evidence is retained by the coordinator under `.build/runtime-runs/*.jsonl` (real tool transcripts) and `.build/api-authored` (proposals). Neither those logs nor private prompts or credentials belong in a distributed artifact.
 - `scripts/provenance.mjs --output release/<path>.json` creates a public content-hash inventory, with timestamp and safe evidence-location references only. A SHA256 proves file bytes matched a manifest, **not** who wrote each line or whether a request succeeded. Review the local audit evidence separately if stronger attribution is required.
 - No earlier package candidate is the final current deliverable, and no release or installation is claimed here. Safe public evidence for the live Responses-gateway QA (no secret values, no raw endpoint or key) is retained by the coordinator under `.build/`. These are development evidence, not shipped user guidance and not proof of packaging or installation.

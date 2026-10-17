@@ -315,6 +315,7 @@ export const rpcRequestSchema = z
       })
       .strict(),
     z.object({ ...requestBase, method: z.literal("setRunPermission"), runId: runIdSchema, permission: permissionSchema }).strict(),
+    z.object({ ...requestBase, method: z.literal("steerRun"), runId: runIdSchema, prompt: runInputSchema.unwrap().shape.prompt }).strict(),
     z
       .object({
         ...requestBase,
@@ -393,6 +394,7 @@ export const rpcResponseSchema = z.union([
   success("startRun", runHandleSchema),
   success("cancelRun", z.null()),
   success("setRunPermission", permissionSchema),
+  success("steerRun", z.null()),
   success("answerApproval", z.null()),
   z
     .object({
@@ -426,6 +428,7 @@ export const rpcResponseSchema = z.union([
         "startRun",
         "cancelRun",
         "setRunPermission",
+        "steerRun",
         "answerApproval",
       ]),
       error: errorInfoSchema,
@@ -495,6 +498,7 @@ export interface ForgeBridge {
   startRun(input: RunInput): Promise<RunHandle>;
   cancelRun(runId: RunId): Promise<void>;
   setRunPermission(runId: RunId, permission: Permission): Promise<Permission>;
+  steerRun(runId: RunId, prompt: string): Promise<void>;
   answerApproval(
     runId: RunId,
     approvalId: string,

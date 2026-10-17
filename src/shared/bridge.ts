@@ -68,6 +68,7 @@ export function createTransportBridge(transport: BridgeTransport): ForgeBridge {
     },
     cancelRun: async (runId) => { await request("cancelRun", { runId }); },
     setRunPermission: (runId, permission) => request("setRunPermission", { runId, permission }),
+    steerRun: async (runId, prompt) => { await request("steerRun", { runId, prompt }); },
     answerApproval: async (runId, approvalId, approved) => { await request("answerApproval", { runId, approvalId, approved }); },
     onEvent(listener) { listeners.add(listener); setTimeout(deliver, 0); return () => { listeners.delete(listener); }; },
   } satisfies ForgeBridge);
