@@ -62,13 +62,13 @@ export async function createWebHost(options: {
   const authority = `${options.host}:${options.port}`;
   const origin = `http://${authority}`;
   let authenticatedUntil = 0;
-  let clientId = "";
-  let lastHeartbeat = 0;
-  let eventSocket: WebSocket | undefined;
   let sequence = 0;
   let bytes = 0;
-  let overflow = false;
   const events: { cursor: number; data: RunEvent; bytes: number }[] = [];
+  const clients = new Map<
+    string,
+    { socket: WebSocket | undefined; heartbeat: number; lastSeen: number }
+  >();
   const pending = new Map<string, (response: RpcResponse) => void>();
   const requestIds = new Set<string>();
   const controller = createWorkerController(options.service, (message) => {
@@ -78,12 +78,14 @@ export async function createWebHost(options: {
       const length = Buffer.byteLength(JSON.stringify(message.data));
       events.push({ cursor: ++sequence, data: message.data, bytes: length });
       bytes += length;
-      if (events.length > 5000 || bytes > MAX_EVENT_BYTES) {
-        overflow = true;
-        events.length = 0;
-        bytes = 0;
-        eventSocket?.close(1013, "Event buffer exceeded");
-      } else sendEvents([message.data]);
+      while (
+        events.length > 0 &&
+        (events.length > 5000 || bytes > MAX_EVENT_BYTES)
+      ) {
+        const dropped = events.shift();
+        if (dropped) bytes -= dropped.bytes;
+      }
+      sendEvents([message.data]);
     }
   });
   async function dispatch(request: RpcRequest): Promise<RpcResponse> {
@@ -120,11 +122,9 @@ export async function createWebHost(options: {
     maxPayload: 1024,
     perMessageDeflate: false,
   });
-  function sendEvents(batch: RunEvent[]): void {
-    const socket = eventSocket;
-    if (!socket || socket.readyState !== WebSocket.OPEN) return;
+  function sendTo(socket: WebSocket, batch: RunEvent[]): void {
+    if (socket.readyState !== WebSocket.OPEN) return;
     if (socket.bufferedAmount > MAX_EVENT_BYTES) {
-      overflow = true;
       socket.terminate();
       return;
     }
@@ -134,6 +134,10 @@ export async function createWebHost(options: {
         if (error) socket.terminate();
       },
     );
+  }
+  function sendEvents(batch: RunEvent[]): void {
+    for (const client of clients.values())
+      if (client.socket) sendTo(client.socket, batch);
   }
   // Vite's upgrade handler must never expose the dev websocket without authentication.
   server.on("upgrade", (request, socket, head) => {
@@ -147,63 +151,68 @@ export async function createWebHost(options: {
     }
     const url = new URL(request.url ?? "/", origin);
     if (url.pathname !== "/api/events") return;
+    const requestedClient = url.searchParams.get("clientId");
+    const client = requestedClient ? clients.get(requestedClient) : undefined;
     const rawCursor = url.searchParams.get("cursor");
     const cursor = rawCursor === null ? Number.NaN : Number(rawCursor);
     const oldest = events[0]?.cursor ?? sequence + 1;
     if (
-      !clientId ||
-      url.searchParams.get("clientId") !== clientId ||
+      !client ||
       !Number.isSafeInteger(cursor) ||
       cursor < oldest - 1 ||
       cursor > sequence ||
-      overflow ||
       request.headers["sec-websocket-protocol"]
     ) {
       socket.destroy();
       return;
     }
     sockets.handleUpgrade(request, socket, head, (ws) => {
-      eventSocket?.close(4001, "Connection replaced");
-      eventSocket = ws;
-      lastHeartbeat = Date.now();
-      const owner = clientId;
-      const ownsConnection = () => eventSocket === ws && owner === clientId;
+      client.socket?.close(4000, "Connection replaced");
+      client.socket = ws;
+      client.heartbeat = Date.now();
+      client.lastSeen = Date.now();
+      const owner = requestedClient;
+      const ownsConnection = () => {
+        const current = owner ? clients.get(owner) : undefined;
+        return current?.socket === ws;
+      };
       ws.on("error", () => ws.terminate());
       ws.on("close", () => {
-        if (eventSocket === ws) eventSocket = undefined;
+        if (client.socket === ws) client.socket = undefined;
       });
       ws.on("pong", () => {
-        if (ownsConnection()) lastHeartbeat = Date.now();
+        if (!ownsConnection()) return;
+        client.heartbeat = Date.now();
+        client.lastSeen = Date.now();
       });
       ws.on("message", (data, binary) => {
-        if (!ownsConnection()) return ws.close(4001, "Control changed");
+        if (!ownsConnection()) return;
         try {
           const ack = ackSchema.parse(JSON.parse(data.toString()));
           if (binary || ack.cursor > sequence)
             return ws.close(1008, "Invalid cursor");
-          while (events[0] && events[0].cursor <= ack.cursor) {
-            const entry = events.shift();
-            if (entry) bytes -= entry.bytes;
-          }
+          client.lastSeen = Date.now();
         } catch {
           ws.close(1008, "Invalid acknowledgement");
         }
       });
-      sendEvents(
-        events
-          .filter((entry) => entry.cursor > cursor)
-          .map((entry) => entry.data),
-      );
+      const replay = events
+        .filter((entry) => entry.cursor > cursor)
+        .map((entry) => entry.data);
+      sendTo(ws, replay);
     });
   });
   const heartbeat = setInterval(() => {
-    if (!eventSocket) return;
-    if (
-      Date.now() >= authenticatedUntil ||
-      Date.now() - lastHeartbeat > LEASE_MS
-    )
-      eventSocket.terminate();
-    else if (eventSocket.readyState === WebSocket.OPEN) eventSocket.ping();
+    const now = Date.now();
+    for (const [id, client] of clients) {
+      if (now >= authenticatedUntil) client.socket?.terminate();
+      else if (client.socket) {
+        if (now - client.heartbeat > LEASE_MS) client.socket.terminate();
+        else if (client.socket.readyState === WebSocket.OPEN)
+          client.socket.ping();
+      }
+      if (now - client.lastSeen > 12 * 60 * 60 * 1000) clients.delete(id);
+    }
   }, 5000);
   heartbeat.unref();
 
@@ -240,19 +249,27 @@ export async function createWebHost(options: {
       try {
         const input = await body(request);
         if (path === "/api/connect") {
-          clientId = "";
-          eventSocket?.close(4001, "Another page took control");
-          eventSocket = undefined;
-          clientId = randomUUID();
-          lastHeartbeat = 0;
-          events.length = 0;
-          bytes = 0;
-          overflow = false;
-          return json(response, 200, { workspace, cursor: sequence, clientId, recovery: controller.recoveryEvents() });
+          const clientId = randomUUID();
+          clients.set(clientId, {
+            socket: undefined,
+            heartbeat: 0,
+            lastSeen: Date.now(),
+          });
+          return json(response, 200, {
+            workspace,
+            cursor: sequence,
+            clientId,
+            recovery: controller.recoveryEvents(),
+          });
         }
-        if (!clientId || request.headers["x-forge-client"] !== clientId)
-          return json(response, 409, {
-            error: "Another page has taken control. Reload to reconnect.",
+        const requestedClient = request.headers["x-forge-client"];
+        const client =
+          typeof requestedClient === "string"
+            ? clients.get(requestedClient)
+            : undefined;
+        if (!requestedClient || !client)
+          return json(response, 410, {
+            error: "Page connection expired. Reload to reconnect.",
           });
         if (path === "/api/events") {
           return json(response, 426, {
@@ -262,7 +279,10 @@ export async function createWebHost(options: {
         if (path === "/api/connection") {
           const { cursor } = ackSchema.parse(input);
           const oldest = events[0]?.cursor ?? sequence + 1;
-          return json(response, 200, { resumable: !overflow && cursor >= oldest - 1 && cursor <= sequence });
+          client.lastSeen = Date.now();
+          return json(response, 200, {
+            resumable: cursor >= oldest - 1 && cursor <= sequence,
+          });
         }
         if (path !== "/api/rpc")
           return json(response, 404, { error: "Not found" });
@@ -301,15 +321,18 @@ export async function createWebHost(options: {
             });
         }
         // Workspace lookups above yield: recheck ownership before any effects.
-        if (!clientId || request.headers["x-forge-client"] !== clientId)
-          return json(response, 409, {
-            error: "Control changed; request not executed",
+        if (
+          typeof requestedClient !== "string" ||
+          clients.get(requestedClient) !== client
+        )
+          return json(response, 410, {
+            error: "Page connection expired; request not executed",
           });
+        client.lastSeen = Date.now();
         if (
           rpc.method === "startRun" &&
-          (overflow ||
-            eventSocket?.readyState !== WebSocket.OPEN ||
-            Date.now() - lastHeartbeat > LEASE_MS)
+          (client.socket?.readyState !== WebSocket.OPEN ||
+            Date.now() - client.heartbeat > LEASE_MS)
         )
           return json(response, 409, {
             error: "Event connection expired. Reload before starting a run.",

@@ -342,7 +342,7 @@ describe("Web development host", () => {
     expect(completed.recovery).toEqual([]);
   });
 
-  it("gives a new page control and validates event cursors", async () => {
+  it("keeps authenticated pages independent and validates event cursors", async () => {
     const { url, login } = await setup();
     const oldAuth = await login();
     const oldStream = await connectEvents(url, oldAuth);
@@ -353,13 +353,56 @@ describe("Web development host", () => {
         headers,
         body: JSON.stringify({ cursor }),
       });
-    expect((await poll(oldAuth, 0)).status).toBe(409);
+    expect((await poll(oldAuth, 0)).status).toBe(426);
     expect((await poll(auth, 0)).status).toBe(426);
-    await expect.poll(() => oldStream.ws.readyState).toBe(WebSocket.CLOSED);
-    await expect(connectEvents(url, oldAuth)).rejects.toThrow();
     await expect(connectEvents(url, auth, -1)).rejects.toThrow();
+    await expect(connectEvents(url, auth, 100)).rejects.toThrow();
+    await expect(connectEvents(url, { ...auth, "X-Forge-Client": randomUUID() })).rejects.toThrow();
     const stream = await connectEvents(url, auth);
     expect(stream.cursors).toEqual([0]);
+    expect(oldStream.ws.readyState).toBe(WebSocket.OPEN);
+    const oldPage = await fetch(`${url}/api/rpc`, {
+      method: "POST", headers: oldAuth,
+      body: JSON.stringify({ id: randomUUID(), method: "getSettings" }),
+    });
+    expect(oldPage.status).toBe(200);
+    expect((await oldPage.json()).ok).toBe(true);
+    const replacement = await connectEvents(url, oldAuth);
+    expect(replacement.cursors).toEqual([0]);
+    expect(stream.ws.readyState).toBe(WebSocket.OPEN);
+    await expect.poll(() => oldStream.ws.readyState).toBe(WebSocket.CLOSED);
+  });
+
+  it("replays a background page's missed events after another page acknowledges them", async () => {
+    const { url, directory, login } = await setup();
+    const auth = await login();
+    const background = await connectEvents(url, auth);
+    const otherAuth = await login();
+    const other = await connectEvents(url, otherAuth);
+    const rpc = async (headers: Record<string, string>, input: object) => {
+      const response = await fetch(`${url}/api/rpc`, {
+        method: "POST", headers, body: JSON.stringify(input),
+      });
+      expect(response.status).toBe(200);
+      const result = await response.json();
+      expect(result.ok).toBe(true);
+      return result;
+    };
+    const session = await rpc(auth, { id: randomUUID(), method: "createSession", input: { workspace: directory, model: "test-model" } });
+    const run = await rpc(auth, { id: randomUUID(), method: "startRun", input: { sessionId: session.result.id, prompt: "wait for cancellation", permission: "readonly" } });
+    for (const stream of [background, other]) {
+      await expect.poll(() => stream.received.some(item => item.event.type === "text_delta")).toBe(true);
+    }
+    const cursor = background.cursors.at(-1);
+    if (cursor === undefined) throw new Error("Missing background cursor");
+    background.ws.terminate();
+    await expect.poll(() => background.ws.readyState).toBe(WebSocket.CLOSED);
+    await rpc(otherAuth, { id: randomUUID(), method: "cancelRun", runId: run.result.runId });
+    await expect.poll(() => other.received.some(item => item.event.type === "run_finished")).toBe(true);
+    const resumed = await connectEvents(url, auth, cursor);
+    await expect.poll(() => resumed.received.some(item => item.event.type === "run_finished")).toBe(true);
+    expect(resumed.received.some(item => item.event.type === "text_delta")).toBe(false);
+    expect(other.ws.readyState).toBe(WebSocket.OPEN);
   });
 
   it("rejects unauthenticated and cross-origin WebSocket upgrades", async () => {
@@ -494,7 +537,7 @@ describe("Web development host", () => {
     expect(recovery.some((item) => item.event.type === "text_delta" && item.event.text === "fixture response")).toBe(true);
     const nextAuth = { ...auth, "X-Forge-Client": handshake.clientId };
     const resumed = await connectEvents(url, nextAuth, handshake.cursor);
-    expect((await rpc({ id: randomUUID(), method: "cancelRun", runId: started.result.runId })).status).toBe(409);
+    expect((await rpc({ id: randomUUID(), method: "getSettings" })).status).toBe(200);
     const cancelled = await fetch(`${url}/api/rpc`, {
       method: "POST", headers: nextAuth,
       body: JSON.stringify({ id: randomUUID(), method: "cancelRun", runId: started.result.runId }),
