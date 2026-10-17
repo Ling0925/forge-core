@@ -1,5 +1,6 @@
 import { z } from "zod";
-import { imageAttachmentsSchema, type ImageAttachment } from "./images";
+import type { HtmlPreviewResponse } from "./html-preview";
+import { type ImageAttachment, imageAttachmentsSchema } from "./images";
 import {
   agentEventSchema,
   configureInputSchema,
@@ -506,6 +507,12 @@ export interface ForgeBridge {
     approved: boolean,
   ): Promise<void>;
   onEvent(listener: (event: RunEvent) => void): () => void;
+  /**
+   * Web-only sandboxed HTML preview. Absent on hosts without an authenticated
+   * preview endpoint (the desktop bridge), so callers must probe for it.
+   */
+  previewHtml?(html: string): Promise<HtmlPreviewResponse>;
+  previewFile?(path: string): Promise<HtmlPreviewResponse>;
 }
 
 declare global {

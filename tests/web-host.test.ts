@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { request } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -568,5 +568,57 @@ describe("Web development host", () => {
     });
     expect((await cancelled.json()).ok).toBe(true);
     await expect.poll(() => resumed.received.find((item) => item.event.type === "run_finished")?.event).toMatchObject({ status: "cancelled" });
+  });
+
+  it("serves sandboxed HTML previews for inline code and workspace files only", async () => {
+    const { url, directory, login } = await setup();
+    const auth = await login();
+    await connectEvents(url, auth);
+    const post = async (path: string, body: object, headers = auth) =>
+      fetch(`${url}${path}`, {
+        method: "POST",
+        headers,
+        body: JSON.stringify(body),
+      });
+    const markup = "<h1 id=t>preview</h1><script>document.title='ran'</script>";
+    const inline = await post("/api/preview", { html: markup });
+    expect(inline.status).toBe(200);
+    const inlineUrl = (await inline.json()).url as string;
+    expect(inlineUrl).toMatch(/^\/preview\/document\?id=[0-9a-f]{48}$/);
+
+    // The preview document is its own response: a strict CSP plus a frame
+    // allowance that the workbench itself never grants.
+    const document = await fetch(`${url}${inlineUrl}`, { headers: auth });
+    expect(document.status).toBe(200);
+    expect(document.headers.get("content-type")).toBe("text/html; charset=utf-8");
+    expect(document.headers.get("content-security-policy")).toContain(
+      "default-src 'none'",
+    );
+    expect(document.headers.get("content-security-policy")).toContain(
+      "sandbox allow-scripts",
+    );
+    expect(document.headers.get("content-security-policy")).not.toContain(
+      "allow-same-origin",
+    );
+    expect(document.headers.get("x-frame-options")).toBe("SAMEORIGIN");
+    expect(await document.text()).toBe(markup);
+
+    // Previews require the session cookie, like every other authenticated page.
+    const { Cookie: _cookie, ...unauthenticated } = auth;
+    expect((await fetch(`${url}${inlineUrl}`, { headers: unauthenticated })).status).toBe(401);
+    expect((await fetch(`${url}/preview/document?id=${"0".repeat(48)}`, { headers: auth })).status).toBe(404);
+    expect((await post("/api/preview", { html: "x" }, { ...auth, Origin: "http://evil.invalid" })).status).toBe(403);
+
+    // A workspace HTML file is read through the path guard, never from outside it.
+    await writeFile(join(directory, "page.html"), "<p id=file>from disk</p>");
+    await writeFile(join(directory, "notes.txt"), "not html");
+    const file = await post("/api/preview/file", { path: "page.html" });
+    expect(file.status).toBe(200);
+    const fileUrl = (await file.json()).url as string;
+    expect(await (await fetch(`${url}${fileUrl}`, { headers: auth })).text()).toBe(
+      "<p id=file>from disk</p>",
+    );
+    for (const path of ["notes.txt", "../outside.html", ".env.html", ".git/x.html"])
+      expect((await post("/api/preview/file", { path })).status).toBeGreaterThanOrEqual(403);
   });
 });

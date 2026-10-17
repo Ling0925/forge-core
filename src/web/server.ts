@@ -10,21 +10,41 @@ import { WebSocket, WebSocketServer } from "ws";
 import { z } from "zod";
 import { createWorkerController } from "../desktop/controller";
 import type { HarnessService } from "../shared/contracts";
-import type { SessionSnapshot } from "../shared/schemas";
-import { SessionDeltaCache } from "./session-delta";
+import {
+  HTML_PREVIEW_CSP,
+  htmlPreviewRequestSchema,
+  htmlPreviewResponseSchema,
+} from "../shared/html-preview";
 import {
   type RpcRequest,
   type RpcResponse,
   type RunEvent,
   rpcRequestSchema,
 } from "../shared/ipc";
+import type { SessionSnapshot } from "../shared/schemas";
+import {
+  HtmlPreviewStore,
+  PreviewFileError,
+  readPreviewFile,
+} from "./html-preview";
+import { SessionDeltaCache } from "./session-delta";
 
 const COOKIE = "forge_web_dev";
 const MAX_BODY = 1024 * 1024;
 const MAX_RPC_BODY = 16 * 1024 * 1024;
+// JSON escaping can inflate an inline HTML preview past the default 1 MiB.
+const MAX_PREVIEW_BODY = 4 * 1024 * 1024;
 const LEASE_MS = 20_000;
 const MAX_EVENT_BYTES = 8 * 1024 * 1024;
 const ackSchema = z.object({ cursor: z.number().int().nonnegative() }).strict();
+const previewPathSchema = z
+  .object({ path: z.string().min(1).max(4096) })
+  .strict()
+  .readonly();
+const previewDocumentSchema = z
+  .object({ id: z.string().regex(/^[0-9a-f]{48}$/) })
+  .strict()
+  .readonly();
 
 async function body(request: IncomingMessage, limit = MAX_BODY): Promise<unknown> {
   let size = 0;
@@ -59,6 +79,7 @@ export async function createWebHost(options: {
   const workspace = await realpath(resolve(options.workspace));
   const token = options.token ?? randomBytes(24).toString("hex");
   const sessionDeltas = new SessionDeltaCache();
+  const previews = new HtmlPreviewStore();
   const cookie = randomBytes(32).toString("hex");
   const authority = `${options.host}:${options.port}`;
   const origin = `http://${authority}`;
@@ -248,7 +269,14 @@ export async function createWebHost(options: {
       } else if (!authenticated(request))
         return json(response, 401, { error: "Authentication required" });
       try {
-        const input = await body(request, path === "/api/rpc" ? MAX_RPC_BODY : MAX_BODY);
+        const input = await body(
+          request,
+          path === "/api/rpc"
+            ? MAX_RPC_BODY
+            : path === "/api/preview"
+              ? MAX_PREVIEW_BODY
+              : MAX_BODY,
+        );
         if (path === "/api/connect") {
           const clientId = randomUUID();
           clients.set(clientId, {
@@ -284,6 +312,34 @@ export async function createWebHost(options: {
           return json(response, 200, {
             resumable: cursor >= oldest - 1 && cursor <= sequence,
           });
+        }
+        if (path === "/api/preview") {
+          const { html } = htmlPreviewRequestSchema.parse(input);
+          client.lastSeen = Date.now();
+          return json(
+            response,
+            200,
+            htmlPreviewResponseSchema.parse({ url: previews.put(html) }),
+          );
+        }
+        if (path === "/api/preview/file") {
+          const { path: relative } = previewPathSchema.parse(input);
+          client.lastSeen = Date.now();
+          let html: string;
+          try {
+            html = await readPreviewFile(workspace, relative);
+          } catch (error) {
+            if (error instanceof PreviewFileError)
+              return json(response, error.status, { error: error.message });
+            return json(response, 404, {
+              error: "The file is not available for preview.",
+            });
+          }
+          return json(
+            response,
+            200,
+            htmlPreviewResponseSchema.parse({ url: previews.put(html) }),
+          );
         }
         if (path !== "/api/rpc")
           return json(response, 404, { error: "Not found" });
@@ -388,6 +444,22 @@ export async function createWebHost(options: {
     if (path === "/favicon.ico") {
       response.writeHead(204);
       response.end();
+      return;
+    }
+    if (path === "/preview/document") {
+      const query = new URL(request.url ?? "/", origin).searchParams;
+      const parsed = previewDocumentSchema.safeParse({ id: query.get("id") });
+      const html = parsed.success ? previews.get(parsed.data.id) : undefined;
+      if (html === undefined)
+        return json(response, 404, { error: "Preview document expired" });
+      response.writeHead(200, {
+        "Content-Type": "text/html; charset=utf-8",
+        "Cache-Control": "no-store",
+        "Content-Security-Policy": HTML_PREVIEW_CSP,
+        // The workbench itself keeps DENY; only a preview document may be framed.
+        "X-Frame-Options": "SAMEORIGIN",
+      });
+      response.end(html);
       return;
     }
     next();
