@@ -15,6 +15,7 @@ import type {
   ProviderConfig,
   ProviderResponse,
   ToolCall,
+  ToolCallPreview,
   Usage,
 } from "../shared/schemas";
 import { createResponsesAdapter } from "./responses";
@@ -239,6 +240,33 @@ const notify = (observer: (text: string) => void, text: string): void => {
     throw new ProviderError("observer", "The response observer failed.");
   }
 };
+// Generation previews are display-only metadata: only bounded counters cross the
+// boundary, never raw argument fragments (which may hold secrets or unvalidated
+// JSON). Values are clamped here so any in-progress fragment still yields a
+// schema-shaped snapshot, and a failing observer is isolated to the same safe
+// classification as text observers so it can never become a retryable error.
+const notifyToolCall = (
+  observer: (preview: ToolCallPreview) => void,
+  index: number,
+  name: string,
+  argumentsChars: number,
+): void => {
+  if (!Number.isInteger(index) || index < 0 || index > 255) return;
+  const bounded = name.slice(0, 64);
+  const preview: ToolCallPreview = {
+    index,
+    name: /^[a-zA-Z0-9_-]*$/.test(bounded) ? bounded : "",
+    argumentsChars: Math.max(
+      0,
+      Math.min(1_000_000, Math.trunc(argumentsChars)),
+    ),
+  };
+  try {
+    observer(preview);
+  } catch {
+    throw new ProviderError("observer", "The response observer failed.");
+  }
+};
 
 // Per-response request activity; weak keys cannot retain completed response bodies.
 const responseActivity = new WeakMap<Response, { signal: AbortSignal; touch: () => void }>();
@@ -292,6 +320,7 @@ async function readStream(
   response: Response,
   observer: (text: string) => void,
   onReasoning: (text: string) => void = () => {},
+  onToolCall: (preview: ToolCallPreview) => void = () => {},
 ): Promise<ProviderResponse> {
   const decoder = new TextDecoder("utf-8", { fatal: true });
   let pending = "";
@@ -371,6 +400,13 @@ async function readStream(
         )
           throw protocol("invalid_tool_call");
         calls.set(part.index, next);
+        // Cumulative snapshot only: the raw fragment never leaves this scope.
+        notifyToolCall(
+          onToolCall,
+          part.index,
+          next.name,
+          next.arguments.length,
+        );
       }
       if (choice.finish_reason) finish = choice.finish_reason;
     }
@@ -446,7 +482,7 @@ export function createModelProvider(config: ProviderConfig): ModelProvider {
   const settings = parsedConfig.data;
   const base = settings.baseUrl.replace(/\/+$/, "");
   const responses = createResponsesAdapter(
-    { protocol, parseJson, consumeBytes, notify },
+    { protocol, parseJson, consumeBytes, notify, notifyToolCall },
     base,
   );
   const headers = settings.apiKey
@@ -611,6 +647,7 @@ export function createModelProvider(config: ProviderConfig): ModelProvider {
             options.onText,
             model.data,
             options.onReasoning,
+            options.onToolCall,
           );
         }
         const request = async (stream: boolean): Promise<Response> =>
@@ -688,7 +725,12 @@ export function createModelProvider(config: ProviderConfig): ModelProvider {
           ?.trim()
           .toLowerCase();
         if (contentType === "text/event-stream")
-          return readStream(response, options.onText, options.onReasoning);
+          return readStream(
+            response,
+            options.onText,
+            options.onReasoning,
+            options.onToolCall,
+          );
         if (contentType !== "application/json") {
           await response.body?.cancel();
           throw protocol();
@@ -702,6 +744,16 @@ export function createModelProvider(config: ProviderConfig): ModelProvider {
         const text = choice.message.content ?? "";
         const calls = choice.message.tool_calls ?? [];
         checkFinish(choice.finish_reason, calls, text);
+        // A non-streaming response has no intermediate frames, so announce the
+        // validated complete metadata once, still without raw arguments.
+        if (options.onToolCall)
+          for (const [index, call] of calls.entries())
+            notifyToolCall(
+              options.onToolCall,
+              index,
+              call.function.name,
+              call.function.arguments.length,
+            );
         const reasoningRaw = choice.message.reasoning_content;
         const reasoning = reasoningRaw
           ? reasoningRaw.slice(0, MAX_REASONING)

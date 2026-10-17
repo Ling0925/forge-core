@@ -26,6 +26,7 @@ import { boundedReports, childReport, type ChildOperation } from "./agent-operat
 import { projectSummary, summaryBoundary } from "./context";
 import { summarizeWorkingState } from "./working-memory";
 import { buildSystemInstructions } from "./prompts";
+import { createToolPreviewStream } from "./tool-preview";
 import { budgetUsage, measureContext, reportedContext, resolveContextBudget, resolveContextWindow } from "../shared/context-usage";
 
 type EventBody = {
@@ -518,7 +519,11 @@ export const createAgentRuntime = (
         // or re-running any completed tool.
         let attempt = 0;
         let response: ProviderResponse;
+        let previews: ReturnType<typeof createToolPreviewStream>;
         for (;;) {
+          previews = createToolPreviewStream(`${turns}:${attempt}`, (previewId, preview) => {
+            ephemeral({ type: "tool_call_preview", previewId, name: preview.name, argumentsChars: preview.argumentsChars });
+          });
           check();
           let partial = "";
           let emittedChars = 0;
@@ -566,6 +571,9 @@ export const createAgentRuntime = (
                     else if (partial && flushTimer === undefined)
                       flushTimer = setTimeout(flush, 80);
                   },
+                  onToolCall: (preview) => {
+                    if (streaming) previews.push(preview);
+                  },
                   onReasoning: (text) => {
                     if (!streaming || typeof text !== "string") return;
                     // Display-only preview, bounded and never persisted.
@@ -586,6 +594,7 @@ export const createAgentRuntime = (
                 streaming = false;
                 flush();
                 flushReasoning();
+                previews.close();
               });
             break;
           } catch (error) {
@@ -641,6 +650,7 @@ export const createAgentRuntime = (
         await save();
         const calls = response.message.tool_calls ?? [];
         if (calls.length === 0) {
+          if (previews.size) ephemeral({ type: "tool_preview_reset" });
           const undelivered = [...children.entries()].filter(([, child]) => !child.delivered);
           if (undelivered.length) {
             await Promise.allSettled(undelivered.map(([, child]) => child.work));
@@ -679,14 +689,18 @@ export const createAgentRuntime = (
             "provider",
             "Provider returned duplicate tool call identifiers.",
           );
-        for (const call of calls) {
+        // All parameters are now complete and validated; queued calls are no
+        // longer generating while an earlier call executes or waits for approval.
+        if (previews.size) ephemeral({ type: "tool_preview_reset" });
+        for (const [callIndex, call] of calls.entries()) {
           check();
           if (toolCalls >= deps.settings.maxToolCalls)
             throw new ForgeError("budget", "Tool attempt budget exhausted.");
           toolCalls += 1;
           snapshot = { ...snapshot, pendingTool: call };
           await save();
-          event({ type: "tool_started", call });
+          const previewId = previews.id(callIndex);
+          event({ type: "tool_started", call, ...(previewId ? { previewId } : {}) });
           let acceptingEvents = true;
           let requested = false;
           let toolEvents = 0;

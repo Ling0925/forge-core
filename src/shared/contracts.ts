@@ -42,6 +42,8 @@ export interface ModelProvider {
       onText: (text: string) => void;
       /** Optional live reasoning display; never persisted as assistant content. */
       onReasoning?: (text: string) => void;
+      /** Ephemeral cumulative metadata; never execute or expose partial arguments. */
+      onToolCall?: (preview: import("./schemas").ToolCallPreview) => void;
     }>,
   ): Promise<ProviderResponse>;
 }

@@ -239,6 +239,13 @@ export const toolCallSchema = z
   .strict()
   .readonly();
 export type ToolCall = z.infer<typeof toolCallSchema>;
+/** Display-only generation metadata. Partial arguments never cross the UI boundary. */
+export const toolCallPreviewSchema = z.object({
+  index: z.number().int().min(0).max(255),
+  name: z.string().max(64).regex(/^[a-zA-Z0-9_-]*$/),
+  argumentsChars: z.number().int().min(0).max(1000000),
+}).strict().readonly();
+export type ToolCallPreview = z.infer<typeof toolCallPreviewSchema>;
 export const toolDefinitionSchema = z
   .object({
     type: z.literal("function"),
@@ -568,11 +575,21 @@ export const agentEventSchema = z
         type: z.literal("retry_reset"),
       })
       .strict(),
+    // Ephemeral metadata only: neither executable arguments nor transcript evidence.
+    z.object({
+      ...eventBase,
+      type: z.literal("tool_call_preview"),
+      previewId: z.string().min(1).max(128),
+      name: toolCallPreviewSchema.unwrap().shape.name,
+      argumentsChars: toolCallPreviewSchema.unwrap().shape.argumentsChars,
+    }).strict(),
+    z.object({ ...eventBase, type: z.literal("tool_preview_reset") }).strict(),
     z
       .object({
         ...eventBase,
         type: z.literal("tool_started"),
         call: toolCallSchema,
+        previewId: z.string().min(1).max(128).optional(),
       })
       .strict(),
     z

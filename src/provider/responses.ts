@@ -4,6 +4,7 @@ import { providerResponseSchema, toolCallSchema } from "../shared/schemas";
 import type {
   Message,
   ProviderResponse,
+  ToolCallPreview,
   ToolDefinition,
 } from "../shared/schemas";
 
@@ -70,6 +71,13 @@ type Helpers = {
     consume: (bytes: Uint8Array) => void,
   ) => Promise<void>;
   notify: (observer: (text: string) => void, text: string) => void;
+  /** Display-only generation metadata; isolated like any other observer. */
+  notifyToolCall: (
+    observer: (preview: ToolCallPreview) => void,
+    index: number,
+    name: string,
+    argumentsChars: number,
+  ) => void;
 };
 
 function sameAdded(added: unknown, done: z.infer<typeof outputItem>): boolean {
@@ -252,6 +260,7 @@ export function createResponsesAdapter(h: Helpers, baseUrl: string) {
       observer: (text: string) => void,
       model: string,
       onReasoning: (text: string) => void = () => {},
+      onToolCall: (preview: ToolCallPreview) => void = () => {},
     ): Promise<ProviderResponse> {
       const decoder = new TextDecoder("utf-8", { fatal: true });
       let pending = "";
@@ -271,6 +280,24 @@ export function createResponsesAdapter(h: Helpers, baseUrl: string) {
       const textParts = new Map<string, string>();
       let eventSize = 0;
       let reasoning = "";
+      // Preview bookkeeping: a tool-sequence index (never output_index, which
+      // also counts reasoning/message items) and the latest accumulated name.
+      const callIndex = new Map<string, number>();
+      const names = new Map<string, string>();
+      let callCount = 0;
+      const notifyToolPreview = (outputIndex: number): void => {
+        const item = items.get(outputIndex);
+        if (!item || item.type !== "function_call") return;
+        const index = callIndex.get(item.id);
+        // Only the first 256 tool calls can be addressed by the preview index.
+        if (index === undefined) return;
+        h.notifyToolCall(
+          onToolCall,
+          index,
+          names.get(item.id) ?? "",
+          (args.get(item.id) ?? "").length,
+        );
+      };
       const dispatch = () => {
         if (!data.length) {
           eventName = "";
@@ -341,9 +368,17 @@ export function createResponsesAdapter(h: Helpers, baseUrl: string) {
           items.set(p.output_index, p.item);
           if (p.item.type === "function_call") {
             const initial = z
-              .object({ arguments: z.string().max(1_000_000).optional() })
+              .object({
+                name: z.string().optional(),
+                arguments: z.string().max(1_000_000).optional(),
+              })
               .parse(p.item);
             args.set(p.item.id, initial.arguments ?? "");
+            // Added frames may omit the name; the terminal item fills it in.
+            names.set(p.item.id, initial.name ?? "");
+            if (callCount < 256) callIndex.set(p.item.id, callCount);
+            callCount += 1;
+            notifyToolPreview(p.output_index);
           }
         } else if (
           e.type === "response.output_text.delta" ||
@@ -376,6 +411,7 @@ export function createResponsesAdapter(h: Helpers, baseUrl: string) {
             const next = (args.get(item.id) ?? "") + p.delta;
             if (next.length > 1_000_000) throw h.protocol();
             args.set(item.id, next);
+            notifyToolPreview(p.output_index);
           }
         } else if (e.type === "response.function_call_arguments.done") {
           const p = z
@@ -421,6 +457,11 @@ export function createResponsesAdapter(h: Helpers, baseUrl: string) {
           )
             throw h.protocol();
           ended.set(p.output_index, p.item);
+          if (p.item.type === "function_call") {
+            // Terminal item completes a name the added frame may have omitted.
+            names.set(p.item.id, p.item.name);
+            notifyToolPreview(p.output_index);
+          }
         } else if (e.type === "response.output_text.done") {
           const p = z
             .object({
