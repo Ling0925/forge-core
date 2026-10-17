@@ -200,3 +200,24 @@ directory, optionally overridden by `FORGE_AUTHOR_CONFIG`; no credentials belong
 in committed prompts or evidence. Proposal mode is read-only by default.
 Provider-request retry remains the runtime's responsibility; the author wrapper
 does not automatically replay failed whole tasks or choose a fallback model.
+
+## 2026-10-17 image composer UI
+
+Gemini `ag/gemini-3.8-flash`, invoked through the local Forge CLI with the enlarged
+tool budget, authored `ImageAttachments`, its styles, Composer integration and
+saved-image rendering. Accepted evidence is retained locally under
+`.build/gemini-design-fixes-ui/{images-ui-expanded,images-ui-integration,images-ui-final}/`.
+The coordinator reviewed the proposals, normalized patch formatting and stale
+unchanged context, preserved concurrent tool-preview work and authored focused
+browser checks. The integration run completed with 49 tool attempts across 50
+model turns; the final correction needed one model turn and no tools.
+
+Real Chrome checks cover file selection, paste, removal, image-only sending,
+failure retention, session isolation, history reload and dialog viewing, queued
+and steered image messages, storage-quota rollback and command/attachment guards.
+Captures at 320, 390, 768 and 1440 pixels cover light and dark themes; the existing
+composer, mode and shortcut browser regressions also pass. A separate live
+provider check sent only a programmatically generated public digit image through
+the image-message transport to the same Gemini route, which returned `73`.
+These checks do not claim physical-phone testing, a desktop package release or
+activation of an already-running Web backend.
