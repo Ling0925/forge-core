@@ -146,4 +146,21 @@ optional-property diagnostic was resolved by the Gemini change.
 - No earlier package candidate is the final current deliverable, and no release or installation is claimed here. Safe public evidence for the live Responses-gateway QA (no secret values, no raw endpoint or key) is retained by the coordinator under `.build/`. These are development evidence, not shipped user guidance and not proof of packaging or installation.
 - Independently verified behaviors (config `--api-mode` persistence, child-failure convergence into a failed parent, and same-process MCP disable/remove revocation of owned live connections) are recorded as fixed in the owned docs, based on bounded review evidence. This document does not claim final packaging or installation results; those are determined by the release process's actual execution.
 
+## 2026-10-17 composer shortcuts and output speed
+
+Gemini `ag/gemini-3.8-flash`, called through the local `forge` CLI, authored the
+Composer keyboard changes, removal of queue/steering buttons, touch command
+entry and `OutputSpeed` component. The coordinator reviewed proposals, repaired
+patch formatting/context, assembled the accepted hunks and wrote the focused
+browser regressions. Accepted author evidence is retained locally under
+`.build/gemini-design-fixes-ui/{composer-shortcuts-exact,composer-shortcuts-ui-exact,composer-queue-touch,output-speed-reviewed}/`;
+the speed styling also comes from the completed `output-speed-exact` proposal.
+Rejected or incomplete proposals were not applied as complete implementations.
+
+Four focused browser tests cover queue/steering keys, IME and multiline drafts,
+session/source isolation, existing composer geometry, mode switching and speed
+sampling/reset. The speed is explicitly estimated from new streamed text and
+reasoning, not a live Provider billing counter. This is a renderer hot update;
+it does not claim a desktop package release or a physical-phone keyboard test.
+
 See [REFERENCE_DESIGN.md](REFERENCE_DESIGN.md) for the external references studied and the exact design choices they inspired, and [WORKFLOWS.md](WORKFLOWS.md) for what is actually runnable today.
