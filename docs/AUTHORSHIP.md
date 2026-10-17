@@ -112,6 +112,35 @@ both the base and worktree (`module-wiring` write-before-read and `agent-runtime
 guidance timing); they were not changed or reported as passing. Their comparison
 logs remain under `.build/design-fixes-checks/`.
 
+### Composer correction and live storage migration (2026-10-17)
+
+The user requested notices above the input and restoration of the existing long
+reasoning-effort slider. The first `forge` Gemini correction run failed at the
+provider protocol before editing. After explicit same-model retry authorization,
+`ag/gemini-3.8-flash` completed the correction with exit code 0. Its actual changes
+are the composer markup, `composer-live-input.css`, optional property forwarding
+in `ModelPicker`, the design ordering contract and two mounted regressions.
+The main agent reviewed those changes and independently observed all four
+focused UI tests passing. Live Chrome checks against the running Web workbench
+verified above-input notices, the restored slider, viewport bounds and Escape
+focus restoration at 390/1440 widths in light/dark themes, with no page errors.
+Fresh local evidence is under `.build/composer-correction-live/`; author evidence
+is under `.build/gemini-design-fixes-ui/composer-hints-authorized-retry/`.
+
+The main agent also diagnosed the reported storage error: the still-running old
+Web bundle rejected `sources` and `activeSourceId` in the updated settings file.
+All 128 existing session snapshots themselves validated. With no active runs,
+the old host was quiesced, original sessions and settings were durably backed up,
+and 128 sessions were migrated and compared without logical changes. All three
+configuration files matched their backup hashes afterward. The same Web service
+was restarted with the compatible backend. Real browser checks read settings,
+106 workspace-filtered summaries and three historical details successfully;
+11 focused migration/store/source tests passed. Migration tooling and its test
+were authored by the main agent under the previously recorded takeover exception.
+No external model run was sent to a user's historical session. Typechecking
+retains 26 baseline diagnostics, with no new locations/codes; the ModelPicker
+optional-property diagnostic was resolved by the Gemini change.
+
 - Local raw evidence is retained by the coordinator under `.build/runtime-runs/*.jsonl` (real tool transcripts) and `.build/api-authored` (proposals). Neither those logs nor private prompts or credentials belong in a distributed artifact.
 - `scripts/provenance.mjs --output release/<path>.json` creates a public content-hash inventory, with timestamp and safe evidence-location references only. A SHA256 proves file bytes matched a manifest, **not** who wrote each line or whether a request succeeded. Review the local audit evidence separately if stronger attribution is required.
 - No earlier package candidate is the final current deliverable, and no release or installation is claimed here. Safe public evidence for the live Responses-gateway QA (no secret values, no raw endpoint or key) is retained by the coordinator under `.build/`. These are development evidence, not shipped user guidance and not proof of packaging or installation.
