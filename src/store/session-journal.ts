@@ -263,7 +263,7 @@ export function createSessionJournal(
     async save(snapshot: SessionSnapshot) {
       const previous = await load(snapshot.id);
       const nextHash = hash(snapshot);
-      if (previous.hash === nextHash) {
+      if (previous.hash === nextHash && !previous.legacy) {
         await writeIndex(previous);
         return;
       }
