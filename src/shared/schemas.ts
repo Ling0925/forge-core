@@ -107,11 +107,39 @@ const configurableSettingsFields = {
   baseUrl: z.union([z.literal(""), settingsFields.baseUrl]),
   model: z.union([z.literal(""), settingsFields.model]),
 };
+// Provider sources: a stored endpoint/model/key set selectable at runtime. The
+// public projection never carries credentials, only whether a key exists.
+export const providerSourceIdSchema = z.string().regex(/^[a-z][a-z0-9_-]{0,31}$/);
+const providerSourceFields = {
+  id: providerSourceIdSchema,
+  label: z.string().trim().min(1).max(80),
+  baseUrl: settingsFields.baseUrl,
+  // An empty model means "not chosen yet" so a catalog can be listed first.
+  model: z.union([z.literal(""), settingsFields.model]),
+  apiMode: settingsFields.apiMode,
+};
+export const providerSourceSchema = z
+  .object(providerSourceFields)
+  .strict()
+  .readonly();
+export type ProviderSource = z.infer<typeof providerSourceSchema>;
+export const publicProviderSourceSchema = z
+  .object({
+    ...providerSourceFields,
+    hasApiKey: z.boolean(),
+  })
+  .strict()
+  .readonly();
+export type PublicProviderSource = z.infer<typeof publicProviderSourceSchema>;
 export const publicSettingsSchema = z
   .object({
     ...configurableSettingsFields,
     hasApiKey: z.boolean(),
     isConfigured: z.boolean(),
+    providerSources: z.array(publicProviderSourceSchema).max(20).readonly().optional(),
+    activeSourceId: providerSourceIdSchema.optional(),
+    // FORGE_* variables keep priority: the UI must be able to warn about it.
+    environmentOverride: z.boolean().optional(),
   })
   .strict()
   .refine(
@@ -145,9 +173,33 @@ const apiKeySchema = z
     (value) => !/[\r\n]/.test(value),
     "API key must not contain line breaks",
   );
+// Zod 3 reads `type` off each branch, so branches stay plain objects (no
+// `.readonly()` wrapper); only the union itself is readonly. Nested `source`
+// keeps its own readonly wrapper.
+export const providerSourceOperationSchema = z
+  .discriminatedUnion("type", [
+    z
+      .object({
+        type: z.literal("save"),
+        source: z.object(providerSourceFields).strict().readonly(),
+        apiKey: apiKeySchema.optional(),
+      })
+      .strict(),
+    z
+      .object({ type: z.literal("activate"), id: providerSourceIdSchema })
+      .strict(),
+    z
+      .object({ type: z.literal("remove"), id: providerSourceIdSchema })
+      .strict(),
+  ])
+  .readonly();
+export type ProviderSourceOperation = z.infer<
+  typeof providerSourceOperationSchema
+>;
 export const configureInputSchema = z
   .object({
     apiKey: apiKeySchema.optional(),
+    source: providerSourceOperationSchema.optional(),
     settings: z
       .object(configurableSettingsFields)
       .partial()

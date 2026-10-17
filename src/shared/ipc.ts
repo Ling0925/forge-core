@@ -164,7 +164,7 @@ export const rpcRequestSchema = z
         input: configureInputSchema,
       })
       .strict(),
-    z.object({ ...requestBase, method: z.literal("listModels") }).strict(),
+    z.object({ ...requestBase, method: z.literal("listModels"), sourceId: z.string().regex(/^[a-z][a-z0-9_-]{0,31}$/).optional() }).strict(),
     z.object({ ...requestBase, method: z.literal("listSessions") }).strict(),
     z
       .object({
@@ -453,7 +453,7 @@ export type WorkerMessage = z.infer<typeof workerMessageSchema>;
 export interface ForgeBridge {
   getSettings(): Promise<PublicSettings>;
   updateSettings(input: ConfigureInput): Promise<PublicSettings>;
-  listModels(): Promise<readonly string[]>;
+  listModels(sourceId?: string): Promise<readonly string[]>;
   listSessions(): Promise<readonly SessionSummary[]>;
   createSession(input: CreateSessionInput): Promise<SessionSnapshot>;
   getSession(sessionId: SessionId): Promise<SessionSnapshot>;

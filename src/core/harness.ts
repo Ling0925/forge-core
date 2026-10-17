@@ -493,12 +493,10 @@ export const createHarness = async (
       return await providerFactory(config).getModelContextWindow?.(model,
         AbortSignal.any(signal ? [signal, disposal.signal] : [disposal.signal])) ?? null;
     },
-    async listModels(signal) {
+    async listModels(signal, sourceId) {
       check();
-      const settings = await settingsStore.getPublic();
-      endpoint(settings.baseUrl);
       const config = providerConfigSchema.parse(
-        await settingsStore.getProviderConfig(),
+        await settingsStore.getProviderConfig(sourceId),
       );
       check();
       return providerFactory(config).listModels(
@@ -580,12 +578,8 @@ export const createHarness = async (
           ]);
           endpoint(settings.baseUrl);
           settingsFields.model.parse(input.model ?? snapshot.model);
-          const provider = providerFactory(
-            providerConfigSchema.parse({
-              ...config,
-              apiMode: settings.apiMode,
-            }),
-          );
+          // Endpoint, credential and protocol come from the same atomic source snapshot.
+          const provider = providerFactory(providerConfigSchema.parse(config));
           if (signal.aborted)
             throw new ForgeError("cancelled", "Run cancelled.");
           const built = await buildTools(

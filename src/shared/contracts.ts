@@ -76,7 +76,8 @@ export interface SessionStore {
 }
 export interface SettingsStore {
   getPublic(): Promise<PublicSettings>;
-  getProviderConfig(): Promise<ProviderConfig>;
+  /** Without an id: the active source (legacy top-level settings when none). */
+  getProviderConfig(sourceId?: string): Promise<ProviderConfig>;
   update(input: ConfigureInput): Promise<PublicSettings>;
 }
 export interface HarnessService {
@@ -85,7 +86,7 @@ export interface HarnessService {
   cancelSession(sessionId: SessionId): Promise<boolean>;
   getSettings(): Promise<PublicSettings>;
   updateSettings(input: ConfigureInput): Promise<PublicSettings>;
-  listModels(signal?: AbortSignal): Promise<readonly string[]>;
+  listModels(signal?: AbortSignal, sourceId?: string): Promise<readonly string[]>;
   getModelContextWindow?(model: string, signal?: AbortSignal): Promise<number | null>;
   listSessions(): Promise<readonly SessionSummary[]>;
   createSession(input: CreateSessionInput): Promise<SessionSnapshot>;
