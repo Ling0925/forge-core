@@ -1,4 +1,5 @@
 import { z } from "zod";
+import type { ProtocolReason } from "../shared/errors";
 import { providerResponseSchema, toolCallSchema } from "../shared/schemas";
 import type {
   Message,
@@ -62,7 +63,7 @@ const terminal = z.object({
     .optional(),
 });
 type Helpers = {
-  protocol: () => Error;
+  protocol: (reason?: ProtocolReason) => Error;
   parseJson: (text: string) => unknown;
   consumeBytes: (
     response: Response,
@@ -524,8 +525,8 @@ export function createResponsesAdapter(h: Helpers, baseUrl: string) {
         feed(decoder.decode(b, { stream: true })),
       );
       feed(decoder.decode());
-      if (pending || data.length || !completed) throw h.protocol();
-      if (!completedOutput) throw h.protocol();
+      if (pending || data.length) throw h.protocol("unterminated_event");
+      if (!completed || !completedOutput) throw h.protocol("missing_completion");
       const output = validatedOutput(completedOutput, h);
       for (let index = 0; index < output.length; index++) {
         const entry = output[index];

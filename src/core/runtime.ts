@@ -4,7 +4,7 @@ import type {
   ApprovalHandler,
   RunControl,
 } from "../shared/contracts";
-import { ForgeError, toErrorInfo } from "../shared/errors";
+import { ForgeError, isRetryableProviderFailure, providerRetryReason, toErrorInfo } from "../shared/errors";
 import { toolActivity } from "../shared/tool-activity";
 import {
   agentEventSchema,
@@ -17,6 +17,7 @@ import {
 import type {
   AgentEvent,
   Message,
+  ProviderResponse,
   SessionSnapshot,
   Usage,
 } from "../shared/schemas";
@@ -57,6 +58,32 @@ export const withCancellation = async <T>(
 
 const isHumanTurn = (message: Message | undefined): boolean =>
   message?.role === "user" && message.origin !== "agent_reconciliation";
+
+/** Maximum additional provider attempts after the initial request (1+5=6 total). */
+export const MAX_GENERATION_RETRIES = 5;
+/** Abort-aware backoff between provider attempts; capped at the last entry. */
+export const RETRY_DELAYS_MS = [500, 1000, 2000, 4000, 8000] as const;
+
+/**
+ * Wait before the next provider attempt, resolving early on cancellation.
+ * The timer and abort listener are always cleaned up. Resolves (never rejects)
+ * on abort so the following `check()`/request observes cancellation once.
+ */
+export const retryDelay = (
+  ms: number,
+  signal: AbortSignal,
+): Promise<void> => {
+  if (signal.aborted) return Promise.resolve();
+  return new Promise<void>((resolve) => {
+    const done = (): void => {
+      clearTimeout(timer);
+      signal.removeEventListener("abort", done);
+      resolve();
+    };
+    const timer = setTimeout(done, ms);
+    signal.addEventListener("abort", done, { once: true });
+  });
+};
 
 export const compactContext = (
   messages: readonly Message[],
@@ -217,6 +244,7 @@ export const createAgentRuntime = (
     let toolCalls = 0;
     let usage: Usage = { promptTokens: 0, completionTokens: 0, totalTokens: 0 };
     let reportedUsageTurns = 0;
+    let hadProviderRetries = false;
     let phase: "storage" | "provider" | "tool" = "storage";
     let incompleteText = "";
     const children = new Map<string, ChildOperation>();
@@ -343,7 +371,7 @@ export const createAgentRuntime = (
         turns,
         toolCalls,
         usage,
-        usageComplete: reportedUsageTurns === turns,
+        usageComplete: !hadProviderRetries && reportedUsageTurns === turns,
         ...(children.size ? { childUsage, totalUsage: addUsage(usage, childUsage),
           childUsageComplete: [...children.values()].every(child => child.usageComplete === true) } : {}),
       });
@@ -481,73 +509,107 @@ export const createAgentRuntime = (
           });
         const projectedUsage = { ...measureContext(context.messages, windowTokens, definitions), ...budgetUsage(budget) };
         event({ type: "context_usage", usage: projectedUsage });
-        let partial = "";
-        let emittedChars = 0;
-        let reasoningPartial = "";
-        let reasoningChars = 0;
-        let streaming = true;
-        let flushTimer: ReturnType<typeof setTimeout> | undefined;
-        let reasoningTimer: ReturnType<typeof setTimeout> | undefined;
-        const flushReasoning = (): void => {
-          clearTimeout(reasoningTimer);
-          reasoningTimer = undefined;
-          if (reasoningPartial !== "") {
-            ephemeral({ type: "reasoning_delta", text: reasoningPartial });
-            reasoningChars += reasoningPartial.length;
-            reasoningPartial = "";
-          }
-        };
-        const flush = (): void => {
-          clearTimeout(flushTimer);
-          flushTimer = undefined;
-          if (partial !== "") {
-            ephemeral({ type: "text_delta", text: partial });
-            emittedChars += partial.length;
-            partial = "";
-          }
-        };
         phase = "provider";
         turns += 1;
-        const response = await withCancellation(
-          deps.provider.complete(
-            context.messages,
-            definitions,
-            {
-              model: snapshot.model,
+        // One provider request per agent turn; a transient failure may retry
+        // that same request up to five additional times without consuming turns
+        // or re-running any completed tool.
+        let attempt = 0;
+        let response: ProviderResponse;
+        for (;;) {
+          check();
+          let partial = "";
+          let emittedChars = 0;
+          let reasoningPartial = "";
+          let reasoningChars = 0;
+          let streaming = true;
+          let flushTimer: ReturnType<typeof setTimeout> | undefined;
+          let reasoningTimer: ReturnType<typeof setTimeout> | undefined;
+          const attemptStart = incompleteText.length;
+          const flushReasoning = (): void => {
+            clearTimeout(reasoningTimer);
+            reasoningTimer = undefined;
+            if (reasoningPartial !== "") {
+              ephemeral({ type: "reasoning_delta", text: reasoningPartial });
+              reasoningChars += reasoningPartial.length;
+              reasoningPartial = "";
+            }
+          };
+          const flush = (): void => {
+            clearTimeout(flushTimer);
+            flushTimer = undefined;
+            if (partial !== "") {
+              ephemeral({ type: "text_delta", text: partial });
+              emittedChars += partial.length;
+              partial = "";
+            }
+          };
+          try {
+            response = await withCancellation(
+              deps.provider.complete(
+                context.messages,
+                definitions,
+                {
+                  model: snapshot.model,
+                  signal,
+                  onText: (text) => {
+                    if (!streaming || typeof text !== "string") return;
+                    const accepted = text.slice(
+                      0,
+                      Math.max(0, 131072 - emittedChars - partial.length),
+                    );
+                    partial += accepted;
+                    incompleteText += accepted;
+                    if (partial.length >= 8192) flush();
+                    else if (partial && flushTimer === undefined)
+                      flushTimer = setTimeout(flush, 80);
+                  },
+                  onReasoning: (text) => {
+                    if (!streaming || typeof text !== "string") return;
+                    // Display-only preview, bounded and never persisted.
+                    reasoningPartial += text.slice(
+                      0,
+                      Math.max(0, 131072 - reasoningChars - reasoningPartial.length),
+                    );
+                    if (reasoningPartial.length >= 256) flushReasoning();
+                    else if (reasoningPartial && reasoningTimer === undefined)
+                      reasoningTimer = setTimeout(flushReasoning, 22);
+                  },
+                },
+              ),
               signal,
-              onText: (text) => {
-                if (!streaming || typeof text !== "string") return;
-                const accepted = text.slice(
-                  0,
-                  Math.max(0, 131072 - emittedChars - partial.length),
-                );
-                partial += accepted;
-                incompleteText += accepted;
-                if (partial.length >= 8192) flush();
-                else if (partial && flushTimer === undefined)
-                  flushTimer = setTimeout(flush, 80);
-              },
-              onReasoning: (text) => {
-                if (!streaming || typeof text !== "string") return;
-                // Display-only preview, bounded and never persisted.
-                reasoningPartial += text.slice(
-                  0,
-                  Math.max(0, 131072 - reasoningChars - reasoningPartial.length),
-                );
-                if (reasoningPartial.length >= 256) flushReasoning();
-                else if (reasoningPartial && reasoningTimer === undefined)
-                  reasoningTimer = setTimeout(flushReasoning, 22);
-              },
-            },
-          ),
-          signal,
-        )
-          .then(providerResponseSchema.parse)
-          .finally(() => {
-            streaming = false;
-            flush();
-            flushReasoning();
-          });
+            )
+              .then(providerResponseSchema.parse)
+              .finally(() => {
+                streaming = false;
+                flush();
+                flushReasoning();
+              });
+            break;
+          } catch (error) {
+            // Never retry cancellation, observer failures, auth rejection or
+            // non-provider errors; only bounded transient provider failures.
+            if (
+              signal.aborted ||
+              attempt >= MAX_GENERATION_RETRIES ||
+              !isRetryableProviderFailure(error)
+            )
+              throw error;
+            attempt += 1;
+            hadProviderRetries = true;
+            // Discard only this attempt's partial draft; prior messages and
+            // already-persisted tool evidence stay untouched.
+            incompleteText = incompleteText.slice(0, attemptStart);
+            ephemeral({ type: "retry_reset" });
+            ephemeral({
+              type: "provider_retry",
+              attempt,
+              maxAttempts: MAX_GENERATION_RETRIES,
+              reason: providerRetryReason(error) ?? "protocol",
+            });
+            await retryDelay(RETRY_DELAYS_MS[attempt - 1] ?? 8_000, signal);
+          }
+        }
         check();
         const incoming = response.usage;
         event({ type: "context_usage", usage: incoming

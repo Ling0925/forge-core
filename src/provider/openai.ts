@@ -2,6 +2,7 @@ import ky from "ky";
 import { z } from "zod";
 import type { ModelProvider } from "../shared/contracts";
 import { ForgeError } from "../shared/errors";
+import type { ProtocolReason } from "../shared/errors";
 import {
   messageSchema,
   providerConfigSchema,
@@ -28,22 +29,25 @@ export type ProviderFailure =
 export class ProviderError extends ForgeError {
   readonly classification: ProviderFailure;
   readonly status: number | undefined;
+  readonly reason: ProtocolReason | undefined;
   constructor(
     classification: ProviderFailure,
     message: string,
     retryable = false,
     status?: number,
+    reason?: ProtocolReason,
   ) {
     super(
       "provider",
       classification === "protocol" || classification === "http"
-        ? `${message} [${classification}${status === undefined ? "" : ` HTTP ${status}`}]`
+        ? `${message} [${classification}${status === undefined ? "" : ` HTTP ${status}`}]${reason === undefined ? "" : ` (${reason})`}`
         : message,
       retryable,
     );
     this.name = "ProviderError";
     this.classification = classification;
     this.status = status;
+    this.reason = reason;
   }
 }
 
@@ -137,15 +141,20 @@ const unsupportedSchema = z.object({
     code: z.string().nullable().optional(),
   }),
 });
-const protocol = (): ProviderError =>
+const protocol = (
+  reason: ProtocolReason = "invalid_response",
+): ProviderError =>
   new ProviderError(
     "protocol",
     "The provider returned an invalid or incomplete response.",
+    false,
+    undefined,
+    reason,
   );
 
 // Limit nesting before JSON.parse, including unknown metadata that Zod strips.
 const parseJson = (text: string): unknown => {
-  if (text.length > MAX_BODY) throw protocol();
+  if (text.length > MAX_BODY) throw protocol("output_limit");
   let depth = 0;
   let quoted = false;
   let escaped = false;
@@ -157,13 +166,13 @@ const parseJson = (text: string): unknown => {
     } else if (char === '"') quoted = true;
     else if (char === "{" || char === "[") {
       depth += 1;
-      if (depth > 64) throw protocol();
+      if (depth > 64) throw protocol("invalid_json");
     } else if (char === "}" || char === "]") depth -= 1;
   }
   try {
     return JSON.parse(text) as unknown;
   } catch {
-    throw protocol();
+    throw protocol("invalid_json");
   }
 };
 const normalizeUsage = (
@@ -185,15 +194,17 @@ const httpError = (status: number): ProviderError => {
       ? "Provider authorization was rejected. Check provider credentials and access."
       : status === 404
         ? "The provider resource was not found. Check endpoint and model."
-        : status === 429
-          ? "The provider rate limit was reached."
-          : status >= 500
-            ? "The provider is temporarily unavailable."
-            : "The provider rejected the request.";
+        : status === 408
+          ? "The provider request timed out."
+          : status === 429
+            ? "The provider rate limit was reached."
+            : status >= 500
+              ? "The provider is temporarily unavailable."
+              : "The provider rejected the request.";
   return new ProviderError(
     "http",
     message,
-    status === 429 || status >= 500,
+    status === 408 || status === 429 || status >= 500,
     status,
   );
 };
@@ -202,17 +213,22 @@ const checkFinish = (
   calls: readonly ToolCall[],
   text: string,
 ): void => {
-  if (reason !== "stop" && reason !== "tool_calls") throw protocol();
-  if (reason === "tool_calls" && calls.length === 0) throw protocol();
-  if (reason === "stop" && calls.length > 0) throw protocol();
-  if (calls.length === 0 && text.length === 0) throw protocol();
+  if (reason === undefined) throw protocol("missing_finish");
+  if (reason === "length") throw protocol("output_truncated");
+  if (reason !== "stop" && reason !== "tool_calls")
+    throw protocol("invalid_finish");
+  if (reason === "tool_calls" && calls.length === 0)
+    throw protocol("missing_finish");
+  if (reason === "stop" && calls.length > 0) throw protocol("missing_finish");
+  if (calls.length === 0 && text.length === 0)
+    throw protocol("invalid_response");
   if (new Set(calls.map((call) => call.id)).size !== calls.length)
-    throw protocol();
+    throw protocol("invalid_tool_call");
   for (const call of calls) {
-    if (!call.function.arguments.trim()) throw protocol();
+    if (!call.function.arguments.trim()) throw protocol("invalid_tool_call");
     const args = parseJson(call.function.arguments);
     if (args === null || typeof args !== "object" || Array.isArray(args))
-      throw protocol();
+      throw protocol("invalid_tool_call");
   }
 };
 const notify = (observer: (text: string) => void, text: string): void => {
@@ -298,13 +314,13 @@ async function readStream(
     if (payload === "[DONE]") {
       // Some gateways duplicate the terminal sentinel. Final assembly below
       // still validates the finish reason and complete native calls.
-      if (!finish) throw protocol();
+      if (!finish) throw protocol("missing_finish");
       done = true;
       return;
     }
-    if (done) throw protocol();
+    if (done) throw protocol("unexpected_frame");
     const parsed = chunkSchema.safeParse(parseJson(payload));
-    if (!parsed.success) throw protocol();
+    if (!parsed.success) throw protocol("invalid_chunk");
     const chunk = parsed.data;
     if (chunk.usage) usage = normalizeUsage(chunk.usage);
     for (const choice of chunk.choices) {
@@ -317,12 +333,12 @@ async function readStream(
           delta.content ||
           delta.tool_calls?.length
         )
-          throw protocol();
+          throw protocol("unexpected_frame");
         continue;
       }
       if (delta.content) {
         text += delta.content;
-        if (text.length > MAX_TEXT) throw protocol();
+        if (text.length > MAX_TEXT) throw protocol("output_limit");
         // Shared event text deltas have a smaller bound than final content.
         for (let start = 0; start < delta.content.length; start += 65536)
           notify(observer, delta.content.slice(start, start + 65536));
@@ -353,14 +369,14 @@ async function readStream(
           next.name.length > 64 ||
           next.arguments.length > 1_000_000
         )
-          throw protocol();
+          throw protocol("invalid_tool_call");
         calls.set(part.index, next);
       }
       if (choice.finish_reason) finish = choice.finish_reason;
     }
   };
   const line = (value: string): void => {
-    if (value.length > MAX_LINE) throw protocol();
+    if (value.length > MAX_LINE) throw protocol("output_limit");
     if (value === "") {
       dispatch();
       return;
@@ -372,10 +388,10 @@ async function readStream(
     if (content.startsWith(" ")) content = content.slice(1);
     if (field === "data") {
       eventSize += content.length + 1;
-      if (eventSize > MAX_EVENT) throw protocol();
+      if (eventSize > MAX_EVENT) throw protocol("output_limit");
       data.push(content);
     } else if (field !== "event" && field !== "id" && field !== "retry")
-      throw protocol();
+      throw protocol("unexpected_frame");
   };
   const feed = (value: string): void => {
     pending += value;
@@ -386,24 +402,25 @@ async function readStream(
       pending = pending.slice(newline + 1);
       line(raw.endsWith("\r") ? raw.slice(0, -1) : raw);
     }
-    if (pending.length > MAX_LINE) throw protocol();
+    if (pending.length > MAX_LINE) throw protocol("output_limit");
   };
   await consumeBytes(response, (bytes) =>
     feed(decoder.decode(bytes, { stream: true })),
   );
   feed(decoder.decode());
   // A clean EOF without [DONE] is compatible, but not an unterminated event.
-  if (pending.length > 0 || data.length > 0) throw protocol();
+  if (pending.length > 0 || data.length > 0)
+    throw protocol("unterminated_event");
   const assembled: ToolCall[] = [];
   const entries = [...calls.entries()].sort(([a], [b]) => a - b);
   for (const [index, call] of entries) {
-    if (index !== assembled.length) throw protocol();
+    if (index !== assembled.length) throw protocol("invalid_tool_call");
     const result = toolCallSchema.safeParse({
       id: call.id,
       type: call.type,
       function: { name: call.name, arguments: call.arguments },
     });
-    if (!result.success) throw protocol();
+    if (!result.success) throw protocol("invalid_tool_call");
     assembled.push(result.data);
   }
   checkFinish(finish, assembled, text);

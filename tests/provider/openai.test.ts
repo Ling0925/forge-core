@@ -56,6 +56,17 @@ const success = {
 };
 
 describe("original HTTP provider", () => {
+  it.each([
+    [event({ content: "partial" }, "length"), "output_truncated"],
+    [event({ content: "partial" }), "missing_finish"],
+    ['data: {"choices":', "unterminated_event"],
+    ['data: {"choices":[{"index":1,"delta":{}}]}\n\n', "invalid_chunk"],
+  ])("reports a safe structural reason for an incomplete stream %#", async (wire, reason) => {
+    const provider = await fixture((_request, response) => {
+      response.setHeader("content-type", "text/event-stream"); response.end(wire);
+    });
+    await expect(complete(provider)).rejects.toMatchObject({ classification: "protocol", reason });
+  });
   it("reads context-window metadata and caches a loaded catalog without inventing unknown limits", async () => {
     let calls = 0;
     const provider = await fixture((_request, response) => {

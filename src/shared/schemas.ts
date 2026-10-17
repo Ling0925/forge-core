@@ -542,6 +542,30 @@ export const agentEventSchema = z
         text: z.string().max(131072),
       })
       .strict(),
+    // Bounded user-visible retry status. Carries no upstream body, prompt or
+    // endpoint. Ephemeral (emitted on every retry, not persisted as state).
+    z
+      .object({
+        ...eventBase,
+        type: z.literal("provider_retry"),
+        attempt: z.number().int().min(1).max(5),
+        maxAttempts: z.literal(5),
+        reason: z.enum([
+          "protocol",
+          "network",
+          "timeout",
+          "http",
+        ]),
+      })
+      .strict(),
+    // Clear the live partial text/reasoning of the failed attempt before the
+    // replacement stream so the UI never shows duplicated or stale drafts.
+    z
+      .object({
+        ...eventBase,
+        type: z.literal("retry_reset"),
+      })
+      .strict(),
     z
       .object({
         ...eventBase,
