@@ -7,6 +7,7 @@ import { ForgeError } from "../src/shared/errors";
 import { sessionIdSchema, sessionSnapshotSchema, type SessionSnapshot, type ToolResult } from "../src/shared/schemas";
 import { atomicJson, privateDirectory, readJson, syncDirectory } from "../src/store/io";
 import { openSessionStore } from "../src/store/sessions";
+import { parseSessionBase } from "../src/store/session-journal";
 
 type CleanupResult = {
   id: string;
@@ -42,9 +43,11 @@ export async function cleanupOrphanSessions(
     try {
       // Validate through the store, but retain raw historical fields rather than
       // rewriting legacy event/file-change representations during maintenance.
-      await store.get(id);
+      const current = await store.get(id);
       const path = join(root, "sessions", `${id}.json`);
-      const snapshot = await readJson(path) as SessionSnapshot;
+      const base = parseSessionBase(await readJson(path)).snapshot as SessionSnapshot;
+      const journaled = JSON.stringify(sessionSnapshotSchema.parse(base)) !== JSON.stringify(current);
+      const snapshot = journaled ? current : base;
       if (snapshot.status !== "running" && snapshot.status !== "awaiting_approval") {
         results.push({ id, action: "skipped", reason: `status is ${snapshot.status}` });
         continue;
@@ -91,7 +94,10 @@ export async function cleanupOrphanSessions(
       }
       backupDirectory ??= await privateDirectory(join(root, "session-cleanup-backups", randomUUID()));
       const backup = join(backupDirectory, `${id}.json`);
-      await copyFile(path, backup, constants.COPYFILE_EXCL);
+      if (journaled) {
+        await atomicJson(backup, snapshot);
+        await copyFile(path, join(backupDirectory, `${id}.base.json`), constants.COPYFILE_EXCL);
+      } else await copyFile(path, backup, constants.COPYFILE_EXCL);
       const handle = await open(backup, constants.O_RDONLY | constants.O_NOFOLLOW);
       try { await handle.sync(); } finally { await handle.close(); }
       await syncDirectory(backupDirectory);

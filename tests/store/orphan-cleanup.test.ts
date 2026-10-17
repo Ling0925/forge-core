@@ -108,3 +108,16 @@ it("rejects invalid IDs, timestamps and an empty target list before maintenance"
   await expect(cleanupOrphanSessions(home, [], { before: "invalid", apply: true })).rejects.toThrow();
   expect(await readdir(home)).toEqual([]);
 });
+it("cleans the latest journal state and backs up both aggregate history and original base bytes", async () => {
+  const { store, snapshot, path } = await fixture();
+  const current = await store.get(snapshot.id);
+  await store.save({ ...current, title: "adopted legacy state" });
+  const original = await readFile(path, "utf8");
+  await store.save({ ...current, title: "latest journal title" });
+  expect(await readFile(path, "utf8")).toBe(original);
+  const [result] = await cleanupOrphanSessions(home, [snapshot.id], { before, apply: true });
+  if (!result?.backup) throw new Error("Missing recovery backup");
+  expect(await readJson(result.backup)).toMatchObject({ title: "latest journal title", status: "running" });
+  expect(await readFile(result.backup.replace(/\.json$/, ".base.json"), "utf8")).toBe(original);
+  expect(await store.get(snapshot.id)).toMatchObject({ title: "latest journal title", status: "interrupted" });
+});

@@ -159,7 +159,8 @@ export async function executeAgentOperation(name: string, args: Record<string, u
       const writePaths = [...new Set(parsed.writePaths ?? [])];
       const conflicts = [...children.entries()].filter(([, child]) => child.active && child.writePaths.some(a => writePaths.some(b => overlaps(a, b))));
       if (conflicts.length) return { content: JSON.stringify({ code: "scope_conflict", error: "Declared write paths overlap active children. Wait or assign disjoint paths; this is coordination, not a sandbox.", ids: conflicts.map(([id]) => id) }), isError: true };
-      const child = await deps.store.create({ workspace: snapshot.workspace, title: parsed.task.slice(0, 256), model: parsed.model ?? snapshot.model });
+      const child = await deps.store.create({ workspace: snapshot.workspace, title: parsed.task.slice(0, 256), model: parsed.model ?? snapshot.model,
+        ...(snapshot.providerSourceId ? { providerSourceId: snapshot.providerSourceId } : {}) });
       await deps.store.save({ ...child, parentSessionId: input.sessionId, agentTask: parsed.task,
         ...(parsed.ownership ? { ownership: parsed.ownership } : {}),
         ...(parsed.writePaths ? { writePaths } : {}), permissionCeiling: env.permission });

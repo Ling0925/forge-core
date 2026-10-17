@@ -13,7 +13,7 @@ import type { AgentEvent, ProviderConfig } from "../../src/shared/schemas";
 
 const cleanups: (() => Promise<void>)[] = [];
 afterEach(async () => {
-  for (const cleanup of cleanups.splice(0)) await cleanup();
+  for (const cleanup of cleanups.splice(0).reverse()) await cleanup();
 });
 const directory = async (): Promise<string> => {
   const path = await mkdtemp(join(tmpdir(), "forge-integration-"));

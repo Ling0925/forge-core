@@ -28,6 +28,7 @@ export interface RunControl {
   readonly getPermission?: () => Permission | undefined;
   /** final=true atomically closes an empty child queue before terminal cleanup. */
   readonly drainSteering: (final?: boolean) => readonly string[];
+  readonly onSteeringApplied?: () => void;
 }
 export interface ModelProvider {
   listModels(signal?: AbortSignal): Promise<readonly string[]>;
@@ -69,7 +70,7 @@ export interface SessionStore {
   list(): Promise<readonly SessionSummary[]>;
   get(id: SessionId): Promise<SessionSnapshot>;
   create(
-    input: Readonly<{ workspace: string; title: string; model: string; titleSource?: "default" | "user" }>,
+    input: Readonly<{ workspace: string; title: string; model: string; providerSourceId?: string; titleSource?: "default" | "user" }>,
   ): Promise<SessionSnapshot>;
   save(snapshot: SessionSnapshot): Promise<void>;
   acquire(id: SessionId, signal?: AbortSignal): Promise<() => Promise<void>>;
@@ -87,7 +88,7 @@ export interface HarnessService {
   getSettings(): Promise<PublicSettings>;
   updateSettings(input: ConfigureInput): Promise<PublicSettings>;
   listModels(signal?: AbortSignal, sourceId?: string): Promise<readonly string[]>;
-  getModelContextWindow?(model: string, signal?: AbortSignal): Promise<number | null>;
+  getModelContextWindow?(model: string, signal?: AbortSignal, sourceId?: string): Promise<number | null>;
   listSessions(): Promise<readonly SessionSummary[]>;
   createSession(input: CreateSessionInput): Promise<SessionSnapshot>;
   getSession(id: SessionId): Promise<SessionSnapshot>;
@@ -147,6 +148,7 @@ export interface HarnessOptions {
   readonly toolFactory?: ToolFactory;
 }
 export interface AgentRuntimeDependencies {
+  readonly sessionLock?: Readonly<{ id: SessionId; release: () => Promise<void> }>;
   readonly runMemory?: {
     readonly record: (snapshot: SessionSnapshot) => Promise<void>;
     readonly restore: (snapshot: SessionSnapshot, at: string) => Promise<SessionSnapshot>;

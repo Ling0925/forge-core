@@ -9,16 +9,15 @@ import {
   createSessionInputSchema,
   sessionIdSchema,
   sessionSnapshotSchema,
-  sessionSummarySchema,
 } from "../shared/schemas";
 import {
-  atomicJson,
   hasCode,
   privateDirectory,
   readJson,
   storageError,
 } from "./io";
 import { fileLock } from "./lock";
+import { createSessionJournal } from "./session-journal";
 export { MAX_SNAPSHOT_BYTES } from "./io";
 
 const lockSchema = z
@@ -72,37 +71,23 @@ export async function openSessionStore(
   const folder = await privateDirectory(join(root, "sessions"));
   const pathFor = (id: unknown): string =>
     join(folder, `${validateId(id)}.json`);
-  const get: SessionStore["get"] = async (id) => {
-    const snapshot = validateSnapshot(await readJson(pathFor(id)), true);
-    if (snapshot.id !== id) throw storageError();
-    return snapshot;
-  };
+  const summaries = await privateDirectory(join(folder, "summaries"));
+  const journal = createSessionJournal(folder, summaries, validateSnapshot);
+  const get: SessionStore["get"] = async (id) => journal.get(validateId(id));
   return {
     get,
     async list() {
       try {
         const summaries = [];
         for (const entry of await readdir(folder, { withFileTypes: true })) {
-          if (entry.isSymbolicLink()) throw storageError();
-          if (!entry.name.endsWith(".json")) continue;
-          const id = validateId(entry.name.slice(0, -5));
-          const snapshot = await get(id);
-          const {
-            messages: _messages,
-            events: _events,
-            changes: _changes,
-            pendingTool: _pendingTool,
-            ...summary
-          } = snapshot;
-          summaries.push(
-            sessionSummarySchema.parse(
-              Object.fromEntries(
-                Object.entries(summary).filter(
-                  ([key]) => key in sessionSummarySchema.unwrap().shape,
-                ),
-              ),
-            ),
-          );
+          if (!entry.isFile() || !entry.name.endsWith(".json")) continue;
+          const id = sessionIdSchema.safeParse(entry.name.slice(0, -5));
+          if (!id.success) continue;
+          try {
+            summaries.push(await journal.summary(id.data));
+          } catch (error) {
+            if (!(error instanceof ForgeError) && !(error instanceof z.ZodError)) throw error;
+          }
         }
         return summaries.sort(
           (a, b) =>
@@ -141,6 +126,7 @@ export async function openSessionStore(
           title: parsed.data.title,
           ...(titleSource ? { titleSource } : {}),
           model: parsed.data.model,
+          ...(parsed.data.providerSourceId ? { providerSourceId: parsed.data.providerSourceId } : {}),
           createdAt: now,
           updatedAt: now,
           status: "idle",
@@ -150,13 +136,12 @@ export async function openSessionStore(
         },
         false,
       );
-      await atomicJson(pathFor(snapshot.id), snapshot);
+      await journal.create(snapshot);
       return snapshot;
     },
     async save(snapshot) {
       const validated = validateSnapshot(snapshot, false);
-      await get(validated.id);
-      await atomicJson(pathFor(validated.id), validated);
+      await journal.save(validated);
     },
     async acquire(id, signal) {
       if (signal?.aborted)

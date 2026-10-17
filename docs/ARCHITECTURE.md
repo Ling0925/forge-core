@@ -36,6 +36,32 @@ Core interface signatures remain stable. Domain tests belong in `tests/shared`, 
 
 ## Extended subsystems (current source)
 
+### Session routing and durable history (2026-10-17)
+
+- `providerSourceId` belongs to the session. Creation captures the selected source;
+  forks and children inherit it. Runs and semantic compaction use that source's
+  endpoint, protocol and credential. Global activation does not reroute an existing
+  session. An explicit run override can change the binding; a missing pinned source
+  fails without falling back. Legacy sessions capture the active source on their
+  next run because their original provider identity was not recorded.
+- `sessions/summaries/<id>.json` holds an independently validated summary and disk
+  stamps. Listing reads this index, rebuilding stale or missing entries lazily.
+  Invalid individual records are omitted without changing the original files or
+  preventing access to healthy sessions. Explicit detail reads still validate the
+  complete snapshot and committed records.
+- `session-journal.ts` writes immutable, fsynced delta records under a generation
+  derived from the base snapshot and a durable `_journalGeneration` ID. Checkpoints replace the
+  base atomically after 64 records, 4 MiB of deltas, or a terminal run state. A new
+  base selects a new generation, so retained recovery records cannot be applied
+  twice after an interrupted checkpoint. Uncommitted temporary files are ignored.
+  The existing session flock inode is preserved. Mixed old/new executables must
+  not operate on the same state directory; older strict readers reject the new
+  private base marker instead of opening a stale checkpoint as complete history.
+- Live `text_delta` events are notifications. Successful replies persist once as
+  assistant messages; a failed or cancelled partial reply is retained as one
+  bounded historical event. Cleanup reads the aggregate journal state and retains
+  both the aggregate backup and original base bytes when needed.
+
 These modules build on the foundation without copying any existing harness. They are the implementation behind the workflows in [WORKFLOWS.md](WORKFLOWS.md). Reference/design provenance is recorded in [REFERENCE_DESIGN.md](REFERENCE_DESIGN.md).
 
 ### Project context and skills (`src/context/**`, `src/tools/skills.ts`)

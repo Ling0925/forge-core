@@ -210,13 +210,15 @@ export const createAgentRuntime = (
 ): AgentRuntime => ({
   async run(rawInput, onEvent, approve, signal, control?: RunControl) {
     const input = runInputSchema.parse(rawInput);
-    const release = await deps.store.acquire(input.sessionId, signal);
+    const release = deps.sessionLock?.id === input.sessionId
+      ? deps.sessionLock.release : await deps.store.acquire(input.sessionId, signal);
     let snapshot: SessionSnapshot | undefined;
     let turns = 0;
     let toolCalls = 0;
     let usage: Usage = { promptTokens: 0, completionTokens: 0, totalTokens: 0 };
     let reportedUsageTurns = 0;
     let phase: "storage" | "provider" | "tool" = "storage";
+    let incompleteText = "";
     const children = new Map<string, ChildOperation>();
     let approvalQueue: Promise<unknown> = Promise.resolve();
     const now = deps.now ?? (() => new Date().toISOString());
@@ -287,6 +289,7 @@ export const createAgentRuntime = (
         ],
       };
       await save();
+      control.onSteeringApplied?.();
       return true;
     };
     const finish = async (
@@ -391,6 +394,7 @@ export const createAgentRuntime = (
       snapshot = {
         ...settled,
         model: input.model ?? snapshot.model,
+        ...(input.providerSourceId ? { providerSourceId: input.providerSourceId } : {}),
         messages: closeCalls(
           snapshot.messages,
           "prior execution was interrupted; inspect effects before retry",
@@ -497,7 +501,7 @@ export const createAgentRuntime = (
           clearTimeout(flushTimer);
           flushTimer = undefined;
           if (partial !== "") {
-            event({ type: "text_delta", text: partial });
+            ephemeral({ type: "text_delta", text: partial });
             emittedChars += partial.length;
             partial = "";
           }
@@ -513,10 +517,12 @@ export const createAgentRuntime = (
               signal,
               onText: (text) => {
                 if (!streaming || typeof text !== "string") return;
-                partial += text.slice(
+                const accepted = text.slice(
                   0,
                   Math.max(0, 131072 - emittedChars - partial.length),
                 );
+                partial += accepted;
+                incompleteText += accepted;
                 if (partial.length >= 8192) flush();
                 else if (partial && flushTimer === undefined)
                   flushTimer = setTimeout(flush, 80);
@@ -566,6 +572,7 @@ export const createAgentRuntime = (
           ...snapshot,
           messages: [...snapshot.messages, response.message],
         };
+        incompleteText = "";
         phase = "storage";
         await save();
         const calls = response.message.tool_calls ?? [];
@@ -892,6 +899,9 @@ export const createAgentRuntime = (
       }
     } catch (error) {
       if (!snapshot) throw error;
+      if (incompleteText) snapshot = { ...snapshot, events: [...snapshot.events,
+        agentEventSchema.parse({ type: "text_delta", text: incompleteText,
+          sessionId: input.sessionId, timestamp: now() })] };
       const safe = signal.aborted
         ? new ForgeError("cancelled", "Run cancelled.")
         : error instanceof ForgeError

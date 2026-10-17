@@ -305,17 +305,19 @@ export const createHarness = async (
           controller.signal,
           ...(callerSignal ? [callerSignal] : []),
         ]);
+        const settings = await settingsStore.getPublic();
+        const providerSourceId = s.providerSourceId ?? settings.activeSourceId;
         const config = providerConfigSchema.parse(
-          await settingsStore.getProviderConfig(),
+          await settingsStore.getProviderConfig(providerSourceId),
         );
         const provider = providerFactory(config);
-        const settings = await settingsStore.getPublic();
+        const bound = providerSourceId ? { ...s, providerSourceId } : s;
         let reported: number | null = null;
         const metadataSignal = AbortSignal.any([signal, AbortSignal.timeout(2000)]);
         try { reported = await withCancellation(provider.getModelContextWindow?.(s.model, metadataSignal) ?? Promise.resolve(null), metadataSignal); }
         catch { /* Optional metadata must not prevent compaction. */ }
         const window = resolveContextWindow(s.model, settings, reported);
-        const next = await summarizeWorkingState(s, provider, signal, s.messages.length, Math.floor(window * 0.8));
+        const next = await summarizeWorkingState(bound, provider, signal, s.messages.length, Math.floor(window * 0.8));
         const last = s.events.at(-1);
         // Also repair the stale meter on sessions compacted by older versions.
         if (next === s && last?.type === "context_usage" && last.usage.basis === "projected") return s;
@@ -366,6 +368,7 @@ export const createHarness = async (
           workspace: source.workspace,
           title: `Fork: ${source.title}`.slice(0, 256),
           model: source.model,
+          ...(source.providerSourceId ? { providerSourceId: source.providerSourceId } : {}),
         });
         const next = {
           ...fork,
@@ -484,11 +487,10 @@ export const createHarness = async (
       check();
       return settingsStore.update(configureInputSchema.parse(input));
     },
-    async getModelContextWindow(model, signal) {
+    async getModelContextWindow(model, signal, sourceId) {
       check();
-      const settings = await settingsStore.getPublic();
-      endpoint(settings.baseUrl);
-      const config = providerConfigSchema.parse(await settingsStore.getProviderConfig());
+      const config = providerConfigSchema.parse(await settingsStore.getProviderConfig(sourceId));
+      endpoint(config.baseUrl);
       check();
       return await providerFactory(config).getModelContextWindow?.(model,
         AbortSignal.any(signal ? [signal, disposal.signal] : [disposal.signal])) ?? null;
@@ -515,7 +517,11 @@ export const createHarness = async (
       check();
       const input = createSessionInputSchema.parse(raw);
       const settings = await settingsStore.getPublic();
-      const model = input.model ?? settings.model;
+      const providerSourceId = input.providerSourceId ?? settings.activeSourceId;
+      const source = settings.providerSources?.find(candidate => candidate.id === providerSourceId);
+      if (providerSourceId && !source)
+        throw new ForgeError("invalid_input", "The session's provider source is unavailable. Select an existing source explicitly.");
+      const model = input.model ?? source?.model ?? settings.model;
       if (!model)
         throw new ForgeError(
           "invalid_input",
@@ -545,6 +551,7 @@ export const createHarness = async (
         title: input.title ?? "New session",
         titleSource: input.title === undefined ? "default" : "user",
         model: settingsFields.model.parse(model),
+        ...(providerSourceId ? { providerSourceId } : {}),
       });
     },
     run(raw, onEvent, approve, callerSignal, control) {
@@ -567,16 +574,19 @@ export const createHarness = async (
       // Defer work so the reservation exists before the first asynchronous boundary.
       const operation = Promise.resolve().then(async () => {
         let tools: LocalToolRegistry | undefined;
+        let releaseSession: (() => Promise<void>) | undefined;
         try {
           await stopTitle(input.sessionId);
+          releaseSession = await store.acquire(input.sessionId, signal);
           if (signal.aborted)
             throw new ForgeError("cancelled", "Run cancelled.");
-          const [settings, config, snapshot] = await Promise.all([
+          const [settings, snapshot] = await Promise.all([
             settingsStore.getPublic(),
-            settingsStore.getProviderConfig(),
             store.get(input.sessionId),
           ]);
-          endpoint(settings.baseUrl);
+          const providerSourceId = input.providerSourceId ?? snapshot.providerSourceId ?? settings.activeSourceId;
+          const config = await settingsStore.getProviderConfig(providerSourceId);
+          endpoint(config.baseUrl);
           settingsFields.model.parse(input.model ?? snapshot.model);
           // Endpoint, credential and protocol come from the same atomic source snapshot.
           const provider = providerFactory(providerConfigSchema.parse(config));
@@ -590,6 +600,7 @@ export const createHarness = async (
           tools = built.tools;
           const result = await createAgentRuntime({
             store,
+            sessionLock: { id: input.sessionId, release: releaseSession },
             runMemory,
             settings,
             provider,
@@ -600,7 +611,7 @@ export const createHarness = async (
               return (await buildTools(workspace, settings, config.apiKey))
                 .tools;
             },
-          }).run(input, onEvent, approve, signal, control);
+          }).run({ ...input, ...(providerSourceId ? { providerSourceId } : {}) }, onEvent, approve, signal, control);
           const titleController = new AbortController();
           const naming = autoTitle({ snapshot: result, store, provider, signal: AbortSignal.any([disposal.signal, titleController.signal]), secrets: [config.apiKey, config.baseUrl] }).catch(() => {});
           titleOperations.set(result.id, { controller: titleController, work: naming });
@@ -614,7 +625,8 @@ export const createHarness = async (
           try {
             if (tools) await tools.dispose();
           } finally {
-            active.delete(input.sessionId);
+            try { await releaseSession?.(); }
+            finally { active.delete(input.sessionId); }
           }
         }
       });

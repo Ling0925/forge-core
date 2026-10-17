@@ -622,6 +622,7 @@ const summaryFields = {
   workspace: z.string().min(1).max(4096),
   model: settingsFields.model,
   createdAt: timestampSchema,
+  providerSourceId: providerSourceIdSchema.optional(),
   updatedAt: timestampSchema,
   status: sessionStatusSchema,
   parentSessionId: sessionIdSchema.optional(),
@@ -661,6 +662,7 @@ export const createSessionInputSchema = z
     workspace: summaryFields.workspace,
     title: summaryFields.title.optional(),
     model: settingsFields.model.optional(),
+    providerSourceId: providerSourceIdSchema.optional(),
   })
   .strict()
   .readonly();
@@ -672,6 +674,7 @@ export const runInputSchema = z
     mode: z.enum(["build", "plan"]).optional(),
     permission: permissionSchema.optional(),
     model: settingsFields.model.optional(),
+    providerSourceId: providerSourceIdSchema.optional(),
   })
   .strict()
   .readonly();
