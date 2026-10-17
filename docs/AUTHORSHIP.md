@@ -180,3 +180,23 @@ provider payloads, queue serialization, durable steering acknowledgement and
 Web image RPC above the old request limit. The shared CLI was rebuilt and its
 help command was started with an isolated temporary `FORGE_HOME`. This protocol
 change alone does not claim a completed image picker or live backend activation.
+
+## Gemini UI author invocation budget
+
+`scripts/author-ui.mjs` retains the local Forge author invocation in version
+control. Run it with an evidence label, prompt file, `proposal` and exact model ID:
+
+```sh
+node scripts/author-ui.mjs image-ui-review /absolute/path/to/prompt.md proposal ag/gemini-3.8-flash
+```
+
+The isolated author environment allows 200 tool attempts instead of the previous
+5. It no longer writes the obsolete 3-turn configuration; the runtime deliberately
+continues beyond the legacy `maxTurns` field, as covered by existing regressions.
+The script uses the local Forge launcher, checks the requested model against its
+catalogue and records safe evidence under `.build/gemini-design-fixes-ui/`.
+It reads the private development API configuration from the user's config
+directory, optionally overridden by `FORGE_AUTHOR_CONFIG`; no credentials belong
+in committed prompts or evidence. Proposal mode is read-only by default.
+Provider-request retry remains the runtime's responsibility; the author wrapper
+does not automatically replay failed whole tasks or choose a fallback model.
