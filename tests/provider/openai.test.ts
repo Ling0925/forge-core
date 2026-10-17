@@ -4,6 +4,7 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 import { afterEach, describe, expect, it } from "vitest";
 import { createModelProvider } from "../../src/provider/openai";
 import type { ModelProvider } from "../../src/shared/contracts";
+import { image } from "../fixtures/image";
 
 const cleanups: (() => Promise<void>)[] = [];
 afterEach(async () => {
@@ -56,6 +57,23 @@ const success = {
 };
 
 describe("original HTTP provider", () => {
+  it("sends images as native Chat Completions content parts and keeps text-only messages unchanged", async () => {
+    let received: unknown;
+    const provider = await fixture(async (request, response) => {
+      let body = "";
+      for await (const chunk of request) body += chunk.toString();
+      received = JSON.parse(body);
+      response.setHeader("content-type", "text/event-stream");
+      response.end(`${event({ content: "seen" }, "stop")}data: [DONE]\n\n`);
+    });
+    await provider.complete([{ role: "user", content: "old" }, { role: "user", content: "", images: [image] }, { role: "user", content: "describe", images: [image] }], [], { model: "vision", signal: new AbortController().signal, onText: () => {} });
+    expect(received).toMatchObject({ messages: [
+      { role: "user", content: "old" },
+      { role: "user", content: [{ type: "image_url", image_url: { url: image.dataUrl } }] },
+      { role: "user", content: [{ type: "text", text: "describe" }, { type: "image_url", image_url: { url: image.dataUrl } }] },
+    ] });
+    expect(JSON.stringify(received)).not.toContain(image.name);
+  });
   it.each([
     [event({ content: "partial" }, "length"), "output_truncated"],
     [event({ content: "partial" }), "missing_finish"],

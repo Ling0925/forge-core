@@ -641,7 +641,15 @@ export function createModelProvider(config: ProviderConfig): ModelProvider {
                         content: message.content,
                         tool_call_id: message.tool_call_id,
                       }
-                    : { role: message.role, content: message.content },
+                    : {
+                        role: message.role,
+                        content: message.role === "user" && message.images?.length
+                          ? [
+                              ...(message.content ? [{ type: "text", text: message.content }] : []),
+                              ...message.images.map(image => ({ type: "image_url", image_url: { url: image.dataUrl } })),
+                            ]
+                          : message.content,
+                      },
               ),
               ...(definitions.data.length ? { tools: definitions.data } : {}),
               stream,

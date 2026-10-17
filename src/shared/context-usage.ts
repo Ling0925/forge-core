@@ -46,6 +46,8 @@ export function measureContext(messages: readonly Message[], windowTokens: numbe
     const memory = message.role === "assistant" && /^(Context memory \(|Earlier actions \()/.test(message.content ?? "");
     const category = message.role === "system" ? "instructions" : memory ? "memory" : message.role === "tool" ? "tools" : "conversation";
     parts[category] += 4 + estimateTokens(message.content ?? "");
+    // Vision costs vary by model and resolution; never tokenize base64 as text.
+    if (message.role === "user") parts[category] += (message.images?.length ?? 0) * 2048;
     if (message.role === "assistant") {
       if (message.tool_calls?.length) parts.tools += estimateTokens(JSON.stringify(message.tool_calls));
       // Responses replays opaque reasoning items too. Count the opaque state only

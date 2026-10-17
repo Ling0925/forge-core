@@ -40,6 +40,7 @@ import { z } from "zod";
 import { createHarness } from "../src/core/harness";
 import { type RunEvent, runEventSchema } from "../src/shared/ipc";
 import { createWebHost } from "../src/web/server";
+import { image } from "./fixtures/image";
 
 const cleanup: (() => Promise<unknown>)[] = [];
 afterEach(async () => {
@@ -181,6 +182,29 @@ async function setup() {
 }
 
 describe("Web development host", () => {
+  it("accepts bounded image RPC above the old 1 MiB limit and persists it without changing summary lists", async () => {
+    const { url, directory, login } = await setup();
+    const auth = await login();
+    await connectEvents(url, auth);
+    const rpc = async (data: object) => {
+      const response = await fetch(`${url}/api/rpc`, { method: "POST", headers: auth, body: JSON.stringify({ id: randomUUID(), ...data }) });
+      expect(response.status).toBe(200);
+      return response.json();
+    };
+    const created = await rpc({ method: "createSession", input: { workspace: directory } });
+    const bytes = Buffer.alloc(900000);
+    Buffer.from(image.dataUrl.split(",")[1] ?? "", "base64").copy(bytes);
+    const attachment = { name: "large.png", dataUrl: `data:image/png;base64,${bytes.toString("base64")}` };
+    const started = await rpc({ method: "startRun", input: { sessionId: created.result.id, prompt: "", images: [attachment] } });
+    expect(started.ok).toBe(true);
+    await vi.waitFor(async () => {
+      const saved = await rpc({ method: "getSession", sessionId: created.result.id });
+      expect(saved.result.status).toBe("completed");
+      expect(saved.result.messages).toContainEqual({ role: "user", content: "", images: [attachment] });
+    });
+    const listed = await rpc({ method: "listSessions" });
+    expect(JSON.stringify(listed)).not.toContain("data:image/");
+  });
   it("protects source, API and exact host/origin; sets an HttpOnly cookie", async () => {
     const { url, headers, login } = await setup();
     expect((await fetch(url, { headers })).status).toBe(200);

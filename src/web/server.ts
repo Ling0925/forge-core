@@ -21,16 +21,17 @@ import {
 
 const COOKIE = "forge_web_dev";
 const MAX_BODY = 1024 * 1024;
+const MAX_RPC_BODY = 16 * 1024 * 1024;
 const LEASE_MS = 20_000;
 const MAX_EVENT_BYTES = 8 * 1024 * 1024;
 const ackSchema = z.object({ cursor: z.number().int().nonnegative() }).strict();
 
-async function body(request: IncomingMessage): Promise<unknown> {
+async function body(request: IncomingMessage, limit = MAX_BODY): Promise<unknown> {
   let size = 0;
   const chunks: Buffer[] = [];
   for await (const chunk of request) {
     size += chunk.length;
-    if (size > MAX_BODY) throw new Error("Request too large");
+    if (size > limit) throw new Error("Request too large");
     chunks.push(chunk);
   }
   return JSON.parse(Buffer.concat(chunks).toString("utf8"));
@@ -247,7 +248,7 @@ export async function createWebHost(options: {
       } else if (!authenticated(request))
         return json(response, 401, { error: "Authentication required" });
       try {
-        const input = await body(request);
+        const input = await body(request, path === "/api/rpc" ? MAX_RPC_BODY : MAX_BODY);
         if (path === "/api/connect") {
           const clientId = randomUUID();
           clients.set(clientId, {

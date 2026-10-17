@@ -27,7 +27,7 @@ export type ApprovalHandler = (
 export interface RunControl {
   readonly getPermission?: () => Permission | undefined;
   /** final=true atomically closes an empty child queue before terminal cleanup. */
-  readonly drainSteering: (final?: boolean) => readonly string[];
+  readonly drainSteering: (final?: boolean) => readonly (string | Pick<RunInput, "prompt" | "images">)[];
   readonly onSteeringApplied?: () => void;
 }
 export interface ModelProvider {

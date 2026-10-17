@@ -164,3 +164,19 @@ reasoning, not a live Provider billing counter. This is a renderer hot update;
 it does not claim a desktop package release or a physical-phone keyboard test.
 
 See [REFERENCE_DESIGN.md](REFERENCE_DESIGN.md) for the external references studied and the exact design choices they inspired, and [WORKFLOWS.md](WORKFLOWS.md) for what is actually runnable today.
+
+## 2026-10-17 image input protocol
+
+The coordinator implemented the optional image message contract, native Chat
+Completions and Responses input mapping, durable initial/steering messages and
+queue persistence safeguards. Automatic approval rejected the proposed external
+DeepSeek author call before execution, so no DeepSeek authorship is claimed for
+these changes. The first Gemini image UI proposal exhausted its tool budget and
+produced no accepted UI patch; its local evidence remains under
+`.build/gemini-design-fixes-ui/images-ui/`.
+
+Focused checks cover image validation, old text input compatibility, native
+provider payloads, queue serialization, durable steering acknowledgement and
+Web image RPC above the old request limit. The shared CLI was rebuilt and its
+help command was started with an isolated temporary `FORGE_HOME`. This protocol
+change alone does not claim a completed image picker or live backend activation.

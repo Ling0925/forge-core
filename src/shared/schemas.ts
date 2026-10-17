@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { createDiffPatch, unavailablePatch } from "./diff";
+import { imageAttachmentsSchema } from "./images";
 
 export type JsonValue =
   | null
@@ -290,6 +291,7 @@ export const messageSchema = z
       .object({
         role: z.literal("user"),
         content: z.string().max(2000000),
+        images: imageAttachmentsSchema.optional(),
         origin: z.literal("agent_reconciliation").optional(),
       })
       .strict(),
@@ -691,15 +693,18 @@ export const createSessionInputSchema = z
   .strict()
   .readonly();
 export type CreateSessionInput = z.infer<typeof createSessionInputSchema>;
+export const textPromptSchema = z.string().trim().min(1).max(1000000);
 export const runInputSchema = z
   .object({
     sessionId: sessionIdSchema,
-    prompt: z.string().trim().min(1).max(1000000),
+    prompt: z.string().trim().max(1000000),
+    images: imageAttachmentsSchema.optional(),
     mode: z.enum(["build", "plan"]).optional(),
     permission: permissionSchema.optional(),
     model: settingsFields.model.optional(),
     providerSourceId: providerSourceIdSchema.optional(),
   })
   .strict()
+  .refine(input => Boolean(input.prompt || input.images?.length), "请输入消息或添加图片。")
   .readonly();
 export type RunInput = z.infer<typeof runInputSchema>;

@@ -297,15 +297,17 @@ export const createAgentRuntime = (
       const drained = control.drainSteering(final);
       check();
       if (drained.length === 0) return false;
-      const prompts: string[] = [];
-      for (const prompt of drained) {
-        const parsed = runInputSchema.safeParse({ ...input, prompt });
+      const messages: Message[] = [];
+      for (const entry of drained) {
+        const steering = typeof entry === "string" ? { prompt: entry, images: undefined } : entry;
+        const parsed = runInputSchema.safeParse({ ...input, images: undefined, ...steering });
         if (!parsed.success)
           throw new ForgeError(
             "invalid_input",
             "Steering prompt failed validation.",
           );
-        prompts.push(parsed.data.prompt);
+        messages.push({ role: "user", content: parsed.data.prompt,
+          ...(parsed.data.images?.length ? { images: parsed.data.images } : {}) });
       }
       if (!snapshot)
         throw new ForgeError("internal", "Session has not loaded.");
@@ -313,7 +315,7 @@ export const createAgentRuntime = (
         ...snapshot,
         messages: [
           ...snapshot.messages,
-          ...prompts.map((content): Message => ({ role: "user", content })),
+          ...messages,
         ],
       };
       await save();
@@ -451,7 +453,7 @@ export const createAgentRuntime = (
         status: "running",
         messages: [
           ...snapshot.messages,
-          { role: "user", content: input.prompt },
+          { role: "user", content: input.prompt, ...(input.images?.length ? { images: input.images } : {}) },
         ],
       };
       await save();

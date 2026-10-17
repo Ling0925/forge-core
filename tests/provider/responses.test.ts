@@ -9,6 +9,7 @@ import { z } from "zod";
 import { ProviderError, createModelProvider } from "../../src/provider/openai";
 import type { Message } from "../../src/shared/schemas";
 import { openSessionStore } from "../../src/store/sessions";
+import { image } from "../fixtures/image";
 const requestBody = z
   .object({
     input: z.array(z.unknown()),
@@ -149,6 +150,18 @@ const run = (
   );
 const classification = (kind: string) => (e: unknown) =>
   e instanceof ProviderError && e.classification === kind;
+
+it("sends image-only and mixed input using native Responses input_image parts", async () => {
+  let received: unknown;
+  const provider = await setup((_request, response, body) => { received = body; send(response, textStream("seen")); });
+  await run(provider, [{ role: "user", content: "old" }, { role: "user", content: "", images: [image] }, { role: "user", content: "describe", images: [image] }]);
+  expect(received).toMatchObject({ input: [
+    { role: "user", content: "old" },
+    { role: "user", content: [{ type: "input_image", image_url: image.dataUrl, detail: "auto" }] },
+    { role: "user", content: [{ type: "input_text", text: "describe" }, { type: "input_image", image_url: image.dataUrl, detail: "auto" }] },
+  ] });
+  expect(JSON.stringify(received)).not.toContain(image.name);
+});
 
 it("forwards reasoning summary deltas as a display preview without touching content", async () => {
   const provider = await setup((_req, res) => {

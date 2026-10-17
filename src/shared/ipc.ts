@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { imageAttachmentsSchema, type ImageAttachment } from "./images";
 import {
   agentEventSchema,
   configureInputSchema,
@@ -315,7 +316,7 @@ export const rpcRequestSchema = z
       })
       .strict(),
     z.object({ ...requestBase, method: z.literal("setRunPermission"), runId: runIdSchema, permission: permissionSchema }).strict(),
-    z.object({ ...requestBase, method: z.literal("steerRun"), runId: runIdSchema, prompt: runInputSchema.unwrap().shape.prompt }).strict(),
+    z.object({ ...requestBase, method: z.literal("steerRun"), runId: runIdSchema, prompt: z.string().trim().max(1000000), images: imageAttachmentsSchema.optional() }).strict(),
     z
       .object({
         ...requestBase,
@@ -498,7 +499,7 @@ export interface ForgeBridge {
   startRun(input: RunInput): Promise<RunHandle>;
   cancelRun(runId: RunId): Promise<void>;
   setRunPermission(runId: RunId, permission: Permission): Promise<Permission>;
-  steerRun(runId: RunId, prompt: string): Promise<void>;
+  steerRun(runId: RunId, prompt: string, images?: readonly ImageAttachment[]): Promise<void>;
   answerApproval(
     runId: RunId,
     approvalId: string,

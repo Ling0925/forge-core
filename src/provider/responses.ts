@@ -215,7 +215,15 @@ export function createResponsesAdapter(h: Helpers, baseUrl: string) {
           used.add(c.id);
           pending.add(c.id);
         }
-      } else result.push({ role: m.role, content: m.content });
+      } else result.push({
+        role: m.role,
+        content: m.role === "user" && m.images?.length
+          ? [
+              ...(m.content ? [{ type: "input_text", text: m.content }] : []),
+              ...m.images.map(image => ({ type: "input_image", image_url: image.dataUrl, detail: "auto" })),
+            ]
+          : m.content,
+      });
     }
     if (pending.size) throw h.protocol();
     return result;
