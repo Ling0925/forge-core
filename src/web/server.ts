@@ -8,7 +8,8 @@ import {
 import { resolve } from "node:path";
 import { WebSocket, WebSocketServer } from "ws";
 import { z } from "zod";
-import { createWorkerController } from "../desktop/controller";
+import type { DesktopRuntime } from "../desktop/runtime";
+import { createRuntimeHub } from "../desktop/runtime";
 import type { HarnessService } from "../shared/contracts";
 import {
   HTML_PREVIEW_CSP,
@@ -28,6 +29,7 @@ import {
   readPreviewFile,
 } from "./html-preview";
 import { SessionDeltaCache } from "./session-delta";
+import { createStaticRenderer } from "./static";
 
 const MAX_BODY = 1024 * 1024;
 const MAX_RPC_BODY = 16 * 1024 * 1024;
@@ -44,8 +46,16 @@ const previewDocumentSchema = z
   .object({ id: z.string().regex(/^[0-9a-f]{48}$/) })
   .strict()
   .readonly();
+const desktopOnly = new Set([
+  "chooseWorkspace",
+  "openExternal",
+  "exportSession",
+]);
 
-async function body(request: IncomingMessage, limit = MAX_BODY): Promise<unknown> {
+async function body(
+  request: IncomingMessage,
+  limit = MAX_BODY,
+): Promise<unknown> {
   let size = 0;
   const chunks: Buffer[] = [];
   for await (const chunk of request) {
@@ -63,15 +73,46 @@ function json(response: ServerResponse, status: number, value: unknown): void {
   response.end(JSON.stringify(value));
 }
 
-export async function createWebHost(options: {
-  service: HarnessService;
+interface WebHostOptions {
   workspace: string;
   host: string;
   port: number;
-}) {
-  const workspace = await realpath(resolve(options.workspace));
+  /**
+   * `true` (default) is the single-workspace Web/standalone behavior: sessions
+   * and launches must belong to the launch workspace. `false` is the desktop
+   * multi-workspace mode where the same service already governs many projects.
+   */
+  restrictWorkspace?: boolean;
+  /** Built renderer (`dist/renderer`) served for packaged LAN hosting. */
+  rendererRoot?: string;
+}
+
+/**
+ * HTTP/WebSocket front end over one shared controller runtime.
+ *
+ * The runtime is injected when a desktop worker already owns it (LAN hosting);
+ * otherwise this host creates and owns it. `close()` never disposes an injected
+ * runtime, because the desktop or another Web page may still be using it.
+ */
+export async function createWebHost(
+  options: WebHostOptions &
+    (
+      | { service: HarnessService; runtime?: undefined }
+      | { runtime: DesktopRuntime; service?: undefined }
+    ),
+) {
+  const restrictWorkspace = options.restrictWorkspace !== false;
+  const requested = resolve(options.workspace);
+  // The restricted mode keeps the original strict realpath contract; the
+  // multi-workspace mode must still start if the launch folder was renamed.
+  const workspace = restrictWorkspace
+    ? await realpath(requested)
+    : await realpath(requested).catch(() => requested);
   const sessionDeltas = new SessionDeltaCache();
   const previews = new HtmlPreviewStore();
+  const renderer = options.rendererRoot
+    ? await createStaticRenderer({ rendererRoot: options.rendererRoot })
+    : undefined;
   const authority = `${options.host}:${options.port}`;
   const origin = `http://${authority}`;
   let sequence = 0;
@@ -81,52 +122,25 @@ export async function createWebHost(options: {
     string,
     { socket: WebSocket | undefined; heartbeat: number; lastSeen: number }
   >();
-  const pending = new Map<string, (response: RpcResponse) => void>();
   const requestIds = new Set<string>();
-  const controller = createWorkerController(options.service, (message) => {
-    if (message.kind === "response") {
-      pending.get(message.response.id)?.(message.response);
-    } else if (message.kind === "event") {
-      const length = Buffer.byteLength(JSON.stringify(message.data));
-      events.push({ cursor: ++sequence, data: message.data, bytes: length });
-      bytes += length;
-      while (
-        events.length > 0 &&
-        (events.length > 5000 || bytes > MAX_EVENT_BYTES)
-      ) {
-        const dropped = events.shift();
-        if (dropped) bytes -= dropped.bytes;
-      }
-      sendEvents([message.data]);
+  const injected = options.runtime;
+  const runtime: DesktopRuntime = injected ?? createRuntimeHub(options.service);
+  const ownsRuntime = injected === undefined;
+  const unsubscribe = runtime.subscribe((message) => {
+    if (message.kind !== "event") return;
+    const length = Buffer.byteLength(JSON.stringify(message.data));
+    events.push({ cursor: ++sequence, data: message.data, bytes: length });
+    bytes += length;
+    while (
+      events.length > 0 &&
+      (events.length > 5000 || bytes > MAX_EVENT_BYTES)
+    ) {
+      const dropped = events.shift();
+      if (dropped) bytes -= dropped.bytes;
     }
+    sendEvents([message.data]);
   });
-  async function dispatch(request: RpcRequest): Promise<RpcResponse> {
-    return new Promise((resolveResponse, reject) => {
-      const timer = setTimeout(() => {
-        pending.delete(request.id);
-        reject(
-          new Error(
-            "Request timed out; its effects are uncertain. Do not retry automatically.",
-          ),
-        );
-      }, 120_000);
-      pending.set(request.id, (response) => {
-        clearTimeout(timer);
-        pending.delete(request.id);
-        resolveResponse(response);
-      });
-      void controller.handle(request).catch(reject);
-    });
-  }
-  const validHost = (request: IncomingMessage): boolean =>
-    request.headers.host === authority;
-  const server = createServer();
-  const sockets = new WebSocketServer({
-    noServer: true,
-    maxPayload: 1024,
-    perMessageDeflate: false,
-  });
-  function sendTo(socket: WebSocket, batch: RunEvent[]): void {
+  const sendTo = (socket: WebSocket, batch: RunEvent[]): void => {
     if (socket.readyState !== WebSocket.OPEN) return;
     if (socket.bufferedAmount > MAX_EVENT_BYTES) {
       socket.terminate();
@@ -138,7 +152,15 @@ export async function createWebHost(options: {
         if (error) socket.terminate();
       },
     );
-  }
+  };
+  const validHost = (request: IncomingMessage): boolean =>
+    request.headers.host === authority;
+  const server = createServer();
+  const sockets = new WebSocketServer({
+    noServer: true,
+    maxPayload: 1024,
+    perMessageDeflate: false,
+  });
   function sendEvents(batch: RunEvent[]): void {
     for (const client of clients.values())
       if (client.socket) sendTo(client.socket, batch);
@@ -215,6 +237,30 @@ export async function createWebHost(options: {
   }, 5000);
   heartbeat.unref();
 
+  // Authorization probes are ordinary runtime reads with their own ids; they
+  // never reuse a page request id, so the no-replay contract is untouched.
+  const snapshotOf = async (
+    sessionId: Parameters<HarnessService["getSession"]>[0],
+  ) => {
+    const response = await runtime
+      .request({
+        id: randomUUID(),
+        method: "getSession",
+        sessionId,
+      } as RpcRequest)
+      .catch(() => undefined);
+    return response?.ok && response.method === "getSession"
+      ? (response.result as SessionSnapshot)
+      : undefined;
+  };
+  const inWorkspace = async (candidate: string): Promise<boolean> => {
+    try {
+      return (await realpath(resolve(candidate))) === workspace;
+    } catch {
+      return false;
+    }
+  };
+
   async function handle(
     request: IncomingMessage,
     response: ServerResponse,
@@ -254,7 +300,7 @@ export async function createWebHost(options: {
             workspace,
             cursor: sequence,
             clientId,
-            recovery: controller.recoveryEvents(),
+            recovery: runtime.recoveryEvents(),
           });
         }
         const requestedClient = request.headers["x-forge-client"];
@@ -289,6 +335,14 @@ export async function createWebHost(options: {
           );
         }
         if (path === "/api/preview/file") {
+          // The preview protocol carries a workspace-relative path but no
+          // session id, so a multi-workspace host cannot tell which project a
+          // page means. Refuse rather than silently read the launch project.
+          if (!restrictWorkspace)
+            return json(response, 403, {
+              error:
+                "File previews are not available while hosting multiple workspaces; attach the file to the conversation instead.",
+            });
           const { path: relative } = previewPathSchema.parse(input);
           client.lastSeen = Date.now();
           let html: string;
@@ -307,41 +361,49 @@ export async function createWebHost(options: {
             htmlPreviewResponseSchema.parse({ url: previews.put(html) }),
           );
         }
+        // Address discovery only: a paired page learns the origin it is already
+        // talking to. There is no password, token or secret in this response.
+        if (path === "/api/pairing") {
+          client.lastSeen = Date.now();
+          return json(response, 200, { url: origin, workspace });
+        }
         if (path !== "/api/rpc")
           return json(response, 404, { error: "Not found" });
         const parsed = rpcRequestSchema.safeParse(input);
         if (!parsed.success)
           return json(response, 400, { error: "Invalid RPC request" });
         const rpc = parsed.data;
-        if (
-          ["chooseWorkspace", "openExternal", "exportSession"].includes(
-            rpc.method,
-          )
-        )
+        if (desktopOnly.has(rpc.method))
           return json(response, 403, { error: "Desktop-only operation" });
-        if (
-          rpc.method === "createSession" &&
-          (await realpath(resolve(rpc.input.workspace))) !== workspace
-        )
-          return json(response, 403, {
-            error: "This server is restricted to its launch workspace",
-          });
         let authorizedSnapshot: SessionSnapshot | undefined;
-        if ("sessionId" in rpc || rpc.method === "startRun") {
-          const id =
-            rpc.method === "startRun"
-              ? rpc.input.sessionId
-              : (
-                  rpc as {
-                    sessionId: Parameters<HarnessService["getSession"]>[0];
-                  }
-                ).sessionId;
-          const session = await options.service.getSession(id);
-          authorizedSnapshot = session;
-          if ((await realpath(session.workspace)) !== workspace)
+        if (restrictWorkspace) {
+          if (
+            rpc.method === "createSession" &&
+            !(await inWorkspace(rpc.input.workspace))
+          )
             return json(response, 403, {
-              error: "Session belongs to another workspace",
+              error: "This server is restricted to its launch workspace",
             });
+          if ("sessionId" in rpc || rpc.method === "startRun") {
+            const id =
+              rpc.method === "startRun"
+                ? rpc.input.sessionId
+                : (
+                    rpc as {
+                      sessionId: Parameters<HarnessService["getSession"]>[0];
+                    }
+                  ).sessionId;
+            const session = await snapshotOf(id);
+            if (!session)
+              return json(response, 403, {
+                error: "The session could not be authorized",
+              });
+            authorizedSnapshot = session;
+            if (!(await inWorkspace(session.workspace)))
+              return json(response, 403, {
+                error: "Session belongs to another workspace",
+              });
+          }
         }
         // Workspace lookups above yield: recheck ownership before any effects.
         if (
@@ -368,16 +430,33 @@ export async function createWebHost(options: {
         const oldestRequest = requestIds.values().next().value;
         if (requestIds.size > 8192 && oldestRequest)
           requestIds.delete(oldestRequest);
-        const result = rpc.method === "getSession" && authorizedSnapshot
-          ? { id: rpc.id, ok: true as const, method: rpc.method, result: authorizedSnapshot }
-          : await dispatch(rpc);
+        const result: RpcResponse =
+          rpc.method === "getSession" && authorizedSnapshot
+            ? {
+                id: rpc.id,
+                ok: true,
+                method: rpc.method,
+                result: authorizedSnapshot,
+              }
+            : await runtime.request(rpc);
         if (result.ok && result.method === "getSession") {
           const base = request.headers["x-forge-snapshot"];
-          const update = sessionDeltas.encode(result.result, typeof base === "string" ? base : undefined);
+          const update = sessionDeltas.encode(
+            result.result,
+            typeof base === "string" ? base : undefined,
+          );
           response.setHeader("X-Forge-Snapshot", update.revision);
-          if (update.delta) return json(response, 200, { ...result, result: { sessionDelta: update.delta } });
+          if (update.delta)
+            return json(response, 200, {
+              ...result,
+              result: { sessionDelta: update.delta },
+            });
         }
-        if (result.ok && result.method === "listSessions") {
+        if (
+          result.ok &&
+          result.method === "listSessions" &&
+          restrictWorkspace
+        ) {
           return json(response, 200, {
             ...result,
             result: result.result.filter(
@@ -414,15 +493,28 @@ export async function createWebHost(options: {
       response.end(html);
       return;
     }
+    // The packaged React renderer, only from the build output directory.
+    if (renderer && (await renderer.handle(request, response, origin))) return;
     next();
   }
-  async function close(): Promise<void> {
+  let closing: Promise<void> | undefined;
+  function close(): Promise<void> {
+    if (closing) return closing;
     clearInterval(heartbeat);
+    unsubscribe();
     for (const socket of sockets.clients) socket.terminate();
     sockets.close();
-    await controller.dispose();
     server.closeAllConnections();
-    await new Promise<void>((done) => server.close(() => done()));
+    const listenerClosed = new Promise<void>((done) => server.close(() => done()));
+    closing = (async () => {
+      try {
+        if (ownsRuntime) await runtime.dispose();
+      } finally {
+        await listenerClosed;
+        clients.clear();
+      }
+    })();
+    return closing;
   }
-  return { server, handle, close, origin, workspace };
+  return { server, handle, close, origin, workspace, runtime, ownsRuntime };
 }

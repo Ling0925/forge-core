@@ -609,6 +609,20 @@ export const agentEventSchema = z
         request: approvalRequestSchema,
       })
       .strict(),
+    // Any attached client may answer an approval, so the authoritative
+    // settlement is broadcast: every other surface drops the same card instead
+    // of waiting for a snapshot refresh. The payload is deliberately minimal
+    // (identifier plus decision) and never carries the request body, command,
+    // tool arguments or any credential. Older stored sessions stay readable
+    // because this is one additional union branch, not a shape change.
+    z
+      .object({
+        ...eventBase,
+        type: z.literal("approval_resolved"),
+        approvalId: z.string().uuid(),
+        approved: z.boolean(),
+      })
+      .strict(),
     z
       .object({
         ...eventBase,
