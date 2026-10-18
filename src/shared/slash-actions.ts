@@ -1,6 +1,7 @@
 import type { ForgeBridge } from "./ipc";
 import { mcpRegisterDtoSchema } from "./ipc";
 import { createSessionInputSchema, type SessionId } from "./schemas";
+import { isPrimarySession } from "./sessions";
 
 // Structural host port: both HarnessService and ForgeBridge satisfy it.
 export type SlashService = Pick<ForgeBridge,
@@ -24,7 +25,7 @@ export const createSlashActions = (service: SlashService) => ({
   archive: (id: SessionId) => service.archiveSession(id, true),
   compact: (id: SessionId, signal?: AbortSignal) => service.compactSession(id, signal),
   plan: async (id: SessionId) => (await service.getSession(id)).plan ?? null,
-  sessions: () => service.listSessions(),
+  sessions: async () => (await service.listSessions()).filter(isPrimarySession),
   diagnostics: (id: SessionId) => service.getDiagnostics(id),
   context: (id: SessionId) => service.getProjectContext(id),
   skills: async (id: SessionId) => (await service.getProjectContext(id)).skills,
