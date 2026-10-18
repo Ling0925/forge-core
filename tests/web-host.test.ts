@@ -76,7 +76,7 @@ async function connectEvents(
   return { ws, received, cursors };
 }
 
-async function setup() {
+async function setup(restrictWorkspace = true) {
   const directory = await mkdtemp(join(tmpdir(), "forge-web-test-"));
   cleanup.push(() => rm(directory, { recursive: true, force: true }));
   const service = await createHarness({
@@ -146,6 +146,7 @@ async function setup() {
     workspace: directory,
     host: "127.0.0.1",
     port: 5173,
+    restrictWorkspace,
   });
   web.server.on("request", (req, res) => {
     void web.handle(req, res, () => {
@@ -170,6 +171,7 @@ async function setup() {
     expect(response.status).toBe(200);
     expect(response.headers.get("set-cookie")).toBeNull();
     const data = await response.json();
+    expect(data.restrictWorkspace).toBe(restrictWorkspace);
     return {
       ...headers,
       "X-Forge-Client": data.clientId as string,
@@ -286,6 +288,32 @@ describe("Web development host", () => {
       stream.received.some((item) => item.event.type === "text_delta"),
     ).toBe(true);
     expect(stream.cursors).toEqual(stream.cursors.map((_, index) => index));
+  });
+
+  it("allows cross-workspace CRUD and runs when the launch restriction is disabled", async () => {
+    const { url, directory, login } = await setup(false);
+    const other = await mkdtemp(join(tmpdir(), "forge-web-other-"));
+    cleanup.push(() => rm(other, { recursive: true, force: true }));
+    const auth = await login();
+    const stream = await connectEvents(url, auth);
+    const rpc = async (data: object) => {
+      const response = await fetch(`${url}/api/rpc`, {
+        method: "POST", headers: auth,
+        body: JSON.stringify({ id: randomUUID(), ...data }),
+      });
+      expect(response.status).toBe(200);
+      const result = await response.json();
+      expect(result.ok).toBe(true);
+      return result.result;
+    };
+    await rpc({ method: "createSession", input: { workspace: directory } });
+    const session = await rpc({ method: "createSession", input: { workspace: other, model: "test-model" } });
+    const listed = await rpc({ method: "listSessions" });
+    expect(listed.map((item: { workspace: string }) => item.workspace).sort()).toEqual([directory, other].sort());
+    expect(await rpc({ method: "getSession", sessionId: session.id })).toMatchObject({ workspace: other });
+    expect(await rpc({ method: "renameSession", sessionId: session.id, title: "Other project" })).toMatchObject({ title: "Other project" });
+    await rpc({ method: "startRun", input: { sessionId: session.id, prompt: "fixture", permission: "readonly" } });
+    await expect.poll(() => stream.received.find(item => item.event.type === "run_finished")?.event).toMatchObject({ status: "completed" });
   });
 
   it("writes a real workspace file through the shared runtime and Web event pipe", async () => {

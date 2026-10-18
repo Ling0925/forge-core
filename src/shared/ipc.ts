@@ -463,6 +463,8 @@ export const workerMessageSchema = z
 export type WorkerMessage = z.infer<typeof workerMessageSchema>;
 
 export interface ForgeBridge {
+  /** Web launch-workspace policy; absent on desktop and older hosts. */
+  readonly restrictWorkspace?: boolean;
   getSettings(): Promise<PublicSettings>;
   updateSettings(input: ConfigureInput): Promise<PublicSettings>;
   listModels(sourceId?: string): Promise<readonly string[]>;

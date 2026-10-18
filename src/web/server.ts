@@ -299,6 +299,7 @@ export async function createWebHost(
           });
           return json(response, 200, {
             workspace,
+            restrictWorkspace,
             cursor: sequence,
             clientId,
             recovery: runtime.recoveryEvents(),
