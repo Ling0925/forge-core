@@ -1,4 +1,4 @@
-import { randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
+import { randomUUID } from "node:crypto";
 import { realpath } from "node:fs/promises";
 import {
   type IncomingMessage,
@@ -29,7 +29,6 @@ import {
 } from "./html-preview";
 import { SessionDeltaCache } from "./session-delta";
 
-const COOKIE = "forge_web_dev";
 const MAX_BODY = 1024 * 1024;
 const MAX_RPC_BODY = 16 * 1024 * 1024;
 // JSON escaping can inflate an inline HTML preview past the default 1 MiB.
@@ -56,11 +55,6 @@ async function body(request: IncomingMessage, limit = MAX_BODY): Promise<unknown
   }
   return JSON.parse(Buffer.concat(chunks).toString("utf8"));
 }
-function equal(a: string, b: string): boolean {
-  const left = Buffer.from(a);
-  const right = Buffer.from(b);
-  return left.length === right.length && timingSafeEqual(left, right);
-}
 function json(response: ServerResponse, status: number, value: unknown): void {
   response.writeHead(status, {
     "Content-Type": "application/json",
@@ -74,16 +68,12 @@ export async function createWebHost(options: {
   workspace: string;
   host: string;
   port: number;
-  token?: string;
 }) {
   const workspace = await realpath(resolve(options.workspace));
-  const token = options.token ?? randomBytes(24).toString("hex");
   const sessionDeltas = new SessionDeltaCache();
   const previews = new HtmlPreviewStore();
-  const cookie = randomBytes(32).toString("hex");
   const authority = `${options.host}:${options.port}`;
   const origin = `http://${authority}`;
-  let authenticatedUntil = 0;
   let sequence = 0;
   let bytes = 0;
   const events: { cursor: number; data: RunEvent; bytes: number }[] = [];
@@ -128,14 +118,6 @@ export async function createWebHost(options: {
       void controller.handle(request).catch(reject);
     });
   }
-  const authenticated = (request: IncomingMessage): boolean => {
-    return (
-      Date.now() < authenticatedUntil &&
-      (request.headers.cookie ?? "")
-        .split(";")
-        .some((part) => part.trim() === `${COOKIE}=${cookie}`)
-    );
-  };
   const validHost = (request: IncomingMessage): boolean =>
     request.headers.host === authority;
   const server = createServer();
@@ -161,13 +143,9 @@ export async function createWebHost(options: {
     for (const client of clients.values())
       if (client.socket) sendTo(client.socket, batch);
   }
-  // Vite's upgrade handler must never expose the dev websocket without authentication.
+  // Keep both event and Vite HMR sockets restricted to the launch origin.
   server.on("upgrade", (request, socket, head) => {
-    if (
-      !validHost(request) ||
-      request.headers.origin !== origin ||
-      !authenticated(request)
-    ) {
+    if (!validHost(request) || request.headers.origin !== origin) {
       socket.destroy();
       return;
     }
@@ -227,8 +205,7 @@ export async function createWebHost(options: {
   const heartbeat = setInterval(() => {
     const now = Date.now();
     for (const [id, client] of clients) {
-      if (now >= authenticatedUntil) client.socket?.terminate();
-      else if (client.socket) {
+      if (client.socket) {
         if (now - client.heartbeat > LEASE_MS) client.socket.terminate();
         else if (client.socket.readyState === WebSocket.OPEN)
           client.socket.ping();
@@ -257,17 +234,6 @@ export async function createWebHost(options: {
       ) {
         return json(response, 403, { error: "Same-origin JSON POST required" });
       }
-      if (
-        path === "/api/connect" &&
-        equal(request.headers.authorization ?? "", `Bearer ${token}`)
-      ) {
-        authenticatedUntil = Date.now() + 12 * 60 * 60 * 1000;
-        response.setHeader(
-          "Set-Cookie",
-          `${COOKIE}=${cookie}; HttpOnly; SameSite=Strict; Path=/; Max-Age=43200`,
-        );
-      } else if (!authenticated(request))
-        return json(response, 401, { error: "Authentication required" });
       try {
         const input = await body(
           request,
@@ -427,20 +393,6 @@ export async function createWebHost(options: {
         });
       }
     }
-    if (!authenticated(request)) {
-      if (request.method !== "GET" || path !== "/")
-        return json(response, 401, { error: "Authentication required" });
-      response.writeHead(200, {
-        "Content-Type": "text/html; charset=utf-8",
-        "Cache-Control": "no-store",
-        "Content-Security-Policy":
-          "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; connect-src 'self'; frame-ancestors 'none'; form-action 'none'",
-      });
-      response.end(
-        `<!doctype html><html lang="zh-CN"><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>Forge Web 登录</title><style>body{font:16px system-ui;max-width:520px;margin:12vh auto;padding:24px;background:#f7f5ef;color:#292b26}input,button{font:inherit;padding:12px;box-sizing:border-box;width:100%;margin:8px 0}p{line-height:1.6}</style><h1>Forge Web Dev</h1><p>请输入服务启动时打印的访问口令。此页面能操作服务器文件并执行命令，仅限可信局域网使用，请勿向公网开放。</p><form><input type="password" autocomplete="off" required aria-label="访问口令" placeholder="访问口令"><button>连接工作台</button></form><p id="status"></p><script>document.querySelector('form').onsubmit=async(e)=>{e.preventDefault();const s=document.querySelector('#status');s.textContent='连接中…';try{const r=await fetch('/api/connect',{method:'POST',headers:{'Content-Type':'application/json',Authorization:'Bearer '+document.querySelector('input').value},body:'{}'});if(!r.ok)throw Error();location.reload()}catch{s.textContent='连接失败，请检查口令。'}}</script></html>`,
-      );
-      return;
-    }
     if (path === "/favicon.ico") {
       response.writeHead(204);
       response.end();
@@ -472,5 +424,5 @@ export async function createWebHost(options: {
     server.closeAllConnections();
     await new Promise<void>((done) => server.close(() => done()));
   }
-  return { server, handle, close, token, origin, workspace };
+  return { server, handle, close, origin, workspace };
 }

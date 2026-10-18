@@ -146,7 +146,6 @@ async function setup() {
     workspace: directory,
     host: "127.0.0.1",
     port: 5173,
-    token: "test-passphrase",
   });
   web.server.on("request", (req, res) => {
     void web.handle(req, res, () => {
@@ -165,16 +164,14 @@ async function setup() {
   async function login() {
     const response = await fetch(`${url}/api/connect`, {
       method: "POST",
-      headers: { ...headers, Authorization: "Bearer test-passphrase" },
+      headers,
       body: "{}",
     });
     expect(response.status).toBe(200);
+    expect(response.headers.get("set-cookie")).toBeNull();
     const data = await response.json();
-    const cookie = response.headers.get("set-cookie")?.split(";")[0];
-    if (!cookie) throw new Error("Missing cookie");
     return {
       ...headers,
-      Cookie: cookie,
       "X-Forge-Client": data.clientId as string,
     };
   }
@@ -205,14 +202,14 @@ describe("Web development host", () => {
     const listed = await rpc({ method: "listSessions" });
     expect(JSON.stringify(listed)).not.toContain("data:image/");
   });
-  it("protects source, API and exact host/origin; sets an HttpOnly cookie", async () => {
+  it("opens directly without a password or cookie while retaining host/origin and page checks", async () => {
     const { url, headers, login } = await setup();
-    expect((await fetch(url, { headers })).status).toBe(200);
-    expect((await fetch(`${url}/main.tsx`, { headers })).status).toBe(401);
+    expect(await (await fetch(url, { headers })).text()).toBe("vite content");
+    expect((await fetch(`${url}/main.tsx`, { headers })).status).toBe(200);
     expect(
       (await fetch(`${url}/api/rpc`, { method: "POST", headers, body: "{}" }))
         .status,
-    ).toBe(401);
+    ).toBe(410);
     expect((await fetch(url)).status).toBe(403);
     const auth = await login();
     expect((await fetch(`${url}/main.tsx`, { headers: auth })).status).toBe(
@@ -603,9 +600,8 @@ describe("Web development host", () => {
     expect(document.headers.get("x-frame-options")).toBe("SAMEORIGIN");
     expect(await document.text()).toBe(markup);
 
-    // Previews require the session cookie, like every other authenticated page.
-    const { Cookie: _cookie, ...unauthenticated } = auth;
-    expect((await fetch(`${url}${inlineUrl}`, { headers: unauthenticated })).status).toBe(401);
+    // Preview documents also work without a login cookie or page connection id.
+    expect((await fetch(`${url}${inlineUrl}`, { headers: { Host: auth.Host } })).status).toBe(200);
     expect((await fetch(`${url}/preview/document?id=${"0".repeat(48)}`, { headers: auth })).status).toBe(404);
     expect((await post("/api/preview", { html: "x" }, { ...auth, Origin: "http://evil.invalid" })).status).toBe(403);
 
