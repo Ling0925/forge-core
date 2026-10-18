@@ -43,6 +43,7 @@ export function createTransportBridge(transport: BridgeTransport): ForgeBridge {
     listSessions: () => request("listSessions"),
     createSession: (input) => request("createSession", { input }),
     getSession: (sessionId) => request("getSession", { sessionId }),
+    getPublishedFile: (sessionId, fileId) => request("getPublishedFile", { sessionId, fileId }),
     compactSession: (sessionId) => request("compactSession", { sessionId }),
     forkSession: (sessionId, boundary) => request("forkSession", { sessionId, boundary }),
     renameSession: (sessionId, title) => request("renameSession", { sessionId, title }),

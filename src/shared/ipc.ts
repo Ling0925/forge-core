@@ -1,5 +1,6 @@
 import { z } from "zod";
 import type { HtmlPreviewResponse } from "./html-preview";
+import { publishedFileIdSchema, publishedFileResponseSchema, type PublishedFileResponse } from "./published-files";
 import { type ImageAttachment, imageAttachmentsSchema } from "./images";
 import {
   agentEventSchema,
@@ -182,6 +183,7 @@ export const rpcRequestSchema = z
         sessionId: sessionIdSchema,
       })
       .strict(),
+    z.object({ ...requestBase, method: z.literal("getPublishedFile"), sessionId: sessionIdSchema, fileId: publishedFileIdSchema }).strict(),
     z
       .object({
         ...requestBase,
@@ -288,6 +290,7 @@ export const rpcRequestSchema = z
       })
       .strict(),
     z.object({ ...requestBase, method: z.literal("chooseWorkspace") }).strict(),
+    z.object({ ...requestBase, method: z.literal("savePublishedFile"), sessionId: sessionIdSchema, fileId: publishedFileIdSchema }).strict(),
     z
       .object({
         ...requestBase,
@@ -334,12 +337,12 @@ export const workerRequestSchema = rpcRequestSchema.refine(
   (request) =>
     request.method !== "chooseWorkspace" &&
     request.method !== "openExternal" &&
-    request.method !== "exportSession",
+    request.method !== "exportSession" && request.method !== "savePublishedFile",
   "Workspace chooser is main-process only",
 );
 export type WorkerRequest = Exclude<
   RpcRequest,
-  { readonly method: "chooseWorkspace" | "openExternal" | "exportSession" }
+  { readonly method: "chooseWorkspace" | "openExternal" | "exportSession" | "savePublishedFile" }
 >;
 const success = <M extends RpcRequest["method"], S extends z.ZodTypeAny>(
   method: M,
@@ -361,6 +364,7 @@ export const rpcResponseSchema = z.union([
   success("listSessions", z.array(sessionSummarySchema).readonly()),
   success("createSession", sessionSnapshotSchema),
   success("getSession", sessionSnapshotSchema),
+  success("getPublishedFile", publishedFileResponseSchema),
   success("compactSession", sessionSnapshotSchema),
   success("forkSession", sessionSnapshotSchema),
   success("renameSession", sessionSnapshotSchema),
@@ -392,6 +396,7 @@ export const rpcResponseSchema = z.union([
   success("openExternal", z.null()),
   success("chooseWorkspace", z.string().min(1).max(4096).nullable()),
   success("exportSession", z.boolean()),
+  success("savePublishedFile", z.boolean()),
   success("cancelSession", z.boolean()),
   success("startRun", runHandleSchema),
   success("cancelRun", z.null()),
@@ -409,6 +414,7 @@ export const rpcResponseSchema = z.union([
         "listSessions",
         "createSession",
         "getSession",
+        "getPublishedFile",
         "compactSession",
         "forkSession",
         "renameSession",
@@ -426,6 +432,7 @@ export const rpcResponseSchema = z.union([
         "openExternal",
         "chooseWorkspace",
         "exportSession",
+        "savePublishedFile",
         "cancelSession",
         "startRun",
         "cancelRun",
@@ -462,6 +469,7 @@ export interface ForgeBridge {
   listSessions(): Promise<readonly SessionSummary[]>;
   createSession(input: CreateSessionInput): Promise<SessionSnapshot>;
   getSession(sessionId: SessionId): Promise<SessionSnapshot>;
+  getPublishedFile(sessionId: SessionId, fileId: string): Promise<PublishedFileResponse>;
   compactSession(sessionId: SessionId): Promise<SessionSnapshot>;
   forkSession(
     sessionId: SessionId,
@@ -513,6 +521,8 @@ export interface ForgeBridge {
    */
   previewHtml?(html: string): Promise<HtmlPreviewResponse>;
   previewFile?(path: string): Promise<HtmlPreviewResponse>;
+  /** Desktop native save dialog. No renderer-chosen output path or content. */
+  savePublishedFile?(sessionId: SessionId, fileId: string): Promise<boolean>;
 }
 
 declare global {

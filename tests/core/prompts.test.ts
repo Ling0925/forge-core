@@ -38,7 +38,8 @@ describe("system instructions", () => {
     expect(prompt).toContain("bounded to 300 per run");
     expect(prompt).toContain("Role: primary agent.");
     expect(prompt).not.toContain("Plan mode: read-only analysis.");
-    expect(prompt.length).toBeLessThan(5000);
+    expect(prompt).toContain("use publish_file after creating it");
+    expect(prompt.length).toBeLessThan(6500);
   });
 
   it("omits empty context and keeps the policy prefix stable across run modes", () => {

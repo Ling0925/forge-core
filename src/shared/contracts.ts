@@ -94,6 +94,7 @@ export interface HarnessService {
   listSessions(): Promise<readonly SessionSummary[]>;
   createSession(input: CreateSessionInput): Promise<SessionSnapshot>;
   getSession(id: SessionId): Promise<SessionSnapshot>;
+  getPublishedFile?(sessionId: SessionId, fileId: string): Promise<import("./published-files").PublishedFileResponse>;
   run(
     input: RunInput,
     onEvent: EventSink,

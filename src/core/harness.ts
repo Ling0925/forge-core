@@ -27,6 +27,9 @@ import type {
   SessionSnapshot,
 } from "../shared/schemas";
 import { createCheckpointStore } from "../store/checkpoints";
+import { openPublishedFileStore } from "../store/published-files";
+import { collectPublishedFiles, publishedFileIdSchema } from "../shared/published-files";
+import { createPublishedFileTool } from "../tools/published-files";
 import { openSessionStore } from "../store/sessions";
 import { openSettingsStore } from "../store/settings";
 import { createCombinedToolRegistry } from "../tools/combined";
@@ -108,6 +111,7 @@ export const createHarness = async (
     openSettingsStore(directory),
     openRunMemory(directory),
   ]);
+  const publishedFiles = await openPublishedFileStore(directory);
   const mcp = await createMcpService({ home: directory });
   const liveMcp = new Set<Awaited<ReturnType<typeof createMcpService>>>();
   // Keep live access and a bounded recent history without retaining disposed tools.
@@ -148,6 +152,7 @@ export const createHarness = async (
       await context.refresh();
       const combined = createCombinedToolRegistry(
         local,
+        ...(!options.toolFactory ? [await createPublishedFileTool(workspace, publishedFiles, { protectedRoots: [directory], redactValues: [apiKey] })] : []),
         createSkillTool(context),
       );
       const ownedService = service;
@@ -512,6 +517,17 @@ export const createHarness = async (
     async getSession(id) {
       check();
       return store.get(sessionIdSchema.parse(id));
+    },
+    async getPublishedFile(rawSessionId, rawFileId) {
+      check();
+      const session = await store.get(sessionIdSchema.parse(rawSessionId));
+      const fileId = publishedFileIdSchema.parse(rawFileId);
+      const referenced = collectPublishedFiles(session.messages).find(file => file.id === fileId);
+      if (!referenced) throw new ForgeError("not_found", "This session does not contain that attachment.");
+      const response = await publishedFiles.get(fileId);
+      if (JSON.stringify(response.file) !== JSON.stringify(referenced))
+        throw new ForgeError("storage", "Attachment metadata does not match the published snapshot.");
+      return response;
     },
     async createSession(raw) {
       check();

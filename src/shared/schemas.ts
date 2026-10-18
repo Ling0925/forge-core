@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { createDiffPatch, unavailablePatch } from "./diff";
 import { imageAttachmentsSchema } from "./images";
+import { publishedFilesSchema } from "./published-files";
 
 export type JsonValue =
   | null
@@ -408,6 +409,7 @@ export const toolResultSchema = z
     content: z.string().max(131072),
     isError: z.boolean(),
     changes: z.array(fileChangeSchema).max(256).readonly().optional(),
+    files: publishedFilesSchema.optional(),
   })
   .strict()
   .readonly();

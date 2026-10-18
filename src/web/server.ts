@@ -50,6 +50,7 @@ const desktopOnly = new Set([
   "chooseWorkspace",
   "openExternal",
   "exportSession",
+  "savePublishedFile",
 ]);
 
 async function body(
