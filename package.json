@@ -27,15 +27,16 @@
     "browser:install": "playwright install chromium"
   },
   "dependencies": {
+    "@anthropic-ai/sdk": "^0.135.0",
     "@fontsource-variable/geist": "^5.3.0",
     "@fontsource-variable/geist-mono": "^5.3.0",
     "@phosphor-icons/react": "^2.1.7",
     "cli-highlight": "^2.1.11",
     "commander": "^13.1.0",
     "ink": "6.6.0",
-    "ky": "^1.8.1",
     "marked": "^15.0.12",
     "marked-terminal": "^7.3.0",
+    "openai": "^7.35.0",
     "playwright": "^1.51.1",
     "react": "^19.0.0",
     "react-dom": "^19.0.0",

@@ -7,6 +7,16 @@ const dirs: string[] = [];
 afterEach(async () => { vi.unstubAllEnvs(); await Promise.all(dirs.splice(0).map(dir => rm(dir, { recursive: true, force: true }))); });
 const fixture = async () => { const dir = await mkdtemp(join(tmpdir(), 'forge-source-store-')); dirs.push(dir); return dir; };
 const source = (id: string) => ({ id, label: id.toUpperCase(), baseUrl: `https://${id}.test/v1`, model: `${id}/model`, apiMode: 'chat-completions' as const });
+it('persists Anthropic protocol and output limits through source activation and reopen', async () => {
+  const dir = await fixture();
+  const store = await openSettingsStore(dir);
+  await store.update({ settings: { maxOutputTokens: 4096 } });
+  await store.update({ source: { type: 'save', source: { ...source('claude'), apiMode: 'anthropic' }, apiKey: 'fixture-claude' } });
+  const reopened = await openSettingsStore(dir);
+  expect(await reopened.getProviderConfig()).toMatchObject({ apiMode: 'anthropic', maxOutputTokens: 4096 });
+  expect(await reopened.getProviderConfig('claude')).toMatchObject({ apiMode: 'anthropic', maxOutputTokens: 4096 });
+  expect(JSON.stringify(await reopened.getPublic())).not.toContain('fixture-claude');
+});
 it('migrates legacy transaction without exposing keys and preserves source on reopen', async () => {
   const dir = await fixture(); await mkdir(join(dir, 'settings'), { mode: 0o700 });
   await writeFile(join(dir, 'settings/state.json'), JSON.stringify({ version: 1, settings: { baseUrl: 'https://old.test/v1', model: 'old/model', apiMode: 'responses' }, apiKey: 'fixture-old' }), { mode: 0o600 });

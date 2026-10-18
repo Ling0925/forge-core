@@ -61,7 +61,8 @@ export const lspServersSchema = z.array(lspServerSchema).max(8).readonly().refin
   "LSP server IDs and file extensions must be unique",
 ).refine(servers => JSON.stringify(servers).length <= 24000, "LSP configuration is too large");
 export const settingsFields = {
-  apiMode: z.enum(["chat-completions", "responses"]).optional(),
+  apiMode: z.enum(["chat-completions", "responses", "anthropic"]).optional(),
+  maxOutputTokens: z.number().int().min(1).max(1000000).optional(),
   reasoningEffort: z
     .enum(["default", "none", "minimal", "low", "medium", "high", "xhigh"])
     .optional(),
@@ -218,6 +219,7 @@ export const providerConfigSchema = z
     apiKey: apiKeySchema,
     apiMode: settingsFields.apiMode,
     reasoningEffort: settingsFields.reasoningEffort,
+    maxOutputTokens: settingsFields.maxOutputTokens,
     requestTimeoutMs: settingsFields.requestTimeoutMs,
   })
   .strict()
@@ -264,7 +266,7 @@ export type ToolDefinition = z.infer<typeof toolDefinitionSchema>;
 export const providerStateSchema = z
   .object({
     version: z.literal(1),
-    apiMode: z.literal("responses"),
+    apiMode: z.enum(["responses", "anthropic"]),
     baseUrl: settingsFields.baseUrl,
     model: settingsFields.model,
     output: z.array(jsonObjectSchema).max(256).readonly(),

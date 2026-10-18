@@ -18,7 +18,7 @@ Parse unknown persisted, HTTP, IPC and tool-argument data at the receiving bound
 | --- | --- |
 | `src/core/harness.ts` | `createHarness(options?: HarnessOptions): Promise<HarnessService>`; orchestration/defaults |
 | `src/core/runtime.ts` | `createAgentRuntime(dependencies: AgentRuntimeDependencies): AgentRuntime`; original bounded loop |
-| `src/provider/openai.ts` | `createModelProvider(config: ProviderConfig): ModelProvider`; ky transport |
+| `src/provider/openai.ts` | `createModelProvider(config: ProviderConfig): ModelProvider`; OpenAI SDK and Anthropic SDK adapters |
 | `src/tools/local.ts` | `createLocalToolRegistry(workspace: string): Promise<LocalToolRegistry>`; original read/list/search/write/edit/exec adapters |
 | `src/tools/browser.ts` | `createBrowserTools(options: BrowserToolOptions): Promise<LocalToolRegistry>`; optional original Playwright adapters |
 | `src/store/sessions.ts` | `openSessionStore(directory: string): Promise<SessionStore>` |
@@ -95,7 +95,7 @@ These modules build on the foundation without copying any existing harness. They
 
 ### Provider API modes (`src/provider/**`)
 
-- Explicit `apiMode?: 'chat-completions'|'responses'` (default `chat-completions`). The provider **never** auto-detects, falls back, or replays across modes/models. Responses uses native `function_call`/`function_call_output`, strict terminal checks, and reported cached-input usage; opaque reasoning items are persisted on the exact assistant message as versioned `providerState` and replayed only against a matching origin, with old absent-state readable. No native Anthropic or Gemini adapters. Details in [PROVIDERS.md](PROVIDERS.md).
+- Explicit `apiMode?: 'chat-completions'|'responses'|'anthropic'` (default `chat-completions`). The provider **never** auto-detects, falls back, or replays across modes/models. Responses uses native `function_call`/`function_call_output`, strict terminal checks, and reported cached-input usage; opaque reasoning items are persisted on the exact assistant message as versioned `providerState` and replayed only against a matching origin, with old absent-state readable. Anthropic uses native Messages, signed thinking continuation and SDK model pagination. No native Gemini adapter. Details in [PROVIDERS.md](PROVIDERS.md).
 
 ### Host bridge, CLI and desktop surfaces
 
@@ -111,7 +111,7 @@ Private ProviderConfig requires a valid nonempty endpoint and validated key and 
 
 Before listModels, provider creation or run network use, reject unconfigured settings with an actionable typed invalid_input failure asking the user to configure endpoint and model. An explicit run model override does not bypass this guard. Validate ProviderConfig before transport and validate the completion model before a request; invalid boundaries must not initiate network calls.
 
-Transport uses ky with explicit timeout=requestTimeoutMs and explicit retry policy. Completion POST uses retry.limit=0 to prevent duplicate generations; listModels GET may use a small bounded retry policy. Normalize responses/stream chunks through schemas, honor cancellation and test malformed bodies, timeout and streamed tool-call assembly. Tool arguments remain strings until tool dispatch. No provider engine dependency.
+Transport uses the official OpenAI and Anthropic SDKs with `maxRetries: 0` for generation. OpenAI catalog GET retains one bounded retry. `sdk-transport.ts` enforces the generation idle deadline, catalog total deadline, byte limits and safe error classification; SDKs own HTTP and SSE decoding. Normalize responses/stream chunks through schemas, honor cancellation and test malformed bodies, timeout and streamed tool-call assembly. Tool arguments remain strings until tool dispatch. No provider engine dependency.
 
 ## Runtime and persistence
 

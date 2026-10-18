@@ -1,8 +1,12 @@
-import ky from "ky";
+import OpenAI from "openai";
+import { createAnthropicProvider } from "./anthropic";
+import { ProviderError, protocol, httpError } from "./errors";
+import { sdkEvents, withSdkRequest } from "./sdk-transport";
+export { ProviderError } from "./errors";
+export type { ProviderFailure } from "./errors";
 import { z } from "zod";
 import type { ModelProvider } from "../shared/contracts";
 import { ForgeError } from "../shared/errors";
-import type { ProtocolReason } from "../shared/errors";
 import {
   messageSchema,
   providerConfigSchema,
@@ -20,41 +24,7 @@ import type {
 } from "../shared/schemas";
 import { createResponsesAdapter } from "./responses";
 
-export type ProviderFailure =
-  | "http"
-  | "protocol"
-  | "network"
-  | "timeout"
-  | "aborted"
-  | "observer";
-export class ProviderError extends ForgeError {
-  readonly classification: ProviderFailure;
-  readonly status: number | undefined;
-  readonly reason: ProtocolReason | undefined;
-  constructor(
-    classification: ProviderFailure,
-    message: string,
-    retryable = false,
-    status?: number,
-    reason?: ProtocolReason,
-  ) {
-    super(
-      "provider",
-      classification === "protocol" || classification === "http"
-        ? `${message} [${classification}${status === undefined ? "" : ` HTTP ${status}`}]${reason === undefined ? "" : ` (${reason})`}`
-        : message,
-      retryable,
-    );
-    this.name = "ProviderError";
-    this.classification = classification;
-    this.status = status;
-    this.reason = reason;
-  }
-}
-
 const MAX_BODY = 8_000_000;
-const MAX_EVENT = 1_200_000;
-const MAX_LINE = 1_200_000;
 const MAX_TEXT = 2_000_000;
 // Persisted display-only reasoning preview; bounded so a chatty gateway cannot
 // inflate the session transcript. Must match assistantMessageSchema.reasoning.
@@ -128,12 +98,16 @@ const jsonResponseSchema = z.object({
   usage: usageWire.nullable().optional(),
 });
 const modelsSchema = z.object({
-  data: z.array(z.object({
-    id: z.string().trim().min(1).max(256),
-    context_length: z.unknown().optional(),
-    context_window: z.unknown().optional(),
-    max_model_len: z.unknown().optional(),
-  })).max(10000),
+  data: z
+    .array(
+      z.object({
+        id: z.string().trim().min(1).max(256),
+        context_length: z.unknown().optional(),
+        context_window: z.unknown().optional(),
+        max_model_len: z.unknown().optional(),
+      }),
+    )
+    .max(10000),
 });
 const unsupportedSchema = z.object({
   error: z.object({
@@ -142,17 +116,6 @@ const unsupportedSchema = z.object({
     code: z.string().nullable().optional(),
   }),
 });
-const protocol = (
-  reason: ProtocolReason = "invalid_response",
-): ProviderError =>
-  new ProviderError(
-    "protocol",
-    "The provider returned an invalid or incomplete response.",
-    false,
-    undefined,
-    reason,
-  );
-
 // Limit nesting before JSON.parse, including unknown metadata that Zod strips.
 const parseJson = (text: string): unknown => {
   if (text.length > MAX_BODY) throw protocol("output_limit");
@@ -188,26 +151,6 @@ const normalizeUsage = (
     totalTokens: usage.total_tokens,
     ...(cached == null ? {} : { cachedPromptTokens: cached }),
   };
-};
-const httpError = (status: number): ProviderError => {
-  const message =
-    status === 401 || status === 403
-      ? "Provider authorization was rejected. Check provider credentials and access."
-      : status === 404
-        ? "The provider resource was not found. Check endpoint and model."
-        : status === 408
-          ? "The provider request timed out."
-          : status === 429
-            ? "The provider rate limit was reached."
-            : status >= 500
-              ? "The provider is temporarily unavailable."
-              : "The provider rejected the request.";
-  return new ProviderError(
-    "http",
-    message,
-    status === 408 || status === 429 || status >= 500,
-    status,
-  );
 };
 const checkFinish = (
   reason: string | undefined,
@@ -268,52 +211,8 @@ const notifyToolCall = (
   }
 };
 
-// Per-response request activity; weak keys cannot retain completed response bodies.
-const responseActivity = new WeakMap<Response, { signal: AbortSignal; touch: () => void }>();
-
-async function consumeBytes(
-  response: Response,
-  onBytes: (bytes: Uint8Array) => void,
-): Promise<void> {
-  if (!response.body) throw protocol();
-  const reader = response.body.getReader();
-  const activity = responseActivity.get(response);
-  // Explicitly cancel the locked reader too: some transports do not promptly
-  // reject an outstanding body read when their request signal is aborted.
-  const cancel = (): void => { void reader.cancel().catch(() => {}); };
-  activity?.signal.addEventListener("abort", cancel, { once: true });
-  let total = 0;
-  try {
-    for (;;) {
-      activity?.signal.throwIfAborted();
-      const item = await reader.read();
-      activity?.signal.throwIfAborted();
-      if (item.done) break;
-      // Includes reasoning, tool arguments, partial UTF-8/SSE frames and comments.
-      // UI animation is not network activity and cannot extend this deadline.
-      if (item.value.byteLength) activity?.touch();
-      total += item.value.byteLength;
-      if (total > MAX_BODY) throw protocol();
-      onBytes(item.value);
-    }
-  } finally {
-    activity?.signal.removeEventListener("abort", cancel);
-    responseActivity.delete(response);
-    try {
-      await reader.cancel();
-    } catch {
-      /* A failed transport may already be closed. */
-    }
-    reader.releaseLock();
-  }
-}
 async function readText(response: Response): Promise<string> {
-  const decoder = new TextDecoder("utf-8", { fatal: true });
-  let text = "";
-  await consumeBytes(response, (bytes) => {
-    text += decoder.decode(bytes, { stream: true });
-  });
-  return text + decoder.decode();
+  return response.text();
 }
 
 async function readStream(
@@ -322,10 +221,6 @@ async function readStream(
   onReasoning: (text: string) => void = () => {},
   onToolCall: (preview: ToolCallPreview) => void = () => {},
 ): Promise<ProviderResponse> {
-  const decoder = new TextDecoder("utf-8", { fatal: true });
-  let pending = "";
-  let data: string[] = [];
-  let eventSize = 0;
   let text = "";
   let reasoning = "";
   let finish: string | undefined;
@@ -335,11 +230,7 @@ async function readStream(
     number,
     Readonly<{ id: string; type: string; name: string; arguments: string }>
   >();
-  const dispatch = (): void => {
-    if (data.length === 0) return;
-    const payload = data.join("\n");
-    data = [];
-    eventSize = 0;
+  const dispatch = (payload: string): void => {
     if (payload === "[DONE]") {
       // Some gateways duplicate the terminal sentinel. Final assembly below
       // still validates the finish reason and complete native calls.
@@ -375,10 +266,20 @@ async function readStream(
       // Reasoning preview is display-only: bounded and never part of content.
       if (delta.reasoning_content) {
         if (reasoning.length < MAX_REASONING) {
-          reasoning += delta.reasoning_content.slice(0, MAX_REASONING - reasoning.length);
+          reasoning += delta.reasoning_content.slice(
+            0,
+            MAX_REASONING - reasoning.length,
+          );
         }
-        for (let start = 0; start < delta.reasoning_content.length; start += 65536)
-          notify(onReasoning, delta.reasoning_content.slice(start, start + 65536));
+        for (
+          let start = 0;
+          start < delta.reasoning_content.length;
+          start += 65536
+        )
+          notify(
+            onReasoning,
+            delta.reasoning_content.slice(start, start + 65536),
+          );
       }
       for (const part of delta.tool_calls ?? []) {
         const previous = calls.get(part.index) ?? {
@@ -411,42 +312,7 @@ async function readStream(
       if (choice.finish_reason) finish = choice.finish_reason;
     }
   };
-  const line = (value: string): void => {
-    if (value.length > MAX_LINE) throw protocol("output_limit");
-    if (value === "") {
-      dispatch();
-      return;
-    }
-    if (value.startsWith(":")) return;
-    const colon = value.indexOf(":");
-    const field = colon < 0 ? value : value.slice(0, colon);
-    let content = colon < 0 ? "" : value.slice(colon + 1);
-    if (content.startsWith(" ")) content = content.slice(1);
-    if (field === "data") {
-      eventSize += content.length + 1;
-      if (eventSize > MAX_EVENT) throw protocol("output_limit");
-      data.push(content);
-    } else if (field !== "event" && field !== "id" && field !== "retry")
-      throw protocol("unexpected_frame");
-  };
-  const feed = (value: string): void => {
-    pending += value;
-    for (;;) {
-      const newline = pending.indexOf("\n");
-      if (newline < 0) break;
-      const raw = pending.slice(0, newline);
-      pending = pending.slice(newline + 1);
-      line(raw.endsWith("\r") ? raw.slice(0, -1) : raw);
-    }
-    if (pending.length > MAX_LINE) throw protocol("output_limit");
-  };
-  await consumeBytes(response, (bytes) =>
-    feed(decoder.decode(bytes, { stream: true })),
-  );
-  feed(decoder.decode());
-  // A clean EOF without [DONE] is compatible, but not an unterminated event.
-  if (pending.length > 0 || data.length > 0)
-    throw protocol("unterminated_event");
+  for await (const event of sdkEvents(response)) dispatch(event.data);
   const assembled: ToolCall[] = [];
   const entries = [...calls.entries()].sort(([a], [b]) => a - b);
   for (const [index, call] of entries) {
@@ -480,103 +346,38 @@ export function createModelProvider(config: ProviderConfig): ModelProvider {
       false,
     );
   const settings = parsedConfig.data;
+  if (settings.apiMode === "anthropic")
+    return createAnthropicProvider(settings);
   const base = settings.baseUrl.replace(/\/+$/, "");
   const responses = createResponsesAdapter(
-    { protocol, parseJson, consumeBytes, notify, notifyToolCall },
+    { protocol, parseJson, events: sdkEvents, notify, notifyToolCall },
     base,
   );
-  const headers = settings.apiKey
-    ? { Authorization: `Bearer ${settings.apiKey}` }
-    : {};
-  const execute = async <T>(
-    signal: AbortSignal | undefined,
-    operation: (combined: AbortSignal, trackResponse: (response: Response) => Response) => Promise<T>,
-    idleTimeout = false,
-  ): Promise<T> => {
-    const controller = new AbortController();
-    let timedOut = false;
-    let settled = false;
-    const timeoutMessage = idleTimeout
-      ? `The provider sent no data for ${settings.requestTimeoutMs} ms (idle timeout).`
-      : "The provider request timed out.";
-    const abort = (): void => controller.abort();
-    signal?.addEventListener("abort", abort, { once: true });
-    if (signal?.aborted) controller.abort();
-    const timer = setTimeout(() => {
-      timedOut = true;
-      controller.abort();
-    }, settings.requestTimeoutMs);
-    const activity = (): void => {
-      if (idleTimeout && !settled && !controller.signal.aborted) timer.refresh();
-    };
-    const trackResponse = (response: Response): Response => {
-      activity(); // Headers arrived; start the body idle interval.
-      responseActivity.set(response, { signal: controller.signal, touch: activity });
-      return response;
-    };
-    try {
-      if (controller.signal.aborted)
-        throw new ProviderError(
-          "aborted",
-          "The provider request was cancelled.",
-        );
-      const result = await operation(controller.signal, trackResponse);
-      if (controller.signal.aborted)
-        throw new ProviderError(
-          timedOut ? "timeout" : "aborted",
-          timedOut
-            ? timeoutMessage
-            : "The provider request was cancelled.",
-          timedOut,
-        );
-      return result;
-    } catch (error: unknown) {
-      if (error instanceof ProviderError) throw error;
-      if (signal?.aborted)
-        throw new ProviderError(
-          "aborted",
-          "The provider request was cancelled.",
-        );
-      if (timedOut || (error instanceof Error && error.name === "TimeoutError"))
-        throw new ProviderError(
-          "timeout",
-          timeoutMessage,
-          true,
-        );
-      if (
-        error instanceof z.ZodError ||
-        error instanceof SyntaxError ||
-        (error instanceof TypeError && error.message.includes("encoded data"))
-      )
-        throw protocol();
-      throw new ProviderError(
-        "network",
-        "The provider connection failed.",
-        true,
-      );
-    } finally {
-      settled = true;
-      clearTimeout(timer);
-      signal?.removeEventListener("abort", abort);
-      controller.abort();
-    }
-  };
+  const clientFor = (fetch: typeof globalThis.fetch) =>
+    new OpenAI({
+      apiKey: settings.apiKey || "forge-no-auth",
+      adminAPIKey: null,
+      baseURL: base,
+      maxRetries: 0,
+      timeout: settings.requestTimeoutMs,
+      fetch,
+      logLevel: "off",
+      organization: null,
+      project: null,
+      defaultHeaders: {
+        Authorization: settings.apiKey ? `Bearer ${settings.apiKey}` : null,
+      },
+    });
   const windows = new Map<string, number | null>();
   let catalogLoaded = false;
   const listModels = (signal?: AbortSignal) =>
-      execute(signal, async (combined, trackResponse) => {
-        const response = await ky.get(`${base}/models`, {
-          headers,
-          signal: combined,
-          timeout: settings.requestTimeoutMs,
-          retry: {
-            limit: 1,
-            methods: ["get"],
-            statusCodes: [408, 429, 500, 502, 503, 504],
-            retryOnTimeout: false,
-          },
-          throwHttpErrors: false,
-        }).then(trackResponse);
+    withSdkRequest(
+      settings,
+      { signal, idle: false },
+      async ({ signal: combined, fetch }) => {
+        const response = await clientFor(fetch)
+          .models.list({ signal: combined, maxRetries: 1 })
+          .asResponse();
         if (!response.ok) {
           await response.body?.cancel();
           throw httpError(response.status);
@@ -586,13 +387,23 @@ export function createModelProvider(config: ProviderConfig): ModelProvider {
         );
         if (!parsed.success) throw protocol();
         for (const model of parsed.data.data) {
-          const value = [model.context_length, model.context_window, model.max_model_len]
-            .find((v): v is number => typeof v === "number" && Number.isInteger(v) && v > 0 && v <= 10000000);
+          const value = [
+            model.context_length,
+            model.context_window,
+            model.max_model_len,
+          ].find(
+            (v): v is number =>
+              typeof v === "number" &&
+              Number.isInteger(v) &&
+              v > 0 &&
+              v <= 10000000,
+          );
           windows.set(model.id, value ?? null);
         }
         catalogLoaded = true;
         return [...new Set(parsed.data.data.map((model) => model.id))].sort();
-      });
+      },
+    );
   return {
     listModels,
     async getModelContextWindow(model, signal) {
@@ -612,168 +423,204 @@ export function createModelProvider(config: ProviderConfig): ModelProvider {
           "Provide a valid model, message history and tool definitions.",
           false,
         );
-      return execute(options.signal, async (combined, trackResponse) => {
-        if (settings.apiMode === "responses") {
-          const response = await ky.post(`${base}/responses`, {
-            headers,
-            signal: combined,
-            timeout: settings.requestTimeoutMs,
-            retry: { limit: 0 },
-            throwHttpErrors: false,
-            json: {
-              ...responses.body(history.data, definitions.data, model.data),
-              ...(settings.reasoningEffort &&
-              settings.reasoningEffort !== "default"
-                ? { reasoning: { effort: settings.reasoningEffort } }
-                : {}),
-            },
-          }).then(trackResponse);
+      return withSdkRequest(
+        settings,
+        { signal: options.signal, idle: true },
+        async ({ signal: combined, fetch }) => {
+          const client = clientFor(fetch);
+          if (settings.apiMode === "responses") {
+            const response = await client.responses
+              .create(
+                {
+                  ...responses.body(history.data, definitions.data, model.data),
+                  ...(settings.maxOutputTokens
+                    ? { max_output_tokens: settings.maxOutputTokens }
+                    : {}),
+                  ...(settings.reasoningEffort &&
+                  settings.reasoningEffort !== "default"
+                    ? { reasoning: { effort: settings.reasoningEffort } }
+                    : {}),
+                },
+                { signal: combined },
+              )
+              .asResponse();
+            if (!response.ok) {
+              await response.body?.cancel();
+              throw httpError(response.status);
+            }
+            if (
+              response.headers
+                .get("content-type")
+                ?.split(";")[0]
+                ?.trim()
+                .toLowerCase() !== "text/event-stream"
+            ) {
+              await response.body?.cancel();
+              throw protocol();
+            }
+            return responses.read(
+              response,
+              options.onText,
+              model.data,
+              options.onReasoning,
+              options.onToolCall,
+            );
+          }
+          const request = async (stream: boolean): Promise<Response> =>
+            client.chat.completions
+              .create(
+                {
+                  model: model.data,
+                  ...(settings.maxOutputTokens
+                    ? { max_completion_tokens: settings.maxOutputTokens }
+                    : {}),
+                  ...(settings.reasoningEffort &&
+                  settings.reasoningEffort !== "default"
+                    ? { reasoning_effort: settings.reasoningEffort }
+                    : {}),
+                  messages: history.data.map(
+                    (
+                      message,
+                    ): OpenAI.Chat.Completions.ChatCompletionMessageParam =>
+                      message.role === "assistant"
+                        ? {
+                            role: message.role,
+                            content: message.content,
+                            ...(message.tool_calls
+                              ? {
+                                  tool_calls: message.tool_calls.map(
+                                    (call) => ({
+                                      ...call,
+                                      function: { ...call.function },
+                                    }),
+                                  ),
+                                }
+                              : {}),
+                          }
+                        : message.role === "tool"
+                          ? {
+                              role: "tool",
+                              content: message.content,
+                              tool_call_id: message.tool_call_id,
+                            }
+                          : message.role === "system"
+                            ? { role: "system", content: message.content }
+                            : {
+                                role: "user",
+                                content: message.images?.length
+                                  ? [
+                                      ...(message.content
+                                        ? [
+                                            {
+                                              type: "text" as const,
+                                              text: message.content,
+                                            },
+                                          ]
+                                        : []),
+                                      ...message.images.map((image) => ({
+                                        type: "image_url" as const,
+                                        image_url: { url: image.dataUrl },
+                                      })),
+                                    ]
+                                  : message.content,
+                              },
+                  ),
+                  ...(definitions.data.length
+                    ? { tools: definitions.data }
+                    : {}),
+                  stream,
+                  // Ask spec-compliant gateways to report usage in the stream; without
+                  // this the footer never receives a real cache rate during a run.
+                  ...(stream
+                    ? { stream_options: { include_usage: true } }
+                    : {}),
+                },
+                { signal: combined },
+              )
+              .asResponse();
+          let response: Response;
+          try {
+            response = await request(true);
+          } catch (error) {
+            if (
+              !(error instanceof OpenAI.APIError) ||
+              (error.status !== 400 && error.status !== 422)
+            )
+              throw error;
+            const parsed = unsupportedSchema.safeParse({ error: error.error });
+            if (
+              !parsed.success ||
+              !/\bstream(?:ing)?\b/i.test(parsed.data.error.message) ||
+              !/not supported|unsupported|does not support/i.test(
+                parsed.data.error.message,
+              )
+            )
+              throw error;
+            response = await request(false);
+          }
           if (!response.ok) {
             await response.body?.cancel();
             throw httpError(response.status);
           }
-          if (
-            response.headers
-              .get("content-type")
-              ?.split(";")[0]
-              ?.trim()
-              .toLowerCase() !== "text/event-stream"
-          ) {
+          const contentType = response.headers
+            .get("content-type")
+            ?.split(";")[0]
+            ?.trim()
+            .toLowerCase();
+          if (contentType === "text/event-stream")
+            return readStream(
+              response,
+              options.onText,
+              options.onReasoning,
+              options.onToolCall,
+            );
+          if (contentType !== "application/json") {
             await response.body?.cancel();
             throw protocol();
           }
-          return responses.read(
-            response,
-            options.onText,
-            model.data,
-            options.onReasoning,
-            options.onToolCall,
+          const parsed = jsonResponseSchema.safeParse(
+            parseJson(await readText(response)),
           );
-        }
-        const request = async (stream: boolean): Promise<Response> =>
-          ky.post(`${base}/chat/completions`, {
-            headers,
-            signal: combined,
-            timeout: settings.requestTimeoutMs,
-            retry: { limit: 0 },
-            throwHttpErrors: false,
-            json: {
-              model: model.data,
-              ...(settings.reasoningEffort &&
-              settings.reasoningEffort !== "default"
-                ? { reasoning_effort: settings.reasoningEffort }
-                : {}),
-              messages: history.data.map((message) =>
-                message.role === "assistant"
-                  ? {
-                      role: message.role,
-                      content: message.content,
-                      ...(message.tool_calls
-                        ? { tool_calls: message.tool_calls }
-                        : {}),
-                    }
-                  : message.role === "tool"
-                    ? {
-                        role: "tool",
-                        content: message.content,
-                        tool_call_id: message.tool_call_id,
-                      }
-                    : {
-                        role: message.role,
-                        content: message.role === "user" && message.images?.length
-                          ? [
-                              ...(message.content ? [{ type: "text", text: message.content }] : []),
-                              ...message.images.map(image => ({ type: "image_url", image_url: { url: image.dataUrl } })),
-                            ]
-                          : message.content,
-                      },
-              ),
-              ...(definitions.data.length ? { tools: definitions.data } : {}),
-              stream,
-              // Ask spec-compliant gateways to report usage in the stream; without
-              // this the footer never receives a real cache rate during a run.
-              ...(stream ? { stream_options: { include_usage: true } } : {}),
+          if (!parsed.success) throw protocol();
+          const choice = parsed.data.choices[0];
+          if (!choice) throw protocol();
+          const text = choice.message.content ?? "";
+          const calls = choice.message.tool_calls ?? [];
+          checkFinish(choice.finish_reason, calls, text);
+          // A non-streaming response has no intermediate frames, so announce the
+          // validated complete metadata once, still without raw arguments.
+          if (options.onToolCall)
+            for (const [index, call] of calls.entries())
+              notifyToolCall(
+                options.onToolCall,
+                index,
+                call.function.name,
+                call.function.arguments.length,
+              );
+          const reasoningRaw = choice.message.reasoning_content;
+          const reasoning = reasoningRaw
+            ? reasoningRaw.slice(0, MAX_REASONING)
+            : "";
+          if (reasoning)
+            for (let start = 0; start < reasoning.length; start += 65536)
+              notify(
+                options.onReasoning ?? (() => {}),
+                reasoning.slice(start, start + 65536),
+              );
+          for (let start = 0; start < text.length; start += 65536)
+            notify(options.onText, text.slice(start, start + 65536));
+          const usage = normalizeUsage(parsed.data.usage);
+          return providerResponseSchema.parse({
+            message: {
+              role: "assistant",
+              content: text || null,
+              ...(reasoning ? { reasoning } : {}),
+              ...(calls.length ? { tool_calls: calls } : {}),
             },
-          }).then(trackResponse);
-        let response = await request(true);
-        if (response.status === 400 || response.status === 422) {
-          const raw = await readText(response);
-          let unsupported = false;
-          try {
-            const parsed = unsupportedSchema.safeParse(parseJson(raw));
-            if (parsed.success) {
-              const error = parsed.data.error;
-              unsupported =
-                /\bstream(?:ing)?\b/i.test(error.message) &&
-                /not supported|unsupported|does not support/i.test(
-                  error.message,
-                );
-            }
-          } catch {
-            /* An unrecognized rejection never enables fallback. */
-          }
-          if (!unsupported) throw httpError(response.status);
-          response = await request(false);
-        }
-        if (!response.ok) {
-          await response.body?.cancel();
-          throw httpError(response.status);
-        }
-        const contentType = response.headers
-          .get("content-type")
-          ?.split(";")[0]
-          ?.trim()
-          .toLowerCase();
-        if (contentType === "text/event-stream")
-          return readStream(
-            response,
-            options.onText,
-            options.onReasoning,
-            options.onToolCall,
-          );
-        if (contentType !== "application/json") {
-          await response.body?.cancel();
-          throw protocol();
-        }
-        const parsed = jsonResponseSchema.safeParse(
-          parseJson(await readText(response)),
-        );
-        if (!parsed.success) throw protocol();
-        const choice = parsed.data.choices[0];
-        if (!choice) throw protocol();
-        const text = choice.message.content ?? "";
-        const calls = choice.message.tool_calls ?? [];
-        checkFinish(choice.finish_reason, calls, text);
-        // A non-streaming response has no intermediate frames, so announce the
-        // validated complete metadata once, still without raw arguments.
-        if (options.onToolCall)
-          for (const [index, call] of calls.entries())
-            notifyToolCall(
-              options.onToolCall,
-              index,
-              call.function.name,
-              call.function.arguments.length,
-            );
-        const reasoningRaw = choice.message.reasoning_content;
-        const reasoning = reasoningRaw
-          ? reasoningRaw.slice(0, MAX_REASONING)
-          : "";
-        if (reasoning)
-          for (let start = 0; start < reasoning.length; start += 65536)
-            notify(options.onReasoning ?? (() => {}), reasoning.slice(start, start + 65536));
-        for (let start = 0; start < text.length; start += 65536)
-          notify(options.onText, text.slice(start, start + 65536));
-        const usage = normalizeUsage(parsed.data.usage);
-        return providerResponseSchema.parse({
-          message: {
-            role: "assistant",
-            content: text || null,
-            ...(reasoning ? { reasoning } : {}),
-            ...(calls.length ? { tool_calls: calls } : {}),
-          },
-          ...(usage ? { usage } : {}),
-        });
-      }, true);
+            ...(usage ? { usage } : {}),
+          });
+        },
+      );
     },
   };
 }

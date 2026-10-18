@@ -1,3 +1,8 @@
+import type { ServerSentEvent } from "openai/core/streaming";
+import type {
+  ResponseCreateParamsStreaming,
+  ResponseInput,
+} from "openai/resources/responses/responses";
 import { z } from "zod";
 import type { ProtocolReason } from "../shared/errors";
 import { providerResponseSchema, toolCallSchema } from "../shared/schemas";
@@ -66,10 +71,7 @@ const terminal = z.object({
 type Helpers = {
   protocol: (reason?: ProtocolReason) => Error;
   parseJson: (text: string) => unknown;
-  consumeBytes: (
-    response: Response,
-    consume: (bytes: Uint8Array) => void,
-  ) => Promise<void>;
+  events: (response: Response) => AsyncIterable<ServerSentEvent>;
   notify: (observer: (text: string) => void, text: string) => void;
   /** Display-only generation metadata; isolated like any other observer. */
   notifyToolCall: (
@@ -223,15 +225,23 @@ export function createResponsesAdapter(h: Helpers, baseUrl: string) {
           used.add(c.id);
           pending.add(c.id);
         }
-      } else result.push({
-        role: m.role,
-        content: m.role === "user" && m.images?.length
-          ? [
-              ...(m.content ? [{ type: "input_text", text: m.content }] : []),
-              ...m.images.map(image => ({ type: "input_image", image_url: image.dataUrl, detail: "auto" })),
-            ]
-          : m.content,
-      });
+      } else
+        result.push({
+          role: m.role,
+          content:
+            m.role === "user" && m.images?.length
+              ? [
+                  ...(m.content
+                    ? [{ type: "input_text", text: m.content }]
+                    : []),
+                  ...m.images.map((image) => ({
+                    type: "input_image",
+                    image_url: image.dataUrl,
+                    detail: "auto",
+                  })),
+                ]
+              : m.content,
+        });
     }
     if (pending.size) throw h.protocol();
     return result;
@@ -241,10 +251,10 @@ export function createResponsesAdapter(h: Helpers, baseUrl: string) {
       messages: readonly Message[],
       tools: readonly ToolDefinition[],
       model: string,
-    ) {
+    ): ResponseCreateParamsStreaming {
       return {
         model,
-        input: input(messages, model),
+        input: input(messages, model) as ResponseInput,
         tools: tools.map((t) => ({
           type: "function",
           ...t.function,
@@ -262,10 +272,6 @@ export function createResponsesAdapter(h: Helpers, baseUrl: string) {
       onReasoning: (text: string) => void = () => {},
       onToolCall: (preview: ToolCallPreview) => void = () => {},
     ): Promise<ProviderResponse> {
-      const decoder = new TextDecoder("utf-8", { fatal: true });
-      let pending = "";
-      let data: string[] = [];
-      let eventName = "";
       let text = "";
       let completed: z.infer<typeof terminal> | undefined;
       let responseId: string | undefined;
@@ -278,7 +284,6 @@ export function createResponsesAdapter(h: Helpers, baseUrl: string) {
       const ended = new Map<number, z.infer<typeof outputItem>>();
       const added = new Map<number, unknown>();
       const textParts = new Map<string, string>();
-      let eventSize = 0;
       let reasoning = "";
       // Preview bookkeeping: a tool-sequence index (never output_index, which
       // also counts reasoning/message items) and the latest accumulated name.
@@ -298,14 +303,7 @@ export function createResponsesAdapter(h: Helpers, baseUrl: string) {
           (args.get(item.id) ?? "").length,
         );
       };
-      const dispatch = () => {
-        if (!data.length) {
-          eventName = "";
-          return;
-        }
-        const payload = data.join("\n");
-        data = [];
-        eventSize = 0;
+      const dispatch = (payload: string, eventName: string | null) => {
         if (payload === "[DONE]") {
           if (!completed || transportDone || eventName) throw h.protocol();
           transportDone = true;
@@ -318,7 +316,6 @@ export function createResponsesAdapter(h: Helpers, baseUrl: string) {
           .parse(h.parseJson(payload));
         if (completed || (eventName && eventName !== e.type))
           throw h.protocol();
-        eventName = "";
         if (
           ["error", "response.failed", "response.incomplete"].includes(e.type)
         )
@@ -549,33 +546,10 @@ export function createResponsesAdapter(h: Helpers, baseUrl: string) {
         )
           throw h.protocol();
       };
-      const feed = (chunk: string) => {
-        pending += chunk;
-        for (;;) {
-          const n = pending.indexOf("\n");
-          if (n < 0) break;
-          const line = pending.slice(0, n).replace(/\r$/, "");
-          pending = pending.slice(n + 1);
-          if (line.length > 1_200_000) throw h.protocol();
-          if (!line) dispatch();
-          else if (line.startsWith("data:")) {
-            const value = line.slice(5).replace(/^ /, "");
-            eventSize += value.length + 1;
-            if (eventSize > 1_200_000) throw h.protocol();
-            data.push(value);
-          } else if (line.startsWith("event:"))
-            eventName = line.slice(6).trim();
-          else if (!line.startsWith(":") && !/^(id|retry):/.test(line))
-            throw h.protocol();
-        }
-        if (pending.length > 1_200_000) throw h.protocol();
-      };
-      await h.consumeBytes(response, (b) =>
-        feed(decoder.decode(b, { stream: true })),
-      );
-      feed(decoder.decode());
-      if (pending || data.length) throw h.protocol("unterminated_event");
-      if (!completed || !completedOutput) throw h.protocol("missing_completion");
+      for await (const event of h.events(response))
+        dispatch(event.data, event.event);
+      if (!completed || !completedOutput)
+        throw h.protocol("missing_completion");
       const output = validatedOutput(completedOutput, h);
       for (let index = 0; index < output.length; index++) {
         const entry = output[index];

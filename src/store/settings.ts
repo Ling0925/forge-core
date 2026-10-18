@@ -311,6 +311,7 @@ export async function openSettingsStore(
           requestTimeoutMs: state.public.requestTimeoutMs,
           apiMode: source.apiMode,
           reasoningEffort: state.public.reasoningEffort,
+          maxOutputTokens: state.public.maxOutputTokens,
         });
       }
       const config = state.public;
@@ -325,6 +326,7 @@ export async function openSettingsStore(
         requestTimeoutMs: config.requestTimeoutMs,
         apiMode: config.apiMode,
         reasoningEffort: config.reasoningEffort,
+        maxOutputTokens: config.maxOutputTokens,
       });
     },
     update(input) {
