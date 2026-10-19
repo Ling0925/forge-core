@@ -6,6 +6,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, expect, it } from "vitest";
 import { z } from "zod";
+import { nativeDefinitions } from "../../src/core/agents";
 import { ProviderError, createModelProvider } from "../../src/provider/openai";
 import type { Message } from "../../src/shared/schemas";
 import { openSessionStore } from "../../src/store/sessions";
@@ -150,6 +151,24 @@ const run = (
   );
 const classification = (kind: string) => (e: unknown) =>
   e instanceof ProviderError && e.classification === kind;
+
+it("preserves separate plan parameter branches in the Responses wire request", async () => {
+  let received: unknown;
+  const provider = await setup((_request, response, body) => {
+    received = body;
+    send(response, textStream("ready"));
+  });
+  const tool = nativeDefinitions.find(definition => definition.function.name === "update_plan");
+  if (!tool) throw new Error("Missing plan tool");
+
+  await provider.complete([{ role: "user", content: "Plan a task" }], [tool], {
+    model: "fixture", onText: () => {}, signal: new AbortController().signal,
+  });
+
+  expect(requestBody.parse(received).tools).toEqual([
+    { type: "function", ...tool.function, strict: false },
+  ]);
+});
 
 it("sends image-only and mixed input using native Responses input_image parts", async () => {
   let received: unknown;

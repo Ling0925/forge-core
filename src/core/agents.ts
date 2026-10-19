@@ -13,6 +13,21 @@ const modelListArgs = z
   })
   .strict();
 const MODEL_CATALOG_BYTES = 32768;
+const planContentProperties = {
+  title: { type: "string", minLength: 1, maxLength: 256 },
+  explanation: { type: "string" },
+  steps: {
+    type: "array",
+    items: {
+      type: "object",
+      properties: {
+        step: { type: "string" },
+        status: { type: "string", enum: ["pending", "in_progress", "completed"] },
+      },
+      required: ["step", "status"],
+    },
+  },
+} as const;
 
 export const nativeDefinitions: readonly ToolDefinition[] = [
   ...historyDefinitions,
@@ -34,28 +49,32 @@ export const nativeDefinitions: readonly ToolDefinition[] = [
   },
   {
     name: "update_plan",
-    description: "Persist independent task plans within this session. For each new multi-step task use action:create and a concise title; prior plans stay intact. To revise the same task use action:update with the returned planId (id in the result), sending its full steps. Never append an unrelated task to an old plan. Without selectors, continues the current unfinished plan or creates a new one after completion. Repeat calls are allowed throughout the session; simple questions need no plan.",
-    properties: {
-      action: { type: "string", enum: ["create", "update"] },
-      planId: { type: "string", minLength: 1, maxLength: 128 },
-      title: { type: "string", minLength: 1, maxLength: 256 },
-      explanation: { type: "string" },
-      steps: {
-        type: "array",
-        items: {
+    description: "Persist independent task plans within this session. For each new multi-step task use action:create and a concise title; creation has no ID input and the result supplies an automatically generated id. To revise the same task use action:update with that returned planId, sending its full steps. Never append an unrelated task to an old plan. Without selectors, continues the current unfinished plan or creates a new one after completion. Repeat calls are allowed throughout the session; simple questions need no plan.",
+    parameters: {
+      type: "object",
+      anyOf: [
+        {
           type: "object",
           properties: {
-            step: { type: "string" },
-            status: {
-              type: "string",
-              enum: ["pending", "in_progress", "completed"],
-            },
+            action: { type: "string", enum: ["create"] },
+            ...planContentProperties,
           },
-          required: ["step", "status"],
+          required: ["action", "explanation", "steps"],
+          additionalProperties: false,
         },
-      },
+        {
+          type: "object",
+          properties: {
+            action: { type: "string", enum: ["update"] },
+            planId: { type: "string", minLength: 1, maxLength: 128,
+              description: "Existing plan ID returned by a previous call. Omit to continue the current plan." },
+            ...planContentProperties,
+          },
+          required: ["explanation", "steps"],
+          additionalProperties: false,
+        },
+      ],
     },
-    required: ["explanation", "steps"],
   },
   {
     name: "spawn_agent",
@@ -122,7 +141,7 @@ export const nativeDefinitions: readonly ToolDefinition[] = [
   function: {
     name: d.name,
     description: d.description,
-    parameters: {
+    parameters: "parameters" in d ? d.parameters : {
       type: "object",
       properties: d.properties,
       required: d.required,

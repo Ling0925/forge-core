@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { updateSessionPlan } from "../../src/core/plans";
+import { nativeDefinitions } from "../../src/core/agents";
 import { buildSystemInstructions } from "../../src/core/prompts";
 import { createAgentRuntime } from "../../src/core/runtime";
 import { createHarness } from "../../src/core/harness";
@@ -18,6 +19,30 @@ const dirs: string[] = [];
 afterEach(async () => { await Promise.all(dirs.splice(0).map(dir => rm(dir, { recursive: true, force: true }))); });
 
 describe("independent session plans", () => {
+  it("exposes creation without an ID field and keeps IDs only in the update branch", () => {
+    const tool = nativeDefinitions.find(definition => definition.function.name === "update_plan");
+    expect(tool?.function.parameters).toMatchObject({
+      type: "object",
+      anyOf: [
+        {
+          properties: { action: { enum: ["create"] } },
+          required: ["action", "explanation", "steps"],
+          additionalProperties: false,
+        },
+        {
+          properties: { action: { enum: ["update"] }, planId: { type: "string" } },
+          required: ["explanation", "steps"],
+          additionalProperties: false,
+        },
+      ],
+    });
+    const branches = tool?.function.parameters.anyOf;
+    if (!Array.isArray(branches)) throw new Error("Missing plan parameter branches");
+    expect(branches[0].properties).not.toHaveProperty("planId");
+    expect(branches[0].properties).not.toHaveProperty("id");
+    expect(tool?.function.parameters).not.toHaveProperty("properties");
+  });
+
   it("creates independent plans and updates an older one without changing another", () => {
     const first = updateSessionPlan({}, { action: "create", title: "Task A", ...content("A") });
     const second = updateSessionPlan(first, { action: "create", title: "Task B", ...content("B") });
