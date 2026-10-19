@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { request } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -644,5 +644,92 @@ describe("Web development host", () => {
     );
     for (const path of ["notes.txt", "../outside.html", ".env.html", ".git/x.html"])
       expect((await post("/api/preview/file", { path })).status).toBeGreaterThanOrEqual(403);
+  });
+
+  it("browses server directories only on multi-workspace hosts after page/origin checks", async () => {
+    // A restricted host answers 403 and never enumerates the filesystem.
+    const restricted = await setup();
+    const restrictedAuth = await restricted.login();
+    const restrictedBrowse = await fetch(
+      `${restricted.url}/api/workspaces/browse`,
+      { method: "POST", headers: restrictedAuth, body: "{}" },
+    );
+    expect(restrictedBrowse.status).toBe(403);
+    expect(JSON.stringify(await restrictedBrowse.json())).not.toContain(
+      restricted.directory,
+    );
+
+    // A multi-workspace host exposes the read-only directory browser.
+    const { url, directory, login } = await setup(false);
+    const auth = await login();
+    await mkdir(join(directory, "alpha"), { recursive: true });
+    await mkdir(join(directory, "beta"));
+    await mkdir(join(directory, ".git"));
+    await writeFile(join(directory, "notes.txt"), "not listed");
+    const browse = (body: object, headers: Record<string, string> = auth) =>
+      fetch(`${url}/api/workspaces/browse`, {
+        method: "POST",
+        headers,
+        body: JSON.stringify(body),
+      });
+    // The page connection is required before any listing happens.
+    expect(
+      (
+        await browse({}, { ...auth, "X-Forge-Client": randomUUID() })
+      ).status,
+    ).toBe(410);
+    expect((await browse({}, { ...restricted.headers })).status).toBe(410);
+    // Cross-origin requests stay refused.
+    expect(
+      (await browse({}, { ...auth, Origin: "http://evil.invalid" })).status,
+    ).toBe(403);
+    // The server decides the default: its own launch workspace.
+    const response = await browse({});
+    expect(response.status).toBe(200);
+    const listing = await response.json();
+    expect(listing.path).toBe(directory);
+    expect(listing.directories).toContainEqual({
+      name: "alpha",
+      path: join(directory, "alpha"),
+    });
+    expect(
+      listing.directories.every(
+        (entry: { name: string }) => !entry.name.startsWith("."),
+      ),
+    ).toBe(true);
+    expect(JSON.stringify(listing)).not.toContain("notes.txt");
+    expect(listing.truncated).toBe(false);
+    expect(
+      typeof listing.parent === "string" || listing.parent === null,
+    ).toBe(true);
+    // An explicit absolute path is browsed; invalid input is a 400.
+    const nested = await browse({ path: join(directory, "alpha") });
+    expect(nested.status).toBe(200);
+    expect(await nested.json()).toMatchObject({
+      path: join(directory, "alpha"),
+      parent: directory,
+      directories: [],
+    });
+    for (const body of [
+      { path: "alpha" },
+      { path: "" },
+      { path: 42 },
+      { extra: true },
+      [],
+    ])
+      expect((await browse(body)).status).toBe(400);
+    // Missing and non-directory targets are 404 with a plain sentence.
+    for (const target of [
+      join(directory, "missing"),
+      join(directory, "notes.txt"),
+    ]) {
+      const failed = await browse({ path: target });
+      expect(failed.status).toBe(404);
+      const payload = await failed.json();
+      expect(payload.error).not.toMatch(/ENOENT|ENOTDIR|Error:|at /);
+      expect(payload.error).not.toContain(directory);
+    }
+    // Hidden and sensitive directories are refused even when named directly.
+    expect((await browse({ path: join(directory, ".git") })).status).toBe(403);
   });
 });

@@ -1,5 +1,6 @@
 import { z } from "zod";
 import type { HtmlPreviewResponse } from "./html-preview";
+import type { WorkspaceDirectoryPage } from "./workspaces";
 import { publishedFileIdSchema, publishedFileResponseSchema, type PublishedFileResponse } from "./published-files";
 import { type ImageAttachment, imageAttachmentsSchema } from "./images";
 import {
@@ -505,6 +506,8 @@ export interface ForgeBridge {
   ): Promise<SessionSnapshot>;
   openExternal(url: string): Promise<void>;
   chooseWorkspace(): Promise<string | null>;
+  /** Web-only server directory browser; absent on fixed-workspace and desktop hosts. */
+  browseWorkspaces?(path?: string): Promise<WorkspaceDirectoryPage>;
   exportSession(sessionId: SessionId): Promise<boolean>;
   cancelSession(sessionId: SessionId): Promise<boolean>;
   startRun(input: RunInput): Promise<RunHandle>;

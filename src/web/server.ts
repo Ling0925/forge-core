@@ -23,6 +23,7 @@ import {
   rpcRequestSchema,
 } from "../shared/ipc";
 import type { SessionSnapshot } from "../shared/schemas";
+import { workspaceBrowseRequestSchema } from "../shared/workspaces";
 import {
   HtmlPreviewStore,
   PreviewFileError,
@@ -30,6 +31,7 @@ import {
 } from "./html-preview";
 import { SessionDeltaCache } from "./session-delta";
 import { createStaticRenderer } from "./static";
+import { WorkspaceBrowseError, browseWorkspaceDirectory } from "./workspaces";
 
 const MAX_BODY = 1024 * 1024;
 const MAX_RPC_BODY = 16 * 1024 * 1024;
@@ -362,6 +364,33 @@ export async function createWebHost(
             200,
             htmlPreviewResponseSchema.parse({ url: previews.put(html) }),
           );
+        }
+        // Read-only server directory browsing for multi-workspace hosts. The
+        // restricted host already answers with its own single workspace, so it
+        // must never enumerate the filesystem.
+        if (path === "/api/workspaces/browse") {
+          if (restrictWorkspace)
+            return json(response, 403, {
+              error:
+                "Directory browsing is not available while hosting a single workspace.",
+            });
+          const browse = workspaceBrowseRequestSchema.safeParse(input);
+          if (!browse.success)
+            return json(response, 400, { error: "Expected an absolute path." });
+          client.lastSeen = Date.now();
+          try {
+            return json(
+              response,
+              200,
+              await browseWorkspaceDirectory(workspace, browse.data.path),
+            );
+          } catch (error) {
+            if (error instanceof WorkspaceBrowseError)
+              return json(response, error.status, { error: error.message });
+            return json(response, 500, {
+              error: "The directory could not be listed.",
+            });
+          }
         }
         // Address discovery only: a paired page learns the origin it is already
         // talking to. There is no password, token or secret in this response.
