@@ -38,6 +38,7 @@ import { withCommandTasks } from "../tools/command-tasks";
 import { createLspToolRegistry } from "../tools/lsp";
 import { createMcpToolRegistry } from "../tools/mcp";
 import { createSkillTool } from "../tools/skills";
+import { createWebToolRegistry } from "../tools/web";
 import { createUsageStatsService } from "./usage-stats";
 import { assertBoundary, projectSummary } from "./context";
 import { summarizeWorkingState } from "./working-memory";
@@ -72,6 +73,8 @@ const createDefaultTools = async (
       ),
     });
     registries.push(withCommandTasks(local, { redactValues: [apiKey] }));
+    // Public-text tools require no browser configuration and do no I/O until called.
+    registries.push(createWebToolRegistry({ redactValues: [apiKey] }));
     if (settings.lspServers?.length) registries.push(await createLspToolRegistry(workspace, settings.lspServers, {
       protectedRoots: [stateDirectory], redactValues: [apiKey],
     }));

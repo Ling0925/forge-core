@@ -94,7 +94,7 @@ const runOnce = async (
 };
 
 describe("default harness tool integration", () => {
-  it("exposes only local tools by default and runs without a browser installed", async () => {
+  it("exposes local and public web tools by default without a browser installed", async () => {
     const { state, workspace } = await configured();
     let definitions: readonly { function: { name: string } }[] = [];
     const providerFactory = (config: ProviderConfig): ModelProvider => {
@@ -113,9 +113,45 @@ describe("default harness tool integration", () => {
     const names = definitions.map((definition) => definition.function.name);
     expect(names).toContain("read_file");
     expect(names).toContain("run_command");
+    expect(names).toContain("web_search");
+    expect(names).toContain("web_fetch");
     expect(names.some((name) => name.startsWith("browser_"))).toBe(false);
     expect(JSON.stringify(definitions)).not.toContain(fakeKey);
   });
+
+  it.each(["readonly", "workspace"] as const)(
+    "routes web calls through default tools and honors %s denial",
+    async (permission) => {
+      const { state, workspace } = await configured();
+      let turns = 0;
+      const providerFactory = (): ModelProvider => ({
+        listModels: async () => ["fixture-model"],
+        complete: async (messages, tools) => {
+          expect(tools.some((tool) => tool.function.name === "web_fetch")).toBe(true);
+          if (turns++ === 0) return { message: {
+            role: "assistant", content: null, tool_calls: [{
+              id: "web-denied", type: "function", function: {
+                name: "web_fetch", arguments: JSON.stringify({ url: "https://example.com/docs" }),
+              },
+            }],
+          } };
+          const outcome = messages.findLast((message) => message.role === "tool");
+          expect(outcome?.content).toContain(permission === "readonly"
+            ? "Core readonly policy denies" : "Web request was denied");
+          return { message: { role: "assistant", content: "Access denied; no source read." } };
+        },
+      });
+      const service = await createHarness({ stateDir: state, providerFactory });
+      cleanups.push(() => service.dispose());
+      await service.updateSettings({ settings: { defaultPermission: permission } });
+      const { events } = await runOnce(service, workspace);
+      const approvals = events.filter((event) => event.type === "approval_requested");
+      expect(approvals).toHaveLength(permission === "readonly" ? 0 : 1);
+      if (permission !== "readonly")
+        expect(JSON.stringify(approvals)).toContain("https://example.com/docs");
+      expect(turns).toBe(2);
+    },
+  );
 
   it("exposes browser tools only when exact allowed origins are configured", async () => {
     const { state, workspace } = await configured(["http://127.0.0.1:4173"]);
