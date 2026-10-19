@@ -98,6 +98,22 @@ const createDefaultTools = async (
   }
 };
 
+/**
+ * A model name is the user's real choice, and each source publishes its own
+ * models, so the source follows the model when it is unambiguous. Returns
+ * undefined when nothing identifies a source; callers then fall back.
+ */
+function inferSourceId(
+  settings: PublicSettings,
+  model: string | undefined,
+): string | undefined {
+  if (model === undefined || model === "") return undefined;
+  const owners = (settings.providerSources ?? []).filter(
+    (source) => source.model === model,
+  );
+  return owners.length === 1 ? owners[0]?.id : undefined;
+}
+
 export const createHarness = async (
   options: HarnessOptions = {},
 ): Promise<HarnessService> => {
@@ -217,6 +233,22 @@ export const createHarness = async (
     );
   };
   const providerFactory = options.providerFactory ?? createModelProvider;
+  /**
+   * The "active" source is only the fallback for callers that name no source.
+   * Whenever a caller does name one, remember it, so selecting a model in any
+   * client automatically keeps that source for the next run.
+   */
+  const rememberSource = async (sourceId: string | undefined): Promise<void> => {
+    if (!sourceId) return;
+    const current = await settingsStore.getPublic();
+    if (current.activeSourceId === sourceId) return;
+    try {
+      await settingsStore.update({ source: { type: "activate", id: sourceId } });
+    } catch {
+      // Remembering the fallback is best-effort: the run already resolved its
+      // own source explicitly and must not fail because of this.
+    }
+  };
   const disposal = new AbortController();
   const active = new Map<SessionId, Promise<SessionSnapshot>>();
   const controls = new Map<
@@ -538,7 +570,10 @@ export const createHarness = async (
       check();
       const input = createSessionInputSchema.parse(raw);
       const settings = await settingsStore.getPublic();
-      const providerSourceId = input.providerSourceId ?? settings.activeSourceId;
+      // A new session pins the source of the model the user picked, so choosing
+      // a model alone is enough to switch providers.
+      const providerSourceId =
+        input.providerSourceId ?? inferSourceId(settings, input.model) ?? settings.activeSourceId;
       const source = settings.providerSources?.find(candidate => candidate.id === providerSourceId);
       if (providerSourceId && !source)
         throw new ForgeError("invalid_input", "The session's provider source is unavailable. Select an existing source explicitly.");
@@ -605,10 +640,22 @@ export const createHarness = async (
             settingsStore.getPublic(),
             store.get(input.sessionId),
           ]);
-          const providerSourceId = input.providerSourceId ?? snapshot.providerSourceId ?? settings.activeSourceId;
+          // An explicit selection (the picked model's source) wins; a session
+          // keeps the source it was created with; only when neither exists does
+          // the model, and finally the remembered fallback, decide.
+          const providerSourceId =
+            input.providerSourceId ??
+            snapshot.providerSourceId ??
+            inferSourceId(settings, input.model) ??
+            settings.activeSourceId;
           const config = await settingsStore.getProviderConfig(providerSourceId);
           endpoint(config.baseUrl);
           settingsFields.model.parse(input.model ?? snapshot.model);
+          // An explicit source (or one the model alone identifies) is what the
+          // user just chose, so remember it as the fallback for the next run.
+          await rememberSource(
+            input.providerSourceId ?? inferSourceId(settings, input.model),
+          );
           // Endpoint, credential and protocol come from the same atomic source snapshot.
           const provider = providerFactory(providerConfigSchema.parse(config));
           if (signal.aborted)

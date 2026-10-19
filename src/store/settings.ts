@@ -428,11 +428,9 @@ async function updateSource(
     };
     if (existing === undefined) sources.push(saved);
     else sources[index] = saved;
-    // The first saved source may activate itself; other saves never switch.
-    const activeSourceId =
-      state.activeSourceId === undefined && sources.length === 1
-        ? saved.id
-        : state.activeSourceId;
+    // The active source is only a fallback for callers that name no source: it
+    // follows the last source used instead of being a setting users must edit.
+    const activeSourceId = state.activeSourceId ?? saved.id;
     const next: StoredState = {
       ...state,
       sources,
@@ -444,20 +442,13 @@ async function updateSource(
   if (operation.type === "activate") {
     const source = index === -1 ? undefined : sources[index];
     if (source === undefined) throw unknownSource();
-    // Without a default model the runtime could not start a session.
-    if (source.model === "")
-      throw invalid(
-        "请先为该来源选择并保存默认模型，再设为当前来源。",
-      );
+    // The active source is only the fallback for callers that name no source,
+    // so the last used source is remembered without any manual switch step.
     return projectActive(
       { ...state, sources, activeSourceId: source.id },
       source,
     );
   }
-  if (state.activeSourceId === operation.id)
-    throw invalid(
-      "请先切换到其他来源，再删除当前来源。",
-    );
   if (index === -1) throw unknownSource();
   // Sessions pin the source they were created with; removing it would strand
   // them with a source id that no longer resolves. Require an explicit ack.
@@ -469,7 +460,21 @@ async function updateSource(
       `仍有 ${unreleased.length} 个会话绑定此来源（${unreleased.slice(0, 5).join(", ")}）。确认删除后这些会话将没有来源，无法继续运行。`,
     );
   sources.splice(index, 1);
-  return { ...state, sources };
+  // "Active" is only the fallback for callers that name no source, so removing
+  // it hands the fallback to the next remaining source instead of asking the
+  // user to switch first.
+  if (state.activeSourceId !== operation.id) return { ...state, sources };
+  const next = sources[0];
+  if (next === undefined) {
+    // Nothing left: clear the legacy projection so no stale pair stays usable.
+    const { apiMode: _apiMode, ...rest } = state.settings as Record<string, unknown>;
+    return {
+      settings: { ...rest, baseUrl: "", model: "" } as StoredSettings,
+      apiKey: "",
+      sources,
+    };
+  }
+  return projectActive({ ...state, sources, activeSourceId: next.id }, next);
 }
 
 function updateLegacy(

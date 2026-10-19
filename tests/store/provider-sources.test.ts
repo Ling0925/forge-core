@@ -38,12 +38,25 @@ it('isolates save/activation/keys, rejects mixed operations and protects endpoin
   await expect(store.update({ source: { type: 'activate', id: 'b' }, settings: { theme: 'dark' } })).rejects.toThrow('不能与普通设置或密钥更新同时提交');
   await store.update({ source: { type: 'activate', id: 'b' } });
   expect(await store.getProviderConfig()).toMatchObject({ baseUrl: source('b').baseUrl, apiKey: 'fixture-b' });
-  await expect(store.update({ source: { type: 'remove', id: 'b' } })).rejects.toThrow('请先切换到其他来源');
+  // Removing the fallback source is allowed: the fallback moves to the survivor
+  // so no manual "switch source first" step is required.
+  await store.update({ source: { type: 'remove', id: 'b' } });
+  expect((await store.getPublic()).activeSourceId).toBe('a');
+  expect(await store.getProviderConfig()).toMatchObject({ baseUrl: source('a').baseUrl, apiKey: 'fixture-a' });
   await store.update({ source: { type: 'save', source: source('b'), apiKey: '' } });
-  expect((await store.getProviderConfig()).apiKey).toBe('');
-  expect((await store.getProviderConfig('a')).apiKey).toBe('fixture-a');
+  expect((await store.getProviderConfig('b')).apiKey).toBe('');
+  expect((await store.getProviderConfig()).apiKey).toBe('fixture-a');
   await store.update({ source: { type: 'remove', id: 'a' } });
   await expect(store.getProviderConfig('a')).rejects.toThrow('未找到该模型来源');
+  // Removing the fallback hands it to the survivor rather than leaving a gap.
+  expect((await store.getPublic()).activeSourceId).toBe('b');
+  await store.update({ source: { type: 'remove', id: 'b' } });
+  // With no source left the legacy pair is cleared instead of staying usable.
+  const empty = await store.getPublic();
+  expect(empty.activeSourceId).toBeUndefined();
+  expect(empty.providerSources).toEqual([]);
+  expect(empty.baseUrl).toBe('');
+  await expect(store.getProviderConfig()).rejects.toBeDefined();
 });
 it('keeps legacy CLI updates in sync and serializes independent store writers', async () => {
   const dir = await fixture(); const one = await openSettingsStore(dir); const two = await openSettingsStore(dir);
