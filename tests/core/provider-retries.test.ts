@@ -8,6 +8,20 @@ import type { AgentEvent, Message } from "../../src/shared/schemas";
 
 afterEach(() => { vi.useRealTimers(); });
 
+it("stops a model retry loop after three identical tool failures", async () => {
+  let calls = 0;
+  let executions = 0;
+  const f = fixture(async () => ({ message: { role: "assistant", content: null,
+    tool_calls: [{ id: `failed-${++calls}`, type: "function", function: { name: "edit_file", arguments: '{"path":"a","old_text":"x","new_text":"y"}' } }] } }),
+    async () => { executions++; return { content: '{"error":"old_text was not found."}', isError: true }; });
+  await f.run();
+  expect(calls).toBe(3);
+  expect(executions).toBe(3);
+  expect(f.snapshot().status).toBe("failed");
+  expect(f.snapshot().messages.filter(message => message.role === "tool")).toHaveLength(3);
+  expect(f.events.findLast(event => event.type === "error")).toMatchObject({ error: { code: "tool", retryable: false } });
+});
+
 function fixture(complete: ModelProvider["complete"], execute?: LocalToolRegistry["execute"]) {
   let snapshot = sessionSnapshotSchema.parse({ version: 1, id: "11111111-1111-4111-8111-111111111111",
     title: "Retry fixture", workspace: "/tmp", model: "same-model", status: "idle",
@@ -77,6 +91,10 @@ it.each([
   new ProviderError("http", "Missing", false, 404),
   new ProviderError("observer", "Observer failed"),
   new ProviderError("aborted", "Cancelled"),
+  new ProviderError("protocol", "Too large", false, undefined, "output_limit"),
+  new ProviderError("protocol", "Truncated", false, undefined, "output_truncated"),
+  new ProviderError("protocol", "Bad arguments", false, undefined, "invalid_tool_call"),
+  new ProviderError("protocol", "Bad chunk", false, undefined, "invalid_chunk"),
   new ForgeError("storage", "Store failed"),
   new ForgeError("tool", "Tool failed"),
   new ForgeError("invalid_input", "Invalid input"),

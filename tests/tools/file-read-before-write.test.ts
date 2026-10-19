@@ -42,14 +42,11 @@ it("rejects unread overwrites and edits without creating temporary files", async
   }
 });
 
-it("allows creation but requires an explicit read before the next modification", async () => {
+it("keeps write authority for the session's own successful version", async () => {
   expect((await execute("write_file", { path: "a", content: "first" })).isError).toBe(false);
-  expect((await execute("write_file", { path: "a", content: "second" })).isError).toBe(true);
-  await execute("read_file", { path: "./a", limit: 1 });
   expect((await execute("edit_file", { path: "a", old_text: "first", new_text: "second" })).isError).toBe(false);
-  expect((await execute("write_file", { path: "a", content: "third" })).isError).toBe(true);
-  await execute("read_file", { path: "a" });
   expect((await execute("write_file", { path: "a", content: "third" })).isError).toBe(false);
+  expect(await readFile(join(root, "a"), "utf8")).toBe("third");
 });
 
 it("scopes reads to the session, and search or failed/empty reads do not authorize writes", async () => {
@@ -82,7 +79,7 @@ it("reports read metadata and does not emit changes for identical writes or repl
     version: expect.stringMatching(/^[a-f0-9]{64}$/),
   });
   const write = await execute("write_file", { path: "a", content: "你好\nsecond" });
-  expect(JSON.parse(write.content)).toEqual({ written: false, unchanged: true });
+  expect(JSON.parse(write.content)).toEqual({ written: false, unchanged: true, size_bytes: Buffer.byteLength("你好\nsecond") });
   expect(write.changes).toEqual([]);
   const edit = await execute("edit_file", { path: "a", old_text: "second", new_text: "second" });
   expect(JSON.parse(edit.content)).toEqual({ edited: false, unchanged: true, replacements: 0 });

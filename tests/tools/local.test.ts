@@ -102,7 +102,7 @@ describe("original local tools", () => {
   }
 
   it("publishes native strict definitions without executing shell", () => {
-    expect(tools.definitions).toHaveLength(10);
+    expect(tools.definitions).toHaveLength(11);
     for (const definition of tools.definitions) {
       toolDefinitionSchema.parse(definition);
       expect(definition.function.parameters.additionalProperties).toBe(false);
@@ -126,7 +126,7 @@ describe("original local tools", () => {
       expect(tool.description).not.toContain("before/after previews");
       expect(tool.description).toContain("Workspace-relative only");
       expect(tool.description).toContain("no symlinks or sensitive files");
-      expect(tool.description).toContain("Files at most 2 MiB");
+      expect(tool.description).toContain("Files at most 16 MiB");
       expect(tool.description).toContain("Readonly forbids mutations");
       expect(tool.parameters.additionalProperties).toBe(false);
     }
@@ -138,6 +138,8 @@ describe("original local tools", () => {
       properties: {
         path: { type: "string", minLength: 1, maxLength: 4096 },
         content: { type: "string", maxLength: 2097152 },
+        append: { type: "boolean", default: false, description: expect.any(String) },
+        expected_bytes: { type: "integer", minimum: 0, maximum: 16777216 },
       },
     });
     expect(edit.parameters).toEqual({
@@ -153,7 +155,7 @@ describe("original local tools", () => {
       "builds, tests, git and package managers", "write_file/edit_file",
       "command effects are not checkpointed", "Readonly denied",
       "per-call approval under the host policy", "NOT an OS sandbox",
-      "cwd is guarded", "64 KiB", "128 KiB", "120s",
+      "cwd is guarded", "read_command_output", "128 KiB", "120s",
     ]) expect(command.description).toContain(rule);
     expect(command.description.length).toBeLessThan(850);
   });
@@ -307,7 +309,7 @@ describe("original local tools", () => {
       ).toBe(true);
     }
     await writeFile(join(root, "binary"), Buffer.from([0, 255, 1]));
-    await writeFile(join(root, "large"), Buffer.alloc(2 * 1024 * 1024 + 1, 65));
+    await writeFile(join(root, "large"), Buffer.alloc(16 * 1024 * 1024 + 1, 65));
     expect((await execute("read_file", { path: "binary" })).isError).toBe(true);
     expect((await execute("read_file", { path: "large" })).isError).toBe(true);
     await writeFile(
@@ -466,10 +468,11 @@ describe("original local tools", () => {
     expect(output(timeout).timed_out).toBe(true);
     expect(Date.now() - started).toBeLessThan(3000);
     const noisy = await node(
-      "setInterval(() => process.stdout.write('x'.repeat(65536)), 1)",
+      "process.stdout.write('x'.repeat(100000))",
     );
-    expect(noisy.isError).toBe(true);
-    expect(output(noisy).truncated).toBe(true);
+    expect(noisy.isError).toBe(false);
+    expect(output(noisy).truncated).toBe(false);
+    expect(output(noisy).preview_truncated).toBe(true);
     expect(noisy.content.length).toBeLessThan(131072);
     const failed = await node("process.exit(7)");
     expect(failed.isError).toBe(true);

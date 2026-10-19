@@ -25,6 +25,7 @@ export type ProviderRetryReason = "protocol" | "network" | "timeout" | "http";
 type ClassifiedProviderError = ForgeError & {
   readonly classification: string;
   readonly status?: number | undefined;
+  readonly reason?: ProtocolReason | undefined;
 };
 
 /**
@@ -37,8 +38,19 @@ export const isRetryableProviderFailure = (error: unknown): boolean => {
   if (!(error instanceof ForgeError) || error.code !== "provider") return false;
   const candidate = error as Partial<ClassifiedProviderError>;
   if (typeof candidate.classification !== "string") return false;
+  if (candidate.classification === "protocol") {
+    switch (candidate.reason) {
+      case undefined:
+      case "missing_finish":
+      case "unterminated_event":
+      case "missing_completion":
+      case "provider_error_event":
+        return true;
+      default:
+        return false;
+    }
+  }
   if (
-    candidate.classification === "protocol" ||
     candidate.classification === "network" ||
     candidate.classification === "timeout"
   )

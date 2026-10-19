@@ -98,7 +98,7 @@ describe("original local tools", () => {
   }
 
   it("publishes strict definitions", () => {
-    expect(tools.definitions).toHaveLength(10);
+    expect(tools.definitions).toHaveLength(11);
     for (const definition of tools.definitions) {
       toolDefinitionSchema.parse(definition);
       expect(definition.function.parameters.additionalProperties).toBe(false);
@@ -367,20 +367,22 @@ describe("original local tools", () => {
     }
   });
 
-  it("allows ordinary long build output but terminates overflow and clamps escaped JSON", async () => {
+  it("allows long build output and clamps only the escaped JSON preview", async () => {
     const long = await node("process.stdout.write('x'.repeat(40000))");
     expect(long.isError).toBe(false);
     expect(output(long).truncated).toBe(false);
     const escaped = await node(
       "process.stdout.write(String.fromCharCode(1).repeat(60000))",
     );
-    expect(output(escaped).truncated).toBe(true);
+    expect(output(escaped).truncated).toBe(false);
+    expect(output(escaped).preview_truncated).toBe(true);
     expect(Buffer.byteLength(escaped.content)).toBeLessThan(131072);
     const noisy = await node(
-      "setInterval(()=>process.stdout.write('x'.repeat(65536)),1)",
+      "process.stdout.write('x'.repeat(100000))",
     );
-    expect(noisy.isError).toBe(true);
-    expect(output(noisy).truncated).toBe(true);
+    expect(noisy.isError).toBe(false);
+    expect(output(noisy).truncated).toBe(false);
+    expect(output(noisy).preview_truncated).toBe(true);
     expect(noisy.content.length).toBeLessThan(131072);
     expect(output(await node("setInterval(()=>{},1000)", 100)).timed_out).toBe(
       true,

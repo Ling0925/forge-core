@@ -75,7 +75,7 @@ describe("bounded native file queries", () => {
   });
   it("retains exclusions, byte ceiling, symlink policy and readonly", async () => {
     await writeFile(join(root, "binary.dat"), Buffer.from([0, 1, 2]));
-    await writeFile(join(root, "large.txt"), "Needle".repeat(400000));
+    await writeFile(join(root, "large.txt"), "Needle".repeat(3000000));
     await writeFile(join(root, ".env.local"), "Needle");
     await symlink(join(root, "src/a.ts"), join(root, "link.txt"));
     await mkdir(join(root, "node_modules"));

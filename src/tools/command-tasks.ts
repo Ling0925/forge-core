@@ -19,6 +19,8 @@ const completionMetadata = z.object({
   signal: z.string().max(32).regex(/^[A-Z0-9]+$/).nullable().optional(),
   timed_out: z.boolean().optional(),
   truncated: z.boolean().optional(),
+  output_id: z.string().uuid().optional(),
+  preview_truncated: z.boolean().optional(),
   spawn_failed: z.boolean().optional(),
 });
 const taskDefinition: ToolDefinition = {
@@ -240,8 +242,8 @@ export function withCommandTasks(
         signalStarted();
         context.onCommandStarted?.();
       },
-      // No partial raw chunks retained/forwarded. Local still enforces its
-      // original 64 KiB cap and redacts the complete result published below.
+      // No raw chunks forwarded. Local owns private logs, redacts before paging,
+      // and returns a bounded preview plus its run-scoped output_id.
     };
     task.done = Promise.resolve().then(() => base.execute(call, commandContext)).then(
       (completed): Outcome => {
@@ -251,7 +253,8 @@ export function withCommandTasks(
           if (metadata.success) task.metadata = metadata.data;
         } catch { /* Non-JSON base failures have no safe completion metadata. */ }
         const meta = task.metadata;
-        const failed = completed.isError || meta.timed_out || meta.truncated || meta.spawn_failed ||
+        const failed = completed.isError || meta.timed_out || meta.spawn_failed ||
+          (meta.truncated && meta.preview_truncated === undefined) ||
           (meta.exit_code !== undefined && meta.exit_code !== 0) || meta.signal != null;
         task.status = controller.signal.aborted ? "cancelled" : failed ? "failed" : "completed";
         task.resultIsError = task.status !== "completed";

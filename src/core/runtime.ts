@@ -28,6 +28,7 @@ import { projectSummary, summaryBoundary } from "./context";
 import { summarizeWorkingState } from "./working-memory";
 import { buildSystemInstructions } from "./prompts";
 import { createToolPreviewStream } from "./tool-preview";
+import { createToolFailureGuard } from "./tool-failure-guard";
 import { claimAutoTitle } from "./session-title";
 import { budgetUsage, measureContext, reportedContext, resolveContextBudget, resolveContextWindow } from "../shared/context-usage";
 
@@ -284,6 +285,7 @@ export const createAgentRuntime = (
     let usage: Usage = { promptTokens: 0, completionTokens: 0, totalTokens: 0 };
     let reportedUsageTurns = 0;
     let hadProviderRetries = false;
+    const checkToolFailure = createToolFailureGuard();
     let phase: "storage" | "provider" | "tool" = "storage";
     let incompleteText = "";
     /** Learned estimate->real-input scale for this run; see CONTEXT_SCALE_FLOOR. */
@@ -1006,6 +1008,7 @@ export const createAgentRuntime = (
                   ![
                     "list_files",
                     "read_file",
+                    "read_command_output",
                     "search_files",
                     "project_context",
                     "load_skill",
@@ -1066,6 +1069,7 @@ export const createAgentRuntime = (
           };
           event({ type: "tool_finished", toolCallId: call.id, result });
           await save();
+          checkToolFailure(call, result);
         }
       }
     } catch (error) {

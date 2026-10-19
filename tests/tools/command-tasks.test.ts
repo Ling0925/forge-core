@@ -438,7 +438,7 @@ describe("command task wrapper", () => {
 });
 
 describe("command tasks with the real local registry", () => {
-  it("starts only after approval/spawn; preserves timeout, failure, and overflow", async () => {
+  it("starts only after approval/spawn; preserves timeout and pages noisy successful output", async () => {
     const root = await mkdtemp(join(tmpdir(), "forge-command-tasks-"));
     const tools = withCommandTasks(await createLocalToolRegistry(root));
     const approve = vi.fn(async () => true);
@@ -455,8 +455,11 @@ describe("command tasks with the real local registry", () => {
       expect(JSON.parse(timeoutResult.output).timed_out).toBe(true);
       const overflow = output(await launch([process.execPath, "-e", "process.stdout.write('x'.repeat(70000))"]));
       const overflowResult = output(await manage(tools, ctx, { action: "wait", id: overflow.id }));
-      expect(overflowResult.status).toBe("failed");
-      expect(overflowResult.output).not.toContain("x".repeat(100));
+      expect(overflowResult.status).toBe("completed");
+      expect(overflowResult.preview_truncated).toBe(true);
+      const page = output(await tools.execute(call("read_command_output", { id: overflowResult.output_id, offset: 60000 }), ctx));
+      expect(page.content).toBe("x".repeat(10000));
+      expect(page.next_offset).toBeNull();
       expect(approve).toHaveBeenCalledTimes(3);
       expect(output(await manage(tools, ctx, { action: "list" })).pending_ids).toEqual([]);
     } finally {

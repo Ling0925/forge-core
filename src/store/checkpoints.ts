@@ -4,6 +4,7 @@ import { type FileHandle, lstat, open, rename, unlink } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { z } from "zod";
 import { ForgeError } from "../shared/errors";
+import { MAX_EDITABLE_FILE_BYTES as LIMIT } from "../shared/file-limits";
 import { createWorkspacePathGuard } from "../tools/path-guard";
 import { canonicalPath, containsPath } from "../tools/protected-roots";
 import {
@@ -16,7 +17,7 @@ import {
 } from "./io";
 import { fileLock } from "./lock";
 
-const LIMIT = 2 * 1024 * 1024;
+const RECORD_LIMIT = Math.ceil(LIMIT * 8 / 3) + 64 * 1024;
 const idSchema = z.string().uuid();
 const recordSchema = z
   .object({
@@ -166,7 +167,7 @@ export async function createCheckpointStore(
   }
   async function load(id: string): Promise<RecordData> {
     const data = recordSchema.safeParse(
-      await readJson(recordPath(id), 6 * 1024 * 1024),
+      await readJson(recordPath(id), RECORD_LIMIT),
     );
     if (!data.success || data.data.id !== id) throw storageError();
     return data.data;
@@ -281,7 +282,7 @@ export async function createCheckpointStore(
           before: input.before?.toString("base64") ?? null,
           after: input.after.toString("base64"),
         };
-        await atomicJson(recordPath(record.id), record, 6 * 1024 * 1024);
+        await atomicJson(recordPath(record.id), record, RECORD_LIMIT);
         check(input.signal);
         retained = true;
         let done = false;
@@ -301,7 +302,7 @@ export async function createCheckpointStore(
               state: "completed",
               completedAt: new Date().toISOString(),
             };
-            await atomicJson(recordPath(record.id), updated, 6 * 1024 * 1024);
+            await atomicJson(recordPath(record.id), updated, RECORD_LIMIT);
             done = true;
             return metadata(updated);
           },
@@ -368,7 +369,7 @@ export async function createCheckpointStore(
           state: "restored",
           restoredAt: new Date().toISOString(),
         };
-        await atomicJson(recordPath(id), updated, 6 * 1024 * 1024);
+        await atomicJson(recordPath(id), updated, RECORD_LIMIT);
         return metadata(updated);
       } finally {
         await release();

@@ -92,7 +92,7 @@ describe("system instructions", () => {
       "make_directory for missing parents",
       "call read_file on its current version in this session",
       "search results and internal tool reads do not count",
-      "Read again after a successful write or an external change",
+      "Own writes retain authority; reread external changes",
       "Do not use run_command with node/python/sed/cat",
       "when a checkpoint store is configured",
       "command effects are not checkpointed",

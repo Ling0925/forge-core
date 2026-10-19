@@ -20,15 +20,15 @@ import type { CheckpointStore } from "../store/checkpoints";
 import { gitInspect } from "./git";
 import { createLineMatcher, globMatcher, pageEntries, relativeQueryPath } from "./file-query";
 import { WorkspacePathError, createWorkspacePathGuard } from "./path-guard";
+import { createCommandOutputStore } from "./command-output";
+import { MAX_EDITABLE_FILE_BYTES as FILE_LIMIT } from "../shared/file-limits";
 
-const FILE_LIMIT = 2 * 1024 * 1024;
 const CACHE_LIMIT = 16 * 1024 * 1024;
-const OUTPUT_LIMIT = 64 * 1024;
 const RESULT_LIMIT = 128 * 1024;
 const ENTRY_LIMIT = 1000;
 const DEPTH_LIMIT = 8;
 const pathSchema = z.string().min(1).max(4096);
-const textSchema = z.string().max(FILE_LIMIT);
+const textSchema = z.string().max(2 * 1024 * 1024);
 const commandSchema = z
   .object({
     tool: z.literal("run_command"),
@@ -79,6 +79,8 @@ const argumentsSchema = z.discriminatedUnion("tool", [
       tool: z.literal("write_file"),
       path: pathSchema,
       content: textSchema,
+      append: z.boolean().default(false),
+      expected_bytes: z.number().int().min(0).max(FILE_LIMIT).optional(),
     })
     .strict()
     .readonly()
@@ -100,6 +102,10 @@ const argumentsSchema = z.discriminatedUnion("tool", [
     .readonly()
     .unwrap(),
   commandSchema.unwrap(),
+  z.object({ tool: z.literal("read_command_output"), id: z.string().uuid(),
+    stream: z.enum(["stdout", "stderr"]).default("stdout"),
+    offset: z.number().int().min(0).default(0), limit: z.number().int().min(1).max(12000).default(12000),
+  }).strict(),
   z.object({ tool: z.literal("git_status") }).strict(),
   z.object({ tool: z.literal("git_diff") }).strict(),
   z.object({ tool: z.literal("git_log") }).strict(),
@@ -145,7 +151,7 @@ function definition(
   });
 }
 const fileBoundaries =
-  "Workspace-relative only; no symlinks or sensitive files (.env*, credentials, private keys, .ssh, .config, .git). Files at most 2 MiB. ";
+  "Workspace-relative only; no symlinks or sensitive files (.env*, credentials, private keys, .ssh, .config, .git). Files at most 16 MiB; generate large files in small chunks. ";
 const policies = `${fileBoundaries}Readonly forbids mutations and commands. `;
 const writePolicies = `${fileBoundaries}Readonly forbids mutations. `;
 const definitions: readonly ToolDefinition[] = Object.freeze([
@@ -181,7 +187,7 @@ const definitions: readonly ToolDefinition[] = Object.freeze([
   ),
   definition(
     "read_file",
-    `${policies}Numbered UTF-8 pages with zero-based offset, SHA-256 version, byte size, inclusive end_line and cache status. Matching if_version returns unchanged:true without content or new write authority. A nonempty page authorizes write/edit in this session; reread after changes. Binary rejected; output bounded.`,
+    `${policies}Numbered UTF-8 pages with zero-based offset, SHA-256 version, byte size, inclusive end_line and cache status. Matching if_version returns unchanged:true without content or new write authority. A nonempty page authorizes write/edit in this run; own successful writes refresh that version, external changes require a new read. Binary rejected; output bounded.`,
     {
       path: stringParameter,
       offset: { type: "integer", minimum: 0, maximum: FILE_LIMIT, default: 0 },
@@ -192,10 +198,12 @@ const definitions: readonly ToolDefinition[] = Object.freeze([
   ),
   definition(
     "write_file",
-    `Default tool for creating files or replacing their complete content; use edit_file for targeted changes, not run_command scripts or redirection. Overwriting requires a prior read_file of the current version in this session; new files need no read. Unchanged content is a no-op. Atomic writes use restorable checkpoints when a checkpoint store is configured. Records a bounded diff patch for display; restore uses checkpoints, not the patch. Fails if the parent directory does not exist (create it with make_directory). ${writePolicies}`,
+    `Default tool for creating files or replacing their complete content; use edit_file for targeted changes, not run_command scripts or redirection. Overwriting requires a prior read_file of the current version in this session; new files need no read. Unchanged content is a no-op. For large files send small chunks (prefer <=16000 characters): append:true requires expected_bytes, and returns size_bytes. Atomic writes use restorable checkpoints when a checkpoint store is configured. Records a bounded diff patch for display; restore uses checkpoints, not the patch. Fails if the parent directory does not exist (create it with make_directory). ${writePolicies}`,
     {
       path: stringParameter,
-      content: { type: "string", maxLength: FILE_LIMIT },
+      content: { type: "string", maxLength: 2 * 1024 * 1024 },
+      append: { type: "boolean", default: false, description: "Append a small chunk instead of replacing the file. Requires expected_bytes from the last successful write/read; use 0 for a new file." },
+      expected_bytes: { type: "integer", minimum: 0, maximum: FILE_LIMIT },
     },
     ["path", "content"],
   ),
@@ -204,8 +212,8 @@ const definitions: readonly ToolDefinition[] = Object.freeze([
     `Default tool for targeted file edits instead of shell, node/python or sed scripts. Atomically replace literal old_text (nonempty); exactly one occurrence is required unless replace_all is true. A prior read_file of the current version in this session is required; read again after each write or external change. Identical replacement is a no-op. Edits use restorable checkpoints when a checkpoint store is configured; the bounded display diff patch is separate from checkpoint backups. ${writePolicies}`,
     {
       path: stringParameter,
-      old_text: { type: "string", minLength: 1, maxLength: FILE_LIMIT },
-      new_text: { type: "string", maxLength: FILE_LIMIT },
+      old_text: { type: "string", minLength: 1, maxLength: 2 * 1024 * 1024 },
+      new_text: { type: "string", maxLength: 2 * 1024 * 1024 },
       replace_all: { type: "boolean", default: false },
     },
     ["path", "old_text", "new_text"],
@@ -218,7 +226,7 @@ const definitions: readonly ToolDefinition[] = Object.freeze([
   ),
   definition(
     "run_command",
-    "Run builds, tests, git and package managers with explicit argv (no implicit shell; explicit shell argv allowed). For authored file content, use write_file/edit_file instead of scripts or redirection; command effects are not checkpointed. Readonly denied; workspace requests per-call approval under the host policy; unrestricted permits execution. NOT an OS sandbox: commands can access outside the workspace and network; cwd is guarded. Minimal environment without inherited credential or proxy variables; HOME is the host user's home, so commands can use local config and authentication. Timeout 30s by default, 120s maximum; combined output cap 64 KiB (overflow terminates the process group and withholds partial output); encoded result cap 128 KiB. Cancellation waits for process close.",
+    "Run builds, tests, git and package managers with explicit argv (no implicit shell). For authored files use write_file/edit_file; command effects are not checkpointed. Readonly denied; workspace requests per-call approval under the host policy. NOT an OS sandbox; cwd is guarded. Minimal environment; HOME is the host user's home. Timeout 30s by default, 120s maximum. Output never terminates a command: private logs retain up to 16 MiB/command and 128 MiB/run, then stop capture. Results show 12000 characters/stream; read_command_output pages the redacted log during this run. Encoded result cap 128 KiB. Cancellation waits for process close.",
     {
       argv: {
         type: "array",
@@ -235,6 +243,13 @@ const definitions: readonly ToolDefinition[] = Object.freeze([
       },
     },
     ["argv"],
+  ),
+  definition(
+    "read_command_output",
+    "Read a completed command's redacted log without rerunning it. IDs belong to this session/run; logs expire at run end. Offset and limit are UTF-16 characters, not bytes. Readonly permitted.",
+    { id: { type: "string", format: "uuid" }, stream: { type: "string", enum: ["stdout", "stderr"], default: "stdout" },
+      offset: { type: "integer", minimum: 0, default: 0 }, limit: { type: "integer", minimum: 1, maximum: 12000, default: 12000 } },
+    ["id"],
   ),
   definition(
     "search_files",
@@ -356,7 +371,7 @@ export async function createLocalToolRegistry(
     string,
     Readonly<{ signature: string; text: string; bytes: number }>
   >();
-  // Only successful, model-visible read_file calls authorize overwrites.
+  // Model-visible reads and successful own writes authorize the current version.
   // Keep receipts separate from the internal read/search cache and session-scoped.
   const readReceipts = new Map<string, string>();
   function receiptKey(sessionId: string, path: string): string {
@@ -380,10 +395,11 @@ export async function createLocalToolRegistry(
   }
   function safeText(text: string): void {
     if (Buffer.byteLength(text, "utf8") > FILE_LIMIT)
-      fail("File exceeds the 2 MiB ceiling.");
+      fail("File exceeds the 16 MiB ceiling. Split it into separate files; retrying the same content cannot succeed.");
     if (text.includes("\0") || containsKnown(text) || secretText(text))
       fail("Binary or sensitive content is not permitted.");
   }
+  const commandOutput = createCommandOutputStore(redact);
   async function commandPath(): Promise<string> {
     const defaults =
       process.platform === "win32"
@@ -449,7 +465,7 @@ export async function createLocalToolRegistry(
     const info = await lstat(path);
     if (!info.isFile() || info.isSymbolicLink())
       fail("Expected a regular non-symlink file.");
-    if (info.size > FILE_LIMIT) fail("File exceeds the 2 MiB ceiling.");
+    if (info.size > FILE_LIMIT) fail("File exceeds the 16 MiB ceiling. Split it into separate files.");
     const stamp = signature(info);
     const cached = cache.get(path);
     if (cached?.signature === stamp) {
@@ -476,7 +492,7 @@ export async function createLocalToolRegistry(
         if (chunk.bytesRead === 0) break;
         length += chunk.bytesRead;
       }
-      if (length > FILE_LIMIT) fail("File exceeds the 2 MiB ceiling.");
+      if (length > FILE_LIMIT) fail("File exceeds the 16 MiB ceiling. Split it into separate files.");
       if (signature(await handle.stat()) !== stamp)
         fail("File changed while reading; retry.");
       let text: string;
@@ -566,6 +582,7 @@ export async function createLocalToolRegistry(
       await handle.writeFile(text, "utf8");
       if (beforeMode !== null) await handle.chmod(beforeMode);
       await handle.sync();
+      const written = await handle.stat();
       await handle.close();
       await guard.resolveRead(parentRelative);
       const currentParent = await lstat(parent);
@@ -600,7 +617,14 @@ export async function createLocalToolRegistry(
       check(signal);
       await rename(temporary, path);
       renamed = true;
-      if (sessionId) readReceipts.delete(receiptKey(sessionId, path));
+      if (sessionId) {
+        const current = await lstat(path);
+        const key = receiptKey(sessionId, path);
+        if (current.ino === written.ino && current.dev === written.dev &&
+            current.size === written.size && current.mtimeMs === written.mtimeMs) {
+          readReceipts.set(key, signature(current));
+        } else readReceipts.delete(key);
+      }
       invalidate(path);
       await checkpoint?.complete();
       return [
@@ -615,6 +639,16 @@ export async function createLocalToolRegistry(
       if (!renamed) await unlink(temporary);
       await checkpoint?.release();
     }
+  }
+  async function serializedFile<T>(path: string, sessionId: string, action: () => Promise<T>): Promise<T> {
+    const resolved = await guard.resolveWrite(path);
+    const key = receiptKey(sessionId, resolved);
+    const admitted = readReceipts.get(key);
+    return serialized(async () => {
+      if (readReceipts.get(key) !== admitted)
+        fail("File changed while this edit was queued; read_file again before editing.");
+      return action();
+    });
   }
   async function directories(
     relativePath: string,
@@ -773,6 +807,7 @@ export async function createLocalToolRegistry(
       fail("Command cwd must be a directory.");
     check(signal);
     const started = Date.now();
+    const log = await commandOutput.create(context.sessionId);
     return new Promise<ToolResult>((resolve, reject) => {
       const child = spawn(executable, args.argv.slice(1), {
         cwd,
@@ -788,11 +823,7 @@ export async function createLocalToolRegistry(
           TEMP: guard.root,
         },
       });
-      const stdout: Buffer[] = [];
-      const stderr: Buffer[] = [];
-      let bytes = 0;
       let timedOut = false;
-      let truncated = false;
       let cancelled = false;
       let spawnFailed = false;
       function kill(): void {
@@ -805,18 +836,6 @@ export async function createLocalToolRegistry(
           process.kill(-child.pid, "SIGKILL");
         } catch (error: unknown) {
           if (errorCode(error) !== "ESRCH") spawnFailed = true;
-        }
-      }
-      function capture(chunks: Buffer[], chunk: Buffer): void {
-        const available = Math.max(0, OUTPUT_LIMIT - bytes);
-        if (available > 0) {
-          const kept = Buffer.from(chunk.subarray(0, available));
-          chunks.push(kept);
-          bytes += kept.length;
-        }
-        if (chunk.length > available) {
-          truncated = true;
-          kill();
         }
       }
       const abort = () => {
@@ -832,11 +851,11 @@ export async function createLocalToolRegistry(
         try { context.onCommandStarted?.(); } catch { /* Observers cannot fail execution. */ }
       });
       child.stdout.on("data", (chunk: Buffer) => {
-        capture(stdout, chunk);
+        log.capture("stdout", chunk);
         try { context.onCommandOutput?.("stdout", chunk.toString("utf8")); } catch { /* Observer only. */ }
       });
       child.stderr.on("data", (chunk: Buffer) => {
-        capture(stderr, chunk);
+        log.capture("stderr", chunk);
         try { context.onCommandOutput?.("stderr", chunk.toString("utf8")); } catch { /* Observer only. */ }
       });
       child.on("error", () => {
@@ -848,38 +867,26 @@ export async function createLocalToolRegistry(
         // Descendants may have detached their output but remain in our group.
         kill();
         if (cancelled || signal.aborted) {
-          reject(new ForgeError("cancelled", "Tool execution cancelled."));
+          void log.discard().then(() => reject(new ForgeError("cancelled", "Tool execution cancelled.")), reject);
           return;
         }
-        let out = truncated
-          ? "[Output withheld after overflow]"
-          : redact(Buffer.concat(stdout).toString("utf8"));
-        let err = truncated
-          ? ""
-          : redact(Buffer.concat(stderr).toString("utf8"));
-        const encode = () =>
-          result(
-            {
-              stdout: out,
-              stderr: err,
-              exit_code: exitCode,
-              signal: exitSignal,
-              duration_ms: Date.now() - started,
-              truncated,
-              timed_out: timedOut,
-              spawn_failed: spawnFailed,
-            },
-            timedOut || truncated || spawnFailed || exitCode !== 0,
-          );
-        let encoded = encode();
-        while (Buffer.byteLength(encoded.content, "utf8") >= RESULT_LIMIT) {
-          truncated = true;
-          if (out.length >= err.length)
-            out = out.slice(0, Math.floor(out.length / 2));
-          else err = err.slice(0, Math.floor(err.length / 2));
-          encoded = encode();
-        }
-        resolve(encoded);
+        void log.finish().then((output) => {
+          let out = output.stdout;
+          let err = output.stderr;
+          let previewTruncated = output.preview_truncated;
+          const encode = () => result({ ...output, stdout: out, stderr: err,
+            preview_truncated: previewTruncated, exit_code: exitCode, signal: exitSignal,
+            duration_ms: Date.now() - started, timed_out: timedOut, spawn_failed: spawnFailed,
+          }, timedOut || spawnFailed || exitCode !== 0);
+          let encoded = encode();
+          while (Buffer.byteLength(encoded.content, "utf8") >= RESULT_LIMIT) {
+            previewTruncated = true;
+            if (out.length >= err.length) out = out.slice(0, Math.floor(out.length / 2));
+            else err = err.slice(0, Math.floor(err.length / 2));
+            encoded = encode();
+          }
+          resolve(encoded);
+        }, reject);
       });
       if (signal.aborted) abort();
     });
@@ -917,6 +924,8 @@ export async function createLocalToolRegistry(
       if (mutation && context.permission === "readonly")
         fail("Readonly permission forbids this tool.");
       switch (args.tool) {
+        case "read_command_output":
+          return result(await commandOutput.read(context.sessionId, args.id, args.stream, args.offset, args.limit));
         case "read_file": {
           const file = await read(args.path, signal);
           const lines = file.text.split("\n");
@@ -990,23 +999,38 @@ export async function createLocalToolRegistry(
           });
         }
         case "write_file":
-          return await serialized(async () => {
+          return await serializedFile(args.path, context.sessionId, async () => {
+            let content = args.content;
+            if (args.append) {
+              if (args.expected_bytes === undefined)
+                fail("Append requires expected_bytes from the last write/read (0 for a new file); do not blindly replay an append.");
+              let previous = "";
+              try { previous = (await read(args.path, signal)).text; }
+              catch (error) {
+                if (!(error instanceof WorkspacePathError && error.code === "MISSING") && errorCode(error) !== "ENOENT") throw error;
+              }
+              if (Buffer.byteLength(previous, "utf8") !== args.expected_bytes)
+                fail("Append offset differs from current file size; inspect with read_file before continuing. No content was appended.");
+              content = previous + args.content;
+            } else if (args.expected_bytes !== undefined) {
+              fail("expected_bytes is only valid with append:true.");
+            }
             const changes = await commit(
               args.path,
-              args.content,
+              content,
               signal,
               undefined,
               call.id,
               context.sessionId,
             );
             return result(
-              { written: changes.length > 0, unchanged: changes.length === 0 },
+              { written: changes.length > 0, unchanged: changes.length === 0, size_bytes: Buffer.byteLength(content, "utf8") },
               false,
               changes,
             );
           });
         case "edit_file":
-          return await serialized(async () => {
+          return await serializedFile(args.path, context.sessionId, async () => {
             const original = await read(args.path, signal);
             requireRead(context.sessionId, original.path, original.stamp);
             const pieces = original.text.split(args.old_text);
@@ -1157,10 +1181,11 @@ export async function createLocalToolRegistry(
     dispose(): Promise<void> {
       if (disposal) return disposal;
       shutdown.abort();
-      disposal = Promise.allSettled([...active]).then(() => {
+      disposal = Promise.allSettled([...active]).then(async () => {
         cache.clear();
         readReceipts.clear();
         cacheBytes = 0;
+        await commandOutput.dispose();
       });
       return disposal;
     },
