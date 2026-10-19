@@ -3,6 +3,7 @@ import { createServer } from "node:http";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { afterEach, describe, expect, it } from "vitest";
 import { createModelProvider } from "../../src/provider/openai";
+import { nativeDefinitions } from "../../src/core/agents";
 import type { ModelProvider } from "../../src/shared/contracts";
 import { image } from "../fixtures/image";
 
@@ -57,6 +58,21 @@ const success = {
 };
 
 describe("original HTTP provider", () => {
+  it("sends explicit non-strict tools so Chat-to-Responses gateways preserve optional fields", async () => {
+    let received: unknown;
+    const provider = await fixture(async (request, response) => {
+      let body = "";
+      for await (const chunk of request) body += chunk.toString();
+      received = JSON.parse(body);
+      json(response, success);
+    });
+    const tools = nativeDefinitions.filter(tool => ["create_plan", "update_plan"].includes(tool.function.name));
+    await provider.complete([{ role: "user", content: "Plan a task" }], tools, {
+      model: "fixture", signal: new AbortController().signal, onText: () => {},
+    });
+    expect(received).toMatchObject({ tools: tools.map(tool => ({ ...tool, function: { ...tool.function, strict: false } })) });
+    for (const tool of tools) expect(tool.function).not.toHaveProperty("strict");
+  });
   it("sends images as native Chat Completions content parts and keeps text-only messages unchanged", async () => {
     let received: unknown;
     const provider = await fixture(async (request, response) => {

@@ -21,7 +21,8 @@ it("publishes no redundant aliases, with one background control and a conditiona
     expect(names.filter(n => n === "run_command")).toHaveLength(1);
     expect(names.filter(n => n === "command_task")).toHaveLength(1);
     for (const alias of ["grep", "glob", "read", "background_command", "task_output", "task_stop", "lsp"]) expect(names).not.toContain(alias);
-    expect(names).toHaveLength(11);
+    expect(names).toContain("append_file");
+    expect(names).toHaveLength(13);
     const configured = await createLspToolRegistry(dir, [{ id: "ts", command: "not-started", args: [], extensions: [".ts"] }]);
     expect(configured.definitions.map(d => d.function.name)).toEqual(["lsp"]);
     await configured.dispose();

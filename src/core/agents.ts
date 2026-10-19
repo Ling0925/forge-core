@@ -1,7 +1,8 @@
 import { z } from "zod";
 import type { ToolDefinition, ToolResult } from "../shared/schemas";
 import type { TaskPlan } from "../shared/schemas";
-import { updateSessionPlan } from "./plans";
+import { createSessionPlan, updateSessionPlan } from "./plans";
+import { ForgeError, formatValidationError } from "../shared/errors";
 import { executeHistory, historyDefinitions } from "./history";
 import { executeAgentOperation, type AgentEnvironment } from "./agent-operations";
 export { agentSummary } from "./agent-operations";
@@ -14,17 +15,19 @@ const modelListArgs = z
   .strict();
 const MODEL_CATALOG_BYTES = 32768;
 const planContentProperties = {
-  title: { type: "string", minLength: 1, maxLength: 256 },
-  explanation: { type: "string" },
+  explanation: { type: "string", minLength: 1, maxLength: 4096 },
   steps: {
     type: "array",
+    minItems: 1,
+    maxItems: 100,
     items: {
       type: "object",
       properties: {
-        step: { type: "string" },
+        step: { type: "string", minLength: 1, maxLength: 1024 },
         status: { type: "string", enum: ["pending", "in_progress", "completed"] },
       },
       required: ["step", "status"],
+      additionalProperties: false,
     },
   },
 } as const;
@@ -48,33 +51,23 @@ export const nativeDefinitions: readonly ToolDefinition[] = [
     required: [],
   },
   {
-    name: "update_plan",
-    description: "Persist independent task plans within this session. For each new multi-step task use action:create and a concise title; creation has no ID input and the result supplies an automatically generated id. To revise the same task use action:update with that returned planId, sending its full steps. Never append an unrelated task to an old plan. Without selectors, continues the current unfinished plan or creates a new one after completion. Repeat calls are allowed throughout the session; simple questions need no plan.",
-    parameters: {
-      type: "object",
-      anyOf: [
-        {
-          type: "object",
-          properties: {
-            action: { type: "string", enum: ["create"] },
-            ...planContentProperties,
-          },
-          required: ["action", "explanation", "steps"],
-          additionalProperties: false,
-        },
-        {
-          type: "object",
-          properties: {
-            action: { type: "string", enum: ["update"] },
-            planId: { type: "string", minLength: 1, maxLength: 128,
-              description: "Existing plan ID returned by a previous call. Omit to continue the current plan." },
-            ...planContentProperties,
-          },
-          required: ["explanation", "steps"],
-          additionalProperties: false,
-        },
-      ],
+    name: "create_plan",
+    description: "Create an independent plan for a new multi-step task, preserving prior plans. Supply a concise name and full steps (at most one in_progress); the result supplies the generated id. No ID or action input. Use update_plan with the returned id for milestones in this task. Simple questions need no plan.",
+    properties: {
+      name: { type: "string", minLength: 1, maxLength: 256 },
+      ...planContentProperties,
     },
+    required: ["name", "explanation", "steps"],
+  },
+  {
+    name: "update_plan",
+    description: "Revise an existing task plan using its returned id as planId and its full steps (at most one in_progress). Omit planId to continue the current unfinished plan. For a new task use create_plan, not an invented planId. Prior plans remain intact. Legacy selector-free calls can still create a plan when none is unfinished.",
+    properties: {
+      planId: { type: "string", minLength: 1, maxLength: 128,
+        description: "Existing plan ID returned by create_plan or update_plan. Never invent an ID." },
+      ...planContentProperties,
+    },
+    required: ["explanation", "steps"],
   },
   {
     name: "spawn_agent",
@@ -141,7 +134,7 @@ export const nativeDefinitions: readonly ToolDefinition[] = [
   function: {
     name: d.name,
     description: d.description,
-    parameters: "parameters" in d ? d.parameters : {
+    parameters: {
       type: "object",
       properties: d.properties,
       required: d.required,
@@ -150,6 +143,18 @@ export const nativeDefinitions: readonly ToolDefinition[] = [
   },
 })) as ToolDefinition[];
 export async function executeNative(
+  ...parameters: Parameters<typeof executeNativeUnchecked>
+): Promise<ToolResult> {
+  try {
+    return await executeNativeUnchecked(...parameters);
+  } catch (error) {
+    if (error instanceof z.ZodError)
+      throw new ForgeError("invalid_input", formatValidationError(error));
+    throw error;
+  }
+}
+
+async function executeNativeUnchecked(
   name: string,
   args: Record<string, unknown>,
   env: AgentEnvironment & {
@@ -246,8 +251,11 @@ export async function executeNative(
         env.signal.removeEventListener("abort", onAbort);
       }
     }
+    case "create_plan":
     case "update_plan": {
-      const { plan } = updateSessionPlan(env.snapshot, args);
+      const { plan } = name === "create_plan"
+        ? createSessionPlan(env.snapshot, args)
+        : updateSessionPlan(env.snapshot, args);
       await env.savePlan(plan);
       return output(plan);
     }

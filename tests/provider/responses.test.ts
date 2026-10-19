@@ -152,22 +152,20 @@ const run = (
 const classification = (kind: string) => (e: unknown) =>
   e instanceof ProviderError && e.classification === kind;
 
-it("preserves separate plan parameter branches in the Responses wire request", async () => {
+it("preserves flat plan tools with explicit non-strict schemas in the Responses wire request", async () => {
   let received: unknown;
   const provider = await setup((_request, response, body) => {
     received = body;
     send(response, textStream("ready"));
   });
-  const tool = nativeDefinitions.find(definition => definition.function.name === "update_plan");
-  if (!tool) throw new Error("Missing plan tool");
+  const tools = nativeDefinitions.filter(definition => ["create_plan", "update_plan"].includes(definition.function.name));
+  expect(tools).toHaveLength(2);
 
-  await provider.complete([{ role: "user", content: "Plan a task" }], [tool], {
+  await provider.complete([{ role: "user", content: "Plan a task" }], tools, {
     model: "fixture", onText: () => {}, signal: new AbortController().signal,
   });
 
-  expect(requestBody.parse(received).tools).toEqual([
-    { type: "function", ...tool.function, strict: false },
-  ]);
+  expect(requestBody.parse(received).tools).toEqual(tools.map(tool => ({ type: "function", ...tool.function, strict: false })));
 });
 
 it("sends image-only and mixed input using native Responses input_image parts", async () => {

@@ -10,7 +10,7 @@
 /** Matches `toolCallPreviewSchema`'s bound so a preview always stays valid. */
 const MAX_LINES = 1_000_000;
 
-const WRITE_TOOLS = new Set(["write_file", "edit_file"]);
+const WRITE_TOOLS = new Set(["write_file", "append_file", "edit_file"]);
 
 type StringScan = {
   /** `\n` escapes plus raw newline characters seen inside the body. */
@@ -122,7 +122,7 @@ function lineCount(value: StringScan): number {
 }
 
 /**
- * Live change-size estimate for `write_file` / `edit_file` arguments.
+ * Live change-size estimate for file write arguments.
  *
  * Only newline counting is attempted: it is cheap, monotonic while streaming and
  * never needs the final JSON. Every other tool yields `{}`, so non-write previews
@@ -134,7 +134,7 @@ export function estimateToolCallLines(
 ): { linesAdded?: number; linesRemoved?: number } {
   if (!WRITE_TOOLS.has(name) || argumentsText === "") return {};
   const values = topLevelStrings(argumentsText);
-  if (name === "write_file") {
+  if (name === "write_file" || name === "append_file") {
     const content = values.get("content");
     return content ? { linesAdded: lineCount(content) } : {};
   }

@@ -18,6 +18,10 @@ it("counts escaped newlines in a complete or truncated write_file content", () =
   ).toEqual({ linesAdded: 1 });
 });
 
+it("estimates append chunks while arguments are still streaming", () => {
+  expect(estimateToolCallLines("append_file", '{"path":"a","expected_bytes":42,"content":"one\\ntwo')).toEqual({ linesAdded: 2 });
+});
+
 it("counts raw newlines and ignores escaped backslashes that only look like \\n", () => {
   expect(estimateToolCallLines("write_file", '{"content":"a\nb"}')).toEqual({
     linesAdded: 2,

@@ -14,7 +14,7 @@ export function projectToolContext(messages: readonly Message[]): readonly Messa
       return rest;
     }
     if (message.role !== "tool") return message;
-    const nativeEdit = ["write_file", "edit_file"].includes(names.get(message.tool_call_id) ?? "");
+    const nativeEdit = ["write_file", "append_file", "edit_file"].includes(names.get(message.tool_call_id) ?? "");
     if (!nativeEdit) return message;
     let raw: unknown;
     try { raw = JSON.parse(message.content); }

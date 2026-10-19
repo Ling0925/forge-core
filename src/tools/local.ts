@@ -7,7 +7,7 @@ import { delimiter, dirname, isAbsolute, join, relative, sep } from "node:path";
 import { TextDecoder } from "node:util";
 import { z } from "zod";
 import type { LocalToolRegistry, ToolContext } from "../shared/contracts";
-import { ForgeError } from "../shared/errors";
+import { ForgeError, formatValidationError } from "../shared/errors";
 import { createDiffPatch } from "../shared/diff";
 import type {
   FileChange,
@@ -82,6 +82,16 @@ const argumentsSchema = z.discriminatedUnion("tool", [
       content: textSchema,
       append: z.boolean().default(false),
       expected_bytes: z.number().int().min(0).max(FILE_LIMIT).optional(),
+    })
+    .strict()
+    .readonly()
+    .unwrap(),
+  z
+    .object({
+      tool: z.literal("append_file"),
+      path: pathSchema,
+      content: textSchema,
+      expected_bytes: z.number().int().min(0).max(FILE_LIMIT),
     })
     .strict()
     .readonly()
@@ -199,18 +209,26 @@ const definitions: readonly ToolDefinition[] = Object.freeze([
   ),
   definition(
     "write_file",
-    `Default tool for creating files or replacing their complete content; use edit_file for targeted changes, not run_command scripts or redirection. Overwriting requires a prior read_file of the current version in this session; new files need no read. Unchanged content is a no-op. For large files send small chunks (prefer <=16000 characters): append:true requires expected_bytes, and returns size_bytes. Atomic writes use restorable checkpoints when a checkpoint store is configured. Records a bounded diff patch for display; restore uses checkpoints, not the patch. Fails if the parent directory does not exist (create it with make_directory). ${writePolicies}`,
+    `Default tool for creating files or replacing complete content. No append or expected_bytes input; use append_file for chunks and edit_file for targeted edits. Overwriting requires read_file of the current version in this run; new files need no read. Own successful writes refresh read authority. Unchanged content is a no-op. Returns size_bytes and a bounded display diff patch. Atomic writes use restorable checkpoints when a checkpoint store is configured; restore uses checkpoints, not the patch. Create missing parents with make_directory. ${writePolicies}`,
     {
       path: stringParameter,
       content: { type: "string", maxLength: 2 * 1024 * 1024 },
-      append: { type: "boolean", default: false, description: "Append a small chunk instead of replacing the file. Requires expected_bytes from the last successful write/read; use 0 for a new file." },
-      expected_bytes: { type: "integer", minimum: 0, maximum: FILE_LIMIT },
     },
     ["path", "content"],
   ),
   definition(
+    "append_file",
+    `Append a small chunk (prefer <=16000 characters). Pass expected_bytes from the last successful write/read, or 0 for a new file. A mismatched byte size fails without appending; never blindly replay a chunk. Existing files require read_file in this run or a successful own write. Returns size_bytes for the next chunk and a bounded display diff patch. Atomic writes use restorable checkpoints when a checkpoint store is configured; restore uses checkpoints, not the patch. Create missing parents with make_directory. ${writePolicies}`,
+    {
+      path: stringParameter,
+      content: { type: "string", maxLength: 2 * 1024 * 1024 },
+      expected_bytes: { type: "integer", minimum: 0, maximum: FILE_LIMIT },
+    },
+    ["path", "content", "expected_bytes"],
+  ),
+  definition(
     "edit_file",
-    `Default tool for targeted file edits instead of shell, node/python or sed scripts. Atomically replace literal old_text (nonempty); exactly one occurrence is required unless replace_all is true. A prior read_file of the current version in this session is required; read again after each write or external change. Identical replacement is a no-op. Edits use restorable checkpoints when a checkpoint store is configured; the bounded display diff patch is separate from checkpoint backups. ${writePolicies}`,
+    `Default tool for targeted file edits instead of command scripts. Atomically replace literal old_text (nonempty); exactly one occurrence is required unless replace_all is true. Read the current version with read_file in this run first. Own writes refresh authority; external changes or a new run require reading again. Identical replacement is a no-op. Edits use restorable checkpoints when a checkpoint store is configured; the bounded display diff patch is separate. ${writePolicies}`,
     {
       path: stringParameter,
       old_text: { type: "string", minLength: 1, maxLength: 2 * 1024 * 1024 },
@@ -270,8 +288,8 @@ const definitions: readonly ToolDefinition[] = Object.freeze([
   ),
 ]);
 
-function fail(message: string): never {
-  throw new ForgeError("tool", message);
+function fail(message: string, code: "tool" | "invalid_input" = "tool"): never {
+  throw new ForgeError(code, message);
 }
 function check(signal: AbortSignal): void {
   if (signal.aborted)
@@ -379,8 +397,11 @@ export async function createLocalToolRegistry(
     return JSON.stringify([sessionId, path]);
   }
   function requireRead(sessionId: string, path: string, stamp: string): void {
-    if (readReceipts.get(receiptKey(sessionId, path)) !== stamp)
-      fail("Read the current file with read_file in this session before writing or editing; the file may have changed since the last read.");
+    const receipt = readReceipts.get(receiptKey(sessionId, path));
+    if (receipt === undefined)
+      fail("Read the current file with read_file in this run before writing or editing. Previous-run reads do not carry write authority. Omit if_version so content is returned.");
+    if (receipt !== stamp)
+      fail("File changed since read_file in this run. Read the current file again without if_version before writing or editing.");
   }
   let cacheBytes = 0;
   let disposal: Promise<void> | undefined;
@@ -919,6 +940,7 @@ export async function createLocalToolRegistry(
       });
       const mutation =
         args.tool === "write_file" ||
+        args.tool === "append_file" ||
         args.tool === "edit_file" ||
         args.tool === "make_directory" ||
         args.tool === "run_command";
@@ -999,12 +1021,13 @@ export async function createLocalToolRegistry(
             scan_truncated: listing.truncated,
           });
         }
+        case "append_file":
         case "write_file":
           return await serializedFile(args.path, context.sessionId, async () => {
             let content = args.content;
-            if (args.append) {
+            if (args.tool === "append_file" || args.append) {
               if (args.expected_bytes === undefined)
-                fail("Append requires expected_bytes from the last write/read (0 for a new file); do not blindly replay an append.");
+                fail("Append requires expected_bytes from the last write/read (0 for a new file); do not blindly replay an append.", "invalid_input");
               let previous = "";
               try { previous = (await read(args.path, signal)).text; }
               catch (error) {
@@ -1014,7 +1037,7 @@ export async function createLocalToolRegistry(
                 fail("Append offset differs from current file size; inspect with read_file before continuing. No content was appended.");
               content = previous + args.content;
             } else if (args.expected_bytes !== undefined) {
-              fail("expected_bytes is only valid with append:true.");
+              fail("write_file replacement does not accept expected_bytes. Remove it, or use append_file with expected_bytes to append a chunk.", "invalid_input");
             }
             const changes = await commit(
               args.path,
@@ -1148,9 +1171,13 @@ export async function createLocalToolRegistry(
       }
     } catch (error: unknown) {
       check(signal);
+      if (error instanceof z.ZodError)
+        return result({ code: "invalid_input", error: redact(formatValidationError(error)) }, true);
+      if (error instanceof SyntaxError)
+        return result({ code: "invalid_input", error: "Tool arguments must be valid JSON. Fix the JSON syntax before retrying." }, true);
       if (error instanceof ForgeError) {
         if (error.code === "cancelled") throw error;
-        return result({ error: redact(error.message) }, true);
+        return result({ code: error.code, error: redact(error.message) }, true);
       }
       if (error instanceof WorkspacePathError)
         return result(

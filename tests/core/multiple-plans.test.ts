@@ -2,7 +2,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { updateSessionPlan } from "../../src/core/plans";
+import { createSessionPlan, updateSessionPlan } from "../../src/core/plans";
 import { nativeDefinitions } from "../../src/core/agents";
 import { buildSystemInstructions } from "../../src/core/prompts";
 import { createAgentRuntime } from "../../src/core/runtime";
@@ -19,28 +19,28 @@ const dirs: string[] = [];
 afterEach(async () => { await Promise.all(dirs.splice(0).map(dir => rm(dir, { recursive: true, force: true }))); });
 
 describe("independent session plans", () => {
-  it("exposes creation without an ID field and keeps IDs only in the update branch", () => {
-    const tool = nativeDefinitions.find(definition => definition.function.name === "update_plan");
-    expect(tool?.function.parameters).toMatchObject({
-      type: "object",
-      anyOf: [
-        {
-          properties: { action: { enum: ["create"] } },
-          required: ["action", "explanation", "steps"],
-          additionalProperties: false,
-        },
-        {
-          properties: { action: { enum: ["update"] }, planId: { type: "string" } },
-          required: ["explanation", "steps"],
-          additionalProperties: false,
-        },
-      ],
-    });
-    const branches = tool?.function.parameters.anyOf;
-    if (!Array.isArray(branches)) throw new Error("Missing plan parameter branches");
-    expect(branches[0].properties).not.toHaveProperty("planId");
-    expect(branches[0].properties).not.toHaveProperty("id");
-    expect(tool?.function.parameters).not.toHaveProperty("properties");
+  it("exposes flat create/update tools without ID or action on creation", () => {
+    const create = nativeDefinitions.find(definition => definition.function.name === "create_plan");
+    const update = nativeDefinitions.find(definition => definition.function.name === "update_plan");
+    expect(create?.function.parameters).toMatchObject({ type: "object", additionalProperties: false,
+      required: ["name", "explanation", "steps"], properties: { name: { type: "string" } } });
+    expect(update?.function.parameters).toMatchObject({ type: "object", additionalProperties: false,
+      required: ["explanation", "steps"], properties: { planId: { type: "string" } } });
+    for (const key of ["id", "planId", "action", "title"])
+      expect(create?.function.parameters.properties).not.toHaveProperty(key);
+    for (const tool of [create, update]) expect(tool?.function.parameters).not.toHaveProperty("anyOf");
+  });
+
+  it("generates independent IDs and rejects IDs or invalid steps on creation", () => {
+    const first = createSessionPlan({}, { name: "Task A", ...content() });
+    const second = createSessionPlan(first, { name: "Task B", ...content() });
+    expect(first.plan).toMatchObject({ title: "Task A", id: expect.any(String) });
+    expect(second.plans).toHaveLength(2);
+    expect(second.plan.id).not.toBe(first.plan.id);
+    for (const key of ["id", "planId", "action"])
+      expect(() => createSessionPlan(first, { name: "Task C", ...content(), [key]: "extra" })).toThrow();
+    expect(() => createSessionPlan(first, { name: "Task C", ...content(), steps: [content().steps[0], content("other").steps[0]] })).toThrow("At most one");
+    expect(first.plans).toHaveLength(1);
   });
 
   it("creates independent plans and updates an older one without changing another", () => {
@@ -99,8 +99,8 @@ describe("independent session plans", () => {
   it("instructs later turns to create task-specific plans, not append to completed plans", () => {
     const prompt = buildSystemInstructions({ session: { workspace: "/workspace" }, permission: "readonly", mode: "build", maxToolCalls: 20 });
     expect(prompt).toContain("every new user request");
-    expect(prompt).toContain("action:create");
-    expect(prompt).toContain("action:update");
+    expect(prompt).toContain("create_plan");
+    expect(prompt).toContain("update_plan");
     expect(prompt).toContain("never append an unrelated task");
     expect(prompt).toContain("Simple questions and small edits");
   });
@@ -122,12 +122,12 @@ describe("independent session plans", () => {
           return { message: { role: "assistant", content: "done" } };
         }
         const args = ++turn === 1
-          ? { action: "create", title: "First", ...content("A", "completed") }
+          ? { name: "First", ...content("A", "completed") }
           : turn === 2
-            ? { action: "create", title: "Second", ...content("B") }
-            : { action: "update", planId: firstId, ...content("A verified", "completed") };
+            ? { name: "Second", ...content("B") }
+            : { planId: firstId, ...content("A verified", "completed") };
         return { message: { role: "assistant", content: null, tool_calls: [{
-          id: `plan-${turn}`, type: "function", function: { name: "update_plan", arguments: JSON.stringify(args) },
+          id: `plan-${turn}`, type: "function", function: { name: turn <= 2 ? "create_plan" : "update_plan", arguments: JSON.stringify(args) },
         }] } };
       },
     };

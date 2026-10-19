@@ -95,6 +95,21 @@ export class ForgeError extends Error {
   }
 }
 
+export function formatValidationError(error: ZodError): string {
+  return `Invalid arguments: ${error.issues.slice(0, 8).map(issue => {
+    const path = issue.path.join(".").slice(0, 128) || "arguments";
+    switch (issue.code) {
+      case "invalid_type": return `${path}: expected ${issue.expected}, received ${issue.received}`;
+      case "too_big": return `${path}: maximum ${issue.maximum}`;
+      case "too_small": return `${path}: minimum ${issue.minimum}`;
+      case "invalid_enum_value": return `${path}: allowed ${JSON.stringify(issue.options).slice(0, 256)}`;
+      case "unrecognized_keys": return `${path}: unexpected fields; use only the declared parameters`;
+      case "custom": return `${path}: ${issue.message.slice(0, 256)}`;
+      default: return `${path}: invalid value (${issue.code})`;
+    }
+  }).join("; ")}.`;
+}
+
 export const toErrorInfo = (error: unknown): ErrorInfo => {
   if (error instanceof ForgeError) {
     return errorInfoSchema.parse({

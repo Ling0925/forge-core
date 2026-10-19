@@ -102,7 +102,7 @@ describe("original local tools", () => {
   }
 
   it("publishes native strict definitions without executing shell", () => {
-    expect(tools.definitions).toHaveLength(11);
+    expect(tools.definitions).toHaveLength(12);
     for (const definition of tools.definitions) {
       toolDefinitionSchema.parse(definition);
       expect(definition.function.parameters.additionalProperties).toBe(false);
@@ -138,8 +138,6 @@ describe("original local tools", () => {
       properties: {
         path: { type: "string", minLength: 1, maxLength: 4096 },
         content: { type: "string", maxLength: 2097152 },
-        append: { type: "boolean", default: false, description: expect.any(String) },
-        expected_bytes: { type: "integer", minimum: 0, maximum: 16777216 },
       },
     });
     expect(edit.parameters).toEqual({

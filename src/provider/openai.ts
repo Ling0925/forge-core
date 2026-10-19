@@ -538,7 +538,10 @@ export function createModelProvider(config: ProviderConfig): ModelProvider {
                               },
                   ),
                   ...(definitions.data.length
-                    ? { tools: definitions.data }
+                    ? { tools: definitions.data.map(tool => ({
+                        ...tool,
+                        function: { ...tool.function, strict: false },
+                      })) }
                     : {}),
                   stream,
                   // Ask spec-compliant gateways to report usage in the stream; without

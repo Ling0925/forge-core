@@ -98,7 +98,7 @@ describe("original local tools", () => {
   }
 
   it("publishes strict definitions", () => {
-    expect(tools.definitions).toHaveLength(11);
+    expect(tools.definitions).toHaveLength(12);
     for (const definition of tools.definitions) {
       toolDefinitionSchema.parse(definition);
       expect(definition.function.parameters.additionalProperties).toBe(false);

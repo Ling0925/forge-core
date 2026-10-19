@@ -56,3 +56,10 @@ it("leaves unknown envelopes, failed edits and non-edit change payloads untouche
   const projected = projectToolContext(messages);
   projected.forEach((m,i)=>expect(m).toBe(messages[i]));
 });
+
+it("projects append diffs without altering persisted results", () => {
+  const messages = exchange("append", "append_file");
+  const original = JSON.stringify(messages);
+  expect(JSON.stringify(projectToolContext(messages))).not.toContain("a".repeat(8000));
+  expect(JSON.stringify(messages)).toBe(original);
+});

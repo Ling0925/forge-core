@@ -9,6 +9,18 @@ const selectionSchema = z.object({
   planId: z.string().trim().min(1).max(128).optional(),
 }).strict();
 
+const createArgs = taskPlanSchema.innerType().omit({ id: true, title: true }).extend({
+  name: z.string().trim().min(1).max(256),
+}).strict();
+
+export function createSessionPlan(
+  snapshot: Pick<SessionSnapshot, "plan" | "plans">,
+  args: Record<string, unknown>,
+): { plan: TaskPlan; plans: readonly TaskPlan[] } {
+  const { name, ...content } = createArgs.parse(args);
+  return updateSessionPlan(snapshot, { ...content, title: name, action: "create" });
+}
+
 /** Missing selectors remain compatible with old models: continue unfinished work,
  * but start a separate plan after completion instead of rewriting its history. */
 export function updateSessionPlan(
@@ -29,7 +41,7 @@ export function updateSessionPlan(
   if (planId && !previous)
     throw new ForgeError("invalid_input", "Unknown planId. Read session history for the existing plan IDs.");
   if (action === "update" && !previous)
-    throw new ForgeError("invalid_input", "No existing plan to update. Use action:create for a new task.");
+    throw new ForgeError("invalid_input", "No existing plan to update. Use create_plan for a new task.");
   const create = action === "create" || (!previous) || (
     !action && !planId && previous.steps.every(step => step.status === "completed")
   );
