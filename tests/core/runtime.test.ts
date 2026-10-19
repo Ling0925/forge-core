@@ -2,7 +2,13 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { compactContext, createAgentRuntime } from "../../src/core/runtime";
+import {
+  CONTEXT_SCALE_CEILING,
+  CONTEXT_SCALE_FLOOR,
+  compactContext,
+  createAgentRuntime,
+  seedContextScale,
+} from "../../src/core/runtime";
 import type {
   AgentRuntimeDependencies,
   LocalToolRegistry,
@@ -13,6 +19,7 @@ import { ForgeError } from "../../src/shared/errors";
 import { measureContext } from "../../src/shared/context-usage";
 import {
   defaultPublicSettings,
+  agentEventSchema,
   sessionSnapshotSchema,
 } from "../../src/shared/schemas";
 import type {
@@ -89,6 +96,29 @@ const call = (id: string) => ({
 });
 const input = { sessionId: initial().id, prompt: "work" };
 const signal = () => new AbortController().signal;
+/** A persisted `context_usage` event; `used` is the local estimate for the turn. */
+const usageEvent = (
+  index: number,
+  part: Readonly<{
+    basis: "projected" | "request";
+    used: number;
+    prompt?: number;
+  }>,
+): AgentEvent =>
+  agentEventSchema.parse({
+    sessionId: initial().id,
+    timestamp: `2026-01-01T00:00:0${index}.000Z`,
+    type: "context_usage",
+    usage: {
+      windowTokens: 300000,
+      usedTokens: part.used,
+      estimated: true,
+      basis: part.basis,
+      ...(part.basis === "projected" ? { budgetTokens: 240000 } : {}),
+      parts: { instructions: 0, memory: 0, conversation: part.used, tools: 0 },
+      ...(part.prompt === undefined ? {} : { promptTokens: part.prompt }),
+    },
+  });
 
 describe("original runtime", () => {
   it("projects edit previews out of provider requests but keeps stored tool evidence", async () => {
@@ -748,4 +778,92 @@ it("summarizes old history while keeping three recent human turns in the real re
   expect(request.filter(m => m.role === "user").map(m => m.content)).toEqual(["request-5", "request-6", "work"]);
   expect(result.messages).toHaveLength(messages.length + 3); // inserted system, current user, response
   expect(result.contextSummary?.fallback).toBe(false);
+});
+
+it("seeds the estimate scale from recorded usage pairs and ignores unusable ones", () => {
+  const usage = usageEvent;
+  expect(seedContextScale([])).toBe(CONTEXT_SCALE_FLOOR);
+  // A lone projected estimate with no following report cannot calibrate anything.
+  expect(seedContextScale([usage(0, { basis: "projected", used: 1000 })])).toBe(CONTEXT_SCALE_FLOOR);
+  // Two projected events in a row describe two estimates, not an observation.
+  expect(seedContextScale([
+    usage(0, { basis: "projected", used: 1000 }),
+    usage(1, { basis: "projected", used: 1400 }),
+  ])).toBe(CONTEXT_SCALE_FLOOR);
+  // 10000 estimated against 14000 really sent is a 1.4x error.
+  expect(seedContextScale([
+    usage(0, { basis: "projected", used: 10000 }),
+    usage(1, { basis: "request", used: 14000, prompt: 14000 }),
+  ])).toBeCloseTo(1.4, 5);
+  // The median resists one wild turn, and the result never leaves its bounds.
+  expect(seedContextScale([
+    usage(0, { basis: "projected", used: 10000 }),
+    usage(1, { basis: "request", used: 12000, prompt: 12000 }),
+    usage(2, { basis: "projected", used: 10000 }),
+    usage(3, { basis: "request", used: 15000, prompt: 15000 }),
+    usage(4, { basis: "projected", used: 10000 }),
+    usage(5, { basis: "request", used: 900000, prompt: 900000 }),
+  ])).toBeCloseTo(1.5, 5);
+  expect(seedContextScale([
+    usage(0, { basis: "projected", used: 10000 }),
+    usage(1, { basis: "request", used: 1000, prompt: 1000 }),
+  ])).toBe(CONTEXT_SCALE_FLOOR);
+  expect(seedContextScale([
+    usage(0, { basis: "projected", used: 10000 }),
+    usage(1, { basis: "request", used: 900000, prompt: 900000 }),
+  ])).toBe(CONTEXT_SCALE_CEILING);
+});
+
+it("compacts a long run before the provider sees the oversized request", async () => {
+  // The local heuristic under-counts CJK against the real tokenizer. Real usage
+  // is simulated at 1.6x the local estimate, inside the recorded error
+  // distribution, and the resumed session already records one such pair so the
+  // run starts calibrated. Without calibration the raw estimate still fits the
+  // budget, so these requests would leave Forge over the provider window.
+  const window = 32000;
+  const limit = Math.floor(window * 0.8);
+  const realInputFor = (messages: readonly Message[]) => measureContext(messages, window).usedTokens * 1.6;
+  const provider: ModelProvider = {
+    ...finalProvider,
+    getModelContextWindow: async () => window,
+    complete: async (incoming, definitions) => {
+      if (!definitions.length) return {
+        message: { role: "assistant", content: JSON.stringify({ goal: "continue", constraints: [], decisions: [], completed: [], nextSteps: [], verification: [], uncertainties: [] }) },
+      };
+      // The provider's own view of this exact request must fit its real window.
+      const realInput = realInputFor(incoming);
+      expect(realInput).toBeLessThanOrEqual(limit);
+      return { message: { role: "assistant", content: "done" }, usage: {
+        promptTokens: Math.round(realInput), completionTokens: 1, totalTokens: Math.round(realInput) + 1,
+      } };
+    },
+  };
+  const messages: Message[] = [];
+  for (let index = 0; index < 8; index += 1)
+    messages.push(
+      { role: "user", content: `request-${index}` },
+      { role: "assistant", content: "中".repeat(1500) },
+    );
+  // A prior turn in this session recorded a 1.6x estimate error.
+  const prior: AgentEvent[] = [
+    usageEvent(0, { basis: "projected", used: 20000 }),
+    usageEvent(1, { basis: "request", used: 32000, prompt: 32000 }),
+  ];
+  const f = fixture(provider, emptyTools, { ...initial(), messages, events: prior });
+  const sent: number[] = [];
+  const result = await f.runtime.run(
+    { ...input, prompt: "中".repeat(2000) },
+    event => { if (event.type === "context_usage" && event.usage.promptTokens !== undefined) sent.push(event.usage.promptTokens); },
+    async () => false,
+    signal(),
+  );
+  expect(result.status).toBe("completed");
+  expect(sent.length).toBeGreaterThan(0);
+  expect(Math.max(...sent)).toBeLessThanOrEqual(limit);
+  expect(result.events.some(event => event.type === "context_compacted")).toBe(true);
+  // The recorded history itself is never rewritten or reordered by compaction;
+  // the only addition is the injected system instructions at the front.
+  const history = result.messages.filter(message => message.role !== "system");
+  const original = messages.filter(message => message.role !== "system");
+  expect(history.slice(0, original.length)).toEqual(original);
 });

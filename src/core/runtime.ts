@@ -68,6 +68,42 @@ export const MAX_GENERATION_RETRIES = 5;
 export const RETRY_DELAYS_MS = [500, 1000, 2000, 4000, 8000] as const;
 
 /**
+ * `measureContext` is a local character heuristic, not the provider tokenizer.
+ * Recorded turns show real input at roughly 1.16x that estimate (p50) and above
+ * 1.4x for tool-result-heavy or CJK history (p90), so a budget check on the raw
+ * estimate fires late and trims too little. The compaction trigger therefore
+ * compares a calibrated estimate against the budget, with the scale learned from
+ * this session's own provider-reported input and bounded between the observed
+ * floor and ceiling so one unusual turn cannot skew it.
+ */
+export const CONTEXT_SCALE_FLOOR = 1.25;
+export const CONTEXT_SCALE_CEILING = 2;
+
+/**
+ * Seed the estimate scale from this session's own recorded usage pairs, so a
+ * resumed long session starts calibrated instead of relearning on every run.
+ * Only local-estimate/reported-input pairs from the persisted event log are
+ * used; the median resists a single odd turn, and no pair means no seed.
+ */
+export function seedContextScale(events: readonly AgentEvent[]): number {
+  const ratios: number[] = [];
+  for (let index = 0; index + 1 < events.length; index += 1) {
+    const estimated = events[index];
+    const reported = events[index + 1];
+    if (estimated?.type !== "context_usage" || estimated.usage.basis !== "projected") continue;
+    if (reported?.type !== "context_usage" || reported.usage.basis === "projected") continue;
+    const estimatedTokens = estimated.usage.usedTokens;
+    const reportedTokens = reported.usage.promptTokens;
+    if (estimatedTokens <= 0 || reportedTokens === undefined || reportedTokens <= 0) continue;
+    ratios.push(reportedTokens / estimatedTokens);
+  }
+  if (ratios.length === 0) return CONTEXT_SCALE_FLOOR;
+  ratios.sort((a, b) => a - b);
+  const median = ratios[Math.floor(ratios.length / 2)] ?? CONTEXT_SCALE_FLOOR;
+  return Math.min(CONTEXT_SCALE_CEILING, Math.max(CONTEXT_SCALE_FLOOR, median));
+}
+
+/**
  * Wait before the next provider attempt, resolving early on cancellation.
  * The timer and abort listener are always cleaned up. Resolves (never rejects)
  * on abort so the following `check()`/request observes cancellation once.
@@ -250,6 +286,8 @@ export const createAgentRuntime = (
     let hadProviderRetries = false;
     let phase: "storage" | "provider" | "tool" = "storage";
     let incompleteText = "";
+    /** Learned estimate->real-input scale for this run; see CONTEXT_SCALE_FLOOR. */
+    let contextScale = CONTEXT_SCALE_FLOOR;
     const children = new Map<string, ChildOperation>();
     let approvalQueue: Promise<unknown> = Promise.resolve();
     const now = deps.now ?? (() => new Date().toISOString());
@@ -470,6 +508,7 @@ export const createAgentRuntime = (
       const claimed = claimAutoTitle(snapshot, deps.autoTitle?.secrets ?? []);
       const shouldName = claimed !== snapshot;
       snapshot = claimed;
+      contextScale = seedContextScale(snapshot.events);
       await save();
       event({ type: "run_started", model: snapshot.model, permission, title: snapshot.title });
       await save();
@@ -493,9 +532,21 @@ export const createAgentRuntime = (
       const windowTokens = resolveContextWindow(snapshot.model, deps.settings, reportedWindow);
       const definitions = [...deps.tools.definitions, ...nativeDefinitions];
       const budget = resolveContextBudget(windowTokens, deps.settings);
+      // Raw size of the exact messages a request would carry. `measureContext` is
+      // a character heuristic, not the provider tokenizer, so this must not be
+      // compared against a token budget directly: over recorded turns real input
+      // exceeded the trigger on 788 turns while the raw estimate never once
+      // crossed it, so an all-raw check lets the request grow past the window.
       const contextSize = (messages: readonly Message[]) => budget.unit === "tokens"
         ? measureContext(messages, windowTokens, definitions).usedTokens
         : JSON.stringify(messages).length;
+      // Every budget comparison below uses the calibrated size, and every raw
+      // limit handed to trimming is divided by the scale, so the messages that
+      // leave Forge are the ones measured against the budget.
+      const scale = budget.unit === "tokens" ? contextScale : 1;
+      const calibratedSize = (messages: readonly Message[]) => contextSize(messages) * scale;
+      const rawLimit = budget.limit / scale;
+      const rawTarget = budget.target / scale;
       while (true) {
         check();
         currentInstructions = buildSystemInstructions({ session: snapshot, permission: effectivePermission(), mode: input.mode,
@@ -509,9 +560,11 @@ export const createAgentRuntime = (
           return projected[0]?.role === "system" ? projected : [{ role: "system" as const, content: currentInstructions }, ...projected];
         };
         const before = project(snapshot);
-        if (contextSize(before) > budget.limit) {
+        if (calibratedSize(before) > budget.limit) {
+          // Search for a boundary in raw-estimate units: that is what the
+          // estimator reports, and the hard trim below uses the same units.
           let boundary = summaryBoundary(snapshot, messages => contextSize(messages.map((m, i) =>
-            i === 0 && m.role === "system" ? { role: "system", content: currentInstructions } : m)), budget.target);
+            i === 0 && m.role === "system" ? { role: "system", content: currentInstructions } : m)), rawTarget);
           // If three recent turns alone exceed the hard budget, retain fewer
           // whole turns rather than silently discarding their meaning.
           if (boundary === null) {
@@ -527,7 +580,7 @@ export const createAgentRuntime = (
               beforeChars: JSON.stringify(before).length, afterChars: JSON.stringify(project(snapshot)).length });
           }
         }
-        const context = compactContext(project(snapshot), budget.limit, contextSize);
+        const context = compactContext(project(snapshot), rawLimit, contextSize);
         if (context.removedMessages > 0)
           event({
             type: "context_compacted",
@@ -653,6 +706,14 @@ export const createAgentRuntime = (
           : { ...measureContext([...context.messages, response.message], windowTokens, definitions), ...budgetUsage(budget) } });
         if (incoming) {
           reportedUsageTurns += 1;
+          // Learn this run's estimate error from the provider's real input count.
+          // Only positive measurements are usable, and the scale only ever grows,
+          // so a light turn cannot mask a heavier one later in the same run.
+          if (projectedUsage.usedTokens > 0 && incoming.promptTokens > 0)
+            contextScale = Math.min(
+              CONTEXT_SCALE_CEILING,
+              Math.max(contextScale, incoming.promptTokens / projectedUsage.usedTokens),
+            );
           // Aggregate only provider-reported cache counts; never invent cached usage.
           const cached =
             incoming.cachedPromptTokens === undefined
