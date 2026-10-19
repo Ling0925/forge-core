@@ -6,6 +6,7 @@ import type {
 } from "../shared/contracts";
 import { ForgeError, isRetryableProviderFailure, providerRetryReason, toErrorInfo } from "../shared/errors";
 import { toolActivity } from "../shared/tool-activity";
+import { recordPlan } from "../shared/plans";
 import {
   agentEventSchema,
   providerResponseSchema,
@@ -809,7 +810,7 @@ export const createAgentRuntime = (
                               "internal",
                               "Session unavailable",
                             );
-                          snapshot = { ...snapshot, plan };
+                          snapshot = { ...snapshot, ...recordPlan(snapshot, plan) };
                           event({ type: "plan_updated", plan });
                           await save();
                         },

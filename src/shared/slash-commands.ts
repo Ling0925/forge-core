@@ -19,7 +19,7 @@ export const SLASH_COMMANDS: readonly SlashCommand[] = [
   { name: "/thinking", args: "[on|off]", description: "切换是否展开完整思考内容流式输出", category: "config", onboarding: true },
   { name: "/permission", args: "[readonly|workspace|unrestricted]", description: "查看或更改权限", category: "config", onboarding: true },
   { name: "/mode", args: "[plan|build]", description: "切换计划或执行模式", category: "workflow", onboarding: true },
-  { name: "/plan", description: "查看执行计划", category: "workflow" },
+  { name: "/plan", description: "查看本会话的各份计划与历史进度", category: "workflow" },
   { name: "/sessions", description: "历史会话", category: "session", onboarding: true },
   { name: "/resume", args: "[uuid]", description: "选择会话恢复，也可指定完整 ID", category: "session" },
   { name: "/new", description: "创建新会话", category: "session" },

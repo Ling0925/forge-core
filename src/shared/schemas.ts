@@ -472,6 +472,9 @@ export const errorInfoSchema = z
 export type ErrorInfo = z.infer<typeof errorInfoSchema>;
 export const taskPlanSchema = z
   .object({
+    // Optional only for snapshots/events written before independent plans.
+    id: z.string().trim().min(1).max(128).optional(),
+    title: z.string().trim().min(1).max(256).optional(),
     explanation: z.string().trim().min(1).max(4096),
     steps: z
       .array(
@@ -722,7 +725,9 @@ export const sessionSnapshotSchema = z
     titleSource: z.enum(["default", "user", "auto"]).optional(),
     autoTitleAttempted: z.boolean().optional(),
     pendingTool: toolCallSchema.optional(),
+    // Current-plan projection for existing clients; plans retains independent history.
     plan: taskPlanSchema.optional(),
+    plans: z.array(taskPlanSchema).max(10000).readonly().optional(),
     parentSessionId: sessionIdSchema.optional(),
     agentTask: z.string().max(16384).optional(),
     ownership: z.string().max(4096).optional(),

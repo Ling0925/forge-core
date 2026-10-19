@@ -1,6 +1,7 @@
 import { z } from "zod";
 import type { ToolDefinition, ToolResult } from "../shared/schemas";
-import { taskPlanSchema } from "../shared/schemas";
+import type { TaskPlan } from "../shared/schemas";
+import { updateSessionPlan } from "./plans";
 import { executeHistory, historyDefinitions } from "./history";
 import { executeAgentOperation, type AgentEnvironment } from "./agent-operations";
 export { agentSummary } from "./agent-operations";
@@ -33,8 +34,11 @@ export const nativeDefinitions: readonly ToolDefinition[] = [
   },
   {
     name: "update_plan",
-    description: "Persist plan and explain changes",
+    description: "Persist independent task plans within this session. For each new multi-step task use action:create and a concise title; prior plans stay intact. To revise the same task use action:update with the returned planId (id in the result), sending its full steps. Never append an unrelated task to an old plan. Without selectors, continues the current unfinished plan or creates a new one after completion. Repeat calls are allowed throughout the session; simple questions need no plan.",
     properties: {
+      action: { type: "string", enum: ["create", "update"] },
+      planId: { type: "string", minLength: 1, maxLength: 128 },
+      title: { type: "string", minLength: 1, maxLength: 256 },
       explanation: { type: "string" },
       steps: {
         type: "array",
@@ -130,7 +134,7 @@ export async function executeNative(
   name: string,
   args: Record<string, unknown>,
   env: AgentEnvironment & {
-    savePlan: (plan: ReturnType<typeof taskPlanSchema.parse>) => Promise<void>;
+    savePlan: (plan: TaskPlan) => Promise<void>;
   },
 ): Promise<ToolResult> {
   const output = (value: unknown): ToolResult => ({
@@ -224,7 +228,7 @@ export async function executeNative(
       }
     }
     case "update_plan": {
-      const plan = taskPlanSchema.parse(args);
+      const { plan } = updateSessionPlan(env.snapshot, args);
       await env.savePlan(plan);
       return output(plan);
     }

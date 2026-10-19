@@ -417,6 +417,7 @@ export const createHarness = async (
           messages: source.messages.slice(0, end),
           ...(contextSummary ? { contextSummary } : {}),
           plan: source.plan,
+          plans: source.plans,
           permissionCeiling: source.permissionCeiling,
           parentSessionId: source.parentSessionId,
           agentTask: source.agentTask,
