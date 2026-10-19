@@ -358,8 +358,18 @@ export function createModelProvider(config: ProviderConfig): ModelProvider {
       false,
     );
   const settings = parsedConfig.data;
-  if (settings.apiMode === "anthropic")
-    return createAnthropicProvider(settings);
+  if (settings.apiMode === "anthropic") {
+    const provider = createAnthropicProvider(settings);
+    return {
+      ...provider,
+      apiMode: "anthropic",
+      complete(messages, tools, options) {
+        if (options.webSearch && options.webSearch !== "disabled")
+          throw new ForgeError("invalid_input", "Native web search requires a Responses endpoint and a model supporting web_search; no local-search fallback is used.");
+        return provider.complete(messages, tools, options);
+      },
+    };
+  }
   const base = settings.baseUrl.replace(/\/+$/, "");
   const responses = createResponsesAdapter(
     { protocol, parseJson, events: sdkEvents, notify, notifyToolCall },
@@ -417,12 +427,16 @@ export function createModelProvider(config: ProviderConfig): ModelProvider {
       },
     );
   return {
+    apiMode: settings.apiMode ?? "chat-completions",
     listModels,
     async getModelContextWindow(model, signal) {
       if (!catalogLoaded) await listModels(signal);
       return windows.get(model) ?? null;
     },
     complete: (messages, tools, options) => {
+      const hostedSearch = options.webSearch !== undefined && options.webSearch !== "disabled";
+      if (hostedSearch && settings.apiMode !== "responses")
+        throw new ForgeError("invalid_input", "Native web search requires a Responses endpoint and a model supporting web_search; no local-search fallback is used.");
       const model = settingsFields.model.safeParse(options.model);
       const history = z.array(messageSchema).max(100000).safeParse(messages);
       const definitions = z
@@ -444,7 +458,7 @@ export function createModelProvider(config: ProviderConfig): ModelProvider {
             const response = await client.responses
               .create(
                 {
-                  ...responses.body(history.data, definitions.data, model.data),
+                  ...responses.body(history.data, definitions.data, model.data, options.webSearch),
                   ...(settings.maxOutputTokens
                     ? { max_output_tokens: settings.maxOutputTokens }
                     : {}),
@@ -455,7 +469,12 @@ export function createModelProvider(config: ProviderConfig): ModelProvider {
                 },
                 { signal: combined },
               )
-              .asResponse();
+              .asResponse()
+              .catch((error: unknown) => {
+                if (hostedSearch && error instanceof OpenAI.APIError && [400, 404, 422].includes(error.status ?? 0))
+                  throw new ProviderError("http", "The Responses request with native web_search was rejected. Check endpoint/model support or explicitly set --web-search disabled; Forge will not retry without search or fall back to Bing.", false, error.status);
+                throw error;
+              });
             if (!response.ok) {
               await response.body?.cancel();
               throw httpError(response.status);
@@ -476,6 +495,8 @@ export function createModelProvider(config: ProviderConfig): ModelProvider {
               model.data,
               options.onReasoning,
               options.onToolCall,
+              options.webSearch,
+              options.onWebSearch,
             );
           }
           const request = async (stream: boolean): Promise<Response> =>

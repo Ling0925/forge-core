@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import type {
   AgentRuntime,
   AgentRuntimeDependencies,
@@ -594,9 +595,43 @@ export const createAgentRuntime = (
         event({ type: "context_usage", usage: projectedUsage });
         phase = "provider";
         turns += 1;
-        // One provider request per agent turn; a transient failure may retry
-        // that same request up to five additional times without consuming turns
-        // or re-running any completed tool.
+        let webSearch = effectivePermission() === "readonly" ? "disabled" as const : deps.settings.webSearch ?? "disabled";
+        if (webSearch !== "disabled") {
+          if (deps.provider.apiMode !== "responses")
+            throw new ForgeError("invalid_input", "Native web search requires a Responses endpoint and a model supporting web_search. Select Responses or explicitly set --web-search disabled; no local-search fallback is used.");
+          if (effectivePermission() === "workspace") {
+            const request = {
+              id: randomUUID(), sessionId: input.sessionId,
+              toolCallId: `hosted-search:${turns}:${randomUUID()}`, toolName: "web_search",
+              description: `Allow provider-hosted ${webSearch} web search for this Responses request? The provider may send generated queries to search services${webSearch === "live" ? " and fetch external pages" : " using cached results only"}. Queries can include conversation data and may incur provider charges. Local URL/SSRF rules cannot control this service; individual queries and URLs cannot be approved before execution. No Bing fallback.`,
+            };
+            snapshot = { ...snapshot, status: "awaiting_approval" };
+            event({ type: "state_changed", status: "awaiting_approval" });
+            await save();
+            let allowed = false;
+            try {
+              const work = approvalQueue.then(() => {
+                check();
+                if (effectivePermission() === "readonly") return false;
+                event({ type: "approval_requested", request });
+                return approve(request, signal);
+              });
+              approvalQueue = work.catch(() => false);
+              allowed = await withCancellation(work, signal);
+            } finally {
+              snapshot = { ...snapshot, status: "running" };
+              event({ type: "state_changed", status: "running" });
+              await save();
+            }
+            check();
+            if (!allowed) throw new ForgeError("tool", "Provider-hosted web search was denied; no search request was sent. Explicitly disable search to continue without it.");
+          }
+          // Permission can change while approval is pending; never use stale consent.
+          if (effectivePermission() === "readonly") webSearch = "disabled";
+        }
+        // One provider request per agent turn. Only requests without hosted
+        // search may retry transient failures, without consuming turns or
+        // re-running any completed local tool.
         let attempt = 0;
         let response: ProviderResponse;
         let previews: ReturnType<typeof createToolPreviewStream>;
@@ -646,6 +681,10 @@ export const createAgentRuntime = (
                 {
                   model: snapshot.model,
                   signal,
+                  webSearch,
+                  onWebSearch: (search) => {
+                    if (streaming) ephemeral({ type: "web_search", search });
+                  },
                   onText: (text) => {
                     if (!streaming || typeof text !== "string") return;
                     const accepted = text.slice(
@@ -689,6 +728,9 @@ export const createAgentRuntime = (
             // non-provider errors; only bounded transient provider failures.
             if (
               signal.aborted ||
+              // A hosted search may already have run/billed even without a final
+              // frame. Never replay an uncertain provider-owned operation.
+              webSearch !== "disabled" ||
               attempt >= MAX_GENERATION_RETRIES ||
               !isRetryableProviderFailure(error)
             )
@@ -743,6 +785,8 @@ export const createAgentRuntime = (
         incompleteText = "";
         phase = "storage";
         await save();
+        if (response.message.citations?.length || response.message.webSearches?.length)
+          ephemeral({ type: "web_search_result", citations: response.message.citations ?? [], webSearches: response.message.webSearches ?? [] });
         const calls = response.message.tool_calls ?? [];
         if (calls.length === 0) {
           if (previews.size) ephemeral({ type: "tool_preview_reset" });

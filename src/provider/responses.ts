@@ -6,6 +6,8 @@ import type {
 import { z } from "zod";
 import type { ProtocolReason } from "../shared/errors";
 import { providerResponseSchema, toolCallSchema } from "../shared/schemas";
+import type { WebCitation, WebSearchMode, WebSearchProgress } from "../shared/web-search";
+import { citationRecord, searchRecord, urlCitation, webSearchCall } from "./responses-web-search";
 import type {
   Message,
   ProviderResponse,
@@ -36,6 +38,7 @@ const message = z
           .object({
             type: z.literal("output_text"),
             text: z.string().max(2_000_000),
+            annotations: z.array(urlCitation).max(256).optional(),
           })
           .passthrough(),
       )
@@ -50,7 +53,7 @@ const reasoning = z
     encrypted_content: z.string().max(1_000_000).optional(),
   })
   .passthrough();
-const outputItem = z.union([call, message, reasoning]);
+const outputItem = z.union([call, message, reasoning, webSearchCall]);
 const terminal = z.object({
   id,
   status: z.literal("completed"),
@@ -126,8 +129,8 @@ function sameItem(
       JSON.stringify(a.content) === JSON.stringify(b.content)
     );
   return (
-    a.type === "reasoning" &&
-    b.type === "reasoning" &&
+    (a.type === "reasoning" || a.type === "web_search_call") &&
+    a.type === b.type &&
     JSON.stringify(a) === JSON.stringify(b)
   );
 }
@@ -150,6 +153,10 @@ function validatedOutput(
   for (const item of parsed) {
     if (ids.has(item.id)) throw h.protocol();
     ids.add(item.id);
+    if (item.type === "message")
+      for (const part of item.content)
+        for (const citation of part.annotations ?? [])
+          if (citation.end_index > part.text.length) throw h.protocol();
     if (item.type === "function_call") {
       if (
         calls.has(item.call_id) ||
@@ -252,18 +259,18 @@ export function createResponsesAdapter(h: Helpers, baseUrl: string) {
       messages: readonly Message[],
       tools: readonly ToolDefinition[],
       model: string,
+      webSearch: WebSearchMode = "disabled",
     ): ResponseCreateParamsStreaming {
       return {
         model,
         input: input(messages, model) as ResponseInput,
-        tools: tools.map((t) => ({
-          type: "function",
-          ...t.function,
-          strict: false,
-        })),
+        tools: [
+          ...tools.map((t) => ({ type: "function" as const, ...t.function, strict: false })),
+          ...(webSearch === "disabled" ? [] : [{ type: "web_search" as const, external_web_access: webSearch === "live" }]),
+        ],
         stream: true,
         store: false,
-        include: ["reasoning.encrypted_content"],
+        include: ["reasoning.encrypted_content", ...(webSearch === "disabled" ? [] : ["web_search_call.action.sources" as const])],
       };
     },
     async read(
@@ -272,6 +279,8 @@ export function createResponsesAdapter(h: Helpers, baseUrl: string) {
       model: string,
       onReasoning: (text: string) => void = () => {},
       onToolCall: (preview: ToolCallPreview) => void = () => {},
+      webSearch: WebSearchMode = "disabled",
+      onWebSearch: (search: WebSearchProgress) => void = () => {},
     ): Promise<ProviderResponse> {
       let text = "";
       let completed: z.infer<typeof terminal> | undefined;
@@ -285,6 +294,17 @@ export function createResponsesAdapter(h: Helpers, baseUrl: string) {
       const ended = new Map<number, z.infer<typeof outputItem>>();
       const added = new Map<number, unknown>();
       const textParts = new Map<string, string>();
+      const annotations = new Map<string, z.infer<typeof urlCitation>>();
+      const searchStatuses = new Map<string, WebSearchProgress["status"]>();
+      const notifySearch = (id: string, status: WebSearchProgress["status"]) => {
+        const previous = searchStatuses.get(id);
+        if (previous === status) return;
+        if (previous && ["completed", "failed", "incomplete"].includes(previous)) throw h.protocol();
+        if (previous === "searching" && status === "in_progress") throw h.protocol();
+        searchStatuses.set(id, status);
+        // Isolate callback failures using the same observer boundary as text.
+        h.notify(() => onWebSearch({ id, status }), "web_search");
+      };
       let reasoning = "";
       // Preview bookkeeping: a tool-sequence index (never output_index, which
       // also counts reasoning/message items) and the latest accumulated name.
@@ -364,7 +384,13 @@ export function createResponsesAdapter(h: Helpers, baseUrl: string) {
               p.output_index,
               z.object({ type: z.literal("reasoning"), id }).parse(p.item),
             );
-          else throw h.protocol();
+          else if (p.item.type === "web_search_call") {
+            if (webSearch === "disabled") throw h.protocol();
+            const initial = z.object({ id, type: z.literal("web_search_call"), status: z.enum(["in_progress", "searching", "completed", "failed", "incomplete"]) }).parse(p.item);
+            if (searchStatuses.size >= 128) throw h.protocol("output_limit");
+            added.set(p.output_index, initial);
+            notifySearch(initial.id, initial.status);
+          } else throw h.protocol();
           items.set(p.output_index, p.item);
           if (p.item.type === "function_call") {
             const initial = z
@@ -413,6 +439,18 @@ export function createResponsesAdapter(h: Helpers, baseUrl: string) {
             args.set(item.id, next);
             notifyToolPreview(p.output_index);
           }
+        } else if (["response.web_search_call.in_progress", "response.web_search_call.searching", "response.web_search_call.completed"].includes(e.type)) {
+          const p = z.object({ item_id: id, output_index: z.number().int().min(0).max(511) }).parse(e);
+          const item = items.get(p.output_index);
+          if (webSearch === "disabled" || item?.type !== "web_search_call" || item.id !== p.item_id || ended.has(p.output_index)) throw h.protocol();
+          notifySearch(item.id, e.type === "response.web_search_call.in_progress" ? "in_progress" : e.type === "response.web_search_call.searching" ? "searching" : "completed");
+        } else if (e.type === "response.output_text.annotation.added") {
+          const p = z.object({ item_id: id, output_index: z.number().int().min(0).max(511), content_index: z.number().int().min(0).max(255), annotation_index: z.number().int().min(0).max(255), annotation: urlCitation }).parse(e);
+          const item = items.get(p.output_index);
+          const key = `${p.output_index}:${p.content_index}:${p.annotation_index}`;
+          if (item?.type !== "message" || item.id !== p.item_id || ended.has(p.output_index) || annotations.has(key)) throw h.protocol();
+          if (annotations.size >= 256) throw h.protocol("output_limit");
+          annotations.set(key, p.annotation);
         } else if (e.type === "response.function_call_arguments.done") {
           const p = z
             .object({
@@ -456,6 +494,10 @@ export function createResponsesAdapter(h: Helpers, baseUrl: string) {
             !sameAdded(added.get(p.output_index), p.item)
           )
             throw h.protocol();
+          if (p.item.type === "web_search_call") {
+            if (webSearch === "disabled" || !sameAdded(added.get(p.output_index), p.item)) throw h.protocol();
+            notifySearch(p.item.id, p.item.status);
+          }
           ended.set(p.output_index, p.item);
           if (p.item.type === "function_call") {
             // Terminal item completes a name the added frame may have omitted.
@@ -571,6 +613,23 @@ export function createResponsesAdapter(h: Helpers, baseUrl: string) {
         )
           throw h.protocol();
       }
+      for (const [key, annotation] of annotations) {
+        const [index, part, annotationIndex] = key.split(":").map(Number);
+        const entry = output[index ?? -1];
+        if (entry?.type !== "message" || JSON.stringify(entry.content[part ?? -1]?.annotations?.[annotationIndex ?? -1]) !== JSON.stringify(annotation)) throw h.protocol();
+      }
+      const citations: WebCitation[] = [];
+      let textOffset = 0;
+      for (const item of output) {
+        if (item.type !== "message") continue;
+        for (const part of item.content) {
+          for (const citation of part.annotations ?? []) citations.push(citationRecord(citation, textOffset));
+          textOffset += part.text.length;
+        }
+      }
+      if (citations.length > 256) throw h.protocol("output_limit");
+      const webSearches = output.filter((item) => item.type === "web_search_call").map(searchRecord);
+      if (webSearches.length > 128 || (webSearches.length && webSearch === "disabled")) throw h.protocol();
       const calls = output
         .filter((i) => i.type === "function_call")
         .map((i) =>
@@ -591,6 +650,8 @@ export function createResponsesAdapter(h: Helpers, baseUrl: string) {
           role: "assistant",
           content: text || null,
           ...(reasoning ? { reasoning } : {}),
+          ...(citations.length ? { citations } : {}),
+          ...(webSearches.length ? { webSearches } : {}),
           ...(calls.length ? { tool_calls: calls } : {}),
           providerState: {
             version: 1,

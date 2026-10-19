@@ -46,11 +46,8 @@ afterEach(async () => {
   await registry.dispose();
 });
 
-it("registration is lazy and exposes both tools", () => {
-  expect(registry.definitions.map((tool) => tool.function.name)).toEqual([
-    "web_search",
-    "web_fetch",
-  ]);
+it("registration is lazy and exposes only page fetch, not a fake search function", () => {
+  expect(registry.definitions.map((tool) => tool.function.name)).toEqual(["web_fetch"]);
   expect(mocks.request).not.toHaveBeenCalled();
 });
 it.each(["workspace"] as const)(
@@ -139,32 +136,10 @@ it("evicts the oldest of eight cached pages", async () => {
   expect(JSON.parse(output.content).from_cache).toBe(false);
   expect(mocks.request).toHaveBeenCalledTimes(10);
 });
-it("search encodes query, returns source links and treats snippets as untrusted", async () => {
-  body =
-    "<rss><channel><item><title>Example</title><link>https://example.com/source</link><description>A source</description></item></channel></rss>";
-  mime = "application/rss+xml";
-  const output = await registry.execute(
-    call("web_search", { query: "中文 & site:example.com" }),
-    context(),
-  );
-  expect(output.isError).toBe(false);
-  const data = JSON.parse(output.content);
-  expect(data.results[0].url).toBe("https://example.com/source");
-  expect(data.notice).toContain("untrusted");
-  expect(new URL(transmitted[0] ?? "").searchParams.get("q")).toBe(
-    "中文 & site:example.com",
-  );
-  expect(new URL(transmitted[0] ?? "").searchParams.get("format")).toBe("rss");
-});
-it("reports blocked/empty search as uncertain failure, not fabricated results", async () => {
-  body = "<html>CAPTCHA required</html>";
-  const output = await registry.execute(
-    call("web_search", { query: "test" }),
-    context(),
-  );
+it("never executes old local web_search calls or falls back to Bing", async () => {
+  const output = await registry.execute(call("web_search", { query: "test" }), context());
   expect(output.isError).toBe(true);
-  expect(output.content).toContain("does not prove");
-  expect(mocks.request).toHaveBeenCalledTimes(1);
+  expect(mocks.request).not.toHaveBeenCalled();
 });
 it.each([
   ["web_search", { query: "fixture-secret" }],

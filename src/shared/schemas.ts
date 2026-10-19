@@ -2,6 +2,7 @@ import { z } from "zod";
 import { createDiffPatch, unavailablePatch } from "./diff";
 import { imageAttachmentsSchema } from "./images";
 import { publishedFilesSchema } from "./published-files";
+import { webSearchModeSchema, webCitationSchema, webSearchRecordSchema, webSearchProgressSchema } from "./web-search";
 
 export type JsonValue =
   | null
@@ -63,6 +64,8 @@ export const lspServersSchema = z.array(lspServerSchema).max(8).readonly().refin
 ).refine(servers => JSON.stringify(servers).length <= 24000, "LSP configuration is too large");
 export const settingsFields = {
   apiMode: z.enum(["chat-completions", "responses", "anthropic"]).optional(),
+  // Responses hosted search only. Absent is disabled for existing installations.
+  webSearch: webSearchModeSchema.optional(),
   maxOutputTokens: z.number().int().min(1).max(1000000).optional(),
   reasoningEffort: z
     .enum(["default", "none", "minimal", "low", "medium", "high", "xhigh", "max"])
@@ -307,6 +310,8 @@ export const assistantMessageSchema = z
     // Bounded, never sent back to the provider, and not part of assistant content.
     reasoning: z.string().max(131072).optional(),
     providerState: providerStateSchema.optional(),
+    citations: z.array(webCitationSchema).max(256).readonly().optional(),
+    webSearches: z.array(webSearchRecordSchema).max(128).readonly().optional(),
     tool_calls: z.array(toolCallSchema).max(256).readonly().optional(),
   })
   .strict()
@@ -537,6 +542,9 @@ const persistedContextUsageSchema = z.union([
 const eventBase = { sessionId: sessionIdSchema, timestamp: timestampSchema };
 export const agentEventSchema = z
   .discriminatedUnion("type", [
+    // Provider-owned search progress, not an executable local function call.
+    z.object({ ...eventBase, type: z.literal("web_search"), search: webSearchProgressSchema }).strict(),
+    z.object({ ...eventBase, type: z.literal("web_search_result"), citations: z.array(webCitationSchema).max(256).readonly(), webSearches: z.array(webSearchRecordSchema).max(128).readonly() }).strict(),
     z.object({ ...eventBase, type: z.literal("permission_changed"), permission: permissionSchema }).strict(),
     z.object({
       ...eventBase,

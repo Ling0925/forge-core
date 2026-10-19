@@ -113,7 +113,7 @@ describe("default harness tool integration", () => {
     const names = definitions.map((definition) => definition.function.name);
     expect(names).toContain("read_file");
     expect(names).toContain("run_command");
-    expect(names).toContain("web_search");
+    expect(names).not.toContain("web_search"); // Hosted Responses tool, never a local function.
     expect(names).toContain("web_fetch");
     expect(names.some((name) => name.startsWith("browser_"))).toBe(false);
     expect(JSON.stringify(definitions)).not.toContain(fakeKey);

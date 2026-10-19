@@ -5,7 +5,7 @@ import { createWebToolRegistry } from "../../src/tools/web";
 
 // Explicit opt-in: normal tests never depend on public network availability.
 it.runIf(process.env.FORGE_WEB_SMOKE === "1")(
-  "reads a public page and searches live Bing RSS without credentials",
+  "reads a public page without credentials (not a hosted-search capability test)",
   async () => {
     const registry = createWebToolRegistry();
     const ctx: ToolContext = {
@@ -34,27 +34,7 @@ it.runIf(process.env.FORGE_WEB_SMOKE === "1")(
       );
       expect(page.isError, page.content).toBe(false);
       expect(JSON.parse(page.content).text).toContain("documentation examples");
-      const search = await registry.execute(
-        {
-          id: "search",
-          type: "function",
-          function: {
-            name: "web_search",
-            arguments: JSON.stringify({
-              query: "TypeScript documentation",
-              count: 3,
-            }),
-          },
-        },
-        ctx,
-      );
-      expect(search.isError, search.content).toBe(false);
-      expect(JSON.parse(search.content).results.length).toBeGreaterThan(0);
-      console.log(
-        "Live web smoke: example.com text verified; search returned",
-        JSON.parse(search.content).results.length,
-        "results.",
-      );
+      console.log("Live web smoke: example.com text verified; native search requires a separately authorized Responses gateway.");
     } finally {
       await registry.dispose();
     }

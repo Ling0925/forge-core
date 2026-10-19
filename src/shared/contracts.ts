@@ -31,6 +31,7 @@ export interface RunControl {
   readonly onSteeringApplied?: () => void;
 }
 export interface ModelProvider {
+  readonly apiMode?: "chat-completions" | "responses" | "anthropic";
   listModels(signal?: AbortSignal): Promise<readonly string[]>;
   getModelContextWindow?(model: string, signal?: AbortSignal): Promise<number | null>;
   complete(
@@ -39,6 +40,9 @@ export interface ModelProvider {
     options: Readonly<{
       model: string;
       signal: AbortSignal;
+      /** Request-scoped authorization; omitted for title generation/compaction. */
+      webSearch?: import("./web-search").WebSearchMode;
+      onWebSearch?: (search: import("./web-search").WebSearchProgress) => void;
       onText: (text: string) => void;
       /** Optional live reasoning display; never persisted as assistant content. */
       onReasoning?: (text: string) => void;
