@@ -106,11 +106,16 @@ export const createHarness = async (
       process.env.FORGE_HOME ??
       join(homedir(), ".local", "share", "forge"),
   );
-  const [store, settingsStore, runMemory] = await Promise.all([
-    openSessionStore(directory),
-    openSettingsStore(directory),
-    openRunMemory(directory),
-  ]);
+  const store = await openSessionStore(directory);
+  // Removing a source must not silently strand sessions pinned to it, so the
+  // settings store asks the session store which sessions still reference it.
+  const settingsStore = await openSettingsStore(directory, {
+    referencedSessions: async (sourceId) =>
+      (await store.list())
+        .filter((session) => session.providerSourceId === sourceId)
+        .map((session) => session.id),
+  });
+  const runMemory = await openRunMemory(directory);
   const publishedFiles = await openPublishedFileStore(directory);
   const mcp = await createMcpService({ home: directory });
   const liveMcp = new Set<Awaited<ReturnType<typeof createMcpService>>>();

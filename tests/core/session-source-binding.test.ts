@@ -140,7 +140,13 @@ it("binds legacy sessions once and fails rather than falling back when their sou
   });
   expect((await run(old.id, "first legacy run")).providerSourceId).toBe("a");
   await service.updateSettings({ source: { type: "activate", id: "b" } });
-  await service.updateSettings({ source: { type: "remove", id: "a" } });
+  // Sessions pinned to a source must be acknowledged before it can be removed.
+  await expect(
+    service.updateSettings({ source: { type: "remove", id: "a" } }),
+  ).rejects.toThrow("仍有 1 个会话绑定此来源");
+  await service.updateSettings({
+    source: { type: "remove", id: "a", forgottenSessionIds: [old.id] },
+  });
   const count = requests.length;
   await expect(run(old.id, "must not reach b")).rejects.toBeDefined();
   expect(requests.length).toBe(count);

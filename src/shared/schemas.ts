@@ -113,22 +113,29 @@ const configurableSettingsFields = {
 // Provider sources: a stored endpoint/model/key set selectable at runtime. The
 // public projection never carries credentials, only whether a key exists.
 export const providerSourceIdSchema = z.string().regex(/^[a-z][a-z0-9_-]{0,31}$/);
-const providerSourceFields = {
-  id: providerSourceIdSchema,
+const providerSourceContentFields = {
   label: z.string().trim().min(1).max(80),
   baseUrl: settingsFields.baseUrl,
   // An empty model means "not chosen yet" so a catalog can be listed first.
   model: z.union([z.literal(""), settingsFields.model]),
   apiMode: settingsFields.apiMode,
 };
+const providerSourceFields = {
+  id: providerSourceIdSchema,
+  ...providerSourceContentFields,
+};
+// A monotonically increasing revision lets a writer detect that someone else
+// (desktop, LAN web or CLI) saved the same source in the meantime.
+export const providerSourceRevisionSchema = z.number().int().nonnegative();
 export const providerSourceSchema = z
-  .object(providerSourceFields)
+  .object({ ...providerSourceFields, revision: providerSourceRevisionSchema.optional() })
   .strict()
   .readonly();
 export type ProviderSource = z.infer<typeof providerSourceSchema>;
 export const publicProviderSourceSchema = z
   .object({
     ...providerSourceFields,
+    revision: providerSourceRevisionSchema,
     hasApiKey: z.boolean(),
   })
   .strict()
@@ -186,13 +193,20 @@ export const providerSourceOperationSchema = z
         type: z.literal("save"),
         source: z.object(providerSourceFields).strict().readonly(),
         apiKey: apiKeySchema.optional(),
+        // Omitted for a brand-new source; required to overwrite a stored one.
+        expectedRevision: providerSourceRevisionSchema.optional(),
       })
       .strict(),
     z
       .object({ type: z.literal("activate"), id: providerSourceIdSchema })
       .strict(),
     z
-      .object({ type: z.literal("remove"), id: providerSourceIdSchema })
+      .object({
+        type: z.literal("remove"),
+        id: providerSourceIdSchema,
+        // Session ids that still reference the source, acknowledged by the user.
+        forgottenSessionIds: z.array(z.string()).max(100000).readonly().optional(),
+      })
       .strict(),
   ])
   .readonly();

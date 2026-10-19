@@ -7,6 +7,7 @@ import {
   defaultPublicSettings,
   providerConfigSchema,
   providerSourceIdSchema,
+  providerSourceRevisionSchema,
   providerSourceSchema,
   publicSettingsSchema,
 } from "../shared/schemas";
@@ -45,11 +46,17 @@ const credentialSchema = z
   .strict();
 const storedSourceSchema = providerSourceSchema
   .unwrap()
-  .extend({ apiKey: credentialValueSchema })
+  .extend({
+    apiKey: credentialValueSchema,
+    // Every committed edit bumps this; UI writes must echo the revision they saw.
+    revision: providerSourceRevisionSchema.optional(),
+  })
   .strict()
   .readonly();
 type StoredSettings = z.infer<typeof fieldsSchema>;
-type StoredSource = z.infer<typeof storedSourceSchema>;
+type StoredSource = z.infer<typeof storedSourceSchema> & {
+  readonly revision: number;
+};
 type StoredState = Readonly<{
   settings: StoredSettings;
   apiKey: string;
@@ -94,7 +101,7 @@ async function optionalRecord(
 const invalid = (message: string): ForgeError =>
   new ForgeError("invalid_input", message);
 const unknownSource = (): ForgeError =>
-  new ForgeError("not_found", "Provider source was not found.");
+  new ForgeError("not_found", "未找到该模型来源，可能已在别处删除。");
 
 // Migration rule: an older state (or legacy config) with a usable endpoint
 // becomes the "default" source, keeping its model, protocol and credential.
@@ -113,6 +120,7 @@ function seedFromLegacy(state: StoredState): StoredState {
         model: state.settings.model ?? "",
         ...(apiMode === undefined ? {} : { apiMode }),
         apiKey: state.apiKey,
+        revision: 1,
       },
     ],
     activeSourceId: NEW_SOURCE_ID,
@@ -139,6 +147,7 @@ function publicSource(source: StoredSource) {
     baseUrl: source.baseUrl,
     model: source.model,
     ...(source.apiMode === undefined ? {} : { apiMode: source.apiMode }),
+    revision: source.revision,
     // Presence only: the stored credential itself never reaches a renderer.
     hasApiKey: source.apiKey !== "",
   };
@@ -146,6 +155,10 @@ function publicSource(source: StoredSource) {
 
 export async function openSettingsStore(
   directory: string,
+  options: Readonly<{
+    // Session ids pinned to a source; used to refuse a destructive removal.
+    referencedSessions?: (sourceId: string) => Promise<readonly string[]>;
+  }> = {},
 ): Promise<SettingsStore> {
   const root = await privateDirectory(directory);
   const folder = await privateDirectory(join(root, "settings"));
@@ -193,7 +206,10 @@ export async function openSettingsStore(
     return {
       settings: parsed.data.settings,
       apiKey: parsed.data.apiKey,
-      sources: parsed.data.sources ?? [],
+      sources: (parsed.data.sources ?? []).map((source) => ({
+        ...source,
+        revision: source.revision ?? 1,
+      })),
       ...(parsed.data.activeSourceId === undefined
         ? {}
         : { activeSourceId: parsed.data.activeSourceId }),
@@ -206,11 +222,13 @@ export async function openSettingsStore(
     );
     if (transaction !== undefined) {
       const stored = await load();
-      // Older state.json files carry no source list; publish the migration
-      // under the writer lock before any unlocked reader can observe it.
+      // Publish legacy source lists and missing revisions under the writer lock.
       const parsed = transactionSchema.safeParse(transaction);
       if (!parsed.success) throw storageError();
-      if (parsed.data.sources === undefined) await commitState(seedFromLegacy(stored));
+      if (
+        parsed.data.sources === undefined ||
+        parsed.data.sources.some((source) => source.revision === undefined)
+      ) await commitState(seedFromLegacy(stored));
       return;
     }
     // Import legacy files only while holding the cross-process writer lock, and
@@ -344,13 +362,17 @@ export async function openSettingsStore(
               parsed.data.apiKey !== undefined)
           )
             throw invalid(
-              "Provider source operations cannot be combined with settings or API key updates.",
+              "来源操作不能与普通设置或密钥更新同时提交。",
             );
           const stored = await load();
           const next =
             parsed.data.source === undefined
               ? updateLegacy(stored, parsed.data)
-              : updateSource(stored, parsed.data.source);
+              : await updateSource(
+                  stored,
+                  parsed.data.source,
+                  options.referencedSessions ?? (async () => []),
+                );
           await commitAll(next);
           return (await effective()).public;
         }),
@@ -364,10 +386,11 @@ export async function openSettingsStore(
   };
 }
 
-function updateSource(
+async function updateSource(
   state: StoredState,
   operation: ProviderSourceOperation,
-): StoredState {
+  referencedSessions: (sourceId: string) => Promise<readonly string[]>,
+): Promise<StoredState> {
   const sources = [...state.sources];
   if (operation.type === "save") {
     const index = sources.findIndex(
@@ -376,7 +399,16 @@ function updateSource(
     const existing = index === -1 ? undefined : sources[index];
     if (existing === undefined && sources.length >= MAX_PROVIDER_SOURCES)
       throw invalid(
-        `At most ${MAX_PROVIDER_SOURCES} provider sources are supported.`,
+        `最多支持 ${MAX_PROVIDER_SOURCES} 个模型来源。`,
+      );
+    // Optimistic lock: a renderer that opened the editor must prove it saw the
+    // committed revision, so a concurrent desktop/CLI edit cannot be clobbered.
+    if (
+      operation.expectedRevision !== undefined &&
+      (existing?.revision ?? 0) !== operation.expectedRevision
+    )
+      throw invalid(
+        "该来源已被其他窗口或 CLI 修改。请重新加载设置后再保存，避免覆盖对方的改动。",
       );
     // Reusing a stored credential for a different endpoint would silently send
     // one server's key to another. Require an explicit key, or an empty one.
@@ -387,11 +419,12 @@ function updateSource(
       operation.apiKey === undefined
     )
       throw invalid(
-        "Changing a provider source endpoint requires an explicit API key for the new endpoint (send an empty key to clear the saved one).",
+        "修改来源地址时必须重新提供新地址的密钥（或明确清除已保存的密钥），以免把旧密钥发往新地址。",
       );
     const saved: StoredSource = {
       ...operation.source,
       apiKey: operation.apiKey ?? existing?.apiKey ?? "",
+      revision: (existing?.revision ?? 0) + 1,
     };
     if (existing === undefined) sources.push(saved);
     else sources[index] = saved;
@@ -414,7 +447,7 @@ function updateSource(
     // Without a default model the runtime could not start a session.
     if (source.model === "")
       throw invalid(
-        "Select a default model for this provider source before activating it.",
+        "请先为该来源选择并保存默认模型，再设为当前来源。",
       );
     return projectActive(
       { ...state, sources, activeSourceId: source.id },
@@ -423,9 +456,18 @@ function updateSource(
   }
   if (state.activeSourceId === operation.id)
     throw invalid(
-      "Switch to another provider source before removing the active one.",
+      "请先切换到其他来源，再删除当前来源。",
     );
   if (index === -1) throw unknownSource();
+  // Sessions pin the source they were created with; removing it would strand
+  // them with a source id that no longer resolves. Require an explicit ack.
+  const pinned = await referencedSessions(operation.id);
+  const acknowledged = new Set(operation.forgottenSessionIds ?? []);
+  const unreleased = pinned.filter((id) => !acknowledged.has(id));
+  if (unreleased.length > 0)
+    throw invalid(
+      `仍有 ${unreleased.length} 个会话绑定此来源（${unreleased.slice(0, 5).join(", ")}）。确认删除后这些会话将没有来源，无法继续运行。`,
+    );
   sources.splice(index, 1);
   return { ...state, sources };
 }
@@ -487,7 +529,7 @@ function updateLegacy(
   const existing = sources.findIndex((source) => source.id === NEW_SOURCE_ID);
   if (existing === -1 && sources.length >= MAX_PROVIDER_SOURCES)
     throw invalid(
-      `At most ${MAX_PROVIDER_SOURCES} provider sources are supported.`,
+      `最多支持 ${MAX_PROVIDER_SOURCES} 个模型来源。`,
     );
   const created: StoredSource = {
     id: NEW_SOURCE_ID,
@@ -498,6 +540,7 @@ function updateLegacy(
       ? {}
       : { apiMode: settings.apiMode as StoredSource["apiMode"] }),
     apiKey,
+    revision: existing === -1 ? 1 : (sources[existing]?.revision ?? 0) + 1,
   };
   if (existing === -1) sources.push(created);
   else sources[existing] = created;

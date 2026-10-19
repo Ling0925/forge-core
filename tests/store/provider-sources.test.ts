@@ -21,7 +21,7 @@ it('migrates legacy transaction without exposing keys and preserves source on re
   const dir = await fixture(); await mkdir(join(dir, 'settings'), { mode: 0o700 });
   await writeFile(join(dir, 'settings/state.json'), JSON.stringify({ version: 1, settings: { baseUrl: 'https://old.test/v1', model: 'old/model', apiMode: 'responses' }, apiKey: 'fixture-old' }), { mode: 0o600 });
   const store = await openSettingsStore(dir);
-  expect((await store.getPublic()).providerSources).toEqual([{ id: 'default', label: 'Default', baseUrl: 'https://old.test/v1', model: 'old/model', apiMode: 'responses', hasApiKey: true }]);
+  expect((await store.getPublic()).providerSources).toEqual([{ id: 'default', label: 'Default', baseUrl: 'https://old.test/v1', model: 'old/model', apiMode: 'responses', revision: 1, hasApiKey: true }]);
   expect(await store.getProviderConfig('default')).toMatchObject({ apiKey: 'fixture-old', apiMode: 'responses' });
   const again = await openSettingsStore(dir);
   expect((await again.getPublic()).activeSourceId).toBe('default');
@@ -34,16 +34,16 @@ it('isolates save/activation/keys, rejects mixed operations and protects endpoin
   expect((await store.getPublic()).activeSourceId).toBe('a');
   await store.update({ source: { type: 'save', source: { ...source('b'), label: 'Changed' } } });
   expect((await store.getProviderConfig('b')).apiKey).toBe('fixture-b');
-  await expect(store.update({ source: { type: 'save', source: { ...source('b'), baseUrl: 'https://other.test/v1' } } })).rejects.toThrow('explicit API key');
-  await expect(store.update({ source: { type: 'activate', id: 'b' }, settings: { theme: 'dark' } })).rejects.toThrow('cannot be combined');
+  await expect(store.update({ source: { type: 'save', source: { ...source('b'), baseUrl: 'https://other.test/v1' } } })).rejects.toThrow('重新提供新地址的密钥');
+  await expect(store.update({ source: { type: 'activate', id: 'b' }, settings: { theme: 'dark' } })).rejects.toThrow('不能与普通设置或密钥更新同时提交');
   await store.update({ source: { type: 'activate', id: 'b' } });
   expect(await store.getProviderConfig()).toMatchObject({ baseUrl: source('b').baseUrl, apiKey: 'fixture-b' });
-  await expect(store.update({ source: { type: 'remove', id: 'b' } })).rejects.toThrow('Switch');
+  await expect(store.update({ source: { type: 'remove', id: 'b' } })).rejects.toThrow('请先切换到其他来源');
   await store.update({ source: { type: 'save', source: source('b'), apiKey: '' } });
   expect((await store.getProviderConfig()).apiKey).toBe('');
   expect((await store.getProviderConfig('a')).apiKey).toBe('fixture-a');
   await store.update({ source: { type: 'remove', id: 'a' } });
-  await expect(store.getProviderConfig('a')).rejects.toThrow('not found');
+  await expect(store.getProviderConfig('a')).rejects.toThrow('未找到该模型来源');
 });
 it('keeps legacy CLI updates in sync and serializes independent store writers', async () => {
   const dir = await fixture(); const one = await openSettingsStore(dir); const two = await openSettingsStore(dir);
@@ -67,4 +67,39 @@ it('retains environment precedence but explicit sources never mix environment cr
   expect(await store.getPublic()).toMatchObject({ environmentOverride: true, baseUrl: 'https://env.test/v1', model: 'env/model' });
   expect(await store.getProviderConfig()).toMatchObject({ apiKey: 'fixture-env', baseUrl: 'https://env.test/v1' });
   expect(await store.getProviderConfig('a')).toMatchObject({ apiKey: 'fixture-a', baseUrl: source('a').baseUrl });
+});
+it('rejects a stale revision instead of overwriting a concurrent source edit', async () => {
+  const dir = await fixture();
+  const one = await openSettingsStore(dir);
+  const two = await openSettingsStore(dir);
+  await one.update({ source: { type: 'save', source: source('a'), apiKey: 'fixture-a' } });
+  const seen = (await one.getPublic()).providerSources?.[0]!.revision;
+  expect(seen).toBe(1);
+  await two.update({
+    source: { type: 'save', source: { ...source('a'), label: 'FROM TWO' }, expectedRevision: seen },
+  });
+  await expect(
+    one.update({
+      source: { type: 'save', source: { ...source('a'), label: 'FROM ONE' }, expectedRevision: seen },
+    }),
+  ).rejects.toThrow('已被其他窗口或 CLI 修改');
+  expect((await one.getPublic()).providerSources?.[0]).toMatchObject({ label: 'FROM TWO', revision: 2 });
+});
+it('refuses to remove a source that sessions still reference until they are acknowledged', async () => {
+  const dir = await fixture();
+  let pinned: string[] = [];
+  const store = await openSettingsStore(dir, { referencedSessions: async () => pinned });
+  await store.update({ source: { type: 'save', source: source('a'), apiKey: 'fixture-a' } });
+  await store.update({ source: { type: 'save', source: source('b'), apiKey: 'fixture-b' } });
+  await store.update({ source: { type: 'activate', id: 'b' } });
+  pinned = ['sess-1', 'sess-2'];
+  await expect(store.update({ source: { type: 'remove', id: 'a' } })).rejects.toThrow('仍有 2 个会话绑定此来源');
+  expect((await store.getPublic()).providerSources).toHaveLength(2);
+  await expect(
+    store.update({ source: { type: 'remove', id: 'a', forgottenSessionIds: ['sess-1'] } }),
+  ).rejects.toThrow('sess-2');
+  await store.update({
+    source: { type: 'remove', id: 'a', forgottenSessionIds: ['sess-1', 'sess-2'] },
+  });
+  expect((await store.getPublic()).providerSources?.map(item => item.id)).toEqual(['b']);
 });
