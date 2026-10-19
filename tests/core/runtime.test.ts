@@ -28,6 +28,7 @@ import type {
   SessionSnapshot,
 } from "../../src/shared/schemas";
 import { createLocalToolRegistry } from "../../src/tools/local";
+import { executionTurns } from "../../src/shared/execution";
 
 const initial = (): SessionSnapshot =>
   sessionSnapshotSchema.parse({
@@ -121,6 +122,79 @@ const usageEvent = (
   });
 
 describe("original runtime", () => {
+  it("publishes a turn only after its prompt and boundary are checkpointed together", async () => {
+    const f = fixture(finalProvider, emptyTools);
+    const observed: boolean[] = [];
+    await f.runtime.run(input, event => {
+      if (event.type === "run_started") observed.push(f.current().events.some(saved => saved.type === "run_started" && saved.turn === event.turn));
+    }, async () => false, signal());
+    expect(observed).toEqual([true]);
+    expect(f.checkpoints.filter(state => state.messages.some(message => message.role === "user"))
+      .every(state => state.events.some(event => event.type === "run_started"))).toBe(true);
+  });
+
+  it("keeps a provider retry and multiple tools inside one step, then starts the next turn at step one", async () => {
+    let requests = 0;
+    const f = fixture({ ...finalProvider, complete: async () => {
+      requests++;
+      if (requests === 1) throw Object.assign(new ForgeError("provider", "Transient", true), { classification: "network" });
+      return requests === 2
+        ? { message: { role: "assistant", content: null, tool_calls: [call("a"), call("b"), call("c")] } }
+        : { message: { role: "assistant", content: "done" } };
+    } }, emptyTools);
+    const first = await f.runtime.run(input, () => {}, async () => false, signal());
+    expect(first.events.filter(event => event.type === "step_started").map(event => [event.turn, event.step])).toEqual([[1, 1], [1, 2]]);
+    expect(first.events.filter(event => event.type === "step_finished").map(event => [event.turn, event.step, event.status])).toEqual([[1, 1, "completed"], [1, 2, "completed"]]);
+    expect(first.events.find(event => event.type === "provider_retry")).toMatchObject({ turn: 1, step: 1 });
+    expect(first.events.at(-1)).toMatchObject({ turns: 2, turn: 1, steps: 2, toolCalls: 3, retries: 1 });
+    const resumed = await f.runtime.run({ ...input, prompt: "next task" }, () => {}, async () => false, signal());
+    expect(resumed.events.filter(event => event.type === "step_started").at(-1)).toMatchObject({ turn: 2, step: 1 });
+    expect(executionTurns(resumed).map(turn => [turn.turn, turn.steps, turn.toolCalls, turn.retries])).toEqual([[1, 2, 3, 1], [2, 1, 0, 0]]);
+  });
+
+  it("retains steering inside the current turn and records the next model step", async () => {
+    let requests = 0;
+    const queued: string[] = [];
+    const f = fixture({ ...finalProvider, complete: async () => {
+      requests++;
+      if (requests === 1) queued.push("also inspect this");
+      return { message: { role: "assistant", content: "done" } };
+    } }, emptyTools);
+    const result = await f.runtime.run(input, () => {}, async () => false, signal(), {
+      drainSteering: () => queued.splice(0),
+    });
+    expect(result.messages.filter(message => message.role === "user")).toHaveLength(2);
+    expect(executionTurns(result)).toHaveLength(1);
+    expect(executionTurns(result)[0]).toMatchObject({ turn: 1, steps: 2, toolCalls: 0 });
+  });
+
+  it.each(["cancelled", "failed"] as const)("closes an entered step exactly once when %s", async status => {
+    const controller = new AbortController();
+    const f = fixture({ ...finalProvider, complete: async () => {
+      if (status === "cancelled") controller.abort();
+      throw new ForgeError("provider", "Stopped");
+    } }, emptyTools);
+    const result = await f.runtime.run(input, () => {}, async () => false, controller.signal);
+    expect(result.events.filter(event => event.type === "step_finished")).toHaveLength(1);
+    expect(result.events.find(event => event.type === "step_finished")).toMatchObject({ turn: 1, step: 1, status });
+    expect(result.events.at(-1)).toMatchObject({ status, steps: 1 });
+  });
+
+  it("repairs an interrupted open step before entering a new turn without replaying tools", async () => {
+    const base = initial();
+    const state = sessionSnapshotSchema.parse({ ...base, status: "running",
+      messages: [{ role: "system", content: "system" }, { role: "user", content: "old task" }],
+      events: [
+        { type: "run_started", sessionId: base.id, timestamp: base.createdAt, turn: 1, messageIndex: 1, model: "chosen", permission: "readonly" },
+        { type: "step_started", sessionId: base.id, timestamp: base.createdAt, turn: 1, step: 1, messageIndex: 2 },
+      ],
+    });
+    const f = fixture(finalProvider, emptyTools, state);
+    const result = await f.runtime.run(input, () => {}, async () => false, signal());
+    expect(result.events.filter(event => event.type === "step_finished").map(event => [event.turn, event.status])).toEqual([[1, "interrupted"], [2, "completed"]]);
+    expect(result.events.filter(event => event.type === "run_finished").map(event => [event.turn, event.status, event.steps])).toEqual([[1, "interrupted", 1], [2, "completed", 1]]);
+  });
+
   it("projects edit previews out of provider requests but keeps stored tool evidence", async () => {
     const preview = "original-file-content".repeat(100);
     const state = initial();

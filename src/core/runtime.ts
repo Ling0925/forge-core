@@ -8,6 +8,7 @@ import type {
 import { ForgeError, isRetryableProviderFailure, providerRetryReason, toErrorInfo } from "../shared/errors";
 import { toolActivity } from "../shared/tool-activity";
 import { recordPlan } from "../shared/plans";
+import { executionTurns } from "../shared/execution";
 import {
   agentEventSchema,
   providerResponseSchema,
@@ -283,6 +284,10 @@ export const createAgentRuntime = (
       ? deps.sessionLock.release : await deps.store.acquire(input.sessionId, signal);
     let snapshot: SessionSnapshot | undefined;
     let turns = 0;
+    let turn: number | undefined;
+    let activeStep: number | undefined;
+    let steps = 0;
+    let retries = 0;
     let toolCalls = 0;
     let usage: Usage = { promptTokens: 0, completionTokens: 0, totalTokens: 0 };
     let reportedUsageTurns = 0;
@@ -306,6 +311,8 @@ export const createAgentRuntime = (
       if (!snapshot)
         throw new ForgeError("internal", "Session has not loaded.");
       const event = agentEventSchema.parse({
+        ...(turn === undefined ? {} : { turn }),
+        ...(activeStep === undefined ? {} : { step: activeStep }),
         ...body,
         sessionId: input.sessionId,
         timestamp: now(),
@@ -313,10 +320,18 @@ export const createAgentRuntime = (
       snapshot = { ...snapshot, events: [...snapshot.events, event] };
       notify(event);
     };
+    const closeStep = (status: "completed" | "cancelled" | "failed"): void => {
+      if (!snapshot || turn === undefined || activeStep === undefined) return;
+      event({ type: "step_finished", turn, step: activeStep, status, messageIndex: snapshot.messages.length });
+      steps += 1;
+      activeStep = undefined;
+    };
     // Display-only, never persisted: live reasoning preview is not transcript state.
     const ephemeral = (body: EventBody): void => {
       notify(
         agentEventSchema.parse({
+          ...(turn === undefined ? {} : { turn }),
+          ...(activeStep === undefined ? {} : { step: activeStep }),
           ...body,
           sessionId: input.sessionId,
           timestamp: now(),
@@ -408,6 +423,7 @@ export const createAgentRuntime = (
       )
         status = "failed";
       if (signal.aborted) status = "cancelled";
+      closeStep(status);
       const addUsage = (a: Usage, b: Usage): Usage => ({
         promptTokens: a.promptTokens + b.promptTokens,
         completionTokens: a.completionTokens + b.completionTokens,
@@ -423,7 +439,11 @@ export const createAgentRuntime = (
         sessionId: input.sessionId,
         timestamp: now(),
         status,
+        ...(turn === undefined ? {} : { turn }),
         turns,
+        steps,
+        retries,
+        messageIndex: snapshot.messages.length,
         toolCalls,
         usage,
         usageComplete: !hadProviderRetries && reportedUsageTurns === turns,
@@ -454,6 +474,17 @@ export const createAgentRuntime = (
         snapshot.status === "running" ||
         snapshot.status === "awaiting_approval"
       ) {
+        const previous = executionTurns(snapshot).at(-1);
+        if (previous && !previous.finish && previous.events[0]?.type === "run_started" && previous.events[0].turn !== undefined) {
+          if (previous.currentStep !== undefined)
+            event({ type: "step_finished", turn: previous.turn, step: previous.currentStep,
+              messageIndex: snapshot.messages.length, status: "interrupted" });
+          event({ type: "run_finished", turn: previous.turn, status: "interrupted",
+            turns: previous.currentStep ?? previous.steps ?? 0,
+            steps: (previous.steps ?? 0) + (previous.currentStep === undefined ? 0 : 1),
+            toolCalls: previous.toolCalls ?? 0, retries: previous.retries ?? 0,
+            messageIndex: snapshot.messages.length, usageComplete: false });
+        }
         snapshot = { ...snapshot, status: "interrupted" };
         event({ type: "state_changed", status: "interrupted" });
         await save();
@@ -501,6 +532,7 @@ export const createAgentRuntime = (
             ...snapshot.messages,
           ],
         };
+      turn = (executionTurns(snapshot).at(-1)?.turn ?? 0) + 1;
       snapshot = {
         ...snapshot,
         status: "running",
@@ -513,9 +545,12 @@ export const createAgentRuntime = (
       const shouldName = claimed !== snapshot;
       snapshot = claimed;
       contextScale = seedContextScale(snapshot.events);
+      const started = agentEventSchema.parse({ type: "run_started", turn,
+        sessionId: input.sessionId, timestamp: now(), messageIndex: snapshot.messages.length - 1,
+        model: snapshot.model, permission, title: snapshot.title });
+      snapshot = { ...snapshot, events: [...snapshot.events, started] };
       await save();
-      event({ type: "run_started", model: snapshot.model, permission, title: snapshot.title });
-      await save();
+      notify(started);
       if (shouldName && deps.autoTitle) {
         const fallback = snapshot.title;
         deps.autoTitle.start(snapshot, async title => {
@@ -596,6 +631,9 @@ export const createAgentRuntime = (
         event({ type: "context_usage", usage: projectedUsage });
         phase = "provider";
         turns += 1;
+        activeStep = turns;
+        event({ type: "step_started", turn, step: activeStep, messageIndex: snapshot.messages.length });
+        await save();
         let webSearch = effectivePermission() === "readonly" ? "disabled" as const : deps.settings.webSearch ?? "disabled";
         if (webSearch !== "disabled") {
           if (deps.provider.apiMode !== "responses")
@@ -737,17 +775,19 @@ export const createAgentRuntime = (
             )
               throw error;
             attempt += 1;
+            retries += 1;
             hadProviderRetries = true;
             // Discard only this attempt's partial draft; prior messages and
             // already-persisted tool evidence stay untouched.
             incompleteText = incompleteText.slice(0, attemptStart);
             ephemeral({ type: "retry_reset" });
-            ephemeral({
+            event({
               type: "provider_retry",
               attempt,
               maxAttempts: MAX_GENERATION_RETRIES,
               reason: providerRetryReason(error) ?? "protocol",
             });
+            await save();
             await retryDelay(RETRY_DELAYS_MS[attempt - 1] ?? 8_000, signal);
           }
         }
@@ -785,10 +825,11 @@ export const createAgentRuntime = (
         };
         incompleteText = "";
         phase = "storage";
+        const calls = response.message.tool_calls ?? [];
+        if (calls.length === 0) closeStep("completed");
         await save();
         if (response.message.citations?.length || response.message.webSearches?.length)
           ephemeral({ type: "web_search_result", citations: response.message.citations ?? [], webSearches: response.message.webSearches ?? [] });
-        const calls = response.message.tool_calls ?? [];
         if (calls.length === 0) {
           if (previews.size) ephemeral({ type: "tool_preview_reset" });
           const undelivered = [...children.entries()].filter(([, child]) => !child.delivered);
@@ -1116,6 +1157,8 @@ export const createAgentRuntime = (
           await save();
           checkToolFailure(call, result);
         }
+        closeStep("completed");
+        await save();
       }
     } catch (error) {
       if (!snapshot) throw error;

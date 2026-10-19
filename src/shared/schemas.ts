@@ -539,7 +539,12 @@ const persistedContextUsageSchema = z.union([
   }).strict().transform((): ContextUsage => ({ windowTokens: null, usedTokens: 0, estimated: true,
     basis: "projected", parts: { instructions: 0, memory: 0, conversation: 0, tools: 0 } })),
 ]);
-const eventBase = { sessionId: sessionIdSchema, timestamp: timestampSchema };
+const eventBase = {
+  sessionId: sessionIdSchema,
+  timestamp: timestampSchema,
+  turn: z.number().int().positive().optional(),
+  step: z.number().int().positive().optional(),
+};
 export const agentEventSchema = z
   .discriminatedUnion("type", [
     // Provider-owned search progress, not an executable local function call.
@@ -586,7 +591,7 @@ export const agentEventSchema = z
       })
       .strict(),
     // Bounded user-visible retry status. Carries no upstream body, prompt or
-    // endpoint. Ephemeral (emitted on every retry, not persisted as state).
+    // endpoint. Persisted so request retries remain inspectable after resume.
     z
       .object({
         ...eventBase,
@@ -669,6 +674,7 @@ export const agentEventSchema = z
       .object({
         ...eventBase,
         type: z.literal("run_started"),
+        messageIndex: z.number().int().nonnegative().optional(),
         model: settingsFields.model,
         permission: permissionSchema,
         title: z.string().min(1).max(256).optional(),
@@ -687,6 +693,9 @@ export const agentEventSchema = z
         type: z.literal("run_finished"),
         status: z.enum(["completed", "cancelled", "failed", "interrupted"]),
         turns: z.number().int().nonnegative(),
+        steps: z.number().int().nonnegative().optional(),
+        retries: z.number().int().nonnegative().optional(),
+        messageIndex: z.number().int().nonnegative().optional(),
         toolCalls: z.number().int().nonnegative(),
         usage: usageSchema.optional(),
         usageComplete: z.boolean().optional(),
@@ -697,6 +706,21 @@ export const agentEventSchema = z
         childUsageComplete: z.boolean().optional(),
       })
       .strict(),
+    z.object({
+      ...eventBase,
+      type: z.literal("step_started"),
+      turn: z.number().int().positive(),
+      step: z.number().int().positive(),
+      messageIndex: z.number().int().nonnegative(),
+    }).strict(),
+    z.object({
+      ...eventBase,
+      type: z.literal("step_finished"),
+      turn: z.number().int().positive(),
+      step: z.number().int().positive(),
+      messageIndex: z.number().int().nonnegative(),
+      status: z.enum(["completed", "failed", "cancelled", "interrupted"]),
+    }).strict(),
     z
       .object({
         ...eventBase,
