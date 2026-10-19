@@ -17,7 +17,20 @@ export function redactCommandArguments(command: readonly string[] = []): readonl
 }
 
 // Scalar keys surfaced as a tool's human-readable target, in priority order.
-const targetKeys = ["path", "argv", "command", "query", "url", "id", "cwd"];
+const targetKeys = [
+  "path",
+  "argv",
+  "command",
+  "query",
+  "url",
+  "ownership",
+  "id",
+  "task",
+  "resolution",
+  "cwd",
+  "skill",
+  "reason",
+];
 
 /** Never forward file bodies, edit text, MCP arguments or tool output. Only a
  * bounded scalar target is surfaced; an unmatched payload adds nothing rather
