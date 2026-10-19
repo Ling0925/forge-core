@@ -136,6 +136,7 @@ describe("browser tools", () => {
         false,
       );
       expect((await run("browser_read", {})).content).toContain("Hello");
+      expect((await run("browser_read", { reason: "Inspect the page" })).content).toContain("Hello");
       expect(
         (await run("browser_fill", { selector: "#value", text: "typed" }))
           .isError,

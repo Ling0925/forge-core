@@ -163,6 +163,30 @@ describe("live stdio protocol", () => {
     expect(output.isError).toBe(false);
     expect(JSON.parse(output.content).text).toBe("hello world");
   });
+  it("preserves JSON text input through a real MCP call", async () => {
+    const text = JSON.stringify({ title: "中文", reason: "legitimate input", nested: { items: [1, false, null] } });
+    const output = await call(registry, "mcp_call_tool", {
+      toolName: "mcp__echo__echo", arguments_json: JSON.stringify({ text }),
+    });
+    expect(output.isError).toBe(false);
+    expect(JSON.parse(output.content).text).toBe(text);
+  });
+  it.each(["{", "null", "[]", '"private-input-marker"'])("rejects invalid encoded MCP input %s before approval", async arguments_json => {
+    let approvals = 0;
+    const output = await registry.execute({ id: "input", type: "function", function: {
+      name: "mcp_call_tool", arguments: JSON.stringify({ toolName: "mcp__echo__echo", arguments_json }),
+    } }, ctx("workspace", async () => { approvals++; return true; }));
+    expect(output.isError).toBe(true);
+    expect(JSON.parse(output.content)).toMatchObject({ code: "invalid_input" });
+    expect(output.content).not.toContain("private-input-marker");
+    expect(approvals).toBe(0);
+  });
+  it("rejects competing MCP input representations without executing either", async () => {
+    const output = await call(registry, "mcp_call_tool", {
+      toolName: "mcp__echo__echo", arguments: { text: "old" }, arguments_json: '{"text":"new"}',
+    });
+    expect(JSON.parse(output.content)).toMatchObject({ code: "invalid_input" });
+  });
   it("only forwards explicitly mapped host values, never inherited secrets", async () => {
     process.env.FORGE_SECRET_MARKER = "sk-live-secret";
     try {

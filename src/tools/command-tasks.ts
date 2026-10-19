@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { z } from "zod";
 import type { LocalToolRegistry, ToolContext } from "../shared/contracts";
 import { ForgeError } from "../shared/errors";
+import { invalidToolInput } from "../shared/tool-input";
 import type { ToolCall, ToolDefinition, ToolResult } from "../shared/schemas";
 import type { CommandTaskAccess, TaskView } from "../shared/task-view";
 import { redactCommandArguments } from "../shared/tool-activity";
@@ -13,7 +14,10 @@ const taskArguments = z.object({
   offset: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER).default(0),
   limit: z.number().int().min(1).max(12000).default(12000),
   timeout_ms: z.number().int().min(0).max(120000).default(30000),
-}).strict();
+}).strict().superRefine((args, ctx) => {
+  if (args.action !== "list" && args.id === undefined)
+    ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["id"], message: "Required for read, wait and stop; use list to discover task IDs." });
+});
 const completionMetadata = z.object({
   exit_code: z.number().int().nullable().optional(),
   signal: z.string().max(32).regex(/^[A-Z0-9]+$/).nullable().optional(),
@@ -32,7 +36,7 @@ const taskDefinition: ToolDefinition = {
       type: "object",
       properties: {
         action: { type: "string", enum: ["list", "read", "wait", "stop"] },
-        id: { type: "string", minLength: 1, maxLength: 128 },
+        id: { type: "string", minLength: 1, maxLength: 128, description: "Required for read, wait and stop. Use an ID returned by run_command or command_task list; omit for list." },
         offset: { type: "integer", minimum: 0, maximum: Number.MAX_SAFE_INTEGER, default: 0 },
         limit: { type: "integer", minimum: 1, maximum: 12000, default: 12000 },
         timeout_ms: { type: "integer", minimum: 0, maximum: 120000, default: 30000 },
@@ -194,7 +198,7 @@ export function withCommandTasks(
     const parsed = taskArguments.safeParse((() => {
       try { return JSON.parse(call.function.arguments); } catch { return undefined; }
     })());
-    if (!parsed.success) return result({ error: "Invalid command_task arguments." }, true);
+    if (!parsed.success) return invalidToolInput(parsed.error);
     const args = parsed.data;
     if (args.action === "list") {
       const owned = [...tasks.values()].filter((task) => task.started && task.sessionId === context.sessionId);
@@ -337,7 +341,7 @@ export function withCommandTasks(
       if (!args || typeof args !== "object" || Array.isArray(args) || !("background" in args))
         return base.execute(call, context);
       const { background, ...foreground } = args;
-      if (typeof background !== "boolean") return result({ error: "background must be a boolean." }, true);
+      if (typeof background !== "boolean") return invalidToolInput("background must be a boolean.");
       const command = { ...call, function: { ...call.function, arguments: JSON.stringify(foreground) } };
       // Do not change foreground permissions, contexts, results, or cancellation.
       if (!background || context.permission === "readonly") return base.execute(command, context);

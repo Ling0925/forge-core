@@ -1,5 +1,6 @@
 import { z } from "zod";
 import type { Message, SessionSnapshot, ToolResult } from "../shared/schemas";
+import { invalidToolInput } from "../shared/tool-input";
 
 const recordId = (index: number) => `m${index + 1}`;
 export function historyText(message: Message): string {
@@ -21,7 +22,7 @@ export function executeHistory(name: string, args: unknown, snapshot: SessionSna
   const output = (value: unknown, isError = false): ToolResult => ({ content: JSON.stringify(value), isError });
   if (name === "history_read") {
     const parsed = readArgs.safeParse(args);
-    if (!parsed.success) return output({ error: "Invalid history_read arguments" }, true);
+    if (!parsed.success) return invalidToolInput(parsed.error);
     const { id, offset, limit } = parsed.data;
     const message = snapshot.messages[Number(id.slice(1)) - 1];
     if (!message) return output({ error: "Record not found in this session", id }, true);
@@ -31,7 +32,8 @@ export function executeHistory(name: string, args: unknown, snapshot: SessionSna
       text: text.slice(offset, offset + limit), nextOffset: offset + limit < text.length ? offset + limit : null });
   }
   const parsed = searchArgs.safeParse(args);
-  if (name !== "history_search" || !parsed.success) return output({ error: "Invalid history_search arguments" }, true);
+  if (name !== "history_search") return invalidToolInput("Unknown history tool.");
+  if (!parsed.success) return invalidToolInput(parsed.error);
   const { query, offset, limit } = parsed.data;
   const needle = query.toLowerCase();
   const hits = [];

@@ -4,6 +4,7 @@ import { open, rename, unlink } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { type Browser, type Page, chromium } from "playwright";
 import { z } from "zod";
+import { invalidToolInput, noArgumentFields, noArgumentProperties, recoverToolInputError } from "../shared/tool-input";
 import type {
   BrowserToolOptions,
   LocalToolRegistry,
@@ -27,7 +28,7 @@ const args = z.discriminatedUnion("tool", [
       url: z.string().url().max(4096),
     })
     .strict(),
-  z.object({ tool: z.literal("browser_read") }).strict(),
+  z.object({ tool: z.literal("browser_read"), ...noArgumentFields }).strict(),
   z.object({ tool: z.literal("browser_click"), selector: selectors }).strict(),
   z
     .object({ tool: z.literal("browser_fill"), selector: selectors, text })
@@ -38,7 +39,7 @@ const args = z.discriminatedUnion("tool", [
       path: z.string().min(1).max(4096).optional(),
     })
     .strict(),
-  z.object({ tool: z.literal("browser_close") }).strict(),
+  z.object({ tool: z.literal("browser_close"), ...noArgumentFields }).strict(),
 ]);
 const props = { type: "object", additionalProperties: false } as const;
 const definitions: readonly ToolDefinition[] = [
@@ -47,7 +48,7 @@ const definitions: readonly ToolDefinition[] = [
     function: {
       name: "browser_navigate",
       description:
-        "Navigate to an exact allowlisted HTTP(S) origin. Workspace/readonly require approval; unrestricted does not. Scripts may have remote side effects.",
+        "Navigate to an exact allowlisted HTTP(S) origin. Forge readonly/plan mode denies browser tools. Workspace requires approval; unrestricted does not. Scripts may have remote side effects.",
       parameters: {
         ...props,
         properties: { url: { type: "string", format: "uri", maxLength: 4096 } },
@@ -60,7 +61,7 @@ const definitions: readonly ToolDefinition[] = [
     function: {
       name: "browser_read",
       description: "Read bounded visible page text.",
-      parameters: { ...props, properties: {}, required: [] },
+      parameters: { ...props, properties: noArgumentProperties, required: [] },
     },
   },
   {
@@ -112,7 +113,7 @@ const definitions: readonly ToolDefinition[] = [
     function: {
       name: "browser_close",
       description: "Close the ephemeral browser context.",
-      parameters: { ...props, properties: {}, required: [] },
+      parameters: { ...props, properties: noArgumentProperties, required: [] },
     },
   },
 ];
@@ -346,10 +347,10 @@ export async function createBrowserToolRegistry(
     redirectRejected = false;
     try {
       check();
-      if (call.function.arguments.length > 16000) throw new Error("invalid");
+      if (call.function.arguments.length > 16000) return invalidToolInput("Tool call arguments exceed 16000 characters.");
       const input: unknown = JSON.parse(call.function.arguments);
       const object = z.record(z.unknown()).parse(input);
-      if ("tool" in object) throw new Error("invalid");
+      if ("tool" in object) return invalidToolInput("tool is not an accepted argument; use the declared parameters.");
       const parsed = args.parse({ ...object, tool: call.function.name });
       if (parsed.tool === "browser_close") {
         stop();
@@ -515,7 +516,9 @@ export async function createBrowserToolRegistry(
         await p.locator(parsed.selector).fill(parsed.text, { timeout: 10000 });
       check();
       return result({ completed: true });
-    } catch {
+    } catch (error) {
+      const invalid = recoverToolInputError(error);
+      if (invalid) return invalid;
       return result(
         {
           error: shutdown.signal.aborted

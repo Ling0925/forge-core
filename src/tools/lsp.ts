@@ -5,6 +5,7 @@ import { extname, relative, sep } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { z } from "zod";
 import type { LocalToolRegistry, ToolContext } from "../shared/contracts";
+import { recoverToolInputError } from "../shared/tool-input";
 import { lspServersSchema, type ToolCall, type ToolDefinition, type ToolResult } from "../shared/schemas";
 import { createWorkspacePathGuard } from "./path-guard";
 import { StdioLspClient } from "./lsp-client";
@@ -33,9 +34,12 @@ const argsSchema = z.object({
   character: z.number().int().min(1).max(2_097_153).optional(),
   offset: z.number().int().min(0).max(1000).default(0),
   limit: z.number().int().min(1).max(100).default(50),
-}).strict().refine((v) => v.operation === "symbols" ||
-  (v.line !== undefined && v.character !== undefined),
-{ message: "line and character are required except for symbols" });
+}).strict().superRefine((args, ctx) => {
+  if (args.operation === "symbols") return;
+  for (const field of ["line", "character"] as const)
+    if (args[field] === undefined)
+      ctx.addIssue({ code: z.ZodIssueCode.custom, path: [field], message: "Required for definition, references and hover." });
+});
 const definition: ToolDefinition = {
   type: "function",
   function: {
@@ -46,8 +50,8 @@ const definition: ToolDefinition = {
       properties: {
         operation: { type: "string", enum: ["symbols", "definition", "references", "hover"] },
         path: { type: "string", minLength: 1, maxLength: 4096 },
-        line: { type: "integer", minimum: 1 },
-        character: { type: "integer", minimum: 1 },
+        line: { type: "integer", minimum: 1, maximum: 2_097_153, description: "Required for definition, references and hover; omit for symbols. 1-based line." },
+        character: { type: "integer", minimum: 1, maximum: 2_097_153, description: "Required for definition, references and hover; omit for symbols. 1-based UTF-16 column." },
         offset: { type: "integer", minimum: 0, maximum: 1000, default: 0 },
         limit: { type: "integer", minimum: 1, maximum: 100, default: 50 },
       },
@@ -275,9 +279,9 @@ export async function createLspToolRegistry(
     } catch (error) {
       try { await client?.dispose(); }
       catch { return result({ error: "LSP process cleanup failed; execution stopped." }, true); }
-      // zod and filesystem errors can contain user input; return only bounded text.
-      return result({ error: error instanceof z.ZodError ? "Invalid LSP arguments." :
-        clean(error instanceof Error ? error.message : "LSP query failed.", 512) }, true);
+      const invalid = recoverToolInputError(error);
+      if (invalid) return invalid;
+      return result({ error: clean(error instanceof Error ? error.message : "LSP query failed.", 512) }, true);
     }
   }
   return {

@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { invalidToolInput } from "../shared/tool-input";
 import type { ToolDefinition, ToolResult } from "../shared/schemas";
 import type { TaskPlan } from "../shared/schemas";
 import { createSessionPlan, updateSessionPlan } from "./plans";
@@ -172,11 +173,7 @@ async function executeNativeUnchecked(
       return executeHistory(name, args, env.snapshot);
     case "list_models": {
       const parsed = modelListArgs.safeParse(args);
-      if (!parsed.success)
-        return {
-          content: JSON.stringify({ error: "Invalid list_models arguments" }),
-          isError: true,
-        };
+      if (!parsed.success) return invalidToolInput(parsed.error);
       if (env.signal.aborted)
         return {
           content: JSON.stringify({ error: "Model discovery cancelled" }),

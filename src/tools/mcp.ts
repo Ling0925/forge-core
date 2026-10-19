@@ -11,6 +11,7 @@ import {
 } from "../mcp/types";
 import type { LocalToolRegistry, ToolContext } from "../shared/contracts";
 import { ForgeError } from "../shared/errors";
+import { invalidToolInput, recoverToolInputError } from "../shared/tool-input";
 import type {
   JsonValue,
   ToolCall,
@@ -34,7 +35,8 @@ const callArgs = z
   .object({
     tool: z.literal("mcp_call_tool"),
     toolName: z.string().min(1).max(64),
-    arguments: z.record(z.unknown()).default({}),
+    arguments: z.record(z.unknown()).optional(),
+    arguments_json: z.string().max(MCP_CALL_ARGUMENT_LIMIT).optional(),
   })
   .strict()
   .readonly();
@@ -70,12 +72,12 @@ const definitions: readonly ToolDefinition[] = Object.freeze([
     type: "function",
     function: {
       name: "mcp_call_tool",
-      description: `${description} Calls an MCP tool by its namespaced name (mcp__<server>__<tool>) with a JSON object of at most 64 KiB; returns bounded sanitized text content.`,
+      description: `${description} Calls an MCP tool by its discovered namespaced name (mcp__<server>__<tool>). Encode its input object as arguments_json using the schema returned by mcp_list_tools. Omit for an empty object. At most 64 KiB including the call envelope; returns bounded sanitized text content.`,
       parameters: {
         type: "object",
         properties: {
           toolName: { type: "string", minLength: 1, maxLength: 64 },
-          arguments: { type: "object", default: {} },
+          arguments_json: { type: "string", maxLength: MCP_CALL_ARGUMENT_LIMIT, description: 'JSON-encoded input object, for example {"text":"hello"}. Preserve the discovered tool\'s field names and value types. Omit for {}.' },
         },
         required: ["toolName"],
         additionalProperties: false,
@@ -148,12 +150,9 @@ export async function createMcpToolRegistry(
           Buffer.byteLength(call.function.arguments, "utf8") >
           MCP_CALL_ARGUMENT_LIMIT
         )
-          return result({ error: "invalid" }, true);
-        const input = JSON.parse(call.function.arguments) as unknown;
-        if (typeof input !== "object" || input === null || Array.isArray(input))
-          return result({ error: "invalid" }, true);
-        const object = input as Record<string, unknown>;
-        if ("tool" in object) return result({ error: "invalid" }, true);
+          return invalidToolInput("Tool call arguments exceed 64 KiB.");
+        const object = z.record(z.unknown()).parse(JSON.parse(call.function.arguments));
+        if ("tool" in object) return invalidToolInput("tool is not an accepted argument; use the declared parameters.");
         const parsed = args.parse({ ...object, tool: call.function.name });
         if (parsed.tool === "mcp_list_tools") {
           const server = servers.get(parsed.server);
@@ -197,6 +196,18 @@ export async function createMcpToolRegistry(
           return result(payload);
         }
 
+        if (parsed.arguments !== undefined && parsed.arguments_json !== undefined)
+          return invalidToolInput("Supply arguments_json only; do not combine it with legacy arguments.");
+        let inputArguments = parsed.arguments ?? {};
+        if (parsed.arguments_json !== undefined) {
+          try {
+            inputArguments = z.object({ arguments_json: z.record(z.unknown()) })
+              .parse({ arguments_json: JSON.parse(parsed.arguments_json) }).arguments_json;
+          } catch (error) {
+            if (error instanceof SyntaxError) return invalidToolInput("arguments_json must contain valid JSON encoding an object.");
+            throw error;
+          }
+        }
         const route =
           routes.get(parsed.toolName) ?? parseMcpToolName(parsed.toolName);
         if (!route) return result({ error: "unknown tool name" }, true);
@@ -204,9 +215,9 @@ export async function createMcpToolRegistry(
         if (!server) return result({ error: "unknown server" }, true);
         if (!server.enabled)
           return result({ error: "server is disabled" }, true);
-        const encoded = JSON.stringify(parsed.arguments);
+        const encoded = JSON.stringify(inputArguments);
         if (Buffer.byteLength(encoded, "utf8") > MCP_CALL_ARGUMENT_LIMIT)
-          return result({ error: "arguments exceed 64 KiB" }, true);
+          return invalidToolInput("MCP input arguments exceed 64 KiB.");
         await authorize(
           ctx,
           call,
@@ -215,7 +226,7 @@ export async function createMcpToolRegistry(
         const outcome = await service.callTool(
           route.server,
           route.tool,
-          parsed.arguments,
+          inputArguments,
           {
             signal: ctx.signal,
             redactValues: options.redactValues ?? [],
@@ -236,10 +247,10 @@ export async function createMcpToolRegistry(
         }
         return result(payload, payload.isError);
       } catch (error) {
+        const invalid = recoverToolInputError(error);
+        if (invalid) return { ...invalid, content: clean(invalid.content) };
         if (error instanceof ForgeError)
-          return result({ error: clean(error.message) }, true);
-        if (error instanceof z.ZodError)
-          return result({ error: "invalid" }, true);
+          return result({ code: error.code, error: clean(error.message) }, true);
         return result({ error: "MCP call failed." }, true);
       }
     },

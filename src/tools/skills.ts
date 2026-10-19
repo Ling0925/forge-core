@@ -1,3 +1,4 @@
+import { z } from "zod";
 import {
   CONTEXT_INSTRUCTION_TOOL_NAME,
   LOAD_SKILL_TOOL_NAME,
@@ -8,6 +9,7 @@ import {
 } from "../context/project-context";
 import type { LocalToolRegistry, ToolContext } from "../shared/contracts";
 import { ForgeError } from "../shared/errors";
+import { invalidToolInput, recoverToolInputError } from "../shared/tool-input";
 import type { JsonValue, ToolCall, ToolResult } from "../shared/schemas";
 
 export interface SkillToolOptions {
@@ -31,23 +33,22 @@ export function createSkillTool(
   const bundle = createProjectContextTool(service);
   let disposed = false;
 
-  async function execute(
+  async function perform(
     call: ToolCall,
     context: ToolContext,
   ): Promise<ToolResult> {
     if (disposed) {
       throw new ForgeError("internal", "Skill tool disposed.");
     }
+    const input = z.record(z.unknown()).parse(JSON.parse(call.function.arguments || "{}"));
+    if ("tool" in input) return invalidToolInput("tool is not an accepted argument; use the declared parameters.");
     if (call.function.name === CONTEXT_INSTRUCTION_TOOL_NAME) {
       const args = contextPathArgumentsSchema.safeParse({
         tool: call.function.name,
-        ...(JSON.parse(call.function.arguments || "{}") as { path?: string }),
+        ...input,
       });
       if (!args.success) {
-        return encode(
-          { error: "invalid_input", message: "Path is required." },
-          true,
-        );
+        return invalidToolInput(args.error);
       }
       const sources = await service.resolveInstructions(
         args.data.path,
@@ -66,13 +67,10 @@ export function createSkillTool(
     if (call.function.name === LOAD_SKILL_TOOL_NAME) {
       const args = loadSkillArgumentsSchema.safeParse({
         tool: call.function.name,
-        ...(JSON.parse(call.function.arguments || "{}") as { skill?: string }),
+        ...input,
       });
       if (!args.success) {
-        return encode(
-          { error: "invalid_input", message: "Skill id required." },
-          true,
-        );
+        return invalidToolInput(args.error);
       }
       try {
         const record = await service.loadSkill(args.data.skill, context.signal);
@@ -86,10 +84,7 @@ export function createSkillTool(
         });
       } catch (error) {
         if (error instanceof ForgeError && error.code === "invalid_input") {
-          return encode(
-            { error: "unknown_skill", skill: args.data.skill },
-            true,
-          );
+          return invalidToolInput("Unknown skill. Use an ID from the discovered skill catalog.");
         }
         throw error;
       }
@@ -99,7 +94,14 @@ export function createSkillTool(
 
   return {
     definitions: bundle.definitions,
-    execute,
+    async execute(call, context) {
+      try { return await perform(call, context); }
+      catch (error) {
+        const invalid = recoverToolInputError(error);
+        if (invalid) return invalid;
+        throw error;
+      }
+    },
     async dispose(): Promise<void> {
       disposed = true;
     },

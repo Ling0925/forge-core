@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { z } from "zod";
+import { invalidToolInput, recoverToolInputError } from "../shared/tool-input";
 import type { LocalToolRegistry, ToolContext } from "../shared/contracts";
 import type { ToolCall, ToolDefinition, ToolResult } from "../shared/schemas";
 import {
@@ -162,12 +163,12 @@ export function createWebToolRegistry(
           "Web tools are not available in readonly mode.",
         );
       if (Buffer.byteLength(call.function.arguments, "utf8") > 16000)
-        throw new WebAccessError("Invalid web tool arguments.");
+        return invalidToolInput("Tool call arguments exceed 16000 UTF-8 bytes.");
       const object = z
         .record(z.unknown())
         .parse(JSON.parse(call.function.arguments));
       if ("tool" in object)
-        throw new WebAccessError("Invalid web tool arguments.");
+        return invalidToolInput("tool is not an accepted argument; use the declared parameters.");
       const input = args.parse({ ...object, tool: call.function.name });
       const beforeRequest = (url: URL, requestSignal: AbortSignal) =>
         authorize(url, call, ctx, requestSignal);
@@ -256,8 +257,8 @@ export function createWebToolRegistry(
         return result({ error: "Web request cancelled." }, true);
       if (error instanceof WebAccessError)
         return result({ error: clean(error.message) }, true);
-      if (error instanceof z.ZodError || error instanceof SyntaxError)
-        return result({ error: "Invalid web tool arguments." }, true);
+      const invalid = recoverToolInputError(error);
+      if (invalid) return invalid;
       return result(
         { error: "Web request failed; no automatic retry performed." },
         true,

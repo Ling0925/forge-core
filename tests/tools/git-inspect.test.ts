@@ -81,6 +81,19 @@ function call(
     },
   );
 }
+it.each(["git_status", "git_diff", "git_log"])("accepts optional context for %s without changing read-only execution", async name => {
+  const { root } = await repo();
+  const registry = await createLocalToolRegistry(root);
+  try {
+    const result = await registry.execute({ id: "git", type: "function", function: {
+      name, arguments: JSON.stringify({ reason: "Inspect repository state" }),
+    } }, { sessionId: parseSessionId(randomUUID()), toolCallId: "git", workspace: root, permission: "readonly",
+      signal: new AbortController().signal, approve: async () => { throw new Error("Unexpected approval"); }, onEvent() {} });
+    expect(result.isError).toBe(false);
+    expect(JSON.parse(result.content)).toMatchObject({ source: "git" });
+  } finally { await registry.dispose(); }
+});
+
 it("registers read-only git status/diff/log and omits forbidden tracked files and secrets", async () => {
   const { root } = await repo();
   await writeFile(join(root, "safe.txt"), "new TOKEN_CANARY_123\n");

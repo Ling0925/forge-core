@@ -8,6 +8,7 @@ import { TextDecoder } from "node:util";
 import { z } from "zod";
 import type { LocalToolRegistry, ToolContext } from "../shared/contracts";
 import { ForgeError, formatValidationError } from "../shared/errors";
+import { noArgumentFields, noArgumentProperties } from "../shared/tool-input";
 import { createDiffPatch } from "../shared/diff";
 import type {
   FileChange,
@@ -117,9 +118,9 @@ const argumentsSchema = z.discriminatedUnion("tool", [
     stream: z.enum(["stdout", "stderr"]).default("stdout"),
     offset: z.number().int().min(0).default(0), limit: z.number().int().min(1).max(12000).default(12000),
   }).strict(),
-  z.object({ tool: z.literal("git_status") }).strict(),
-  z.object({ tool: z.literal("git_diff") }).strict(),
-  z.object({ tool: z.literal("git_log") }).strict(),
+  z.object({ tool: z.literal("git_status"), ...noArgumentFields }).strict(),
+  z.object({ tool: z.literal("git_diff"), ...noArgumentFields }).strict(),
+  z.object({ tool: z.literal("git_log"), ...noArgumentFields }).strict(),
   z
     .object({
       tool: z.literal("search_files"),
@@ -169,19 +170,19 @@ const definitions: readonly ToolDefinition[] = Object.freeze([
   definition(
     "git_status",
     "Read-only repository status. Sensitive paths omitted; secrets redacted; no shell execution.",
-    {},
+    noArgumentProperties,
     [],
   ),
   definition(
     "git_diff",
     "Read-only unstaged repository diff. Sensitive paths omitted; secrets redacted; no shell execution.",
-    {},
+    noArgumentProperties,
     [],
   ),
   definition(
     "git_log",
     "Read-only recent repository log. Secrets redacted; no shell execution.",
-    {},
+    noArgumentProperties,
     [],
   ),
   definition(

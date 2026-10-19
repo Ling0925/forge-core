@@ -24,6 +24,7 @@ import type {
   Usage,
 } from "../shared/schemas";
 import { agentSummary, executeNative, nativeDefinitions } from "./agents";
+import { invalidToolInput } from "../shared/tool-input";
 import { boundedReports, childReport, type ChildOperation } from "./agent-operations";
 import { projectSummary, summaryBoundary } from "./context";
 import { summarizeWorkingState } from "./working-memory";
@@ -1043,7 +1044,7 @@ export const createAgentRuntime = (
                       },
                     ),
                   )
-                  .catch(error => ({
+                  .catch(error => error instanceof SyntaxError ? invalidToolInput(error) : ({
                     // Safe authored errors retain category; never expose upstream bodies.
                     content: JSON.stringify(toErrorInfo(error)),
                     isError: true,

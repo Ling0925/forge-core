@@ -5,6 +5,7 @@ import { TextDecoder } from "node:util";
 import { z } from "zod";
 import type { LocalToolRegistry } from "../shared/contracts";
 import { ForgeError } from "../shared/errors";
+import { invalidToolInput, recoverToolInputError } from "../shared/tool-input";
 import { PUBLISHED_FILE_MAX_BYTES, publishedFileNameSchema, type PublishedFile } from "../shared/published-files";
 import type { PublishedFileStore } from "../store/published-files";
 import { createWorkspacePathGuard } from "./path-guard";
@@ -67,7 +68,7 @@ export async function createPublishedFileTool(workspace: string, store: Publishe
         if (context.permission === "readonly") fail("Readonly permission forbids file publication.");
         if (await realpath(context.workspace) !== guard.root) fail("Workspace does not match this tool.");
         const args = argumentsSchema.safeParse(JSON.parse(call.function.arguments));
-        if (!args.success) return { content: JSON.stringify({ error: "Invalid publish_file arguments." }), isError: true };
+        if (!args.success) return invalidToolInput(args.error);
         const { path, displayName, description } = args.data;
         if (sensitive(path) || unsafe(path) || path.includes("\\") || (displayName && (sensitive(displayName) || unsafe(displayName))) || (description && unsafe(description))) fail("Sensitive paths or metadata cannot be published.");
         const target = await guard.resolveRead(path);
@@ -97,6 +98,8 @@ export async function createPublishedFileTool(workspace: string, store: Publishe
         return { content: JSON.stringify({ published: true, file }), isError: false, files: [file] };
       } catch (error) {
         if (error instanceof ForgeError && error.code === "cancelled") throw error;
+        const invalid = recoverToolInputError(error);
+        if (invalid) return invalid;
         return { content: JSON.stringify({ error: error instanceof ForgeError ? error.message : "File could not be safely published. Inspect the file and arguments before retrying." }), isError: true };
       }
     },
