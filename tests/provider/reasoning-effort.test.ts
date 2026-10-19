@@ -14,11 +14,11 @@ it("persists effort and supplies provider configuration after reopening", async 
     const store = await openSettingsStore(directory);
     expect((await store.getPublic()).reasoningEffort).toBeUndefined();
     await store.update({
-      settings: { baseUrl: "http://localhost/v1", reasoningEffort: "high" },
+      settings: { baseUrl: "http://localhost/v1", reasoningEffort: "max" },
     });
     const reopened = await openSettingsStore(directory);
-    expect((await reopened.getPublic()).reasoningEffort).toBe("high");
-    expect((await reopened.getProviderConfig()).reasoningEffort).toBe("high");
+    expect((await reopened.getPublic()).reasoningEffort).toBe("max");
+    expect((await reopened.getProviderConfig()).reasoningEffort).toBe("max");
     await reopened.update({ settings: { reasoningEffort: "default" } });
     expect((await store.getProviderConfig()).reasoningEffort).toBe("default");
   } finally {
@@ -36,6 +36,7 @@ for (const apiMode of ["chat-completions", "responses"] as const) {
     "medium",
     "high",
     "xhigh",
+    "max",
   ] as const) {
     it(`${apiMode} sends the correct reasoning field for ${effort}`, async () => {
       const bodies: Record<string, unknown>[] = [];

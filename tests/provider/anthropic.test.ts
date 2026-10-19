@@ -192,6 +192,21 @@ it("uses native SDK routes/auth, system/images/tools and reported cache usage", 
   });
 });
 
+it.each([1024, 8192, 32768])("sends native max effort with adaptive thinking at %i output tokens", async (maxOutputTokens) => {
+  let received: unknown;
+  const provider = await fixture(async (req, res) => {
+    received = await body(req);
+    reply(res, wire({ thinking: true }));
+  }, { reasoningEffort: "max", maxOutputTokens });
+  await provider.complete([{ role: "user", content: "test" }], [], options());
+  expect(received).toMatchObject({
+    max_tokens: maxOutputTokens,
+    thinking: { type: "adaptive" },
+    output_config: { effort: "max" },
+  });
+  expect(received).not.toHaveProperty("thinking.budget_tokens");
+});
+
 it("resumes signed thinking with tools only for the matching endpoint/model", async () => {
   const requests: unknown[] = [];
   const provider = await fixture(

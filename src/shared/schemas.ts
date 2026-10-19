@@ -65,7 +65,7 @@ export const settingsFields = {
   apiMode: z.enum(["chat-completions", "responses", "anthropic"]).optional(),
   maxOutputTokens: z.number().int().min(1).max(1000000).optional(),
   reasoningEffort: z
-    .enum(["default", "none", "minimal", "low", "medium", "high", "xhigh"])
+    .enum(["default", "none", "minimal", "low", "medium", "high", "xhigh", "max"])
     .optional(),
   baseUrl: z
     .string()

@@ -207,7 +207,7 @@ export function createAnthropicProvider(
             high: 8192,
             xhigh: 16384,
           };
-          if (effort !== "default" && effort !== "none" && maxTokens <= 1024)
+          if (effort !== "default" && effort !== "none" && effort !== "max" && maxTokens <= 1024)
             throw new ForgeError(
               "invalid_input",
               "Anthropic thinking requires maxOutputTokens greater than 1024.",
@@ -239,16 +239,21 @@ export function createAnthropicProvider(
                     })),
                   }
                 : {}),
-              ...(effort === "none"
-                ? { thinking: { type: "disabled" } }
-                : effort !== "default"
-                  ? {
-                      thinking: {
-                        type: "enabled",
-                        budget_tokens: Math.min(budget[effort], maxTokens - 1),
-                      },
-                    }
-                  : {}),
+              ...(effort === "max"
+                ? {
+                    thinking: { type: "adaptive" },
+                    output_config: { effort: "max" },
+                  }
+                : effort === "none"
+                  ? { thinking: { type: "disabled" } }
+                  : effort !== "default"
+                    ? {
+                        thinking: {
+                          type: "enabled",
+                          budget_tokens: Math.min(budget[effort], maxTokens - 1),
+                        },
+                      }
+                    : {}),
             },
             { signal },
           );

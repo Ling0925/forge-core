@@ -15,7 +15,7 @@ export const SLASH_COMMANDS: readonly SlashCommand[] = [
   { name: "/tools", args: "[N]", description: "查看工具摘要或第 N 次调用的参数与结果", category: "workflow" },
   { name: "/tasks", args: "[agent|command ID]", description: "运行任务面板：查看子代理/后台命令与停止本进程任务", category: "workflow" },
   { name: "/model", args: "[id]", description: "无参数选择模型，也可手动指定 ID", category: "config", onboarding: true },
-  { name: "/reasoning", args: "[default|none|minimal|low|medium|high|xhigh]", description: "选择或设置思考强度（保存为全局配置）", category: "config", onboarding: true },
+  { name: "/reasoning", args: "[default|none|minimal|low|medium|high|xhigh|max]", description: "选择或设置思考强度（保存为全局配置）", category: "config", onboarding: true },
   { name: "/thinking", args: "[on|off]", description: "切换是否展开完整思考内容流式输出", category: "config", onboarding: true },
   { name: "/permission", args: "[readonly|workspace|unrestricted]", description: "查看或更改权限", category: "config", onboarding: true },
   { name: "/mode", args: "[plan|build]", description: "切换计划或执行模式", category: "workflow", onboarding: true },
