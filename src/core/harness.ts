@@ -38,6 +38,7 @@ import { withCommandTasks } from "../tools/command-tasks";
 import { createLspToolRegistry } from "../tools/lsp";
 import { createMcpToolRegistry } from "../tools/mcp";
 import { createSkillTool } from "../tools/skills";
+import { createUsageStatsService } from "./usage-stats";
 import { assertBoundary, projectSummary } from "./context";
 import { summarizeWorkingState } from "./working-memory";
 import { openRunMemory } from "./run-memory";
@@ -133,6 +134,7 @@ export const createHarness = async (
   });
   const runMemory = await openRunMemory(directory);
   const publishedFiles = await openPublishedFileStore(directory);
+  const usageStatsService = createUsageStatsService(store);
   const mcp = await createMcpService({ home: directory });
   const liveMcp = new Set<Awaited<ReturnType<typeof createMcpService>>>();
   // Keep live access and a bounded recent history without retaining disposed tools.
@@ -551,6 +553,10 @@ export const createHarness = async (
     async listSessions() {
       check();
       return store.list();
+    },
+    async getUsageStats(filter) {
+      check();
+      return usageStatsService.getUsageStats(filter);
     },
     async getSession(id) {
       check();

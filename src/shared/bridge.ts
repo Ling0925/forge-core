@@ -48,6 +48,7 @@ export function createTransportBridge(transport: BridgeTransport): ForgeBridge {
     forkSession: (sessionId, boundary) => request("forkSession", { sessionId, boundary }),
     renameSession: (sessionId, title) => request("renameSession", { sessionId, title }),
     archiveSession: (sessionId, archived) => request("archiveSession", { sessionId, archived }),
+    getUsageStats: (filter) => request("getUsageStats", filter ? { filter } : {}),
     getDiagnostics: (sessionId) => request("getDiagnostics", { sessionId }),
     getProjectContext: (sessionId) => request("getProjectContext", { sessionId }),
     listMcpServers: () => request("listMcpServers"),

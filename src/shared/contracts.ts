@@ -131,6 +131,9 @@ export interface HarnessService {
   forkSession(id: SessionId, boundary?: number): Promise<SessionSnapshot>;
   renameSession(id: SessionId, title: string): Promise<SessionSnapshot>;
   archiveSession(id: SessionId, archived: boolean): Promise<SessionSnapshot>;
+  getUsageStats?(
+    filter?: import("./ipc").UsageFilter,
+  ): Promise<import("./ipc").UsageStatsDto>;
   getDiagnostics(id: SessionId): Promise<
     Readonly<{
       transcriptChars: number;

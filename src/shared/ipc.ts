@@ -130,6 +130,76 @@ export const checkpointDtoSchema = z
   .strict()
   .readonly();
 export type CheckpointDto = z.infer<typeof checkpointDtoSchema>;
+export const usageFilterSchema = z
+  .object({
+    workspace: z.string().optional(),
+    days: z.number().int().positive().optional(),
+  })
+  .strict()
+  .readonly()
+  .optional();
+export type UsageFilter = z.infer<typeof usageFilterSchema>;
+
+export const modelUsageStatSchema = z
+  .object({
+    model: z.string(),
+    promptTokens: z.number().int().nonnegative(),
+    completionTokens: z.number().int().nonnegative(),
+    cachedTokens: z.number().int().nonnegative(),
+    totalTokens: z.number().int().nonnegative(),
+    runCount: z.number().int().nonnegative(),
+    sessionCount: z.number().int().nonnegative(),
+  })
+  .strict()
+  .readonly();
+export type ModelUsageStat = z.infer<typeof modelUsageStatSchema>;
+
+export const dailyUsageStatSchema = z
+  .object({
+    date: z.string(),
+    promptTokens: z.number().int().nonnegative(),
+    completionTokens: z.number().int().nonnegative(),
+    cachedTokens: z.number().int().nonnegative(),
+    totalTokens: z.number().int().nonnegative(),
+    runCount: z.number().int().nonnegative(),
+  })
+  .strict()
+  .readonly();
+export type DailyUsageStat = z.infer<typeof dailyUsageStatSchema>;
+
+export const sessionUsageStatSchema = z
+  .object({
+    sessionId: sessionIdSchema,
+    title: z.string(),
+    workspace: z.string(),
+    model: z.string(),
+    updatedAt: z.string(),
+    promptTokens: z.number().int().nonnegative(),
+    completionTokens: z.number().int().nonnegative(),
+    cachedTokens: z.number().int().nonnegative(),
+    totalTokens: z.number().int().nonnegative(),
+    runCount: z.number().int().nonnegative(),
+  })
+  .strict()
+  .readonly();
+export type SessionUsageStat = z.infer<typeof sessionUsageStatSchema>;
+
+export const usageStatsDtoSchema = z
+  .object({
+    totalPromptTokens: z.number().int().nonnegative(),
+    totalCompletionTokens: z.number().int().nonnegative(),
+    totalCachedTokens: z.number().int().nonnegative(),
+    totalTokens: z.number().int().nonnegative(),
+    totalSessions: z.number().int().nonnegative(),
+    totalRuns: z.number().int().nonnegative(),
+    averageCacheRate: z.number().min(0).max(1),
+    models: z.array(modelUsageStatSchema).readonly(),
+    daily: z.array(dailyUsageStatSchema).readonly(),
+    topSessions: z.array(sessionUsageStatSchema).readonly(),
+  })
+  .strict()
+  .readonly();
+export type UsageStatsDto = z.infer<typeof usageStatsDtoSchema>;
 export const externalUrlSchema = z
   .string()
   .max(4096)
@@ -331,6 +401,13 @@ export const rpcRequestSchema = z
         approved: z.boolean(),
       })
       .strict(),
+    z
+      .object({
+        ...requestBase,
+        method: z.literal("getUsageStats"),
+        filter: usageFilterSchema,
+      })
+      .strict(),
   ])
   .readonly();
 export type RpcRequest = z.infer<typeof rpcRequestSchema>;
@@ -404,6 +481,7 @@ export const rpcResponseSchema = z.union([
   success("setRunPermission", permissionSchema),
   success("steerRun", z.null()),
   success("answerApproval", z.null()),
+  success("getUsageStats", usageStatsDtoSchema),
   z
     .object({
       id: requestBase.id,
@@ -440,6 +518,7 @@ export const rpcResponseSchema = z.union([
         "setRunPermission",
         "steerRun",
         "answerApproval",
+        "getUsageStats",
       ]),
       error: errorInfoSchema,
     })
@@ -489,6 +568,7 @@ export interface ForgeBridge {
     messageCount: number;
     summaryFallback: boolean;
   }>;
+  getUsageStats?(filter?: UsageFilter): Promise<UsageStatsDto>;
   getProjectContext(sessionId: SessionId): Promise<ProjectContextDto>;
   listMcpServers(): Promise<readonly McpRecordDto[]>;
   registerMcpServer(input: McpRegisterDto): Promise<McpRecordDto>;
