@@ -365,3 +365,148 @@ it("emits Responses previews keyed by tool sequence and completes a missing name
     output: [reason, finished],
   });
 });
+
+it("estimates write_file lines live without leaking Chat Completions arguments", async () => {
+  const gate = deferred();
+  const written = '{"path":"a.ts","content":"one\\ntwo\\nthree"}';
+  const provider = await fixture(async (request, response) => {
+    await drain(request);
+    sse(response);
+    response.write(
+      chunk({
+        tool_calls: [
+          {
+            index: 0,
+            id: "call_1",
+            type: "function",
+            function: { name: "write_file", arguments: '{"path":"a.ts"' },
+          },
+        ],
+      }),
+    );
+    // Mid-stream: the content string is still open but already countable.
+    response.write(
+      chunk({
+        tool_calls: [
+          { index: 0, function: { arguments: ',"content":"one\\ntwo' } },
+        ],
+      }),
+    );
+    await gate.promise;
+    response.write(
+      chunk({
+        tool_calls: [{ index: 0, function: { arguments: '\\nthree"}' } }],
+      }),
+    );
+    response.write(chunk({}, "tool_calls"));
+    response.end("data: [DONE]\n\n");
+  });
+
+  const previews: ToolCallPreview[] = [];
+  const task = complete(provider, (preview) => previews.push(preview));
+  await waitFor(
+    () => previews.length >= 2,
+    "no write_file line estimate was observable while streaming",
+  );
+  // Only bounded counters cross the boundary; the content never does.
+  expect(JSON.stringify(previews)).not.toContain("one");
+  expect(previews.at(-1)).toMatchObject({ index: 0, name: "write_file" });
+  expect(previews.at(-1)?.linesAdded).toBeGreaterThanOrEqual(2);
+  expect(previews.at(-1)?.linesRemoved).toBeUndefined();
+
+  gate.resolve();
+  const result = await task;
+  expect(previews.at(-1)).toMatchObject({
+    index: 0,
+    name: "write_file",
+    argumentsChars: written.length,
+    linesAdded: 3,
+  });
+  expect(previews.at(-1)?.linesRemoved).toBeUndefined();
+  expect(result.message.tool_calls?.[0]?.function.arguments).toBe(written);
+});
+
+it("estimates both edit_file directions from Responses argument deltas", async () => {
+  const gate = deferred();
+  const args =
+    '{"path":"a.ts","old_text":"gone\\nold","new_text":"one\\ntwo\\nthree"}';
+  const finished = {
+    type: "function_call",
+    id: "fc_1",
+    call_id: "call_1",
+    name: "edit_file",
+    arguments: args,
+    status: "completed",
+  };
+  const provider = await fixture(async (request, response) => {
+    await drain(request);
+    sse(response);
+    response.write(
+      wire("response.output_item.added", {
+        output_index: 0,
+        item: {
+          type: "function_call",
+          id: "fc_1",
+          call_id: "call_1",
+          name: "edit_file",
+          arguments: "",
+          status: "in_progress",
+        },
+      }),
+    );
+    response.write(
+      wire("response.function_call_arguments.delta", {
+        output_index: 0,
+        item_id: "fc_1",
+        delta: '{"path":"a.ts","old_text":"gone\\nold"',
+      }),
+    );
+    await gate.promise;
+    response.write(
+      wire("response.function_call_arguments.delta", {
+        output_index: 0,
+        item_id: "fc_1",
+        delta: ',"new_text":"one\\ntwo\\nthree"}',
+      }),
+    );
+    response.write(
+      wire("response.function_call_arguments.done", {
+        output_index: 0,
+        item_id: "fc_1",
+        arguments: args,
+      }),
+    );
+    response.write(
+      wire("response.output_item.done", { output_index: 0, item: finished }),
+    );
+    response.end(
+      wire("response.completed", {
+        response: { id: "resp_1", status: "completed", output: [finished] },
+      }) + "data: [DONE]\n\n",
+    );
+  }, "responses");
+
+  const previews: ToolCallPreview[] = [];
+  const task = complete(provider, (preview) => previews.push(preview));
+  await waitFor(
+    () => previews.some((preview) => preview.linesRemoved === 2),
+    "no edit_file removal estimate was observable while streaming",
+  );
+  expect(previews.at(-1)).toMatchObject({
+    index: 0,
+    name: "edit_file",
+    linesRemoved: 2,
+  });
+  expect(previews.at(-1)?.linesAdded).toBeUndefined();
+
+  gate.resolve();
+  await task;
+  expect(previews.at(-1)).toMatchObject({
+    index: 0,
+    name: "edit_file",
+    argumentsChars: args.length,
+    linesAdded: 3,
+    linesRemoved: 2,
+  });
+  expect(JSON.stringify(previews)).not.toContain("gone");
+});

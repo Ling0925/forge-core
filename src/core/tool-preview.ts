@@ -26,7 +26,15 @@ export function createToolPreviewStream(
       if (!parsed.success) return;
       const preview = parsed.data;
       const previous = latest.get(preview.index);
-      if (previous?.name === preview.name && previous.argumentsChars === preview.argumentsChars) return;
+      // The bounded counters and the estimated change size are the whole
+      // payload, so a snapshot advancing any of them is a real update.
+      if (
+        previous?.name === preview.name &&
+        previous.argumentsChars === preview.argumentsChars &&
+        previous.linesAdded === preview.linesAdded &&
+        previous.linesRemoved === preview.linesRemoved
+      )
+        return;
       latest.set(preview.index, preview);
       if (!previous) emit(id(preview.index), preview);
       else {
@@ -41,6 +49,8 @@ export function createToolPreviewStream(
     id(index: number): string | undefined {
       return latest.has(index) ? id(index) : undefined;
     },
-    get size() { return latest.size; },
+    get size() {
+      return latest.size;
+    },
   };
 }

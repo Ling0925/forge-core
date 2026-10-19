@@ -56,6 +56,62 @@ it("publishes metadata before generation ends and start before a slow tool ends,
   } finally { generation.release(); execution.release(); await work; }
 });
 
+it("passes live write and edit line estimates through the preview event", async () => {
+  const arrived = gate(), generation = gate();
+  const events: AgentEvent[] = [];
+  let requests = 0;
+  const provider: ModelProvider = { listModels: async () => [], complete: async (_m, _d, options) => {
+    if (requests++ > 0) return { message: { role: "assistant", content: "done" } };
+    options.onToolCall?.({ index: 0, name: "edit_file", argumentsChars: 30, linesAdded: 1, linesRemoved: 2 });
+    arrived.release();
+    await generation.promise;
+    return { message: { role: "assistant", content: null, tool_calls: [call] } };
+  } };
+  const f = fixture(provider, async () => ({ content: "ok", isError: false }));
+  const work = f.runtime.run(f.input, event => events.push(event), async () => false, new AbortController().signal);
+  try {
+    await arrived.promise;
+    expect(events).toContainEqual(expect.objectContaining({
+      type: "tool_call_preview",
+      previewId: "1:0:0",
+      name: "edit_file",
+      argumentsChars: 30,
+      linesAdded: 1,
+      linesRemoved: 2,
+    }));
+    generation.release();
+    const result = await work;
+    expect(result.status).toBe("completed");
+    // Still ephemeral: estimates never enter the stored transcript.
+    expect(result.events.some(e => e.type === "tool_call_preview")).toBe(false);
+    expect(f.current().events.some(e => e.type === "tool_call_preview")).toBe(false);
+  } finally { generation.release(); await work; }
+});
+
+it("omits line estimates from preview events for tools that cannot be estimated", async () => {
+  const arrived = gate(), generation = gate();
+  const events: AgentEvent[] = [];
+  let requests = 0;
+  const provider: ModelProvider = { listModels: async () => [], complete: async (_m, _d, options) => {
+    if (requests++ > 0) return { message: { role: "assistant", content: "done" } };
+    options.onToolCall?.({ index: 0, name: "read_file", argumentsChars: 7 });
+    arrived.release();
+    await generation.promise;
+    return { message: { role: "assistant", content: null, tool_calls: [call] } };
+  } };
+  const f = fixture(provider, async () => ({ content: "ok", isError: false }));
+  const work = f.runtime.run(f.input, event => events.push(event), async () => false, new AbortController().signal);
+  try {
+    await arrived.promise;
+    const preview = events.find(e => e.type === "tool_call_preview");
+    expect(preview).toMatchObject({ name: "read_file", argumentsChars: 7 });
+    expect(preview && "linesAdded" in preview).toBe(false);
+    expect(preview && "linesRemoved" in preview).toBe(false);
+    generation.release();
+    await work;
+  } finally { generation.release(); await work; }
+});
+
 it("clears failed attempt drafts and scopes replacement previews without executing failed drafts", async () => {
   const events: AgentEvent[] = [];
   let requests = 0, executed = 0;
@@ -118,5 +174,56 @@ it("coalesces updates, emits the first snapshot immediately, bounds indices and 
     expect(updates).toHaveLength(3);
     expect(stream.size).toBe(1);
     expect(vi.getTimerCount()).toBe(0);
+  } finally { vi.useRealTimers(); }
+});
+
+it("treats a line-estimate change as a real update and repeats as no-ops", () => {
+  vi.useFakeTimers();
+  try {
+    const updates: { id: string; preview: ToolCallPreview }[] = [];
+    const stream = createToolPreviewStream("t:a", (id, preview) => updates.push({ id, preview }));
+    stream.push({ index: 0, name: "write_file", argumentsChars: 20, linesAdded: 1 });
+    expect(updates).toHaveLength(1);
+    // Same counters and estimate: nothing new to show.
+    stream.push({ index: 0, name: "write_file", argumentsChars: 20, linesAdded: 1 });
+    expect(updates).toHaveLength(1);
+    vi.advanceTimersByTime(80);
+    expect(updates).toHaveLength(1);
+    // Only the estimated size advanced, so the coalesced update must still fire.
+    stream.push({ index: 0, name: "write_file", argumentsChars: 20, linesAdded: 2 });
+    vi.advanceTimersByTime(80);
+    expect(updates).toHaveLength(2);
+    expect(updates[1]?.preview).toEqual({
+      index: 0,
+      name: "write_file",
+      argumentsChars: 20,
+      linesAdded: 2,
+    });
+    // Removal-only and mixed edits are likewise differentiated.
+    stream.push({ index: 1, name: "edit_file", argumentsChars: 30, linesRemoved: 1 });
+    stream.push({ index: 1, name: "edit_file", argumentsChars: 30, linesAdded: 1, linesRemoved: 1 });
+    stream.close();
+    expect(updates).toHaveLength(4);
+    expect(updates[3]?.preview).toEqual({
+      index: 1,
+      name: "edit_file",
+      argumentsChars: 30,
+      linesAdded: 1,
+      linesRemoved: 1,
+    });
+    expect(vi.getTimerCount()).toBe(0);
+  } finally { vi.useRealTimers(); }
+});
+
+it("drops a snapshot whose line estimate fails schema bounds", () => {
+  vi.useFakeTimers();
+  try {
+    const updates: { id: string; preview: ToolCallPreview }[] = [];
+    const stream = createToolPreviewStream("t:a", (id, preview) => updates.push({ id, preview }));
+    stream.push({ index: 0, name: "write_file", argumentsChars: 5, linesAdded: 1_000_001 });
+    stream.push({ index: 0, name: "write_file", argumentsChars: 5, linesRemoved: -1 });
+    stream.push({ index: 0, name: "write_file", argumentsChars: 5, linesAdded: 1.5 });
+    stream.close();
+    expect(updates).toEqual([]);
   } finally { vi.useRealTimers(); }
 });

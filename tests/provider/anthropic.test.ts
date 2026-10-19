@@ -390,3 +390,83 @@ it("applies the idle deadline after headers", async () => {
     provider.complete([{ role: "user", content: "go" }], [], options()),
   ).rejects.toMatchObject({ classification: "timeout" });
 });
+
+it("estimates write_file lines from cumulative input_json_delta fragments", async () => {
+  const parts = ['{"path":"a.ts","content":"one\\ntwo', '\\nthree"}'];
+  const stream = [
+    {
+      type: "message_start",
+      message: {
+        id: "msg_1",
+        type: "message",
+        role: "assistant",
+        model: "claude-fixture",
+        content: [],
+        stop_reason: null,
+        stop_sequence: null,
+        usage: { input_tokens: 1, output_tokens: 0 },
+      },
+    },
+    {
+      type: "content_block_start",
+      index: 0,
+      content_block: {
+        type: "tool_use",
+        id: "tool_1",
+        name: "write_file",
+        input: {},
+      },
+    },
+    // Two deltas so a preview exists before the arguments are complete.
+    ...parts.map((partial_json) => ({
+      type: "content_block_delta",
+      index: 0,
+      delta: { type: "input_json_delta", partial_json },
+    })),
+    { type: "content_block_stop", index: 0 },
+    {
+      type: "message_delta",
+      delta: { stop_reason: "tool_use", stop_sequence: null },
+      usage: { output_tokens: 4 },
+    },
+    { type: "message_stop" },
+  ];
+  const provider = await fixture((_req, res) =>
+    reply(res, stream.map(sse).join("")),
+  );
+  const previews: ToolCallPreview[] = [];
+  const result = await provider.complete(
+    [{ role: "user", content: "write" }],
+    [],
+    { ...options(), onToolCall: (preview) => previews.push(preview) },
+  );
+
+  expect(previews).toHaveLength(3);
+  // The block-start frame has no arguments yet, so it carries no estimate.
+  expect(previews[0]).toMatchObject({
+    index: 0,
+    name: "write_file",
+    argumentsChars: 0,
+  });
+  expect(previews[0]?.linesAdded).toBeUndefined();
+  // The first fragment already holds two content lines.
+  expect(previews[1]).toMatchObject({
+    index: 0,
+    name: "write_file",
+    linesAdded: 2,
+  });
+  expect(previews[2]).toMatchObject({
+    index: 0,
+    name: "write_file",
+    argumentsChars: parts.join("").length,
+    linesAdded: 3,
+  });
+  expect(previews.every((preview) => preview.linesRemoved === undefined)).toBe(
+    true,
+  );
+  // The raw content still never crosses the preview boundary.
+  expect(JSON.stringify(previews)).not.toContain("one");
+  expect(result.message.tool_calls?.[0]?.function.arguments).toBe(
+    '{"path":"a.ts","content":"one\\ntwo\\nthree"}',
+  );
+});

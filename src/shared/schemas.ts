@@ -261,6 +261,11 @@ export const toolCallPreviewSchema = z.object({
   index: z.number().int().min(0).max(255),
   name: z.string().max(64).regex(/^[a-zA-Z0-9_-]*$/),
   argumentsChars: z.number().int().min(0).max(1000000),
+  // Coarse live line estimate for write/edit arguments. Absent for tools that
+  // cannot be estimated, and never a diff: only bounded counters cross the
+  // boundary, never raw argument fragments.
+  linesAdded: z.number().int().min(0).max(1000000).optional(),
+  linesRemoved: z.number().int().min(0).max(1000000).optional(),
 }).strict().readonly();
 export type ToolCallPreview = z.infer<typeof toolCallPreviewSchema>;
 export const toolDefinitionSchema = z
@@ -603,6 +608,9 @@ export const agentEventSchema = z
       previewId: z.string().min(1).max(128),
       name: toolCallPreviewSchema.unwrap().shape.name,
       argumentsChars: toolCallPreviewSchema.unwrap().shape.argumentsChars,
+      // Optional so older persisted/queued previews still parse unchanged.
+      linesAdded: toolCallPreviewSchema.unwrap().shape.linesAdded,
+      linesRemoved: toolCallPreviewSchema.unwrap().shape.linesRemoved,
     }).strict(),
     z.object({ ...eventBase, type: z.literal("tool_preview_reset") }).strict(),
     z

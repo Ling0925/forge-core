@@ -600,7 +600,14 @@ export const createAgentRuntime = (
         let previews: ReturnType<typeof createToolPreviewStream>;
         for (;;) {
           previews = createToolPreviewStream(`${turns}:${attempt}`, (previewId, preview) => {
-            ephemeral({ type: "tool_call_preview", previewId, name: preview.name, argumentsChars: preview.argumentsChars });
+            ephemeral({
+              type: "tool_call_preview",
+              previewId,
+              name: preview.name,
+              argumentsChars: preview.argumentsChars,
+              ...(preview.linesAdded !== undefined ? { linesAdded: preview.linesAdded } : {}),
+              ...(preview.linesRemoved !== undefined ? { linesRemoved: preview.linesRemoved } : {}),
+            });
           });
           check();
           let partial = "";

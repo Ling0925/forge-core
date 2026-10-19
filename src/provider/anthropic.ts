@@ -15,6 +15,7 @@ import {
   toolDefinitionSchema,
 } from "../shared/schemas";
 import type { Message, ProviderConfig } from "../shared/schemas";
+import { estimateToolCallLines } from "../shared/tool-preview-lines";
 import { ProviderError, protocol } from "./errors";
 import { withSdkRequest } from "./sdk-transport";
 
@@ -302,17 +303,22 @@ export function createAnthropicProvider(
                 return;
               }
             }
-            if (block?.type === "tool_use")
+            if (block?.type === "tool_use") {
+              const argumentsText = argumentsByIndex.get(event.index) ?? "";
+              // Display-only counters derived inside this scope; the fragment
+              // itself still never leaves the provider.
+              const lines = estimateToolCallLines(block.name, argumentsText);
               notify(() =>
                 options.onToolCall?.({
                   index: snapshot.content
                     .slice(0, event.index)
                     .filter((block) => block.type === "tool_use").length,
                   name: block.name,
-                  argumentsChars:
-                    argumentsByIndex.get(event.index)?.length ?? 0,
+                  argumentsChars: argumentsText.length,
+                  ...lines,
                 }),
               );
+            }
           });
           let result: Anthropic.Message;
           try {

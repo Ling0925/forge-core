@@ -79,6 +79,7 @@ type Helpers = {
     index: number,
     name: string,
     argumentsChars: number,
+    argumentsText?: string,
   ) => void;
 };
 
@@ -296,11 +297,13 @@ export function createResponsesAdapter(h: Helpers, baseUrl: string) {
         const index = callIndex.get(item.id);
         // Only the first 256 tool calls can be addressed by the preview index.
         if (index === undefined) return;
+        const argumentsText = args.get(item.id) ?? "";
         h.notifyToolCall(
           onToolCall,
           index,
           names.get(item.id) ?? "",
-          (args.get(item.id) ?? "").length,
+          argumentsText.length,
+          argumentsText,
         );
       };
       const dispatch = (payload: string, eventName: string | null) => {

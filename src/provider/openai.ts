@@ -22,6 +22,7 @@ import type {
   ToolCallPreview,
   Usage,
 } from "../shared/schemas";
+import { estimateToolCallLines } from "../shared/tool-preview-lines";
 import { createResponsesAdapter } from "./responses";
 
 const MAX_BODY = 8_000_000;
@@ -193,16 +194,22 @@ const notifyToolCall = (
   index: number,
   name: string,
   argumentsChars: number,
+  argumentsText = "",
 ): void => {
   if (!Number.isInteger(index) || index < 0 || index > 255) return;
   const bounded = name.slice(0, 64);
+  const safeName = /^[a-zA-Z0-9_-]*$/.test(bounded) ? bounded : "";
+  // The write/edit line estimate is derived from the accumulated fragment in
+  // this scope and reduced to two counters; the text itself never escapes.
+  const lines = estimateToolCallLines(safeName, argumentsText);
   const preview: ToolCallPreview = {
     index,
-    name: /^[a-zA-Z0-9_-]*$/.test(bounded) ? bounded : "",
+    name: safeName,
     argumentsChars: Math.max(
       0,
       Math.min(1_000_000, Math.trunc(argumentsChars)),
     ),
+    ...lines,
   };
   try {
     observer(preview);
@@ -307,6 +314,7 @@ async function readStream(
           part.index,
           next.name,
           next.arguments.length,
+          next.arguments,
         );
       }
       if (choice.finish_reason) finish = choice.finish_reason;
@@ -596,6 +604,7 @@ export function createModelProvider(config: ProviderConfig): ModelProvider {
                 index,
                 call.function.name,
                 call.function.arguments.length,
+                call.function.arguments,
               );
           const reasoningRaw = choice.message.reasoning_content;
           const reasoning = reasoningRaw
