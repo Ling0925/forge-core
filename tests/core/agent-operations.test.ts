@@ -101,7 +101,7 @@ it("validates arguments and never creates sessions for invalid paths/budgets", a
   for (const args of [{ task: " " }, { ownership: 4 }, { model: "" }, { maxToolCalls: 0 }, { maxToolCalls: 101 }, { unknown: true }])
     await expect(f.spawn(args)).rejects.toThrow();
   expect(await f.store.list()).toHaveLength(1);
-  for (const args of [{ ids: ["bad"] }, { timeout_ms: -1 }, { mode: "invalid" }, { unknown: true }])
+  for (const args of [{ ids: ["bad"] }, { timeout_ms: -1 }, { timeout_ms: 1800001 }, { mode: "invalid" }, { unknown: true }])
     await expect(f.invoke("wait_agents", args)).rejects.toThrow();
 });
 

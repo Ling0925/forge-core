@@ -81,11 +81,11 @@ export const nativeDefinitions: readonly ToolDefinition[] = [
   },
   {
     name: "wait_agents",
-    description: "Wait for all/any selected children (default all current-run children), at most timeout_ms (default 30s; 0 polls). Returns completed summaries AND active statuses; timeout never cancels tasks. Historical child results are readable but not joined. Returned settled results are delivered once, avoiding automatic duplicate reconciliation. Use get_agent_result for truncated text; resolve_agent explicitly records handled failures.",
+    description: "Wait for all/any selected children (default all current-run children). Judge timeout_ms based on expected task complexity; defaults to 10 minutes (600000ms) if omitted so long tasks can finish without frequent timeout polling. Set 0 to poll immediately. Returns completed summaries AND active statuses; timeout never cancels tasks. Historical child results are readable but not joined. Returned settled results are delivered once, avoiding automatic duplicate reconciliation. Use get_agent_result for truncated text; resolve_agent explicitly records handled failures.",
     properties: {
       ids: { type: "array", maxItems: 32, items: { type: "string", format: "uuid" } },
       mode: { type: "string", enum: ["all", "any"], default: "all" },
-      timeout_ms: { type: "integer", minimum: 0, maximum: 120000, default: 30000 },
+      timeout_ms: { type: "integer", minimum: 0, maximum: 1800000, default: 600000 },
     },
     required: [],
   },

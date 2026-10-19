@@ -57,7 +57,7 @@ const listArgs = z.object({
 const waitArgs = z.object({
   ids: z.array(sessionIdSchema).max(MAX_AGENTS_PER_RUN).optional(),
   mode: z.enum(["all", "any"]).default("all"),
-  timeout_ms: z.number().int().min(0).max(120000).default(30000),
+  timeout_ms: z.number().int().min(0).max(1800000).default(600000),
 }).strict();
 const idArgs = z.object({ id: sessionIdSchema }).strict();
 const resultArgs = idArgs.extend({
