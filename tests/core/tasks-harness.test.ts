@@ -37,7 +37,7 @@ it("retains bounded completed command inspection after the run without consuming
   const workspace = join(dir, "workspace"); await mkdir(workspace);
   const launched = barrier(); const inspected = barrier(); let turns = 0;
   const h = await createHarness({ stateDir: join(dir, "state"), providerFactory: () => ({ listModels: async () => [], complete: async () => {
-    if (++turns === 1) return { message: { role: "assistant", content: null, tool_calls: [{ id: "bg", type: "function", function: { name: "run_command", arguments: JSON.stringify({ argv: [process.execPath, "--version"], background: true }) } }] } };
+    if (++turns === 1) return { message: { role: "assistant", content: null, tool_calls: [{ id: "bg", type: "function", function: { name: "run_command", arguments: JSON.stringify({ argv: [process.execPath, "--version"], timeout_ms: 2000, background: true }) } }] } };
     if (turns === 2) { launched.release(); await inspected.promise; }
     return { message: { role: "assistant", content: "checked" } };
   } }) });

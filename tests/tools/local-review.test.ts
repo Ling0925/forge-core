@@ -310,7 +310,7 @@ describe("original local tools", () => {
       ["write_file", { path: "a", content: "no" }],
       ["edit_file", { path: "a", old_text: "x", new_text: "y" }],
       ["make_directory", { path: "a" }],
-      ["run_command", { argv: [process.execPath, "-e", "process.exit(0)"] }],
+      ["run_command", { argv: [process.execPath, "-e", "process.exit(0)"], timeout_ms: 3000 }],
     ] as const)
       expect((await execute(name, args, "readonly")).isError).toBe(true);
     expect(approvals).toBe(0);
@@ -341,6 +341,7 @@ describe("original local tools", () => {
           "-e",
           "process.stdout.write(JSON.stringify({key:process.env.FORGE_TEST_API_KEY??null,token:process.env.FORGE_TEST_TOKEN??null,proxy:process.env.HTTPS_PROXY??null,home:process.env.HOME,path:process.env.PATH}))",
         ],
+        timeout_ms: 3000,
       });
       const stdout = output(run).stdout;
       if (typeof stdout !== "string") throw new Error("Expected stdout");
@@ -420,6 +421,7 @@ describe("original local tools", () => {
           name: "run_command",
           arguments: JSON.stringify({
             argv: [process.execPath, "-e", "process.exit(0)"],
+            timeout_ms: 3000,
           }),
         },
       },

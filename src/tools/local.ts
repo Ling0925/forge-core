@@ -27,6 +27,7 @@ const CACHE_LIMIT = 16 * 1024 * 1024;
 const RESULT_LIMIT = 128 * 1024;
 const ENTRY_LIMIT = 1000;
 const DEPTH_LIMIT = 8;
+const MAX_COMMAND_TIMEOUT_MS = 30 * 60 * 1000;
 const pathSchema = z.string().min(1).max(4096);
 const textSchema = z.string().max(2 * 1024 * 1024);
 const commandSchema = z
@@ -43,7 +44,7 @@ const commandSchema = z
       .max(256)
       .readonly(),
     cwd: pathSchema.default("."),
-    timeout_ms: z.number().int().min(1).max(120000).default(30000),
+    timeout_ms: z.number().int().min(1).max(MAX_COMMAND_TIMEOUT_MS),
   })
   .strict()
   .readonly();
@@ -226,7 +227,7 @@ const definitions: readonly ToolDefinition[] = Object.freeze([
   ),
   definition(
     "run_command",
-    "Run builds, tests, git and package managers with explicit argv (no implicit shell). For authored files use write_file/edit_file; command effects are not checkpointed. Readonly denied; workspace requests per-call approval under the host policy. NOT an OS sandbox; cwd is guarded. Minimal environment; HOME is the host user's home. Timeout 30s by default, 120s maximum. Output never terminates a command: private logs retain up to 16 MiB/command and 128 MiB/run, then stop capture. Results show 12000 characters/stream; read_command_output pages the redacted log during this run. Encoded result cap 128 KiB. Cancellation waits for process close.",
+    "Run builds, tests, git and package managers with explicit argv (no implicit shell). For authored files use write_file/edit_file; command effects are not checkpointed. Readonly denied; workspace requests per-call approval under the host policy. NOT an OS sandbox; cwd is guarded. Minimal environment; HOME is the host user's home. Choose and pass timeout_ms: maximum 30 minutes (1800000 ms), no default; allow enough time for builds/tests. Output never terminates a command: private logs retain up to 16 MiB/command and 128 MiB/run, then stop capture. Results show 12000 characters/stream; read_command_output pages the redacted log during this run. Encoded result cap 128 KiB. Cancellation waits for process close.",
     {
       argv: {
         type: "array",
@@ -238,11 +239,11 @@ const definitions: readonly ToolDefinition[] = Object.freeze([
       timeout_ms: {
         type: "integer",
         minimum: 1,
-        maximum: 120000,
-        default: 30000,
+        maximum: MAX_COMMAND_TIMEOUT_MS,
+        description: "Required execution timeout in milliseconds. Choose for the expected command duration, up to 30 minutes (1800000 ms).",
       },
     },
-    ["argv"],
+    ["argv", "timeout_ms"],
   ),
   definition(
     "read_command_output",

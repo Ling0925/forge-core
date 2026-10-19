@@ -531,6 +531,7 @@ describe("runtime lifetime and long-turn projection", () => {
         name: "run_command",
         arguments: JSON.stringify({
           argv: ["node", "-e", "throw new Error('must not execute')"],
+          timeout_ms: 2000,
         }),
       },
     };

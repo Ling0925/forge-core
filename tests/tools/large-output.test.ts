@@ -27,7 +27,7 @@ function execute(name: string, args: object, ctx = context) {
 
 it("finishes a noisy command and retrieves the redacted output without rerunning it", async () => {
   const code = "process.stdout.write('a'.repeat(90000)); process.stdout.write('private-'+'test-value'); process.stderr.write('done'); require('fs').writeFileSync('finished', 'yes')";
-  const result = await execute("run_command", { argv: [process.execPath, "-e", code] });
+  const result = await execute("run_command", { argv: [process.execPath, "-e", code], timeout_ms: 10000 });
   const value = JSON.parse(result.content);
   expect(result.isError).toBe(false);
   expect(value).toMatchObject({ exit_code: 0, truncated: false, preview_truncated: true });
@@ -58,7 +58,7 @@ it("allows sequential own edits but rejects an external change", async () => {
 
 it("keeps running when the capture quota is exhausted", async () => {
   const result = await execute("run_command", { argv: [process.execPath, "-e",
-    "const fs=require('fs'); for(let i=0;i<272;i++) fs.writeSync(1, Buffer.alloc(65536, 120)); fs.writeFileSync('after-quota', 'completed')"] });
+    "const fs=require('fs'); for(let i=0;i<272;i++) fs.writeSync(1, Buffer.alloc(65536, 120)); fs.writeFileSync('after-quota', 'completed')"], timeout_ms: 20000 });
   expect(result.isError).toBe(false);
   expect(JSON.parse(result.content)).toMatchObject({ exit_code: 0, truncated: true });
   expect(await readFile(join(root, "after-quota"), "utf8")).toBe("completed");

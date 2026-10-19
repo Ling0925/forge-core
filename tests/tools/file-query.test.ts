@@ -84,7 +84,7 @@ describe("bounded native file queries", () => {
     expect(result.matches).toEqual([{ path: "src/a.ts" }, { path: "src/c.txt" }, { path: "src/nested/b.ts" }]);
     expect(result.skipped_files).toBe(2);
     expect((await run("read_file", { path: "link.txt" })).isError).toBe(true);
-    expect((await run("run_command", { argv: ["true"] })).isError).toBe(true);
+    expect((await run("run_command", { argv: ["true"], timeout_ms: 2000 })).isError).toBe(true);
   });
   it("separates incomplete traversal from page truncation", async () => {
     let path = root;
@@ -109,10 +109,10 @@ describe("bounded native file queries", () => {
     const streams: string[] = [];
     context = { ...context, permission: "unrestricted", onCommandStarted: () => { started += 1; throw new Error("observer"); },
       onCommandOutput: (stream, text) => { streams.push(`${stream}:${text}`); throw new Error("observer"); } };
-    expect((await run("run_command", { argv: [process.execPath, "-e", "process.stdout.write('out');process.stderr.write('err')"] })).isError).toBe(false);
+    expect((await run("run_command", { argv: [process.execPath, "-e", "process.stdout.write('out');process.stderr.write('err')"], timeout_ms: 3000 })).isError).toBe(false);
     expect(started).toBe(1);
     expect(streams).toEqual(expect.arrayContaining(["stdout:out", "stderr:err"]));
-    expect((await run("run_command", { argv: ["/forge-no-such-executable"] })).isError).toBe(true);
+    expect((await run("run_command", { argv: ["/forge-no-such-executable"], timeout_ms: 2000 })).isError).toBe(true);
     expect(started).toBe(1);
   });
 });

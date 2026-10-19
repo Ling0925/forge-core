@@ -9,7 +9,7 @@ import {
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { z } from "zod";
 import type {
   LocalToolRegistry,
@@ -155,7 +155,7 @@ describe("original local tools", () => {
       "builds, tests, git and package managers", "write_file/edit_file",
       "command effects are not checkpointed", "Readonly denied",
       "per-call approval under the host policy", "NOT an OS sandbox",
-      "cwd is guarded", "read_command_output", "128 KiB", "120s",
+      "cwd is guarded", "read_command_output", "128 KiB", "maximum 30 minutes",
     ]) expect(command.description).toContain(rule);
     expect(command.description.length).toBeLessThan(850);
   });
@@ -286,6 +286,7 @@ describe("original local tools", () => {
         await execute("run_command", {
           argv: [process.execPath, "-e", "process.exit(0)"],
           cwd: "link",
+          timeout_ms: 2000,
         })
       ).isError,
     ).toBe(true);
@@ -397,7 +398,7 @@ describe("original local tools", () => {
       ["write_file", { path: "a", content: "no" }],
       ["edit_file", { path: "a", old_text: "ok", new_text: "no" }],
       ["make_directory", { path: "new" }],
-      ["run_command", { argv: [process.execPath, "-e", "process.exit(0)"] }],
+      ["run_command", { argv: [process.execPath, "-e", "process.exit(0)"], timeout_ms: 2000 }],
     ] as const) {
       expect((await execute(name, args, "readonly")).isError).toBe(true);
     }
@@ -461,6 +462,39 @@ describe("original local tools", () => {
     }
   });
 
+  it("requires a model-chosen execution timeout with a 30-minute ceiling", async () => {
+    const command = tools.definitions.find(item => item.function.name === "run_command")!.function;
+    expect(command.parameters.required).toEqual(["argv", "timeout_ms"]);
+    expect(command.parameters.properties).toMatchObject({
+      timeout_ms: { type: "integer", minimum: 1, maximum: 1800000 },
+    });
+    expect(command.parameters.properties).not.toHaveProperty("timeout_ms.default");
+    expect(command.description).toContain("Choose and pass timeout_ms");
+    expect(command.description).toContain("maximum 30 minutes");
+
+    // Invalid or missing timeouts must fail before approval or spawning.
+    const argv = [process.execPath, "-e", "process.exit(0)"];
+    expect((await execute("run_command", { argv })).isError).toBe(true);
+    for (const timeout_ms of [0, -1, 1.5, 1800001, "300000"]) {
+      expect((await execute("run_command", { argv, timeout_ms })).isError).toBe(true);
+    }
+    expect(approvals).toBe(0);
+
+    for (const timeout_ms of [300000, 1800000]) {
+      const timer = vi.spyOn(globalThis, "setTimeout");
+      try {
+        const run = await node("process.stdout.write('ok')", timeout_ms);
+        expect(run.isError).toBe(false);
+        expect(output(run)).toMatchObject({ stdout: "ok", timed_out: false, exit_code: 0 });
+        expect(timer).toHaveBeenCalledWith(expect.any(Function), timeout_ms);
+        expect(timer).not.toHaveBeenCalledWith(expect.any(Function), 30000);
+      } finally {
+        timer.mockRestore();
+      }
+    }
+    expect(approvals).toBe(2);
+  });
+
   it("enforces timeout/output bounds and reports exit status", async () => {
     const started = Date.now();
     const timeout = await node("setInterval(() => {}, 1000)", 150);
@@ -492,6 +526,7 @@ describe("original local tools", () => {
           name: "run_command",
           arguments: JSON.stringify({
             argv: [process.execPath, "-e", "process.exit(0)"],
+            timeout_ms: 2000,
           }),
         },
       },
@@ -523,6 +558,7 @@ describe("original local tools", () => {
               "-e",
               "require('node:fs').writeFileSync('effect','no')",
             ],
+            timeout_ms: 2000,
           }),
         },
       },

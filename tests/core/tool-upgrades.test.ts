@@ -74,7 +74,7 @@ it("wires background commands through the production harness and reconciles befo
     expect(tools.some(t => t.function.name === "command_task")).toBe(true);
     expect(tools.some(t => t.function.name === "lsp")).toBe(false);
     if (++turns === 1) return { message: { role: "assistant", content: null, tool_calls: [{ id: "bg", type: "function", function: {
-      name: "run_command", arguments: JSON.stringify({ argv: [process.execPath, "--version"], background: true }),
+      name: "run_command", arguments: JSON.stringify({ argv: [process.execPath, "--version"], timeout_ms: 1800000, background: true }),
     } }] } };
     if (turns === 2) {
       const result = messages.findLast(m => m.role === "tool");

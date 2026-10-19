@@ -103,6 +103,7 @@ async function setup(restrictWorkspace = true) {
                     name: "run_command",
                     arguments: JSON.stringify({
                       argv: [process.execPath, "--version"],
+                      timeout_ms: 2000,
                     }),
                   },
                 },

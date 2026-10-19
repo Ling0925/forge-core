@@ -453,7 +453,8 @@ describe("command tasks with the real local registry", () => {
       const timeoutResult = output(await manage(tools, ctx, { action: "wait", id: timed.id }));
       expect(timeoutResult.status).toBe("failed");
       expect(JSON.parse(timeoutResult.output).timed_out).toBe(true);
-      const overflow = output(await launch([process.execPath, "-e", "process.stdout.write('x'.repeat(70000))"]));
+      // Background commands preserve the model's full 30-minute execution budget.
+      const overflow = output(await launch([process.execPath, "-e", "process.stdout.write('x'.repeat(70000))"], 1800000));
       const overflowResult = output(await manage(tools, ctx, { action: "wait", id: overflow.id }));
       expect(overflowResult.status).toBe("completed");
       expect(overflowResult.preview_truncated).toBe(true);
@@ -474,7 +475,7 @@ describe("command tasks with the real local registry", () => {
     const approve = vi.fn(async () => false);
     const ctx = context({ workspace: root, approve });
     try {
-      const command = call("run_command", { argv: [process.execPath, "--version"], background: true });
+      const command = call("run_command", { argv: [process.execPath, "--version"], timeout_ms: 2000, background: true });
       const denied = await tools.execute(command, ctx);
       expect(output(denied)).toEqual({ error: "Command approval denied." });
       expect(denied.isError).toBe(true);
