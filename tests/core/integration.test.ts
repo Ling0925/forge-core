@@ -325,7 +325,9 @@ describe("default harness tool integration", () => {
     let completions = 0;
     const providerFactory = (): ModelProvider => ({
       listModels: async () => ["fixture-model"],
-      complete: async (_messages, tools) => {
+      complete: async (messages, tools) => {
+        if (messages[0]?.content?.startsWith("Generate only"))
+          return { message: { role: "assistant", content: "Browser task" } };
         completions += 1;
         expect(
           tools.some(

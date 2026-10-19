@@ -152,6 +152,10 @@ export interface HarnessOptions {
 }
 export interface AgentRuntimeDependencies {
   readonly sessionLock?: Readonly<{ id: SessionId; release: () => Promise<void> }>;
+  readonly autoTitle?: Readonly<{
+    secrets: readonly string[];
+    start: (snapshot: SessionSnapshot, apply: (title: string) => Promise<boolean>) => void;
+  }>;
   readonly runMemory?: {
     readonly record: (snapshot: SessionSnapshot) => Promise<void>;
     readonly restore: (snapshot: SessionSnapshot, at: string) => Promise<SessionSnapshot>;

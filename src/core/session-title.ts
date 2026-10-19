@@ -1,4 +1,4 @@
-import type { ModelProvider, SessionStore } from "../shared/contracts";
+import type { ModelProvider } from "../shared/contracts";
 import type { SessionSnapshot } from "../shared/schemas";
 import { withCancellation } from "./runtime";
 
@@ -32,54 +32,35 @@ export function cleanTitle(
   return Array.from(value).slice(0, 60).join("");
 }
 
-export async function autoTitle(options: {
-  readonly snapshot: SessionSnapshot;
-  readonly store: SessionStore;
-  readonly provider: ModelProvider;
-  readonly signal: AbortSignal;
-  readonly secrets: readonly string[];
-}): Promise<void> {
-  const { snapshot, store, provider, signal, secrets } = options;
+/** Claim once, alongside the accepted first user message and before network work. */
+export function claimAutoTitle(
+  snapshot: SessionSnapshot,
+  secrets: readonly string[],
+): SessionSnapshot {
   if (
-    snapshot.status !== "completed" ||
     snapshot.titleSource !== "default" ||
     snapshot.autoTitleAttempted ||
     snapshot.parentSessionId ||
     snapshot.forkedFrom
   )
-    return;
-  const user =
-    snapshot.messages.find((m) => m.role === "user" && !m.origin)?.content ??
-    "";
-  const assistant =
-    snapshot.messages.find((m) => m.role === "assistant" && m.content)
-      ?.content ?? "";
-  if (!user.trim() || !assistant.trim()) return;
-  const fallback =
-    cleanTitle(user.trim().split(/\r?\n/)[0] ?? "", secrets) || "New session";
-  // Claim once and persist a usable fallback before network work. Locks are
-  // fail-fast; a competing run/rename wins and metadata work is abandoned.
-  let claimed: SessionSnapshot;
-  const release = await store.acquire(snapshot.id);
-  try {
-    const current = await store.get(snapshot.id);
-    if (
-      current.titleSource !== "default" ||
-      current.autoTitleAttempted ||
-      current.updatedAt !== snapshot.updatedAt
-    )
-      return;
-    claimed = {
-      ...current,
-      title: fallback,
-      titleSource: "auto",
-      autoTitleAttempted: true,
-    };
-    await store.save(claimed);
-  } finally {
-    await release();
-  }
-  if (signal.aborted) return;
+    return snapshot;
+  const user = snapshot.messages.find((m) => m.role === "user" && !m.origin)?.content ?? "";
+  if (!user.trim()) return snapshot;
+  const title = cleanTitle(user.trim().split(/\r?\n/)[0] ?? "", secrets) ||
+    cleanTitle(user, secrets) || "New session";
+  return { ...snapshot, title, titleSource: "auto", autoTitleAttempted: true };
+}
+
+/** Optional inference only; the runtime owns all metadata persistence. */
+export async function autoTitle(options: {
+  readonly snapshot: SessionSnapshot;
+  readonly provider: ModelProvider;
+  readonly signal: AbortSignal;
+  readonly secrets: readonly string[];
+}): Promise<string | undefined> {
+  const { snapshot, provider, signal, secrets } = options;
+  const user = snapshot.messages.find((m) => m.role === "user" && !m.origin)?.content ?? "";
+  if (signal.aborted || !user.trim()) return;
   try {
     const deadline = AbortSignal.any([signal, AbortSignal.timeout(2000)]);
     const result = await withCancellation(
@@ -92,10 +73,7 @@ export async function autoTitle(options: {
           },
           {
             role: "user",
-            content: JSON.stringify({
-              user: cleanTitle(user, secrets),
-              assistant: cleanTitle(assistant, secrets),
-            }),
+            content: JSON.stringify({ user: cleanTitle(user, secrets) }),
           },
         ],
         [],
@@ -104,24 +82,9 @@ export async function autoTitle(options: {
       deadline,
     );
     if (signal.aborted || result.message.tool_calls?.length) return;
-    const title = cleanTitle(result.message.content ?? "", secrets);
-    if (!title) return;
-    const unlock = await store.acquire(snapshot.id);
-    try {
-      const current = await store.get(snapshot.id);
-      if (
-        current.titleSource !== "auto" ||
-        current.title !== fallback ||
-        current.updatedAt !== claimed.updatedAt ||
-        current.messages.length !== claimed.messages.length
-      )
-        return;
-      await store.save({ ...current, title });
-    } finally {
-      await unlock();
-    }
+    return cleanTitle(result.message.content ?? "", secrets) || undefined;
   } catch {
-    // A title is optional metadata. Keep the persisted fallback, without logging
-    // provider exception text, changing run status or retrying an uncertain call.
+    // Keep the persisted fallback without logging provider details or retrying.
+    return;
   }
 }

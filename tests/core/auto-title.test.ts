@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { autoTitle, cleanTitle } from "../../src/core/session-title";
+import { autoTitle, claimAutoTitle, cleanTitle } from "../../src/core/session-title";
 import type { ModelProvider, SessionStore } from "../../src/shared/contracts";
 import { sessionSnapshotSchema } from "../../src/shared/schemas";
 function fixture() {
@@ -12,11 +12,8 @@ function fixture() {
     model: "test",
     createdAt: "2026-01-01T00:00:00Z",
     updatedAt: "2026-01-01T00:00:00Z",
-    status: "completed",
-    messages: [
-      { role: "user", content: "# 修复登录问题" },
-      { role: "assistant", content: "已经修复" },
-    ],
+    status: "running",
+    messages: [{ role: "user", content: "# 修复登录问题" }],
     events: [],
     changes: [],
   });
@@ -35,14 +32,19 @@ function fixture() {
       message: { role: "assistant" as const, content: '"登录修复"' },
     })),
   };
-  const run = () =>
-    autoTitle({
-      snapshot: current,
-      store,
+  const run = async () => {
+    const claimed = claimAutoTitle(current, ["private-key"]);
+    if (claimed === current) return;
+    await store.save(claimed);
+    const title = await autoTitle({
+      snapshot: claimed,
       provider,
       signal: new AbortController().signal,
       secrets: ["private-key"],
     });
+    if (title && current.titleSource === "auto" && current.title === claimed.title)
+      await store.save({ ...current, title });
+  };
   return { store, provider, run, get: () => current };
 }
 describe("automatic title metadata", () => {
@@ -65,6 +67,18 @@ describe("automatic title metadata", () => {
       [],
       expect.objectContaining({ model: "test" }),
     );
+  });
+  it("persists the first-message fallback before an unresolved title request", async () => {
+    const f = fixture();
+    let resolve!: (value: Awaited<ReturnType<ModelProvider["complete"]>>) => void;
+    f.provider.complete = vi.fn(() => new Promise(done => { resolve = done; }));
+    const work = f.run();
+    await vi.waitFor(() => expect(f.provider.complete).toHaveBeenCalledTimes(1));
+    expect(f.get()).toMatchObject({ title: "修复登录问题", status: "running", autoTitleAttempted: true });
+    expect(f.get().messages).toHaveLength(1);
+    resolve({ message: { role: "assistant", content: "登录修复" } });
+    await work;
+    expect(f.get().title).toBe("登录修复");
   });
   it.each(["user", undefined] as const)(
     "does not change user or legacy titleSource %s",

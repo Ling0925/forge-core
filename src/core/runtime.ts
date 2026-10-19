@@ -27,6 +27,7 @@ import { projectSummary, summaryBoundary } from "./context";
 import { summarizeWorkingState } from "./working-memory";
 import { buildSystemInstructions } from "./prompts";
 import { createToolPreviewStream } from "./tool-preview";
+import { claimAutoTitle } from "./session-title";
 import { budgetUsage, measureContext, reportedContext, resolveContextBudget, resolveContextWindow } from "../shared/context-usage";
 
 type EventBody = {
@@ -279,15 +280,23 @@ export const createAgentRuntime = (
         }),
       );
     };
-    const save = async (): Promise<void> => {
-      if (!snapshot)
-        throw new ForgeError("internal", "Session has not loaded.");
-      snapshot = sessionSnapshotSchema.parse({ ...snapshot, updatedAt: now() });
-      try {
-        await deps.store.save(snapshot);
-      } catch {
-        throw new ForgeError("storage", "Could not checkpoint session.", true);
-      }
+    let writes: Promise<void> = Promise.resolve();
+    let acceptingTitle = true;
+    const save = (): Promise<void> => {
+      // Title inference can finish while a provider/tool checkpoint is saving.
+      // Serialize writes and always save the latest in-memory snapshot.
+      const work = writes.then(async () => {
+        if (!snapshot)
+          throw new ForgeError("internal", "Session has not loaded.");
+        snapshot = sessionSnapshotSchema.parse({ ...snapshot, updatedAt: now() });
+        try {
+          await deps.store.save(snapshot);
+        } catch {
+          throw new ForgeError("storage", "Could not checkpoint session.", true);
+        }
+      });
+      writes = work.catch(() => undefined);
+      return work;
     };
     const check = (): void => {
       if (signal.aborted) throw new ForgeError("cancelled", "Run cancelled.");
@@ -457,9 +466,23 @@ export const createAgentRuntime = (
           { role: "user", content: input.prompt, ...(input.images?.length ? { images: input.images } : {}) },
         ],
       };
+      const claimed = claimAutoTitle(snapshot, deps.autoTitle?.secrets ?? []);
+      const shouldName = claimed !== snapshot;
+      snapshot = claimed;
       await save();
-      event({ type: "run_started", model: snapshot.model, permission });
+      event({ type: "run_started", model: snapshot.model, permission, title: snapshot.title });
       await save();
+      if (shouldName && deps.autoTitle) {
+        const fallback = snapshot.title;
+        deps.autoTitle.start(snapshot, async title => {
+          if (!acceptingTitle || !snapshot) return false;
+          if (snapshot.titleSource !== "auto" || snapshot.title !== fallback) return true;
+          snapshot = { ...snapshot, title };
+          await save();
+          if (acceptingTitle) ephemeral({ type: "title_changed", title });
+          return true;
+        });
+      }
       let reportedWindow: number | null = null;
       if (!deps.settings.modelContextWindows?.[snapshot.model]) {
         const metadataSignal = AbortSignal.any([signal, AbortSignal.timeout(2000)]);
@@ -496,7 +519,8 @@ export const createAgentRuntime = (
                 snapshot.messages.slice(snapshot.contextSummary?.boundary ?? 0, latest).some(m => m.role !== "system")) boundary = latest;
           }
           if (boundary !== null) {
-            snapshot = await summarizeWorkingState(snapshot, deps.provider, signal, boundary, Math.floor(windowTokens * 0.8));
+            const summarized = await summarizeWorkingState(snapshot, deps.provider, signal, boundary, Math.floor(windowTokens * 0.8));
+            snapshot = { ...summarized, title: snapshot.title };
             await save();
             event({ type: "context_compacted", removedMessages: Math.max(0, before.length - project(snapshot).length),
               beforeChars: JSON.stringify(before).length, afterChars: JSON.stringify(project(snapshot)).length });
@@ -1005,6 +1029,8 @@ export const createAgentRuntime = (
       event({ type: "error", error: toErrorInfo(safe) });
       return await finish(safe.code === "cancelled" ? "cancelled" : "failed");
     } finally {
+      acceptingTitle = false;
+      await writes;
       await release();
     }
   },

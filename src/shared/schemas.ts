@@ -638,6 +638,14 @@ export const agentEventSchema = z
         type: z.literal("run_started"),
         model: settingsFields.model,
         permission: permissionSchema,
+        title: z.string().min(1).max(256).optional(),
+      })
+      .strict(),
+    z
+      .object({
+        ...eventBase,
+        type: z.literal("title_changed"),
+        title: z.string().min(1).max(60),
       })
       .strict(),
     z

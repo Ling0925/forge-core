@@ -617,6 +617,32 @@ export const createHarness = async (
           const result = await createAgentRuntime({
             store,
             sessionLock: { id: input.sessionId, release: releaseSession },
+            autoTitle: {
+              secrets: [config.apiKey, config.baseUrl],
+              start: (claimed, apply) => {
+                const titleController = new AbortController();
+                const titleSignal = AbortSignal.any([disposal.signal, titleController.signal]);
+                const naming = autoTitle({ snapshot: claimed, provider, signal: titleSignal, secrets: [config.apiKey, config.baseUrl] })
+                  .then(async title => {
+                    if (!title || titleSignal.aborted || await apply(title)) return;
+                    // A fast run may finish before inference. Re-read under a
+                    // new lock; never save the stale first-turn snapshot.
+                    const unlock = await store.acquire(claimed.id, titleSignal);
+                    try {
+                      if (titleSignal.aborted) return;
+                      const current = await store.get(claimed.id);
+                      if (current.titleSource === "auto" && current.title === claimed.title && current.autoTitleAttempted)
+                        await store.save({ ...current, title });
+                    } finally { await unlock(); }
+                  }).catch(() => {});
+                titleOperations.set(claimed.id, { controller: titleController, work: naming });
+                titleTasks.add(naming);
+                void naming.finally(() => {
+                  titleTasks.delete(naming);
+                  if (titleOperations.get(claimed.id)?.work === naming) titleOperations.delete(claimed.id);
+                });
+              },
+            },
             runMemory,
             settings,
             provider,
@@ -628,14 +654,6 @@ export const createHarness = async (
                 .tools;
             },
           }).run({ ...input, ...(providerSourceId ? { providerSourceId } : {}) }, onEvent, approve, signal, control);
-          const titleController = new AbortController();
-          const naming = autoTitle({ snapshot: result, store, provider, signal: AbortSignal.any([disposal.signal, titleController.signal]), secrets: [config.apiKey, config.baseUrl] }).catch(() => {});
-          titleOperations.set(result.id, { controller: titleController, work: naming });
-          titleTasks.add(naming);
-          void naming.finally(() => {
-            titleTasks.delete(naming);
-            if (titleOperations.get(result.id)?.work === naming) titleOperations.delete(result.id);
-          });
           return result;
         } finally {
           try {
