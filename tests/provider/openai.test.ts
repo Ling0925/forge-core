@@ -753,6 +753,39 @@ describe("gateway captured-shape compatibility", () => {
     });
   });
 
+  it("accepts gateways that echo role: null on every delta", async () => {
+    const pieces: string[] = [];
+    const provider = await fixture((_request, response) => {
+      response.setHeader("content-type", "text/event-stream");
+      response.end(
+        event({ role: null, content: null }, "") +
+          event({ role: null, content: "o" }, "") +
+          event({ role: null, content: "k" }, "") +
+          event({ role: null, content: "", tool_calls: null }, "stop") +
+          repeatedDone,
+      );
+    });
+    const result = await complete(provider, undefined, (text) =>
+      pieces.push(text),
+    );
+    expect(result.message.content).toBe("ok");
+    expect(pieces).toEqual(["o", "k"]);
+  });
+
+  it.each(["user", "system", "", "tool"])(
+    "still rejects a non-assistant delta role %j",
+    async (role) => {
+      const provider = await fixture((_request, response) => {
+        response.setHeader("content-type", "text/event-stream");
+        response.end(event({ role, content: "ok" }, "stop") + repeatedDone);
+      });
+      await expect(complete(provider)).rejects.toMatchObject({
+        classification: "protocol",
+        message: expect.stringContaining("[protocol]"),
+      });
+    },
+  );
+
   it.each([
     {
       usage: { prompt_tokens: 100, completion_tokens: 20, total_tokens: 120 },

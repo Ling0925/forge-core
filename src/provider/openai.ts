@@ -62,7 +62,11 @@ const chunkSchema = z.object({
       z.object({
         index: z.literal(0),
         delta: z.object({
-          role: z.literal("assistant").optional(),
+          // Some gateways (e.g. MiMo) echo `role: null` on every delta. A null
+          // role carries no meaning, so it is accepted as field-absent; any
+          // other non-assistant value stays a protocol violation. The value is
+          // never read below, so no normalization is needed.
+          role: z.literal("assistant").nullable().optional(),
           content: z.string().max(MAX_TEXT).nullable().optional(),
           // Live reasoning preview some gateways stream; never assistant content.
           reasoning_content: z.string().max(MAX_TEXT).nullable().optional(),
