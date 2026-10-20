@@ -32,7 +32,9 @@ export interface RunControl {
 }
 export interface ModelProvider {
   readonly apiMode?: "chat-completions" | "responses" | "anthropic";
-  listModels(signal?: AbortSignal): Promise<readonly string[]>;
+  listModels(signal?: AbortSignal, refresh?: boolean): Promise<readonly string[]>;
+  /** Complete normalized metadata from one catalog request; no guessed windows. */
+  listModelCatalog?(signal?: AbortSignal): Promise<import("./model-catalog").ModelCatalog>;
   getModelContextWindow?(model: string, signal?: AbortSignal): Promise<number | null>;
   complete(
     messages: readonly Message[],
@@ -99,7 +101,7 @@ export interface HarnessService {
   updateSettings(input: ConfigureInput): Promise<PublicSettings>;
   getToolHooks?(): Promise<import("./tool-hooks").ToolHooksConfig>;
   setToolHooks?(config: import("./tool-hooks").ToolHooksConfig): Promise<void>;
-  listModels(signal?: AbortSignal, sourceId?: string): Promise<readonly string[]>;
+  listModels(signal?: AbortSignal, sourceId?: string, refresh?: boolean): Promise<readonly string[]>;
   getModelContextWindow?(model: string, signal?: AbortSignal, sourceId?: string): Promise<number | null>;
   listSessions(): Promise<readonly SessionSummary[]>;
   createSession(input: CreateSessionInput): Promise<SessionSnapshot>;

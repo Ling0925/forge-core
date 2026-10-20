@@ -43,7 +43,10 @@ export function createTransportBridge(transport: BridgeTransport): ForgeBridge {
   return Object.freeze({
     getSettings: () => request("getSettings"),
     updateSettings: (input) => request("updateSettings", { input }),
-    listModels: (sourceId) => request("listModels", sourceId === undefined ? {} : { sourceId }),
+    listModels: (sourceId, refresh) => request("listModels", {
+      ...(sourceId === undefined ? {} : { sourceId }),
+      ...(refresh === undefined ? {} : { refresh }),
+    }),
     listSessions: () => request("listSessions"),
     createSession: (input) => request("createSession", { input }),
     getSession: (sessionId) => request("getSession", { sessionId }),

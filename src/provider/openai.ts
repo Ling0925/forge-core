@@ -420,6 +420,10 @@ export function createModelProvider(config: ProviderConfig): ModelProvider {
   return {
     apiMode: settings.apiMode ?? "chat-completions",
     listModels,
+    async listModelCatalog(signal) {
+      const ids = await listModels(signal);
+      return ids.map(id => ({ id, contextWindowTokens: windows.get(id) ?? null }));
+    },
     async getModelContextWindow(model, signal) {
       if (!catalogLoaded) await listModels(signal);
       return windows.get(model) ?? null;

@@ -5,6 +5,8 @@ import { isAbsolute, join, resolve } from "node:path";
 import { createProjectContext } from "../context/index";
 import { createMcpService } from "../mcp/registry";
 import { createModelProvider } from "../provider/openai";
+import { createCachedProviderFactory } from "../provider/catalog-cache";
+import { openModelCatalogStore } from "../store/model-catalog";
 import type {
   HarnessOptions,
   HarnessService,
@@ -257,7 +259,9 @@ export const createHarness = async (
       { protectedStateRoot: directory },
     );
   };
-  const providerFactory = options.providerFactory ?? createModelProvider;
+  const providerFactory = createCachedProviderFactory(
+    await openModelCatalogStore(directory), options.providerFactory ?? createModelProvider,
+  );
   /**
    * The "active" source is only the fallback for callers that name no source.
    * Whenever a caller does name one, remember it, so selecting a model in any
@@ -377,7 +381,7 @@ export const createHarness = async (
         const config = providerConfigSchema.parse(
           await settingsStore.getProviderConfig(providerSourceId),
         );
-        const provider = providerFactory(config);
+        const provider = providerFactory(config, providerSourceId);
         const bound = providerSourceId ? { ...s, providerSourceId } : s;
         let reported: number | null = null;
         const metadataSignal = AbortSignal.any([signal, AbortSignal.timeout(2000)]);
@@ -559,20 +563,28 @@ export const createHarness = async (
     },
     async getModelContextWindow(model, signal, sourceId) {
       check();
+      if (sourceId === undefined) {
+        const settings = await settingsStore.getPublic();
+        if (!settings.environmentOverride) sourceId = settings.activeSourceId;
+      }
       const config = providerConfigSchema.parse(await settingsStore.getProviderConfig(sourceId));
       endpoint(config.baseUrl);
       check();
-      return await providerFactory(config).getModelContextWindow?.(model,
+      return await providerFactory(config, sourceId).getModelContextWindow?.(model,
         AbortSignal.any(signal ? [signal, disposal.signal] : [disposal.signal])) ?? null;
     },
-    async listModels(signal, sourceId) {
+    async listModels(signal, sourceId, refresh) {
       check();
+      if (sourceId === undefined) {
+        const settings = await settingsStore.getPublic();
+        if (!settings.environmentOverride) sourceId = settings.activeSourceId;
+      }
       const config = providerConfigSchema.parse(
         await settingsStore.getProviderConfig(sourceId),
       );
       check();
-      return providerFactory(config).listModels(
-        AbortSignal.any(signal ? [signal, disposal.signal] : [disposal.signal]),
+      return providerFactory(config, sourceId).listModels(
+        AbortSignal.any(signal ? [signal, disposal.signal] : [disposal.signal]), refresh,
       );
     },
     async listSessions() {
@@ -705,7 +717,7 @@ export const createHarness = async (
             input.providerSourceId ?? inferSourceId(settings, input.model),
           );
           // Endpoint, credential and protocol come from the same atomic source snapshot.
-          const provider = providerFactory(providerConfigSchema.parse(config));
+          const provider = providerFactory(providerConfigSchema.parse(config), providerSourceId);
           if (signal.aborted)
             throw new ForgeError("cancelled", "Run cancelled.");
           const built = await buildTools(

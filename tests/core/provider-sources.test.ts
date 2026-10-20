@@ -31,12 +31,11 @@ it("fetches each source's OpenAI /models with its own key without activating it"
     expect(requests).toEqual([
       { url: "/b/models", auth: "Bearer fixture-b" },
       { url: "/a/models", auth: "Bearer fixture-a" },
-      { url: "/b/models", auth: "Bearer fixture-b" },
     ]);
     await expect(service.listModels(undefined, "missing")).rejects.toThrow();
     await expect(service.listModels(undefined, "bad")).rejects.toThrow();
     expect(requests.at(-1)).toEqual({ url: "/bad/models", auth: "Bearer fixture-bad" });
-    expect(requests.length).toBe(4); // no cross-source fallback
+    expect(requests.length).toBe(3); // active/explicit source share cache; no cross-source fallback
     expect(JSON.stringify(await service.getSettings())).not.toContain("fixture-b");
     // Exercise the exact renderer -> schema/bridge -> worker -> harness route.
     let response: (value: unknown) => void = () => {};
@@ -48,6 +47,9 @@ it("fetches each source's OpenAI /models with its own key without activating it"
       request: input => new Promise(resolve => { response = resolve; void controller.handle(input); }),
     });
     expect(await bridge.listModels('a')).toEqual(['alpha']);
+    expect(requests).toHaveLength(3);
+    expect(await bridge.listModels('a', true)).toEqual(['alpha']);
+    expect(requests).toHaveLength(4);
     expect(requests.at(-1)).toEqual({ url: '/a/models', auth: 'Bearer fixture-a' });
     expect((await bridge.getSettings()).activeSourceId).toBe('b');
   } finally {
