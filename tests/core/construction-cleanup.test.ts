@@ -81,6 +81,7 @@ for (const failAt of [1, 2])
       });
       const session = await h.createSession({
         workspace: join(dir, "workspace"),
+        title: "Runtime lifetime fixture",
       });
       const work = h.run(
         { sessionId: session.id, prompt: "work" },
