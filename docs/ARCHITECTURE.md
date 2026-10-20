@@ -57,6 +57,16 @@ Core interface signatures remain stable. Domain tests belong in `tests/shared`, 
   The existing session flock inode is preserved. Mixed old/new executables must
   not operate on the same state directory; older strict readers reject the new
   private base marker instead of opening a stale checkpoint as complete history.
+- Reads of generation-backed sessions pin a base and an enumerated, contiguous
+  delta prefix, validating schemas and every hash link before returning. Concurrent
+  appends, temporary files and checkpoint rotation do not force a full replay.
+  Such a read may precede the newest commit; only an unchanged on-disk head can
+  populate the writer cache or summary index. Writers and legacy bases retain the
+  strict head check; corrupt committed data is still an error, not a fallback.
+- The Web bridge preserves host error codes and retryability. The workbench retries
+  only `getSession` transient storage failures, at most twice (100/300 ms delays),
+  with timers cancelled on unmount. A successful refresh clears only that session's
+  read alert, never an unrelated operation's error. No mutation is replayed.
 - Live `text_delta` events are notifications. Successful replies persist once as
   assistant messages; a failed or cancelled partial reply is retained as one
   bounded historical event. Cleanup reads the aggregate journal state and retains

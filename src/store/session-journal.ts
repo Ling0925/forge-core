@@ -65,6 +65,9 @@ type Loaded = {
   count: number;
   bytes: number;
   legacy: boolean;
+  // A valid read prefix need not still be the current on-disk head. Only an
+  // unchanged head may populate the writer cache or persistent summary index.
+  cacheable: boolean;
 };
 const baseRecordSchema = z
   .object({ _journalGeneration: z.string().uuid().optional() })
@@ -153,6 +156,7 @@ export function createSessionJournal(
         Object.entries(metadata).filter(([key]) => key in shape),
       ),
     );
+    if (!loaded.cacheable) return summary;
     await atomicJson(
       indexPath(loaded.snapshot.id),
       {
@@ -166,7 +170,10 @@ export function createSessionJournal(
     );
     return summary;
   };
-  const load = async (id: SessionId, fresh = false): Promise<Loaded> => {
+  const load = async (
+    id: SessionId,
+    { fresh = false, readOnly = false }: { fresh?: boolean; readOnly?: boolean } = {},
+  ): Promise<Loaded> => {
     for (let attempt = 0; attempt < 3; attempt++) {
       const base = await stamp(basePath(id));
       if (!base)
@@ -224,11 +231,16 @@ export function createSessionJournal(
           count++;
         }
       }
-      if (
-        !same(base, await stamp(basePath(id))) ||
-        !same(journal, await stamp(directory, true))
-      )
-        continue;
+      const currentBase = await stamp(basePath(id));
+      const currentJournal = await stamp(directory, true);
+      const cacheable = same(base, currentBase) && same(journal, currentJournal);
+      // Committed records are immutable and closed generations are retained.
+      // The captured base + enumerated, hash-checked prefix is a consistent
+      // snapshot even if a writer appended records, created temporary files,
+      // or atomically published a new generation while we replayed it. Do not
+      // require a quiet interval for readers of a busy session. Writers (and
+      // legacy bases without a generation) still require an unchanged head.
+      if (!cacheable && (!readOnly || !stored.generation)) continue;
       const loaded = {
         snapshot,
         hash: currentHash,
@@ -238,8 +250,9 @@ export function createSessionJournal(
         count,
         bytes,
         legacy: !stored.generation,
+        cacheable,
       };
-      remember(id, loaded);
+      if (cacheable) remember(id, loaded);
       return loaded;
     }
     throw new ForgeError(
@@ -250,7 +263,7 @@ export function createSessionJournal(
   };
   return {
     async get(id: SessionId) {
-      return (await load(id, true)).snapshot;
+      return (await load(id, { fresh: true, readOnly: true })).snapshot;
     },
     async create(snapshot: SessionSnapshot) {
       await atomicJson(basePath(snapshot.id), {
@@ -292,6 +305,7 @@ export function createSessionJournal(
           count: 0,
           bytes: 0,
           legacy: false,
+          cacheable: true,
         };
       } else {
         const {
@@ -352,7 +366,7 @@ export function createSessionJournal(
         if (!(error instanceof ForgeError) && !(error instanceof z.ZodError))
           throw error;
       }
-      return writeIndex(await load(id));
+      return writeIndex(await load(id, { readOnly: true }));
     },
   };
 }
