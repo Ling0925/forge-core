@@ -28,3 +28,28 @@ tool calls are closed with explicit evidence and are never replayed automaticall
 Tests that count provider turns give fixture sessions explicit titles. Automatic
 title generation otherwise consumes their mock provider's first scripted answer
 and tests a different path than the intended child/construction lifecycle.
+
+## Extracted ports
+
+- `tool-executor`: receives a single call, live permission/signal, a tool registry,
+  optional hooks/native invocation and explicit checkpoint/approval callbacks.
+  Returns validated evidence and an optional post-commit hook. It owns the tool
+  attempt and joins approval checkpoint cleanup, including synchronous adapter
+  throws. It cannot access or commit a parent snapshot.
+- `approval-queue`: owns the root display slot. Hosted search, local calls and
+  child approvals use the same serial queue; rejected requests do not poison it.
+- `agent-supervisor`: owns current-run child operations, child context/tools,
+  approval envelopes and joined cleanup. Existing `agent-operations` retains
+  registration, slot/depth/total limits, scope checks and explicit resolution.
+  Native operations alone receive its mutable operation registry. The coordinator
+  receives read-only usage, joined outcomes, and bounded pending reports with an
+  explicit delivery acknowledgement after a successful durable save.
+- `runtime`: retains session lock, snapshot/writer, context and provider scheduling,
+  intent/result commits, ordered events, reconciliation and final status. Existing
+  pure context/working-memory calculations stay in their established modules.
+
+Focused coverage includes intent-before-effect, result-before-hook, recovery
+without replay, approval cancellation before terminal/unlock, ordered joined read
+batches, child construction/disposal failure, borrowed resources, delayed delivery
+acknowledgement and parent cancellation joining child cleanup. The pre-existing
+fixed-wording edit-preview assertion remains tracked separately by issue #10.
