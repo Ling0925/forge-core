@@ -60,7 +60,10 @@ it("allows exactly five additional attempts, discards failed drafts and keeps th
   expect(f.snapshot().messages.filter(message => message.role === "assistant").map(message => message.content)).toEqual(["accepted"]);
   expect(f.events.filter(event => event.type === "provider_retry").map(event => event.attempt)).toEqual([1, 2, 3, 4, 5]);
   expect(f.events.filter(event => event.type === "retry_reset")).toHaveLength(5);
-  expect(f.snapshot().events.some(event => event.type === "retry_reset" || event.type === "provider_retry")).toBe(false);
+  expect(f.snapshot().events.some(event => event.type === "retry_reset")).toBe(false);
+  expect(f.snapshot().events.filter(event => event.type === "provider_retry").map(event => [event.turn, event.step, event.attempt])).toEqual([
+    [1, 1, 1], [1, 1, 2], [1, 1, 3], [1, 1, 4], [1, 1, 5],
+  ]);
   expect(f.events.findLast(event => event.type === "run_finished")).toMatchObject({ turns: 1, toolCalls: 0, usageComplete: false });
   const before = f.events.length; stale?.("late abandoned output");
   expect(f.events).toHaveLength(before);
@@ -95,6 +98,9 @@ it.each([
   new ProviderError("protocol", "Truncated", false, undefined, "output_truncated"),
   new ProviderError("protocol", "Bad arguments", false, undefined, "invalid_tool_call"),
   new ProviderError("protocol", "Bad chunk", false, undefined, "invalid_chunk"),
+  new ProviderError("upstream", "Quota exhausted", false, undefined, "insufficient_quota"),
+  new ProviderError("upstream", "Output truncated", false, undefined, "output_truncated"),
+  new ProviderError("upstream", "Authentication failed", false, undefined, "authentication_error"),
   new ForgeError("storage", "Store failed"),
   new ForgeError("tool", "Tool failed"),
   new ForgeError("invalid_input", "Invalid input"),
@@ -114,16 +120,20 @@ it("cancels during backoff without constructing another provider request", async
   expect(calls).toBe(1); expect(f.snapshot().status).toBe("cancelled"); expect(vi.getTimerCount()).toBe(0);
 });
 
-it("keeps completed tool evidence and executes each tool once across later generation retries", async () => {
+it.each([
+  new ProviderError("network", "Connection failed", true),
+  new ProviderError("upstream", "Rate limit", true, undefined, "rate_limit_exceeded"),
+])("keeps completed tool evidence and executes each tool once across later generation retries %#", async error => {
   vi.useFakeTimers(); let calls = 0; let effects = 0;
   const f = fixture(async messages => {
     if (++calls === 1) return { message: { role: "assistant", content: null, tool_calls: [{ id: "effect", type: "function", function: { name: "inspect", arguments: "{}" } }] } };
     expect(messages.filter(message => message.role === "tool")).toHaveLength(1);
-    if (calls === 2) throw new ProviderError("network", "Connection failed", true);
+    if (calls === 2) throw error;
     return { message: { role: "assistant", content: "done" } };
   }, async () => { effects++; return { content: "one effect", isError: false }; });
   const running = f.run(); await vi.runAllTimersAsync(); await running;
   expect(calls).toBe(3); expect(effects).toBe(1); expect(f.snapshot().status).toBe("completed");
+  expect(f.events.find(event => event.type === "provider_retry")).toMatchObject({ reason: error.classification });
   expect(f.snapshot().messages.filter(message => message.role === "tool")).toHaveLength(1);
   expect(f.events.findLast(event => event.type === "run_finished")).toMatchObject({ turns: 2, toolCalls: 1 });
 });

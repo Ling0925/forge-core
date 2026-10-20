@@ -20,12 +20,14 @@ export type ProtocolReason =
   | "missing_completion"
   | "unexpected_frame";
 
-export type ProviderRetryReason = "protocol" | "network" | "timeout" | "http";
+export type UpstreamReason = "rate_limit_exceeded" | "server_error" | "authentication_error" | "insufficient_quota" | "invalid_request" | "content_filter" | "response_incomplete";
+export type ProviderReason = ProtocolReason | UpstreamReason;
+export type ProviderRetryReason = "protocol" | "network" | "timeout" | "http" | "upstream";
 
 type ClassifiedProviderError = ForgeError & {
   readonly classification: string;
   readonly status?: number | undefined;
-  readonly reason?: ProtocolReason | undefined;
+  readonly reason?: ProviderReason | undefined;
 };
 
 /**
@@ -38,6 +40,7 @@ export const isRetryableProviderFailure = (error: unknown): boolean => {
   if (!(error instanceof ForgeError) || error.code !== "provider") return false;
   const candidate = error as Partial<ClassifiedProviderError>;
   if (typeof candidate.classification !== "string") return false;
+  if (candidate.classification === "upstream") return error.retryable;
   if (candidate.classification === "protocol") {
     switch (candidate.reason) {
       case undefined:
@@ -75,6 +78,7 @@ export const providerRetryReason = (
     case "network":
     case "timeout":
     case "http":
+    case "upstream":
       return candidate.classification;
     default:
       return undefined;

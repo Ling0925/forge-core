@@ -423,7 +423,7 @@ it.each(["response.failed", "response.incomplete", "error"])(
         }),
       );
     });
-    await expect(run(p)).rejects.toSatisfy(classification("protocol"));
+    await expect(run(p)).rejects.toSatisfy(classification("upstream"));
     expect(requests).toBe(1);
   },
 );
