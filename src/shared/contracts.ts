@@ -75,6 +75,8 @@ export interface LocalToolRegistry {
 }
 export type ToolArguments = Readonly<Record<string, JsonValue>>;
 export interface SessionStore {
+  /** Versioned persistence; optional for legacy/in-memory adapters. */
+  readonly incremental?: import("./session-store").IncrementalSessionStore;
   list(): Promise<readonly SessionSummary[]>;
   get(id: SessionId): Promise<SessionSnapshot>;
   create(

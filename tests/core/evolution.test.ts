@@ -305,14 +305,17 @@ describe("core evolution", () => {
     const finalized = new Promise<void>((r) => {
       parentFinal = r;
     });
-    const save = store.save.bind(store);
-    store.save = async (snapshot) => {
-      await save(snapshot);
+    if (!store.incremental) throw new Error("Missing incremental persistence");
+    const commit = store.incremental.commit.bind(store.incremental);
+    store.incremental.commit = async (id, mutation) => {
+      const result = await commit(id, mutation);
+      const snapshot = result.snapshot;
       if (
         snapshot.id === root.id &&
         snapshot.messages.at(-1)?.content === "done"
       )
         parentFinal();
+      return result;
     };
     const controller = new AbortController();
     const provider: ModelProvider = {

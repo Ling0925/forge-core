@@ -14,7 +14,6 @@ import {
   providerResponseSchema,
   runInputSchema,
   sessionIdSchema,
-  sessionSnapshotSchema,
   toolResultSchema,
 } from "../shared/schemas";
 import type {
@@ -24,6 +23,7 @@ import type {
   SessionSnapshot,
   Usage,
 } from "../shared/schemas";
+import { createSessionWriter } from "./session-writer";
 import { agentSummary, executeNative, nativeDefinitions } from "./agents";
 import { invalidToolInput } from "../shared/tool-input";
 import { boundedReports, childReport, type ChildOperation } from "./agent-operations";
@@ -302,6 +302,7 @@ export const createAgentRuntime = (
     const release = deps.sessionLock?.id === input.sessionId
       ? deps.sessionLock.release : await deps.store.acquire(input.sessionId, signal);
     let snapshot: SessionSnapshot | undefined;
+    const writer = createSessionWriter(deps.store, input.sessionId);
     const levels = ["readonly", "workspace", "unrestricted"] as const;
     const effectivePermission = () => levels[Math.min(
       levels.indexOf(input.mode === "plan" ? "readonly" : control?.getPermission?.() ?? input.permission ?? deps.settings.defaultPermission),
@@ -378,9 +379,9 @@ export const createAgentRuntime = (
       const work = writes.then(async () => {
         if (!snapshot)
           throw new ForgeError("internal", "Session has not loaded.");
-        snapshot = sessionSnapshotSchema.parse({ ...snapshot, updatedAt: now() });
+        snapshot = { ...snapshot, updatedAt: now() };
         try {
-          await deps.store.save(snapshot);
+          await writer.save(snapshot);
         } catch {
           throw new ForgeError("storage", "Could not checkpoint session.", true);
         }
@@ -507,9 +508,7 @@ export const createAgentRuntime = (
       return snapshot;
     };
     try {
-      snapshot = sessionSnapshotSchema.parse(
-        await deps.store.get(input.sessionId),
-      );
+      snapshot = await writer.read();
       if (deps.runMemory) snapshot = await deps.runMemory.restore(snapshot, now());
       if (
         snapshot.status === "running" ||

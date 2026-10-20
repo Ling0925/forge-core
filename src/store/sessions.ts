@@ -1,14 +1,13 @@
 import { randomUUID } from "node:crypto";
 import { readFile, readdir, realpath, stat } from "node:fs/promises";
-import { isAbsolute, join } from "node:path";
+import { join } from "node:path";
 import { z } from "zod";
 import type { SessionStore } from "../shared/contracts";
 import { ForgeError } from "../shared/errors";
-import type { SessionId, SessionSnapshot } from "../shared/schemas";
+import type { SessionId } from "../shared/schemas";
 import {
   createSessionInputSchema,
   sessionIdSchema,
-  sessionSnapshotSchema,
 } from "../shared/schemas";
 import {
   hasCode,
@@ -18,6 +17,7 @@ import {
 } from "./io";
 import { fileLock } from "./lock";
 import { createSessionJournal } from "./session-journal";
+import { validateSnapshot } from "./session-validation";
 export { MAX_SNAPSHOT_BYTES } from "./io";
 
 const lockSchema = z
@@ -34,36 +34,6 @@ const validateId = (id: unknown): SessionId => {
     throw new ForgeError("invalid_input", "Invalid session identifier.");
   return parsed.data;
 };
-function validateSnapshot(value: unknown, persisted: boolean): SessionSnapshot {
-  const parsed = sessionSnapshotSchema.safeParse(value);
-  if (!parsed.success)
-    throw persisted
-      ? storageError()
-      : new ForgeError("invalid_input", "Invalid session snapshot.");
-  const snapshot = parsed.data;
-  if (
-    !isAbsolute(snapshot.workspace) ||
-    snapshot.updatedAt < snapshot.createdAt ||
-    snapshot.events.some((event) => event.sessionId !== snapshot.id)
-  ) {
-    throw persisted
-      ? storageError()
-      : new ForgeError("invalid_input", "Invalid session relationships.");
-  }
-  const pending = new Set<string>();
-  for (const message of snapshot.messages) {
-    if (message.role === "assistant") {
-      if (pending.size !== 0) throw storageError();
-      for (const call of message.tool_calls ?? []) {
-        if (pending.has(call.id)) throw storageError();
-        pending.add(call.id);
-      }
-    } else if (message.role === "tool") {
-      if (!pending.delete(message.tool_call_id)) throw storageError();
-    } else if (pending.size !== 0) throw storageError();
-  }
-  return snapshot;
-}
 export async function openSessionStore(
   directory: string,
 ): Promise<SessionStore> {
@@ -76,6 +46,11 @@ export async function openSessionStore(
   const get: SessionStore["get"] = async (id) => journal.get(validateId(id));
   return {
     get,
+    incremental: {
+      read: id => journal.read(validateId(id)),
+      commit: (id, mutation) => journal.commit(validateId(id), mutation),
+      changesSince: (id, revision) => journal.changesSince(validateId(id), revision),
+    },
     async list() {
       try {
         const summaries = [];

@@ -48,6 +48,7 @@ import { openRunMemory } from "./run-memory";
 import { autoTitle } from "./session-title";
 import { createTaskService } from "./task-service";
 import type { CommandTaskAccess } from "../shared/task-view";
+import { createSessionWriter } from "./session-writer";
 import { createAgentRuntime, withCancellation } from "./runtime";
 
 // Default per-run tools: local registry with configured-key redaction, plus a
@@ -304,8 +305,9 @@ export const createHarness = async (
     await stopTitle(id);
     const release = await store.acquire(sessionIdSchema.parse(id));
     try {
-      const next = await fn(await store.get(id));
-      await store.save(next);
+      const writer = createSessionWriter(store, id);
+      const next = await fn(await writer.read());
+      await writer.save(next);
       return next;
     } finally {
       await release();
@@ -699,9 +701,10 @@ export const createHarness = async (
                     const unlock = await store.acquire(claimed.id, titleSignal);
                     try {
                       if (titleSignal.aborted) return;
-                      const current = await store.get(claimed.id);
+                      const writer = createSessionWriter(store, claimed.id);
+                      const current = await writer.read();
                       if (current.titleSource === "auto" && current.title === claimed.title && current.autoTitleAttempted)
-                        await store.save({ ...current, title });
+                        await writer.save({ ...current, title });
                     } finally { await unlock(); }
                   }).catch(() => {});
                 titleOperations.set(claimed.id, { controller: titleController, work: naming });
