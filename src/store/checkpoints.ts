@@ -1,3 +1,9 @@
+import {
+  type CheckpointMetadata,
+  type CheckpointService,
+  checkpointMetadataSchema,
+} from "../shared/checkpoints";
+export type { CheckpointMetadata, RestoreOptions } from "../shared/checkpoints";
 import { createHash, randomUUID } from "node:crypto";
 import { constants } from "node:fs";
 import { type FileHandle, lstat, open, rename, unlink } from "node:fs/promises";
@@ -17,26 +23,10 @@ import {
 } from "./io";
 import { fileLock } from "./lock";
 
-const RECORD_LIMIT = Math.ceil(LIMIT * 8 / 3) + 64 * 1024;
+const RECORD_LIMIT = Math.ceil((LIMIT * 8) / 3) + 64 * 1024;
 const idSchema = z.string().uuid();
-const recordSchema = z
-  .object({
-    id: idSchema,
-    sessionId: z.string().min(1).max(256),
-    toolCallId: z.string().min(1).max(256),
-    path: z.string().min(1).max(4096),
-    kind: z.enum(["created", "modified"]),
-    state: z.enum(["pending", "completed", "restored"]),
-    beforeHash: z
-      .string()
-      .regex(/^[a-f0-9]{64}$/)
-      .nullable(),
-    beforeMode: z.number().int().min(0).max(0o7777).nullable(),
-    afterHash: z.string().regex(/^[a-f0-9]{64}$/),
-    afterMode: z.number().int().min(0).max(0o7777).optional(),
-    createdAt: z.string().datetime(),
-    completedAt: z.string().datetime().optional(),
-    restoredAt: z.string().datetime().optional(),
+const recordSchema = checkpointMetadataSchema
+  .extend({
     before: z
       .string()
       .max(Math.ceil((LIMIT * 4) / 3) + 4)
@@ -45,15 +35,7 @@ const recordSchema = z
   })
   .strict();
 type RecordData = z.infer<typeof recordSchema>;
-export type CheckpointMetadata = Omit<RecordData, "before" | "after">;
-export interface RestoreOptions {
-  readonly signal?: AbortSignal;
-  readonly isSessionActive: (sessionId: string) => Promise<boolean>;
-}
-export interface CheckpointStore {
-  list(signal?: AbortSignal): Promise<readonly CheckpointMetadata[]>;
-  getDiff(id: string, signal?: AbortSignal): Promise<string>;
-  restore(id: string, options: RestoreOptions): Promise<CheckpointMetadata>;
+export interface CheckpointStore extends CheckpointService {
   begin(input: {
     path: string;
     sessionId: string;

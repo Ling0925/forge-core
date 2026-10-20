@@ -1,4 +1,21 @@
-import { defineTool } from "../shared/tool-definition";
+import type {
+  ContextFileSignature,
+  ContextFingerprint,
+  InstructionSource,
+  ProjectContextCatalog,
+  ProjectContextService,
+  SkillProvenance,
+  SkillRecord,
+} from "../shared/project-context";
+export type {
+  ContextFileSignature,
+  ContextFingerprint,
+  InstructionSource,
+  ProjectContextCatalog,
+  ProjectContextService,
+  SkillProvenance,
+  SkillRecord,
+} from "../shared/project-context";
 import { createHash } from "node:crypto";
 import { constants, type BigIntStats, type Dirent, type Stats } from "node:fs";
 import { lstat, open, readdir, realpath } from "node:fs/promises";
@@ -6,6 +23,7 @@ import { isAbsolute, join, relative, resolve, sep } from "node:path";
 import { z } from "zod";
 import { ForgeError } from "../shared/errors";
 import type { ToolDefinition } from "../shared/schemas";
+import { defineTool } from "../shared/tool-definition";
 import { createProtectedRootMatcher } from "../tools/protected-roots";
 
 // Bounded limits for all context and skill discovery.
@@ -23,47 +41,6 @@ export const CONTEXT_LIMITS = Object.freeze({
 
 export const CONTEXT_INSTRUCTION_TOOL_NAME = "project_context" as const;
 export const LOAD_SKILL_TOOL_NAME = "load_skill" as const;
-
-export interface ContextFileSignature {
-  readonly path: string;
-  readonly signature: string;
-}
-
-export interface ContextFingerprint {
-  readonly hash: string;
-  readonly version: string;
-  readonly signatures: readonly ContextFileSignature[];
-}
-
-export interface InstructionSource {
-  readonly path: string;
-  readonly order: number;
-  readonly bytes: number;
-  readonly body: string;
-}
-
-export type SkillProvenance = "workspace-forge" | "workspace-agents" | "user";
-
-export interface SkillRecord {
-  readonly id: string;
-  readonly name: string;
-  readonly description: string;
-  readonly version: string | null;
-  readonly sourceDirectory: string;
-  readonly provenance: SkillProvenance;
-}
-
-export interface ProjectContextCatalog {
-  readonly workspace: string;
-  readonly instructionSources: readonly InstructionSource[];
-  readonly skills: readonly SkillRecord[];
-  readonly warnings: readonly string[];
-  readonly counts: {
-    readonly instructions: number;
-    readonly skills: number;
-    readonly warnings: number;
-  };
-}
 
 export interface ProjectContextOptions {
   readonly protectedRoots?: readonly string[];
@@ -452,23 +429,6 @@ function hashSignature(input: string): string {
 function insideRoot(root: string, target: string): boolean {
   const rel = relative(root, target);
   return rel === "" || (!rel.startsWith("..") && !isAbsolute(rel));
-}
-
-export interface ProjectContextService {
-  readonly workspace: string;
-  refresh(): Promise<void>;
-  getSystemContext(): string;
-  getCatalog(): ProjectContextCatalog;
-  getFingerprint(): ContextFingerprint;
-  loadSkill(
-    id: string,
-    signal?: AbortSignal,
-  ): Promise<SkillRecord & { body: string }>;
-  resolveInstructions(
-    relativePath: string,
-    signal?: AbortSignal,
-  ): Promise<readonly InstructionSource[]>;
-  dispose(): Promise<void>;
 }
 
 export async function createProjectContext(
@@ -987,10 +947,17 @@ export const loadSkillArgumentsSchema = z
   .strict()
   .readonly();
 
-export const contextInstructionDefinition: ToolDefinition = defineTool(CONTEXT_INSTRUCTION_TOOL_NAME, "Load AGENTS.md project instructions applying to a workspace-relative path. Returns root and nested instruction sources in precedence order (outermost first, most-specific last). Read-only; never executes project commands.", contextPathArgumentsSchema.unwrap().omit({ tool: true }));
+export const contextInstructionDefinition: ToolDefinition = defineTool(
+  CONTEXT_INSTRUCTION_TOOL_NAME,
+  "Load AGENTS.md project instructions applying to a workspace-relative path. Returns root and nested instruction sources in precedence order (outermost first, most-specific last). Read-only; never executes project commands.",
+  contextPathArgumentsSchema.unwrap().omit({ tool: true }),
+);
 
-export const loadSkillDefinition: ToolDefinition = defineTool(LOAD_SKILL_TOOL_NAME, "Load a skill package body by id. Returns bounded SKILL.md content and the source directory. Skill files are instructions only and never grant permissions.", loadSkillArgumentsSchema.unwrap().omit({ tool: true }));
-
+export const loadSkillDefinition: ToolDefinition = defineTool(
+  LOAD_SKILL_TOOL_NAME,
+  "Load a skill package body by id. Returns bounded SKILL.md content and the source directory. Skill files are instructions only and never grant permissions.",
+  loadSkillArgumentsSchema.unwrap().omit({ tool: true }),
+);
 
 export interface ProjectContextToolBundle {
   readonly definitions: readonly ToolDefinition[];

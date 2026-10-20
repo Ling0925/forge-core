@@ -1,10 +1,10 @@
 import { realpath } from "node:fs/promises";
 import { resolve } from "node:path";
-import type { DesktopRuntime } from "../desktop/runtime";
+import type { RuntimeHost } from "../shared/runtime-host";
 import { createWebHost } from "./server";
 
 export interface LanHostOptions {
-  runtime: DesktopRuntime;
+  runtime: RuntimeHost;
   /** A concrete IPv4 literal; `0.0.0.0` is never accepted. */
   host: string;
   port: number;

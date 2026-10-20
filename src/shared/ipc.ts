@@ -1,11 +1,41 @@
+import { type CheckpointDto, checkpointDtoSchema } from "./checkpoints";
+import { mcpStdioRegisterDtoSchema } from "./mcp";
+export { checkpointDtoSchema } from "./checkpoints";
+export type { CheckpointDto } from "./checkpoints";
+import {
+  type McpHealthDto,
+  type McpRecordDto,
+  type McpRegisterDto,
+  mcpHealthDtoSchema,
+  mcpRecordDtoSchema,
+  mcpRegisterDtoSchema,
+} from "./mcp";
+export {
+  mcpRegisterDtoSchema,
+  mcpRecordDtoSchema,
+  mcpHealthDtoSchema,
+} from "./mcp";
+export type { McpRegisterDto, McpRecordDto, McpHealthDto } from "./mcp";
+import {
+  type ProjectContextDto,
+  projectContextDtoSchema,
+} from "./project-context";
+export { projectContextDtoSchema } from "./project-context";
+export type { ProjectContextDto } from "./project-context";
 import { z } from "zod";
 import { hostStateSchema } from "./host";
-import { enqueueInputSchema, inputQueueSnapshotSchema, queuedInputSchema } from "./input-queue";
-import { mcpRemoteRegisterInputSchema } from "../mcp/types";
 import type { HtmlPreviewResponse } from "./html-preview";
-import type { WorkspaceDirectoryPage } from "./workspaces";
-import { publishedFileIdSchema, publishedFileResponseSchema, type PublishedFileResponse } from "./published-files";
 import { type ImageAttachment, imageAttachmentsSchema } from "./images";
+import {
+  enqueueInputSchema,
+  inputQueueSnapshotSchema,
+  queuedInputSchema,
+} from "./input-queue";
+import {
+  type PublishedFileResponse,
+  publishedFileIdSchema,
+  publishedFileResponseSchema,
+} from "./published-files";
 import {
   agentEventSchema,
   configureInputSchema,
@@ -28,117 +58,12 @@ import type {
   SessionSnapshot,
   SessionSummary,
 } from "./schemas";
+import type { WorkspaceDirectoryPage } from "./workspaces";
 
 export const IPC_CHANNELS = Object.freeze({
   request: "forge:request",
   event: "forge:event",
 });
-// Public DTOs deliberately omit instruction bodies, skill bodies and MCP environment.
-export const projectContextDtoSchema = z
-  .object({
-    workspace: z.string().max(4096),
-    instructionSources: z
-      .array(
-        z
-          .object({
-            path: z.string().max(4096),
-            order: z.number().int().nonnegative(),
-            bytes: z.number().int().nonnegative(),
-          })
-          .strict(),
-      )
-      .max(1024),
-    skills: z
-      .array(
-        z
-          .object({
-            id: z.string().max(256),
-            name: z.string().max(256),
-            description: z.string().max(8192),
-            version: z.string().max(256).nullable(),
-            sourceDirectory: z.string().max(4096),
-            provenance: z.enum(["workspace-forge", "workspace-agents", "user"]),
-          })
-          .strict(),
-      )
-      .max(1024),
-    warnings: z.array(z.string().max(4096)).max(1024),
-    counts: z
-      .object({
-        instructions: z.number().int().nonnegative(),
-        skills: z.number().int().nonnegative(),
-        warnings: z.number().int().nonnegative(),
-      })
-      .strict(),
-  })
-  .strict()
-  .readonly();
-export type ProjectContextDto = z.infer<typeof projectContextDtoSchema>;
-const mcpStdioRegisterDtoSchema = z
-  .object({
-    id: z.string().regex(/^[a-z0-9][a-z0-9-]{0,31}$/),
-    label: z.string().min(1).max(64),
-    command: z.string().min(1).max(4096),
-    args: z.array(z.string().max(8192)).max(64),
-    enabled: z.boolean().optional(),
-    requestTimeoutMs: z.number().int().min(1000).max(60000).optional(),
-  })
-  .strict()
-  .readonly();
-export const mcpRegisterDtoSchema = z.union([mcpStdioRegisterDtoSchema, mcpRemoteRegisterInputSchema]);
-export type McpRegisterDto = z.infer<typeof mcpRegisterDtoSchema>;
-export const mcpRecordDtoSchema = z
-  .object({
-    id: mcpStdioRegisterDtoSchema.unwrap().shape.id,
-    label: mcpStdioRegisterDtoSchema.unwrap().shape.label,
-    command: z.string().max(4096),
-    args: mcpStdioRegisterDtoSchema.unwrap().shape.args,
-    enabled: z.boolean(),
-    requestTimeoutMs: z.number().int(),
-    envNameCount: z.number().int().nonnegative(),
-    hasPrivateEnv: z.boolean(),
-    transport: z.enum(["stdio", "http", "sse"]).optional(),
-    url: z.string().max(4096).optional(),
-    headerCount: z.number().int().nonnegative().optional(),
-    hasPrivateHeaders: z.boolean().optional(),
-  })
-  .strict()
-  .readonly();
-export type McpRecordDto = z.infer<typeof mcpRecordDtoSchema>;
-export const mcpHealthDtoSchema = z
-  .object({
-    id: mcpStdioRegisterDtoSchema.unwrap().shape.id,
-    enabled: z.boolean(),
-    connected: z.boolean(),
-    negotiatedProtocolVersion: z.string().max(128).nullable(),
-    lastError: z.string().max(4096).nullable(),
-    transport: z.enum(["stdio", "http", "sse"]).optional(),
-  })
-  .strict()
-  .readonly();
-export type McpHealthDto = z.infer<typeof mcpHealthDtoSchema>;
-export const checkpointDtoSchema = z
-  .object({
-    id: z.string().uuid(),
-    sessionId: z.string().min(1).max(256),
-    toolCallId: z.string().min(1).max(256),
-    path: z.string().min(1).max(4096),
-    kind: z.enum(["created", "modified"]),
-    state: z.enum(["pending", "completed", "restored"]),
-    beforeHash: z
-      .string()
-      .regex(/^[a-f0-9]{64}$/)
-      .nullable(),
-    beforeMode: z.number().int().min(0).max(0o7777).nullable(),
-    afterHash: z.string().regex(/^[a-f0-9]{64}$/),
-    afterMode: z.number().int().min(0).max(0o7777).optional(),
-    createdAt: z.string().datetime(),
-    completedAt: z.string().datetime().optional(),
-    restoredAt: z.string().datetime().optional(),
-  })
-  .strict()
-  .readonly();
-export type CheckpointDto = z.infer<typeof checkpointDtoSchema>;
 export const usageFilterSchema = z
   .object({
     workspace: z.string().optional(),
@@ -277,11 +202,42 @@ const requestBase = { id: z.string().uuid() };
 export const rpcRequestSchema = z
   .discriminatedUnion("method", [
     z.object({ ...requestBase, method: z.literal("getHostState") }).strict(),
-    z.object({ ...requestBase, method: z.literal("enqueueInput"), input: enqueueInputSchema }).strict(),
-    z.object({ ...requestBase, method: z.literal("listInputs"), sessionId: sessionIdSchema }).strict(),
-    z.object({ ...requestBase, method: z.literal("cancelInput"), sessionId: sessionIdSchema, inputId: z.string().uuid() }).strict(),
-    z.object({ ...requestBase, method: z.literal("pauseInputs"), sessionId: sessionIdSchema }).strict(),
-    z.object({ ...requestBase, method: z.literal("resumeInputs"), sessionId: sessionIdSchema }).strict(),
+    z
+      .object({
+        ...requestBase,
+        method: z.literal("enqueueInput"),
+        input: enqueueInputSchema,
+      })
+      .strict(),
+    z
+      .object({
+        ...requestBase,
+        method: z.literal("listInputs"),
+        sessionId: sessionIdSchema,
+      })
+      .strict(),
+    z
+      .object({
+        ...requestBase,
+        method: z.literal("cancelInput"),
+        sessionId: sessionIdSchema,
+        inputId: z.string().uuid(),
+      })
+      .strict(),
+    z
+      .object({
+        ...requestBase,
+        method: z.literal("pauseInputs"),
+        sessionId: sessionIdSchema,
+      })
+      .strict(),
+    z
+      .object({
+        ...requestBase,
+        method: z.literal("resumeInputs"),
+        sessionId: sessionIdSchema,
+      })
+      .strict(),
     z.object({ ...requestBase, method: z.literal("getSettings") }).strict(),
     z
       .object({
@@ -290,7 +246,16 @@ export const rpcRequestSchema = z
         input: configureInputSchema,
       })
       .strict(),
-    z.object({ ...requestBase, method: z.literal("listModels"), sourceId: z.string().regex(/^[a-z][a-z0-9_-]{0,31}$/).optional() }).strict(),
+    z
+      .object({
+        ...requestBase,
+        method: z.literal("listModels"),
+        sourceId: z
+          .string()
+          .regex(/^[a-z][a-z0-9_-]{0,31}$/)
+          .optional(),
+      })
+      .strict(),
     z.object({ ...requestBase, method: z.literal("listSessions") }).strict(),
     z
       .object({
@@ -306,7 +271,14 @@ export const rpcRequestSchema = z
         sessionId: sessionIdSchema,
       })
       .strict(),
-    z.object({ ...requestBase, method: z.literal("getPublishedFile"), sessionId: sessionIdSchema, fileId: publishedFileIdSchema }).strict(),
+    z
+      .object({
+        ...requestBase,
+        method: z.literal("getPublishedFile"),
+        sessionId: sessionIdSchema,
+        fileId: publishedFileIdSchema,
+      })
+      .strict(),
     z
       .object({
         ...requestBase,
@@ -413,7 +385,14 @@ export const rpcRequestSchema = z
       })
       .strict(),
     z.object({ ...requestBase, method: z.literal("chooseWorkspace") }).strict(),
-    z.object({ ...requestBase, method: z.literal("savePublishedFile"), sessionId: sessionIdSchema, fileId: publishedFileIdSchema }).strict(),
+    z
+      .object({
+        ...requestBase,
+        method: z.literal("savePublishedFile"),
+        sessionId: sessionIdSchema,
+        fileId: publishedFileIdSchema,
+      })
+      .strict(),
     z
       .object({
         ...requestBase,
@@ -443,8 +422,23 @@ export const rpcRequestSchema = z
         runId: runIdSchema,
       })
       .strict(),
-    z.object({ ...requestBase, method: z.literal("setRunPermission"), runId: runIdSchema, permission: permissionSchema }).strict(),
-    z.object({ ...requestBase, method: z.literal("steerRun"), runId: runIdSchema, prompt: z.string().trim().max(1000000), images: imageAttachmentsSchema.optional() }).strict(),
+    z
+      .object({
+        ...requestBase,
+        method: z.literal("setRunPermission"),
+        runId: runIdSchema,
+        permission: permissionSchema,
+      })
+      .strict(),
+    z
+      .object({
+        ...requestBase,
+        method: z.literal("steerRun"),
+        runId: runIdSchema,
+        prompt: z.string().trim().max(1000000),
+        images: imageAttachmentsSchema.optional(),
+      })
+      .strict(),
     z
       .object({
         ...requestBase,
@@ -484,12 +478,19 @@ export const workerRequestSchema = rpcRequestSchema.refine(
   (request) =>
     request.method !== "chooseWorkspace" &&
     request.method !== "openExternal" &&
-    request.method !== "exportSession" && request.method !== "savePublishedFile",
+    request.method !== "exportSession" &&
+    request.method !== "savePublishedFile",
   "Workspace chooser is main-process only",
 );
 export type WorkerRequest = Exclude<
   RpcRequest,
-  { readonly method: "chooseWorkspace" | "openExternal" | "exportSession" | "savePublishedFile" }
+  {
+    readonly method:
+      | "chooseWorkspace"
+      | "openExternal"
+      | "exportSession"
+      | "savePublishedFile";
+  }
 >;
 const success = <M extends RpcRequest["method"], S extends z.ZodTypeAny>(
   method: M,
@@ -638,7 +639,10 @@ export interface ForgeBridge {
   listSessions(): Promise<readonly SessionSummary[]>;
   createSession(input: CreateSessionInput): Promise<SessionSnapshot>;
   getSession(sessionId: SessionId): Promise<SessionSnapshot>;
-  getPublishedFile(sessionId: SessionId, fileId: string): Promise<PublishedFileResponse>;
+  getPublishedFile(
+    sessionId: SessionId,
+    fileId: string,
+  ): Promise<PublishedFileResponse>;
   compactSession(sessionId: SessionId): Promise<SessionSnapshot>;
   forkSession(
     sessionId: SessionId,
@@ -688,7 +692,11 @@ export interface ForgeBridge {
   startRun(input: RunInput): Promise<RunHandle>;
   cancelRun(runId: RunId): Promise<void>;
   setRunPermission(runId: RunId, permission: Permission): Promise<Permission>;
-  steerRun(runId: RunId, prompt: string, images?: readonly ImageAttachment[]): Promise<void>;
+  steerRun(
+    runId: RunId,
+    prompt: string,
+    images?: readonly ImageAttachment[],
+  ): Promise<void>;
   answerApproval(
     runId: RunId,
     approvalId: string,

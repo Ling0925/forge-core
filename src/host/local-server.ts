@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { chmod, lstat } from "node:fs/promises";
 import { type Socket, createServer } from "node:net";
-import type { DesktopRuntime } from "../desktop/runtime";
+import type { RuntimeHost } from "../shared/runtime-host";
 import { toErrorInfo } from "../shared/errors";
 import { type RunEvent, workerRequestSchema } from "../shared/ipc";
 import { hasCode } from "../store/io";
@@ -13,7 +13,7 @@ import { localSocketPath } from "./socket-path";
 const MAX_EVENTS = 2048;
 const MAX_EVENT_BYTES = 4 * 1024 * 1024;
 export async function createLocalHost(options: {
-  runtime: DesktopRuntime;
+  runtime: RuntimeHost;
   socketPath: string;
 }) {
   const path = await localSocketPath(options.socketPath, true);

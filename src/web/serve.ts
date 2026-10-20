@@ -1,6 +1,6 @@
 import { fileURLToPath } from "node:url";
 import { createHarness } from "../core/harness";
-import { createRuntimeHub } from "../desktop/runtime";
+import { createRuntimeHub } from "../host/runtime";
 import { createLocalHost } from "../host/local-server";
 import { validLanEndpoint } from "./lan";
 import { createWebHost } from "./server";

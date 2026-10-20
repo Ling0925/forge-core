@@ -8,8 +8,8 @@ import {
 import { resolve } from "node:path";
 import { WebSocket, WebSocketServer } from "ws";
 import { z } from "zod";
-import type { DesktopRuntime } from "../desktop/runtime";
-import { createRuntimeHub } from "../desktop/runtime";
+import type { RuntimeHost } from "../shared/runtime-host";
+import { createRuntimeHub } from "../host/runtime";
 import type { HarnessService } from "../shared/contracts";
 import {
   HTML_PREVIEW_CSP,
@@ -101,7 +101,7 @@ export async function createWebHost(
   options: WebHostOptions &
     (
       | { service: HarnessService; runtime?: undefined }
-      | { runtime: DesktopRuntime; service?: undefined }
+      | { runtime: RuntimeHost; service?: undefined }
     ),
 ) {
   const restrictWorkspace = options.restrictWorkspace !== false;
@@ -127,7 +127,7 @@ export async function createWebHost(
   >();
   const requestIds = new Set<string>();
   const injected = options.runtime;
-  const runtime: DesktopRuntime = injected ?? createRuntimeHub(options.service);
+  const runtime: RuntimeHost = injected ?? createRuntimeHub(options.service);
   const ownsRuntime = injected === undefined;
   const unsubscribe = runtime.subscribe((message) => {
     if (message.kind !== "event") return;

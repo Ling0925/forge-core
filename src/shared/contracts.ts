@@ -31,13 +31,18 @@ export interface RunControl {
   readonly acknowledgedPredecessor?: string;
   readonly getPermission?: () => Permission | undefined;
   /** final=true atomically closes an empty child queue before terminal cleanup. */
-  readonly drainSteering: (final?: boolean) => readonly (string | Pick<RunInput, "prompt" | "images">)[];
+  readonly drainSteering: (
+    final?: boolean,
+  ) => readonly (string | Pick<RunInput, "prompt" | "images">)[];
   readonly onSteeringApplied?: () => void;
 }
 export interface ModelProvider {
   readonly apiMode?: "chat-completions" | "responses" | "anthropic";
   listModels(signal?: AbortSignal): Promise<readonly string[]>;
-  getModelContextWindow?(model: string, signal?: AbortSignal): Promise<number | null>;
+  getModelContextWindow?(
+    model: string,
+    signal?: AbortSignal,
+  ): Promise<number | null>;
   complete(
     messages: readonly Message[],
     toolDefinitions: readonly ToolDefinition[],
@@ -64,10 +69,15 @@ export interface ToolContext {
   readonly approve: ApprovalHandler;
   readonly onEvent: EventSink;
   /** Host-owned accounting for auxiliary inference; undefined marks missing usage. */
-  readonly onModelUsage?: (usage: import("./schemas").Usage | undefined) => void;
+  readonly onModelUsage?: (
+    usage: import("./schemas").Usage | undefined,
+  ) => void;
   /** Host-owned observers; not model tools and never permission grants. */
   readonly onCommandStarted?: () => void;
-  readonly onCommandOutput?: (stream: "stdout" | "stderr", text: string) => void;
+  readonly onCommandOutput?: (
+    stream: "stdout" | "stderr",
+    text: string,
+  ) => void;
 }
 export interface LocalToolRegistry {
   readonly definitions: readonly ToolDefinition[];
@@ -75,7 +85,10 @@ export interface LocalToolRegistry {
   isConcurrencySafe?(call: ToolCall): boolean;
   execute(call: ToolCall, context: ToolContext): Promise<ToolResult>;
   /** Join and report only undelivered background work before model finalization. */
-  settleBackground?(sessionId: SessionId, signal: AbortSignal): Promise<ToolResult | undefined>;
+  settleBackground?(
+    sessionId: SessionId,
+    signal: AbortSignal,
+  ): Promise<ToolResult | undefined>;
   readonly commandTasks?: import("./task-view").CommandTaskAccess;
   dispose(): Promise<void>;
 }
@@ -86,7 +99,13 @@ export interface SessionStore {
   list(): Promise<readonly SessionSummary[]>;
   get(id: SessionId): Promise<SessionSnapshot>;
   create(
-    input: Readonly<{ workspace: string; title: string; model: string; providerSourceId?: string; titleSource?: "default" | "user" }>,
+    input: Readonly<{
+      workspace: string;
+      title: string;
+      model: string;
+      providerSourceId?: string;
+      titleSource?: "default" | "user";
+    }>,
   ): Promise<SessionSnapshot>;
   save(snapshot: SessionSnapshot): Promise<void>;
   acquire(id: SessionId, signal?: AbortSignal): Promise<() => Promise<void>>;
@@ -106,12 +125,22 @@ export interface HarnessService {
   updateSettings(input: ConfigureInput): Promise<PublicSettings>;
   getToolHooks?(): Promise<import("./tool-hooks").ToolHooksConfig>;
   setToolHooks?(config: import("./tool-hooks").ToolHooksConfig): Promise<void>;
-  listModels(signal?: AbortSignal, sourceId?: string): Promise<readonly string[]>;
-  getModelContextWindow?(model: string, signal?: AbortSignal, sourceId?: string): Promise<number | null>;
+  listModels(
+    signal?: AbortSignal,
+    sourceId?: string,
+  ): Promise<readonly string[]>;
+  getModelContextWindow?(
+    model: string,
+    signal?: AbortSignal,
+    sourceId?: string,
+  ): Promise<number | null>;
   listSessions(): Promise<readonly SessionSummary[]>;
   createSession(input: CreateSessionInput): Promise<SessionSnapshot>;
   getSession(id: SessionId): Promise<SessionSnapshot>;
-  getPublishedFile?(sessionId: SessionId, fileId: string): Promise<import("./published-files").PublishedFileResponse>;
+  getPublishedFile?(
+    sessionId: SessionId,
+    fileId: string,
+  ): Promise<import("./published-files").PublishedFileResponse>;
   run(
     input: RunInput,
     onEvent: EventSink,
@@ -121,24 +150,18 @@ export interface HarnessService {
   ): Promise<SessionSnapshot>;
   getProjectContext(
     id: SessionId,
-  ): Promise<import("../context/index").ProjectContextCatalog>;
-  listMcpServers(): ReturnType<import("../mcp/registry").McpService["list"]>;
-  registerMcpServer(
-    input: Parameters<import("../mcp/registry").McpService["register"]>[0],
-  ): ReturnType<import("../mcp/registry").McpService["register"]>;
+  ): Promise<import("./project-context").ProjectContextCatalog>;
+  listMcpServers(): Promise<readonly import("./mcp").McpServerRecord[]>;
+  registerMcpServer(input: unknown): Promise<import("./mcp").McpServerRecord>;
   setMcpEnabled(
     id: string,
     enabled: boolean,
-  ): ReturnType<import("../mcp/registry").McpService["setEnabled"]>;
-  removeMcpServer(
-    id: string,
-  ): ReturnType<import("../mcp/registry").McpService["remove"]>;
-  getMcpHealth(
-    id: string,
-  ): ReturnType<import("../mcp/registry").McpService["health"]>;
+  ): Promise<import("./mcp").McpServerRecord>;
+  removeMcpServer(id: string): Promise<void>;
+  getMcpHealth(id: string): Promise<import("./mcp").McpHealth>;
   listCheckpoints(
     id: SessionId,
-  ): Promise<readonly import("../store/checkpoints").CheckpointMetadata[]>;
+  ): Promise<readonly import("./checkpoints").CheckpointMetadata[]>;
   getCheckpointDiff(id: SessionId, checkpointId: string): Promise<string>;
   restoreCheckpoint(
     id: SessionId,
@@ -179,23 +202,37 @@ export interface HarnessOptions {
   readonly toolFactory?: ToolFactory;
 }
 export interface AgentRuntimeDependencies {
-  readonly sessionLock?: Readonly<{ id: SessionId; release: () => Promise<void> }>;
+  readonly sessionLock?: Readonly<{
+    id: SessionId;
+    release: () => Promise<void>;
+  }>;
   readonly autoTitle?: Readonly<{
     secrets: readonly string[];
-    start: (snapshot: SessionSnapshot, apply: (title: string) => Promise<boolean>) => void;
+    start: (
+      snapshot: SessionSnapshot,
+      apply: (title: string) => Promise<boolean>,
+    ) => void;
   }>;
   readonly runMemory?: {
     readonly record: (snapshot: SessionSnapshot) => Promise<void>;
-    readonly restore: (snapshot: SessionSnapshot, at: string) => Promise<SessionSnapshot>;
+    readonly restore: (
+      snapshot: SessionSnapshot,
+      at: string,
+    ) => Promise<SessionSnapshot>;
   };
   readonly store: SessionStore;
   readonly provider: ModelProvider;
   readonly tools: LocalToolRegistry;
   readonly toolHooks?: import("./tool-hooks").ToolHooksConfig;
-  readonly agentWorktrees?: ReturnType<typeof import("../core/agent-worktrees").createAgentWorktreeService>;
+  readonly agentWorktrees?: import("./agent-worktrees").AgentWorktreeService;
   readonly settings: PublicSettings;
   readonly childToolFactory?: ToolFactory;
-  readonly childContextFactory?: (workspace: string) => Promise<{ readonly tools: LocalToolRegistry; readonly instructions: string }>;
+  readonly childContextFactory?: (
+    workspace: string,
+  ) => Promise<{
+    readonly tools: LocalToolRegistry;
+    readonly instructions: string;
+  }>;
   readonly onChildOperation?: (
     id: SessionId,
     controller: AbortController,
