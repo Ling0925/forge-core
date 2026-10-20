@@ -18,6 +18,7 @@ import type { Message, ProviderConfig } from "../shared/schemas";
 import { estimateToolCallLines } from "../shared/tool-preview-lines";
 import { ProviderError, protocol } from "./errors";
 import { withSdkRequest } from "./sdk-transport";
+import { readModelContextWindow } from "./context-window";
 
 const contentSchema = z
   .array(
@@ -164,23 +165,33 @@ export function createAnthropicProvider(
       logLevel: "off",
       defaultHeaders: { "x-api-key": settings.apiKey || null },
     });
+  let windows = new Map<string, number | null>();
+  let catalogLoaded = false;
+  const listModels = (signal?: AbortSignal) =>
+    withSdkRequest(
+      settings,
+      { signal, idle: false },
+      async ({ signal, fetch }) => {
+        const next = new Map<string, number | null>();
+        for await (const model of clientFor(fetch).models.list(
+          { limit: 100 },
+          { signal },
+        )) {
+          next.set(settingsFields.model.parse(model.id), readModelContextWindow(model));
+          if (next.size > 10000) throw protocol("output_limit");
+        }
+        // Publish a cache only after every page succeeded.
+        windows = next;
+        catalogLoaded = true;
+        return [...windows.keys()].sort();
+      },
+    );
   return {
-    listModels: (signal) =>
-      withSdkRequest(
-        settings,
-        { signal, idle: false },
-        async ({ signal, fetch }) => {
-          const ids = new Set<string>();
-          for await (const model of clientFor(fetch).models.list(
-            { limit: 100 },
-            { signal },
-          )) {
-            ids.add(settingsFields.model.parse(model.id));
-            if (ids.size > 10000) throw protocol("output_limit");
-          }
-          return [...ids].sort();
-        },
-      ),
+    listModels,
+    async getModelContextWindow(model, signal) {
+      if (!catalogLoaded) await listModels(signal);
+      return windows.get(model) ?? null;
+    },
     complete: async (messages, tools, options) => {
       const parsed = z
         .object({

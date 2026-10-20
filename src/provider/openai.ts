@@ -1,5 +1,6 @@
 import OpenAI from "openai";
 import { createAnthropicProvider } from "./anthropic";
+import { readModelContextWindow } from "./context-window";
 import { ProviderError, protocol, httpError } from "./errors";
 import { sdkEvents, withSdkRequest } from "./sdk-transport";
 export { ProviderError } from "./errors";
@@ -110,6 +111,8 @@ const modelsSchema = z.object({
         context_length: z.unknown().optional(),
         context_window: z.unknown().optional(),
         max_model_len: z.unknown().optional(),
+        max_input_tokens: z.unknown().optional(),
+        top_provider: z.unknown().optional(),
       }),
     )
     .max(10000),
@@ -408,20 +411,8 @@ export function createModelProvider(config: ProviderConfig): ModelProvider {
           parseJson(await readText(response)),
         );
         if (!parsed.success) throw protocol();
-        for (const model of parsed.data.data) {
-          const value = [
-            model.context_length,
-            model.context_window,
-            model.max_model_len,
-          ].find(
-            (v): v is number =>
-              typeof v === "number" &&
-              Number.isInteger(v) &&
-              v > 0 &&
-              v <= 10000000,
-          );
-          windows.set(model.id, value ?? null);
-        }
+        windows.clear();
+        for (const model of parsed.data.data) windows.set(model.id, readModelContextWindow(model));
         catalogLoaded = true;
         return [...new Set(parsed.data.data.map((model) => model.id))].sort();
       },

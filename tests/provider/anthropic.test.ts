@@ -317,6 +317,29 @@ it("paginates native models without inheriting environment credentials", async (
   expect(paths[1]).toContain("after_id=z");
 });
 
+it("keeps native model context windows across paginated catalog reads", async () => {
+  let requests = 0;
+  const provider = await fixture((req, res) => {
+    requests++;
+    const secondPage = req.url?.includes("after_id=large");
+    res.setHeader("content-type", "application/json");
+    res.end(JSON.stringify({
+      data: secondPage
+        ? [{ id: "small", max_input_tokens: "64000" }, { id: "unknown", max_output_tokens: 8192 }]
+        : [{ id: "large", max_input_tokens: 1000000 }],
+      has_more: !secondPage, first_id: secondPage ? "small" : "large", last_id: secondPage ? "unknown" : "large",
+    }));
+  });
+  expect(await provider.getModelContextWindow?.("large")).toBe(1000000);
+  expect(await provider.getModelContextWindow?.("small")).toBe(64000);
+  expect(await provider.getModelContextWindow?.("unknown")).toBeNull();
+  expect(await provider.getModelContextWindow?.("missing")).toBeNull();
+  expect(requests).toBe(2);
+  expect(await provider.listModels()).toEqual(["large", "small", "unknown"]);
+  expect(await provider.getModelContextWindow?.("large")).toBe(1000000);
+  expect(requests).toBe(4);
+});
+
 it.each([401, 429, 503])(
   "sanitizes HTTP %s and never retries a generation",
   async (status) => {

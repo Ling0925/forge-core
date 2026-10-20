@@ -83,28 +83,36 @@ export const RETRY_DELAYS_MS = [500, 1000, 2000, 4000, 8000] as const;
  * 1.4x for tool-result-heavy or CJK history (p90), so a budget check on the raw
  * estimate fires late and trims too little. The compaction trigger therefore
  * compares a calibrated estimate against the budget, with the scale learned from
- * this session's own provider-reported input and bounded between the observed
- * floor and ceiling so one unusual turn cannot skew it.
+ * this session's own provider-reported input. The floor is a safety margin,
+ * not a substitute for a larger measured ratio: capping that ratio can let a
+ * request already known to exceed the reserve pass the budget check forever.
  */
 export const CONTEXT_SCALE_FLOOR = 1.25;
-export const CONTEXT_SCALE_CEILING = 2;
 
-/**
- * Seed the estimate scale from this session's own recorded usage pairs, so a
- * resumed long session starts calibrated instead of relearning on every run.
- * Only local-estimate/reported-input pairs from the persisted event log are
- * used; the median resists a single odd turn, and no pair means no seed.
- */
-export function seedContextScale(events: readonly AgentEvent[]): number {
-  const ratios: number[] = [];
+/** Restore the latest valid request measurement, not a median that can hide a
+ * newly oversized input. Model changes and compaction invalidate older pairs.
+ * Billing totals and generated/reasoning output are never used for calibration. */
+export function seedContextScale(events: readonly AgentEvent[], model?: string): number {
+  let scale = CONTEXT_SCALE_FLOOR;
+  let currentModel: string | undefined;
   let estimated: Extract<AgentEvent, { type: "context_usage" }> | undefined;
   for (const reported of events) {
-    if (reported.type === "run_started" || reported.type === "run_finished" ||
-        reported.type === "step_finished" || reported.type === "error") {
+    if (reported.type === "run_started") {
+      if (currentModel !== reported.model) scale = CONTEXT_SCALE_FLOOR;
+      currentModel = reported.model;
       estimated = undefined;
       continue;
     }
-    if (reported.type !== "context_usage") continue;
+    if (reported.type === "context_compacted") {
+      scale = CONTEXT_SCALE_FLOOR;
+      estimated = undefined;
+      continue;
+    }
+    if (reported.type === "run_finished" || reported.type === "step_finished" || reported.type === "error") {
+      estimated = undefined;
+      continue;
+    }
+    if (reported.type !== "context_usage" || (model !== undefined && currentModel !== undefined && model !== currentModel)) continue;
     if (reported.usage.basis === "projected") {
       estimated = reported;
       continue;
@@ -116,12 +124,9 @@ export function seedContextScale(events: readonly AgentEvent[]): number {
     estimated = undefined;
     const reportedTokens = reported.usage.promptTokens;
     if (!sameStep || estimatedTokens <= 0 || reportedTokens === undefined || reportedTokens <= 0) continue;
-    ratios.push(reportedTokens / estimatedTokens);
+    scale = Math.max(CONTEXT_SCALE_FLOOR, reportedTokens / estimatedTokens);
   }
-  if (ratios.length === 0) return CONTEXT_SCALE_FLOOR;
-  ratios.sort((a, b) => a - b);
-  const median = ratios[Math.floor(ratios.length / 2)] ?? CONTEXT_SCALE_FLOOR;
-  return Math.min(CONTEXT_SCALE_CEILING, Math.max(CONTEXT_SCALE_FLOOR, median));
+  return scale;
 }
 
 /**
@@ -585,7 +590,7 @@ export const createAgentRuntime = (
       const claimed = claimAutoTitle(snapshot, deps.autoTitle?.secrets ?? []);
       const shouldName = claimed !== snapshot;
       snapshot = claimed;
-      contextScale = seedContextScale(snapshot.events);
+      contextScale = seedContextScale(snapshot.events, snapshot.model);
       const started = agentEventSchema.parse({ type: "run_started", turn,
         sessionId: input.sessionId, timestamp: now(), messageIndex: snapshot.messages.length - 1,
         model: snapshot.model, permission, title: snapshot.title });
@@ -842,10 +847,7 @@ export const createAgentRuntime = (
           // Only positive measurements are usable, and the scale only ever grows,
           // so a light turn cannot mask a heavier one later in the same run.
           if (projectedUsage.usedTokens > 0 && incoming.promptTokens > 0)
-            contextScale = Math.min(
-              CONTEXT_SCALE_CEILING,
-              Math.max(contextScale, incoming.promptTokens / projectedUsage.usedTokens),
-            );
+            contextScale = Math.max(contextScale, incoming.promptTokens / projectedUsage.usedTokens);
           // Aggregate only provider-reported cache counts; never invent cached usage.
           const cached =
             incoming.cachedPromptTokens === undefined

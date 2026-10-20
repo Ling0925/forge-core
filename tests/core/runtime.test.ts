@@ -3,7 +3,6 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import {
-  CONTEXT_SCALE_CEILING,
   CONTEXT_SCALE_FLOOR,
   compactContext,
   createAgentRuntime,
@@ -834,6 +833,25 @@ it("uses a known token window beyond 100k chars and reports its actual trigger",
   ]));
 });
 
+it.each([
+  { reported: 1000000, override: undefined, window: 1000000, budget: 800000 },
+  { reported: 1000000, override: 64000, window: 64000, budget: 51200 },
+  { reported: null, override: undefined, window: 300000, budget: 240000 },
+])("uses the configured window and reserve, falling back to 300K only when unknown: $window", async ({ reported, override, window, budget }) => {
+  let metadataReads = 0;
+  const f = fixture({ ...finalProvider, getModelContextWindow: async () => { metadataReads++; return reported; } }, emptyTools);
+  const runtime = createAgentRuntime({ ...f.deps, settings: {
+    ...defaultPublicSettings,
+    ...(override === undefined ? {} : { modelContextWindows: { chosen: override } }),
+  } });
+  const result = await runtime.run(input, () => {}, async () => false, signal());
+  expect(result.status).toBe("completed");
+  expect(metadataReads).toBe(override === undefined ? 1 : 0);
+  for (const event of result.events.filter(event => event.type === "context_usage")) {
+    expect(event.usage).toMatchObject({ windowTokens: window, budgetTokens: budget });
+  }
+});
+
 it("summarizes old history while keeping three recent human turns in the real request", async () => {
   const messages: Message[] = [];
   for (let i = 0; i < 7; i++) messages.push({ role: "user", content: `request-${i}` }, { role: "assistant", content: "中".repeat(5000) });
@@ -870,15 +888,15 @@ it("seeds the estimate scale from recorded usage pairs and ignores unusable ones
     usage(0, { basis: "projected", used: 10000 }),
     usage(1, { basis: "request", used: 14000, prompt: 14000 }),
   ])).toBeCloseTo(1.4, 5);
-  // The median resists one wild turn, and the result never leaves its bounds.
+  // The latest real input must not be hidden by an older median or a 2x cap.
   expect(seedContextScale([
     usage(0, { basis: "projected", used: 10000 }),
     usage(1, { basis: "request", used: 12000, prompt: 12000 }),
     usage(2, { basis: "projected", used: 10000 }),
     usage(3, { basis: "request", used: 15000, prompt: 15000 }),
     usage(4, { basis: "projected", used: 10000 }),
-    usage(5, { basis: "request", used: 900000, prompt: 900000 }),
-  ])).toBeCloseTo(1.5, 5);
+    usage(5, { basis: "request", used: 40000, prompt: 40000 }),
+  ])).toBe(4);
   expect(seedContextScale([
     usage(0, { basis: "projected", used: 10000 }),
     usage(1, { basis: "request", used: 1000, prompt: 1000 }),
@@ -886,7 +904,26 @@ it("seeds the estimate scale from recorded usage pairs and ignores unusable ones
   expect(seedContextScale([
     usage(0, { basis: "projected", used: 10000 }),
     usage(1, { basis: "request", used: 900000, prompt: 900000 }),
-  ])).toBe(CONTEXT_SCALE_CEILING);
+  ])).toBe(90);
+});
+
+it("does not reuse calibration across model changes, compaction or mismatched requests", () => {
+  const start = (model: string): AgentEvent => agentEventSchema.parse({
+    type: "run_started", sessionId: initial().id, timestamp: initial().createdAt, model, permission: "readonly",
+  });
+  const projected = usageEvent(0, { basis: "projected", used: 10000 });
+  const reported = usageEvent(1, { basis: "request", used: 40000, prompt: 40000 });
+  const old = [start("a"), projected, reported];
+  expect(seedContextScale(old, "a")).toBe(4);
+  expect(seedContextScale([...old, start("a")], "a")).toBe(4);
+  expect(seedContextScale(old, "b")).toBe(CONTEXT_SCALE_FLOOR);
+  expect(seedContextScale([...old, start("b")], "b")).toBe(CONTEXT_SCALE_FLOOR);
+  const compacted: AgentEvent = agentEventSchema.parse({
+    type: "context_compacted", sessionId: initial().id, timestamp: initial().updatedAt,
+    removedMessages: 2, beforeChars: 10000, afterChars: 1000,
+  });
+  expect(seedContextScale([...old, compacted, reported], "a")).toBe(CONTEXT_SCALE_FLOOR);
+  expect(seedContextScale([{ ...projected, step: 1 }, { ...reported, step: 2 }])).toBe(CONTEXT_SCALE_FLOOR);
 });
 
 it("restores calibration from real step events instead of requiring adjacent usage records", async () => {
@@ -928,6 +965,46 @@ it("applies newly observed calibration before the next generation in the same ru
   expect(result.status).toBe("completed");
   expect(sent).toHaveLength(2);
   expect(sent[1]).toBeLessThanOrEqual(12000);
+  expect(result.events.some(event => event.type === "context_compacted")).toBe(true);
+  expect(result.messages.filter(message => message.role !== "system").slice(0, 2)).toEqual(previous);
+});
+
+it.each(["tool continuation", "resumed session"])("honors input above the 300K reserve despite a >2x estimate error: %s", async (mode) => {
+  const previous: Message[] = [
+    { role: "user", content: "prior task" },
+    { role: "assistant", content: "x".repeat(280000) },
+  ];
+  const sent: number[] = [];
+  let summaries = 0;
+  let executions = 0;
+  const f = fixture({ ...finalProvider, complete: async (messages, definitions) => {
+    if (!definitions.length) {
+      summaries++;
+      return { message: { role: "assistant", content: JSON.stringify({
+        goal: "continue", constraints: [], decisions: [], completed: [], nextSteps: [], verification: [], uncertainties: [],
+      }) } };
+    }
+    const promptTokens = measureContext(messages, 300000, definitions).usedTokens * 4;
+    sent.push(promptTokens);
+    return { message: sent.length === 1 && mode === "tool continuation"
+      ? { role: "assistant", content: null, tool_calls: [call("once")] }
+      : { role: "assistant", content: "done" },
+      usage: { promptTokens, completionTokens: 1, totalTokens: promptTokens + 1 } };
+  } }, { ...emptyTools, execute: async () => {
+    executions++;
+    return { content: "small result", isError: false };
+  } }, { ...initial(), messages: previous });
+
+  let result = await f.runtime.run(input, () => {}, async () => false, signal());
+  if (mode === "resumed session") result = await f.runtime.run(input, () => {}, async () => false, signal());
+
+  expect(result.status).toBe("completed");
+  expect(sent).toHaveLength(2);
+  expect(sent[0]).toBeGreaterThan(240000);
+  expect(sent[1]).toBeLessThanOrEqual(240000);
+  expect(summaries).toBeGreaterThan(0);
+  expect(executions).toBe(mode === "tool continuation" ? 1 : 0);
+  expect(result.contextSummary).toBeDefined();
   expect(result.events.some(event => event.type === "context_compacted")).toBe(true);
   expect(result.messages.filter(message => message.role !== "system").slice(0, 2)).toEqual(previous);
 });

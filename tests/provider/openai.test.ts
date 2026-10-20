@@ -113,6 +113,24 @@ describe("original HTTP provider", () => {
     expect(await provider.getModelContextWindow!("missing")).toBeNull();
     expect(calls).toBe(1);
   });
+  it("keeps configured input windows from gateway metadata instead of returning an unknown limit", async () => {
+    let calls = 0;
+    const provider = await fixture((_request, response) => {
+      calls++;
+      json(response, { data: [
+        { id: "input-window", max_input_tokens: 1000000 },
+        { id: "nested-window", top_provider: { context_length: 524288 } },
+        { id: "string-window", context_window: "64000" },
+        { id: "invalid-window", context_length: "300K", top_provider: false, max_output_tokens: 8192 },
+      ] });
+    });
+    expect(await provider.getModelContextWindow!("input-window")).toBe(1000000);
+    expect(await provider.getModelContextWindow!("nested-window")).toBe(524288);
+    expect(await provider.getModelContextWindow!("string-window")).toBe(64000);
+    expect(await provider.getModelContextWindow!("invalid-window")).toBeNull();
+    expect(await provider.getModelContextWindow!("alias/input-window")).toBeNull();
+    expect(calls).toBe(1);
+  });
   it("joins paths, sends optional auth, deduplicates stable model IDs", async () => {
     const provider = await fixture((request, response) => {
       expect(request.url).toBe("/v1/models");
