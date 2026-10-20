@@ -34,3 +34,4 @@ org.chromium.Chromium.*/
 
 # Local upstream checkout for reference only; not part of Forge sources.
 /references/CometixCode/
+/references/magpie/
