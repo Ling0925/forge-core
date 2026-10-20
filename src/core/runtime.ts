@@ -25,6 +25,7 @@ import type {
   Usage,
 } from "../shared/schemas";
 import { agentSummary, executeNative, nativeDefinitions } from "./agents";
+import { createAgentProgress } from "./agent-progress";
 import { invalidToolInput } from "../shared/tool-input";
 import { boundedReports, childReport, type ChildOperation } from "./agent-operations";
 import { projectSummary, summaryBoundary } from "./context";
@@ -1091,6 +1092,7 @@ export const createAgentRuntime = (
                           childMaxToolCalls,
                         ) => {
                           let childTools: typeof deps.tools | undefined;
+                          const childProgress = createAgentProgress(childInput.sessionId, ephemeral);
                           try {
                             const childWorkspace = (await deps.store.get(childInput.sessionId)).workspace;
                             const childContext = await deps.childContextFactory?.(childWorkspace);
@@ -1107,6 +1109,7 @@ export const createAgentRuntime = (
                             }).run(
                               childInput,
                               (childEvent) => {
+                                childProgress(childEvent);
                                 if (childEvent.type === "run_finished") {
                                   const operation = children.get(childInput.sessionId);
                                   if (operation) {

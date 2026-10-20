@@ -570,6 +570,16 @@ export const agentEventSchema = z
         currentTool: z.object({ name: z.string().max(256), target: z.string().max(1024) }).strict().optional(),
       })
       .strict(),
+    // Ephemeral cumulative child reply: never a parent message or stored event.
+    z.object({
+      ...eventBase,
+      type: z.literal("agent_progress"),
+      childSessionId: sessionIdSchema,
+      text: z.string().max(65536),
+      truncated: z.boolean(),
+      childTurn: z.number().int().positive().optional(),
+      childStep: z.number().int().positive().optional(),
+    }).strict(),
     z
       .object({
         ...eventBase,
