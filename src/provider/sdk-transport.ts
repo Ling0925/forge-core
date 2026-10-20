@@ -60,7 +60,7 @@ export async function withSdkRequest<T>(
           controller.signal.throwIfAborted();
           if (chunk.done) {
             decoder.decode();
-            if (sse && tail && !/(?:\r?\n){2}$/.test(tail))
+            if (sse && tail && !tail.replace(/\r\n/g, "\n").replace(/\r/g, "\n").endsWith("\n\n"))
               throw protocol("unterminated_event");
             controller.signal.removeEventListener("abort", cancel);
             reader.releaseLock();
@@ -158,15 +158,6 @@ export async function* sdkEvents(
         event.raw.some((line) => line.length > 1_200_000)
       )
         throw protocol("output_limit");
-      if (
-        event.raw.some(
-          (line) =>
-            line &&
-            !line.startsWith(":") &&
-            !/^(data|event|id|retry)(:|$)/.test(line),
-        )
-      )
-        throw protocol("unexpected_frame");
       yield event;
     }
   } finally {

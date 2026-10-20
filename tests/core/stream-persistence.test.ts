@@ -60,6 +60,9 @@ for (const fails of [false, true])
       expect(
         reopened.events.filter((event) => event.type === "text_delta"),
       ).toHaveLength(fails ? 1 : 0);
+      if (fails)
+        expect(reopened.events.find((event) => event.type === "text_delta"))
+          .toMatchObject({ turn: 1, step: 1, text });
       expect(
         reopened.messages.filter(
           (message) => message.role === "assistant" && message.content === text,
