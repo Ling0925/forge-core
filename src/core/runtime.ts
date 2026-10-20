@@ -45,7 +45,7 @@ type EventBody = {
 }[AgentEvent["type"]];
 const readonlyToolNames = new Set([
   "list_files", "read_file", "read_command_output", "search_files", "project_context",
-  "load_skill", "git_status", "git_diff", "git_log",
+  "load_skill", "git_status", "git_diff", "git_log", "get_memory", "search_memory",
 ]);
 
 /** Race even adapters that fail to honor cancellation; never replay their uncertain effects. */
@@ -317,6 +317,16 @@ export const createAgentRuntime = (
     let toolCalls = 0;
     let usage: Usage = { promptTokens: 0, completionTokens: 0, totalTokens: 0 };
     let reportedUsageTurns = 0;
+    let auxiliaryUsageComplete = true;
+    const onModelUsage = (incoming: Usage | undefined) => {
+      if (!incoming) { auxiliaryUsageComplete = false; return; }
+      const cached = incoming.cachedPromptTokens === undefined ? usage.cachedPromptTokens
+        : (usage.cachedPromptTokens ?? 0) + incoming.cachedPromptTokens;
+      usage = { promptTokens: usage.promptTokens + incoming.promptTokens,
+        completionTokens: usage.completionTokens + incoming.completionTokens,
+        totalTokens: usage.totalTokens + incoming.totalTokens,
+        ...(cached === undefined ? {} : { cachedPromptTokens: cached }) };
+    };
     let hadProviderRetries = false;
     const checkToolFailure = createToolFailureGuard();
     let phase: "storage" | "provider" | "tool" = "storage";
@@ -487,7 +497,7 @@ export const createAgentRuntime = (
         messageIndex: snapshot.messages.length,
         toolCalls,
         usage,
-        usageComplete: !hadProviderRetries && reportedUsageTurns === turns,
+        usageComplete: auxiliaryUsageComplete && !hadProviderRetries && reportedUsageTurns === turns,
         ...(children.size ? { childUsage, totalUsage: addUsage(usage, childUsage),
           childUsageComplete: [...children.values()].every(child => child.usageComplete === true) } : {}),
       });
@@ -1195,6 +1205,7 @@ export const createAgentRuntime = (
                     get permission() { return effectivePermission(); },
                     signal,
                     approve: approval,
+                    onModelUsage,
                     onEvent: (raw) => {
                       if (!acceptingEvents || toolEvents >= 16) return;
                       const parsed = agentEventSchema.safeParse(raw);
