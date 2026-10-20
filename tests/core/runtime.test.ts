@@ -1,3 +1,4 @@
+import { createDiffPatch } from "../../src/shared/diff";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -121,6 +122,24 @@ const usageEvent = (
     },
   });
 
+function editEvidence(format: "legacy previews" | "patch") {
+  const before = "original-file-content".repeat(200);
+  const after = "replacement-file-content".repeat(200);
+  const change = { path: "a.ts", kind: "modified", ...(format === "patch"
+    ? { patch: createDiffPatch(before, after) }
+    : { before, after, truncated: false }) };
+  const evidence = JSON.stringify({ content: '{"edited":true}', isError: false, changes: [change] });
+  const toolCall = { id: "edit-1", type: "function" as const, function: { name: "edit_file", arguments: '{"path":"a.ts","old_text":"a","new_text":"b"}' } };
+  const messages: Message[] = [
+    { role: "user", content: "previous task" },
+    { role: "assistant", content: null, tool_calls: [{ id: "read-1", type: "function", function: { name: "read_file", arguments: '{"path":"other.ts"}' } }] },
+    { role: "tool", tool_call_id: "read-1", content: "unrelated evidence stays intact" },
+    { role: "assistant", content: null, tool_calls: [toolCall] },
+    { role: "tool", tool_call_id: toolCall.id, content: evidence },
+  ];
+  return { before, after, evidence, toolCall, messages };
+}
+
 describe("original runtime", () => {
   it("publishes a turn only after its prompt and boundary are checkpointed together", async () => {
     const f = fixture(finalProvider, emptyTools);
@@ -195,24 +214,54 @@ describe("original runtime", () => {
     expect(result.events.filter(event => event.type === "run_finished").map(event => [event.turn, event.status, event.steps])).toEqual([[1, "interrupted", 1], [2, "completed", 1]]);
   });
 
-  it("projects edit previews out of provider requests but keeps stored tool evidence", async () => {
-    const preview = "original-file-content".repeat(100);
-    const state = initial();
-    const messages: Message[] = [
-      { role: "user", content: "previous task" },
-      { role: "assistant", content: null, tool_calls: [{ id: "edit-1", type: "function", function: { name: "edit_file", arguments: '{"path":"a.ts","old_text":"a","new_text":"b"}' } }] },
-      { role: "tool", tool_call_id: "edit-1", content: JSON.stringify({ content: '{"edited":true}', isError: false, changes: [{ path: "a.ts", kind: "modified", before: preview, after: preview + "b", truncated: false }] }) },
-    ];
-    let sent: readonly Message[] = [];
+  it.each(["legacy previews", "patch"] as const)("projects edit previews out of provider requests with native associations (%s)", async format => {
+    const original = editEvidence(format);
+    // Make omission assertions non-vacuous for both stored formats.
+    expect(original.evidence).toContain(original.before);
+    expect(original.evidence).toContain(original.after);
+    const requests: (readonly Message[])[] = [];
     const provider: ModelProvider = { ...finalProvider, complete: async incoming => {
-      sent = incoming;
+      requests.push(incoming);
       return { message: { role: "assistant", content: "done" } };
     } };
-    const f = fixture(provider, emptyTools, { ...state, messages });
-    await f.runtime.run(input, () => {}, async () => false, signal());
-    expect(JSON.stringify(sent)).not.toContain(preview);
-    expect(JSON.stringify(sent)).toContain("previews omitted");
-    expect(f.current().messages.find(m => m.role === "tool")?.content).toBe(messages[2]?.content);
+    const f = fixture(provider, emptyTools, { ...initial(), messages: original.messages });
+    expect((await f.runtime.run(input, () => {}, async () => false, signal())).status).toBe("completed");
+    expect(requests).toHaveLength(1);
+    const sent = requests[0] ?? [];
+    const results = sent.filter(message => message.role === "tool" && message.tool_call_id === original.toolCall.id);
+    expect(results).toHaveLength(1);
+    const result = results[0]; if (!result || result.role !== "tool") throw new Error("Missing projected tool result");
+    const projected = JSON.parse(result.content);
+    expect(projected).toMatchObject({ content: '{"edited":true}', isError: false, changes: [{ path: "a.ts", kind: "modified" }], contextNote: expect.stringMatching(/\S/) });
+    expect(projected.changes).toHaveLength(1);
+    for (const key of ["before", "after", "patch"]) expect(projected.changes[0]).not.toHaveProperty(key);
+    expect(JSON.stringify(sent)).not.toContain(original.before);
+    expect(JSON.stringify(sent)).not.toContain(original.after);
+    const callIndex = sent.findIndex(message => message.role === "assistant" && message.tool_calls?.some(call => call.id === original.toolCall.id));
+    const resultIndex = sent.indexOf(result);
+    const currentPromptIndex = sent.findIndex(message => message.role === "user" && message.content === input.prompt);
+    expect(callIndex).toBeGreaterThanOrEqual(0);
+    expect(sent[callIndex]).toMatchObject({ tool_calls: [original.toolCall] });
+    expect(resultIndex).toBe(callIndex + 1);
+    expect(currentPromptIndex).toBeGreaterThan(resultIndex);
+    expect(sent.find(message => message.role === "tool" && message.tool_call_id === "read-1")).toEqual(original.messages[2]);
+  });
+
+  it.each(["legacy previews", "patch"] as const)("retains original stored tool evidence independently of request projection (%s)", async format => {
+    const original = editEvidence(format);
+    const originalBytes = JSON.stringify(original.messages);
+    const f = fixture(finalProvider, emptyTools, { ...initial(), messages: original.messages });
+    const result = await f.runtime.run(input, () => {}, async () => false, signal());
+    expect(result.status).toBe("completed");
+    expect(f.checkpoints.length).toBeGreaterThan(0);
+    for (const snapshot of [...f.checkpoints, result, f.current()]) {
+      const stored = snapshot.messages.filter(message => message.role === "tool" && message.tool_call_id === original.toolCall.id);
+      expect(stored).toHaveLength(1);
+      expect(stored[0]?.content).toBe(original.evidence);
+      expect(stored[0]?.content).toContain(original.before);
+      expect(stored[0]?.content).toContain(original.after);
+    }
+    expect(JSON.stringify(original.messages)).toBe(originalBytes);
   });
   it("checkpoints native calls before effects and retains final text, model and history", async () => {
     let completions = 0;
