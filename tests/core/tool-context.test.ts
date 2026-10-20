@@ -10,10 +10,23 @@ it("applies the same projection after saved semantic memory without touching the
   const original = JSON.stringify(snapshot);
   const projected = projectSummary(snapshot);
   expect(projected[0]?.content).toContain("memory");
-  expect(JSON.stringify(projected)).toContain("omitted from model context");
+  expect(projected.filter(message => message.role === "tool")).toHaveLength(1);
+  expectProjectedEdit(projected, "new");
   expect(JSON.stringify(snapshot)).toBe(original);
   expect(projectToolContext(projected)).toEqual(projected);
 });
+
+
+function expectProjectedEdit(messages: readonly Message[], id: string) {
+  const results = messages.filter(message => message.role === "tool" && message.tool_call_id === id);
+  expect(results).toHaveLength(1);
+  const result = results[0]; if (!result || result.role !== "tool") throw new Error("Missing tool result");
+  const parsed = JSON.parse(result.content);
+  expect(parsed).toMatchObject({ content: '{"edited":true}', isError: false, changes: [{ path: "file.ts", kind: "modified" }], contextNote: expect.stringMatching(/\S/) });
+  expect(parsed.changes).toHaveLength(1);
+  for (const key of ["patch", "before", "after"]) expect(parsed.changes[0]).not.toHaveProperty(key);
+  expect(messages.filter(message => message.role === "assistant" && message.tool_calls?.some(call => call.id === id))).toHaveLength(1);
+}
 
 function exchange(id: string, name = "edit_file", error = false): Message[] {
   return [{role:"assistant",content:null,tool_calls:[{id,type:"function",function:{name,arguments:'{"path":"file.ts","old_text":"a","new_text":"b"}'}}]},
@@ -28,8 +41,10 @@ it("omits repeated edit patches only in requests, retaining calls and persisted 
   expect(projected[0]).toBe(messages[0]); expect(projected[2]).toBe(messages[2]);
   expect(()=>assertBoundary(projected,projected.length)).not.toThrow();
   expect(JSON.stringify(projected)).not.toContain("a".repeat(8000));
+  expect(JSON.stringify(projected)).not.toContain("b".repeat(8000));
   expect(JSON.stringify(projected)).not.toContain('"patch"');
-  expect(JSON.stringify(projected)).toContain("omitted from model context");
+  expect(projected.filter(message => message.role === "tool")).toHaveLength(60);
+  for (let i = 0; i < 60; i++) expectProjectedEdit(projected, String(i));
   const before = measureContext(messages,872000).usedTokens;
   const after = measureContext(projected,872000).usedTokens;
   expect(after).toBeLessThan(before * 0.1);
@@ -54,12 +69,16 @@ it("preserves long results regardless of age and keeps every appended prefix byt
 it("leaves unknown envelopes, failed edits and non-edit change payloads untouched", () => {
   const messages: Message[] = [...exchange("bad","edit_file",true),...exchange("other","custom_tool"),{role:"tool",tool_call_id:"legacy",content:"raw legacy"}];
   const projected = projectToolContext(messages);
+  expect(projected).toHaveLength(messages.length);
   projected.forEach((m,i)=>expect(m).toBe(messages[i]));
 });
 
 it("projects append diffs without altering persisted results", () => {
   const messages = exchange("append", "append_file");
   const original = JSON.stringify(messages);
-  expect(JSON.stringify(projectToolContext(messages))).not.toContain("a".repeat(8000));
+  const projected = projectToolContext(messages);
+  expectProjectedEdit(projected, "append");
+  expect(JSON.stringify(projected)).not.toContain("a".repeat(8000));
+  expect(JSON.stringify(projected)).not.toContain("b".repeat(8000));
   expect(JSON.stringify(messages)).toBe(original);
 });

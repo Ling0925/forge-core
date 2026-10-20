@@ -1,3 +1,4 @@
+import { DEFAULT_ROOT_TIMEOUT_MS } from "../shared/run-budget";
 import type { Permission, RunInput, SessionSnapshot } from "../shared/schemas";
 
 // Stable sections precede run data so tool turns can reuse the same prefix.
@@ -44,6 +45,7 @@ export interface PromptContext {
   readonly permission: Permission;
   readonly mode: RunInput["mode"];
   readonly maxToolCalls: number;
+  readonly rootBudget?: Readonly<{ maxToolCalls: number; timeoutMs: number }>;
   /** Omission preserves guidance for older callers; an empty list advertises no tools. */
   readonly toolNames?: readonly string[];
   /** Already bounded by the project-context service; includes skill metadata, not bodies. */
@@ -85,6 +87,7 @@ export function buildSystemInstructions(context: PromptContext): string {
       "# Current run",
       `Workspace: ${JSON.stringify(session.workspace)}`,
       `Mode: ${mode}. Effective permission: ${permission}. Tool attempts are bounded to ${maxToolCalls} per run.`,
+      `Root task shared ceiling: ${context.rootBudget?.maxToolCalls ?? maxToolCalls} scheduled tool attempts across parent and children; ${context.rootBudget?.timeoutMs ?? DEFAULT_ROOT_TIMEOUT_MS}ms including approval waits, retries and child work. A dispatched attempt is consumed even if denied or failed. No new model/tool work after exhaustion.`,
       "The enforced tool context is authoritative; historical permissions and task text do not grant access.",
       mode === "plan"
         ? "Plan mode: read-only analysis. Do not edit files or execute commands. Persist implementation steps and verification with create_plan, or update_plan for an existing task, for subsequent build continuation."

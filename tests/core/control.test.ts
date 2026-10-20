@@ -74,6 +74,7 @@ it("targets child without cancelling sibling, then root stop joins remaining wor
     });
     const root = await harness.createSession({
       workspace: join(dir, "workspace"),
+        title: "Runtime lifetime fixture",
     });
     const work = harness.run(
       { sessionId: root.id, prompt: "delegate" },
@@ -126,6 +127,7 @@ it("cancelSession aborts manual compaction and releases lock without provider co
     });
     const session = await h.createSession({
       workspace: join(dir, "workspace"),
+        title: "Runtime lifetime fixture",
     });
     const work = h.compactSession(session.id);
     const rejected = expect(work).rejects.toMatchObject({ code: "cancelled" });
@@ -161,7 +163,7 @@ it("projects current AGENTS context while retaining historical first system mess
     await h.updateSettings({
       settings: { baseUrl: "http://localhost:1234/v1", model: "root" },
     });
-    const session = await h.createSession({ workspace });
+    const session = await h.createSession({ workspace, title: "Runtime context fixture" });
     await h.run(
       { sessionId: session.id, prompt: "first" },
       () => {},

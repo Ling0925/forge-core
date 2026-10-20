@@ -142,7 +142,7 @@ async function setup(restrictWorkspace = true) {
     settings: { baseUrl: "http://localhost:1234/v1", model: "test-model" },
   });
   // Host is deliberately fixed; listen(0) below keeps tests independent of port availability.
-  const web = await createWebHost({
+  const web = await createWebHost({ trustedLan: true,
     service,
     workspace: directory,
     host: "127.0.0.1",
@@ -155,7 +155,7 @@ async function setup(restrictWorkspace = true) {
     });
   });
   await new Promise<void>((done) => web.server.listen(0, "127.0.0.1", done));
-  cleanup.push(() => web.close());
+  cleanup.push(() => web.dispose());
   const address = web.server.address() as { port: number };
   const url = `http://127.0.0.1:${address.port}`;
   const headers = {
@@ -178,10 +178,32 @@ async function setup(restrictWorkspace = true) {
       "X-Forge-Client": data.clientId as string,
     };
   }
-  return { web, directory, url, headers, login };
+  return { web, service, directory, url, headers, login };
 }
 
-describe("Web development host", () => {
+describe("Web host in explicitly enabled trusted-LAN compatibility mode", () => {
+  it("accepts durable inputs without a client event lease and checks their nested session workspace", async () => {
+    const { url, directory, service, login } = await setup();
+    const authA = await login();
+    const authB = await login();
+    const rpc = async (auth: Record<string, string>, data: object) => fetch(`${url}/api/rpc`, {
+      method: "POST", headers: auth, body: JSON.stringify({ id: randomUUID(), ...data }),
+    });
+    const other = await service.createSession({ workspace: tmpdir(), title: "Other" });
+    const rejected = await rpc(authA, { method: "enqueueInput", input: { inputId: randomUUID(), input: { sessionId: other.id, prompt: "outside" } } });
+    expect(rejected.status).toBe(403);
+    const session = await service.createSession({ workspace: directory, title: "Durable" });
+    const inputId = randomUUID();
+    const accepted = await rpc(authA, { method: "enqueueInput", input: { inputId, input: { sessionId: session.id, prompt: "work" } } });
+    expect(accepted.status).toBe(200);
+    expect(await accepted.json()).toMatchObject({ ok: true, result: { inputId } });
+    // Neither page opens an event lease or sends another startRun request.
+    await vi.waitFor(async () => {
+      const observed = await rpc(authB, { method: "listInputs", sessionId: session.id });
+      expect(await observed.json()).toMatchObject({ ok: true, result: { items: [{ inputId, state: "consumed", outcome: "completed" }] } });
+    });
+  });
+
   it("accepts bounded image RPC above the old 1 MiB limit and persists it without changing summary lists", async () => {
     const { url, directory, login } = await setup();
     const auth = await login();

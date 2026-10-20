@@ -1,3 +1,5 @@
+import type { McpHealth, McpService, McpToolInfo } from "../shared/mcp";
+export type { McpService } from "../shared/mcp";
 import { join } from "node:path";
 import { z } from "zod";
 import { ForgeError } from "../shared/errors";
@@ -9,12 +11,10 @@ import { StdioMcpConnection } from "./protocol";
 import type { McpConnection } from "./rpc";
 import {
   MCP_MAX_SERVERS,
-  type McpHealth,
   type McpRegisterAnyInput,
   type McpRemoteServerConfig,
   type McpServerConfig,
   type McpServerRecord,
-  type McpToolInfo,
   mcpRegisterAnyInputSchema,
   mcpRemoteServerConfigSchema,
   mcpServerConfigSchema,
@@ -68,40 +68,6 @@ const revoked = (): ForgeError =>
 const isRemote = (config: McpServerConfig): config is McpRemoteServerConfig =>
   config.transport === "http" || config.transport === "sse";
 
-/**
- * The user-owned private MCP catalog. Every operation that can produce an
- * effect (discovery or a call) re-reads this authoritative file under an
- * advisory flock *before* touching a live process, so that a disable/remove
- * performed by any other `McpService` instance in the same or another process
- * is observed before a stale instance can launch or use a server.
- */
-export interface McpService {
-  register(input: unknown): Promise<McpServerRecord>;
-  list(): Promise<readonly McpServerRecord[]>;
-  setEnabled(id: string, enabled: boolean): Promise<McpServerRecord>;
-  remove(id: string): Promise<void>;
-  health(id: string): Promise<McpHealth>;
-  listTools(
-    id: string,
-    options?: Readonly<{
-      signal?: AbortSignal;
-      redactValues?: readonly string[];
-    }>,
-  ): Promise<readonly McpToolInfo[]>;
-  callTool(
-    id: string,
-    tool: string,
-    args: Readonly<Record<string, unknown>>,
-    options?: Readonly<{
-      signal?: AbortSignal;
-      redactValues?: readonly string[];
-    }>,
-  ): Promise<Readonly<{ text: string; isError: boolean; truncated: boolean }>>;
-  /** Terminate this instance's live connection for `id` if present. */
-  revoke(id: string): Promise<void>;
-  dispose(): Promise<void>;
-}
-
 const redact = (text: string, values: readonly string[]): string => {
   let clean = text;
   for (const value of values)
@@ -109,6 +75,13 @@ const redact = (text: string, values: readonly string[]): string => {
   return clean;
 };
 
+/**
+ * The user-owned private MCP catalog. Every operation that can produce an
+ * effect (discovery or a call) re-reads this authoritative file under an
+ * advisory flock *before* touching a live process, so that a disable/remove
+ * performed by any other `McpService` instance in the same or another process
+ * is observed before a stale instance can launch or use a server.
+ */
 export async function createMcpService(options: {
   home: string;
 }): Promise<McpService> {

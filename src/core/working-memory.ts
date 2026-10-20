@@ -1,7 +1,7 @@
 import { z } from "zod";
 import type { ModelProvider } from "../shared/contracts";
 import { ForgeError } from "../shared/errors";
-import type { SessionSnapshot } from "../shared/schemas";
+import type { SessionSnapshot, Usage } from "../shared/schemas";
 import { assertBoundary } from "./context";
 import { archiveBrief } from "./history";
 
@@ -13,7 +13,7 @@ export const workingStateSchema = z.object({
 
 export async function summarizeWorkingState(
   snapshot: SessionSnapshot, provider: ModelProvider, signal: AbortSignal,
-  boundary: number, inputTokens = 96000,
+  boundary: number, inputTokens = 96000, onUsage?: (usage: Usage | undefined) => void,
 ): Promise<SessionSnapshot> {
   assertBoundary(snapshot.messages, boundary);
   if (signal.aborted) throw new ForgeError("cancelled", "Summary cancelled");
@@ -30,6 +30,7 @@ export async function summarizeWorkingState(
   const combined = AbortSignal.any([signal, controller.signal]);
   let timeout: ReturnType<typeof setTimeout> | undefined;
   let abort = () => {};
+  let observed = false;
   try {
     const response = await Promise.race([
       provider.complete([
@@ -46,6 +47,8 @@ export async function summarizeWorkingState(
         }, 20000);
       }),
     ]);
+    observed = true;
+    onUsage?.(response.usage);
     if (signal.aborted) throw new ForgeError("cancelled", "Summary cancelled");
     if (response.message.tool_calls?.length) throw new Error("Unexpected summary tools");
     const state = workingStateSchema.parse(JSON.parse(response.message.content ?? ""));
@@ -54,6 +57,7 @@ export async function summarizeWorkingState(
     }
     content = `${archive}\nWorking state:\n${JSON.stringify(state)}`;
   } catch {
+    if (!observed) onUsage?.(undefined);
     if (signal.aborted) throw new ForgeError("cancelled", "Summary cancelled");
     fallback = true;
     content = `${archive}\nWORKING STATE INCOMPLETE. Search and read history before proceeding.\nPrevious state:\n${prior.slice(0, 2800)}\nDurable plan:\n${JSON.stringify(snapshot.plan ?? null).slice(0, 1600)}\nLatest excerpts:\n${brief.slice(-2800)}`;

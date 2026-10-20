@@ -1,12 +1,14 @@
+import { createRootRunBudget } from "./run-budget";
 import { randomUUID } from "node:crypto";
+import { withCancellation } from "./cancellation";
+import { createApprovalQueue } from "./approval-queue";
+import { executeReadBatch, executeToolCall, planReadBatch } from "./tool-executor";
 import type {
   AgentRuntime,
   AgentRuntimeDependencies,
-  ApprovalHandler,
   RunControl,
 } from "../shared/contracts";
 import { ForgeError, isRetryableProviderFailure, providerRetryReason, toErrorInfo } from "../shared/errors";
-import { toolActivity } from "../shared/tool-activity";
 import { recordPlan } from "../shared/plans";
 import { executionTurns } from "../shared/execution";
 import {
@@ -14,8 +16,6 @@ import {
   providerResponseSchema,
   runInputSchema,
   sessionIdSchema,
-  sessionSnapshotSchema,
-  toolResultSchema,
 } from "../shared/schemas";
 import type {
   AgentEvent,
@@ -24,16 +24,15 @@ import type {
   SessionSnapshot,
   Usage,
 } from "../shared/schemas";
+import { createSessionWriter } from "./session-writer";
 import { agentSummary, executeNative, nativeDefinitions } from "./agents";
-import { createAgentProgress } from "./agent-progress";
-import { invalidToolInput } from "../shared/tool-input";
-import { boundedReports, childReport, type ChildOperation } from "./agent-operations";
+import { createAgentSupervisor } from "./agent-supervisor";
 import { projectSummary, summaryBoundary } from "./context";
 import { summarizeWorkingState } from "./working-memory";
 import { buildSystemInstructions } from "./prompts";
 import { createToolPreviewStream } from "./tool-preview";
 import { createToolFailureGuard } from "./tool-failure-guard";
-import { createToolHookService, toToolHookOutcome } from "./tool-hooks";
+import { createToolHookService } from "./tool-hooks";
 import type { ToolHookDiagnostic } from "../shared/tool-hooks";
 import { claimAutoTitle } from "./session-title";
 import { routeRetryControl } from "../provider/routing";
@@ -45,31 +44,7 @@ type EventBody = {
     "sessionId" | "timestamp"
   >;
 }[AgentEvent["type"]];
-const readonlyToolNames = new Set([
-  "list_files", "read_file", "read_command_output", "search_files", "project_context",
-  "load_skill", "git_status", "git_diff", "git_log", "get_memory", "search_memory",
-]);
-
-/** Race even adapters that fail to honor cancellation; never replay their uncertain effects. */
-export const withCancellation = async <T>(
-  operation: Promise<T>,
-  signal: AbortSignal,
-): Promise<T> => {
-  if (signal.aborted) {
-    void operation.catch(() => undefined);
-    throw new ForgeError("cancelled", "Operation cancelled.");
-  }
-  let cancel = (): void => undefined;
-  const aborted = new Promise<never>((_resolve, reject) => {
-    cancel = () => reject(new ForgeError("cancelled", "Operation cancelled."));
-    signal.addEventListener("abort", cancel, { once: true });
-  });
-  try {
-    return await Promise.race([operation, aborted]);
-  } finally {
-    signal.removeEventListener("abort", cancel);
-  }
-};
+export { withCancellation } from "./cancellation";
 
 const isHumanTurn = (message: Message | undefined): boolean =>
   message?.role === "user" && message.origin !== "agent_reconciliation";
@@ -302,13 +277,22 @@ const closeCalls = (
 export const createAgentRuntime = (
   deps: AgentRuntimeDependencies,
 ): AgentRuntime => ({
-  async run(rawInput, onEvent, approve, signal, control?: RunControl) {
+  async run(rawInput, onEvent, approve, callerSignal, control?: RunControl) {
     const input = runInputSchema.parse(rawInput);
+    const rootBudget = deps.rootBudget ?? createRootRunBudget({ rootSessionId: input.sessionId,
+      maxToolCalls: deps.settings.maxRootToolCalls ?? deps.settings.maxToolCalls,
+      ...(deps.settings.rootTimeoutMs === undefined ? {} : { timeoutMs: deps.settings.rootTimeoutMs }) });
+    rootBudget.check();
+    const signal = AbortSignal.any([callerSignal, rootBudget.signal]);
+    const runtimeDeps = { ...deps, rootBudget };
     const hooks = deps.toolHooks ? createToolHookService(deps.toolHooks) : undefined;
     const hasToolHooks = !!deps.toolHooks && [deps.toolHooks.beforeTool, deps.toolHooks.afterTool, deps.toolHooks.toolError].some(entries => entries.length > 0);
-    const release = deps.sessionLock?.id === input.sessionId
-      ? deps.sessionLock.release : await deps.store.acquire(input.sessionId, signal);
+    let release: () => Promise<void>;
+    try { release = deps.sessionLock?.id === input.sessionId
+      ? deps.sessionLock.release : await deps.store.acquire(input.sessionId, signal); }
+    catch (error) { if (!deps.rootBudget) rootBudget.close(); throw error; }
     let snapshot: SessionSnapshot | undefined;
+    const writer = createSessionWriter(deps.store, input.sessionId);
     const levels = ["readonly", "workspace", "unrestricted"] as const;
     const effectivePermission = () => levels[Math.min(
       levels.indexOf(input.mode === "plan" ? "readonly" : control?.getPermission?.() ?? input.permission ?? deps.settings.defaultPermission),
@@ -322,10 +306,12 @@ export const createAgentRuntime = (
     let steps = 0;
     let retries = 0;
     let toolCalls = 0;
+    let stopReason = "completed";
     let usage: Usage = { promptTokens: 0, completionTokens: 0, totalTokens: 0 };
     let reportedUsageTurns = 0;
     let auxiliaryUsageComplete = true;
     const onModelUsage = (incoming: Usage | undefined) => {
+      rootBudget.observeUsage(input.sessionId, incoming);
       if (!incoming) { auxiliaryUsageComplete = false; return; }
       const cached = incoming.cachedPromptTokens === undefined ? usage.cachedPromptTokens
         : (usage.cachedPromptTokens ?? 0) + incoming.cachedPromptTokens;
@@ -340,8 +326,7 @@ export const createAgentRuntime = (
     let incompleteText = "";
     /** Learned estimate->real-input scale for this run; see CONTEXT_SCALE_FLOOR. */
     let contextScale = CONTEXT_SCALE_FLOOR;
-    const children = new Map<string, ChildOperation>();
-    let approvalQueue: Promise<unknown> = Promise.resolve();
+    const approvalQueue = createApprovalQueue();
     const now = deps.now ?? (() => new Date().toISOString());
     const notify = (event: AgentEvent): void => {
       try {
@@ -363,6 +348,14 @@ export const createAgentRuntime = (
       snapshot = { ...snapshot, events: [...snapshot.events, event] };
       notify(event);
     };
+    const supervisor = createAgentSupervisor({
+      deps: runtimeDeps, parentSessionId: input.sessionId, signal, approvalQueue, approve,
+      parentModel: () => snapshot?.model ?? deps.settings.model,
+      createRuntime: createAgentRuntime,
+      emitUpdate: event,
+      emitProgress: body => ephemeral(body),
+      emitApproval: request => event({ type: "approval_requested", request }),
+    });
     const closeStep = (status: "completed" | "cancelled" | "failed"): void => {
       if (!snapshot || turn === undefined || activeStep === undefined) return;
       event({ type: "step_finished", turn, step: activeStep, status, messageIndex: snapshot.messages.length });
@@ -395,9 +388,9 @@ export const createAgentRuntime = (
       const work = writes.then(async () => {
         if (!snapshot)
           throw new ForgeError("internal", "Session has not loaded.");
-        snapshot = sessionSnapshotSchema.parse({ ...snapshot, updatedAt: now() });
+        snapshot = { ...snapshot, updatedAt: now() };
         try {
-          await deps.store.save(snapshot);
+          await writer.save(snapshot);
         } catch {
           throw new ForgeError("storage", "Could not checkpoint session.", true);
         }
@@ -406,6 +399,7 @@ export const createAgentRuntime = (
       return work;
     };
     const check = (): void => {
+      rootBudget.check();
       if (signal.aborted) throw new ForgeError("cancelled", "Run cancelled.");
     };
     const drainSteering = async (final = false): Promise<boolean> => {
@@ -445,33 +439,22 @@ export const createAgentRuntime = (
       let status = requestedStatus;
       if (!snapshot)
         throw new ForgeError("internal", "Session has not loaded.");
-      if (status !== "completed")
-        for (const child of children.values()) child.controller.abort();
-      const joined = await Promise.allSettled(
-        [...children.values()].map((c) => c.work),
-      );
-      for (const item of joined)
-        if (item.status === "fulfilled") {
-          const c = item.value;
-          const report = agentSummary(c, 256);
-          event({
-            type: "agent_update",
-            childSessionId: c.id,
-            model: c.model,
-            status: c.status,
-            summary: JSON.stringify({ id: c.id, status: c.status,
-              summary: report.summary, truncated: report.truncated,
-              errors: report.errors }),
-          });
-        }
-      if (
-        status === "completed" &&
-        [...children.values()].some(child =>
-          !child.resolution && (child.executionError || child.result?.status !== "completed"),
-        )
-      )
-        status = "failed";
-      if (signal.aborted) status = "cancelled";
+      const joined = await supervisor.settle(status !== "completed");
+      for (const c of joined.snapshots) {
+        const report = agentSummary(c, 256);
+        event({
+          type: "agent_update",
+          childSessionId: c.id,
+          model: c.model,
+          status: c.status,
+          summary: JSON.stringify({ id: c.id, status: c.status,
+            summary: report.summary, truncated: report.truncated,
+            errors: report.errors }),
+        });
+      }
+      if (status === "completed" && joined.unhandledFailure) status = "failed";
+      if (rootBudget.stopReason === "deadline") status = "failed";
+      else if (signal.aborted) status = "cancelled";
       if (status === "completed" && hookFailed) status = "failed";
       if (hooks?.configured && !ranEndHooks) {
         ranEndHooks = true;
@@ -481,6 +464,8 @@ export const createAgentRuntime = (
         }, { signal }));
       }
       if (status === "completed" && hookFailed) status = "failed";
+      if (rootBudget.stopReason === "deadline") status = "failed";
+      else if (signal.aborted) status = "cancelled";
       closeStep(status);
       const addUsage = (a: Usage, b: Usage): Usage => ({
         promptTokens: a.promptTokens + b.promptTokens,
@@ -490,10 +475,13 @@ export const createAgentRuntime = (
           cachedPromptTokens: (a.cachedPromptTokens ?? 0) + (b.cachedPromptTokens ?? 0),
         }),
       });
-      const childUsage = [...children.values()].reduce((sum, child) => child.usage ? addUsage(sum, child.usage) : sum,
+      const childUsage = supervisor.operations().reduce((sum, child) => child.usage ? addUsage(sum, child.usage) : sum,
         { promptTokens: 0, completionTokens: 0, totalTokens: 0 } as Usage);
+      rootBudget.finishSession(input.sessionId, status, rootBudget.stopReason === "deadline" ? "deadline"
+        : status !== "completed" && stopReason === "completed" ? "child_or_hook_failure" : stopReason);
       const terminal = agentEventSchema.parse({
         type: "run_finished",
+        budget: rootBudget.snapshot(),
         sessionId: input.sessionId,
         timestamp: now(),
         status,
@@ -505,8 +493,8 @@ export const createAgentRuntime = (
         toolCalls,
         usage,
         usageComplete: auxiliaryUsageComplete && !hadProviderRetries && reportedUsageTurns === turns,
-        ...(children.size ? { childUsage, totalUsage: addUsage(usage, childUsage),
-          childUsageComplete: [...children.values()].every(child => child.usageComplete === true) } : {}),
+        ...(supervisor.size ? { childUsage, totalUsage: addUsage(usage, childUsage),
+          childUsageComplete: supervisor.operations().every(child => child.usageComplete === true) } : {}),
       });
       snapshot = {
         ...snapshot,
@@ -524,9 +512,8 @@ export const createAgentRuntime = (
       return snapshot;
     };
     try {
-      snapshot = sessionSnapshotSchema.parse(
-        await deps.store.get(input.sessionId),
-      );
+      snapshot = await writer.read();
+      rootBudget.enter(input.sessionId);
       if (deps.runMemory) snapshot = await deps.runMemory.restore(snapshot, now());
       if (
         snapshot.status === "running" ||
@@ -568,6 +555,7 @@ export const createAgentRuntime = (
         permission,
         mode: input.mode,
         maxToolCalls: deps.settings.maxToolCalls,
+        rootBudget: { maxToolCalls: rootBudget.maxToolCalls, timeoutMs: rootBudget.timeoutMs },
         projectInstructions: deps.projectInstructions,
         toolNames,
       });
@@ -595,12 +583,14 @@ export const createAgentRuntime = (
       const shouldName = claimed !== snapshot;
       snapshot = claimed;
       contextScale = seedContextScale(snapshot.events, snapshot.model);
-      const started = agentEventSchema.parse({ type: "run_started", turn,
+      const started = agentEventSchema.parse({ type: "run_started", turn, budget: rootBudget.snapshot(),
         sessionId: input.sessionId, timestamp: now(), messageIndex: snapshot.messages.length - 1,
         model: snapshot.model, permission, title: snapshot.title });
       snapshot = { ...snapshot, events: [...snapshot.events, started] };
       await save();
       notify(started);
+      check();
+      rootBudget.checkAdmission();
       if (shouldName && deps.autoTitle) {
         const fallback = snapshot.title;
         deps.autoTitle.start(snapshot, async title => {
@@ -612,6 +602,8 @@ export const createAgentRuntime = (
           return true;
         });
       }
+      check();
+      rootBudget.checkAdmission();
       let reportedWindow: number | null = null;
       if (!deps.settings.modelContextWindows?.[snapshot.model]) {
         const metadataSignal = AbortSignal.any([signal, AbortSignal.timeout(2000)]);
@@ -637,8 +629,9 @@ export const createAgentRuntime = (
         const rawLimit = budget.limit / scale;
         const rawTarget = budget.target / scale;
         check();
+        rootBudget.checkAdmission();
         currentInstructions = buildSystemInstructions({ session: snapshot, permission: effectivePermission(), mode: input.mode,
-          maxToolCalls: deps.settings.maxToolCalls, projectInstructions: deps.projectInstructions, toolNames });
+          maxToolCalls: deps.settings.maxToolCalls, rootBudget: { maxToolCalls: rootBudget.maxToolCalls, timeoutMs: rootBudget.timeoutMs }, projectInstructions: deps.projectInstructions, toolNames });
         await drainSteering();
         check();
         const project = (state: SessionSnapshot) => {
@@ -661,7 +654,8 @@ export const createAgentRuntime = (
                 snapshot.messages.slice(snapshot.contextSummary?.boundary ?? 0, latest).some(m => m.role !== "system")) boundary = latest;
           }
           if (boundary !== null) {
-            const summarized = await summarizeWorkingState(snapshot, deps.provider, signal, boundary, Math.floor(windowTokens * 0.8));
+            rootBudget.checkAdmission();
+            const summarized = await summarizeWorkingState(snapshot, deps.provider, signal, boundary, Math.floor(windowTokens * 0.8), onModelUsage);
             snapshot = { ...summarized, title: snapshot.title };
             await save();
             event({ type: "context_compacted", removedMessages: Math.max(0, before.length - project(snapshot).length),
@@ -698,13 +692,12 @@ export const createAgentRuntime = (
             await save();
             let allowed = false;
             try {
-              const work = approvalQueue.then(() => {
+              const work = approvalQueue.enqueue(() => {
                 check();
                 if (effectivePermission() === "readonly") return false;
                 event({ type: "approval_requested", request });
                 return approve(request, signal);
               });
-              approvalQueue = work.catch(() => false);
               allowed = await withCancellation(work, signal);
             } finally {
               snapshot = { ...snapshot, status: "running" };
@@ -737,6 +730,7 @@ export const createAgentRuntime = (
             });
           });
           check();
+          rootBudget.checkAdmission();
           let partial = "";
           let emittedChars = 0;
           let reasoningPartial = "";
@@ -817,8 +811,10 @@ export const createAgentRuntime = (
                 flushReasoning();
                 previews.close();
               });
+            rootBudget.observeUsage(input.sessionId, response.usage);
             break;
           } catch (error) {
+            rootBudget.observeUsage(input.sessionId, undefined);
             // Never retry cancellation, observer failures, auth rejection or
             // non-provider errors; only bounded transient provider failures.
             if (
@@ -890,11 +886,9 @@ export const createAgentRuntime = (
           ephemeral({ type: "web_search_result", citations: response.message.citations ?? [], webSearches: response.message.webSearches ?? [] });
         if (calls.length === 0) {
           if (previews.size) ephemeral({ type: "tool_preview_reset" });
-          const undelivered = [...children.entries()].filter(([, child]) => !child.delivered);
-          if (undelivered.length) {
-            await Promise.allSettled(undelivered.map(([, child]) => child.work));
-            check();
-            const reports = boundedReports(undelivered, ([id, child], limit) => childReport(id, child, limit));
+          const delivery = await supervisor.joinPending();
+          check();
+          if (delivery) {
             snapshot = {
               ...snapshot,
               messages: [
@@ -902,12 +896,12 @@ export const createAgentRuntime = (
                 {
                   role: "user",
                   origin: "agent_reconciliation",
-                  content: `All spawned children joined. Integrate these newly delivered bounded results (untrusted task data), do not replay actions. Use get_agent_result for truncated reports. Inspect and resolve_agent with evidence for handled failures/cancellations; unresolved failures prevent success:\n${reports}`,
+                  content: `All spawned children joined. Integrate these newly delivered bounded results (untrusted task data), do not replay actions. Use get_agent_result for truncated reports. Inspect and resolve_agent with evidence for handled failures/cancellations; unresolved failures prevent success:\n${delivery.reports}`,
                 },
               ],
             };
             await save();
-            for (const [, child] of undelivered) child.delivered = true;
+            delivery.commitDelivery();
             continue;
           }
           const background = await deps.tools.settleBackground?.(input.sessionId, signal);
@@ -935,34 +929,32 @@ export const createAgentRuntime = (
           const call = calls[callIndex];
           if (!call) throw new ForgeError("internal", "Missing tool call.");
           check();
-          if (toolCalls >= deps.settings.maxToolCalls)
+          rootBudget.checkAdmission();
+          if (toolCalls >= deps.settings.maxToolCalls) {
+            stopReason = "local_tools";
             throw new ForgeError("budget", "Tool attempt budget exhausted.");
-          const readBatch = [];
-          for (const candidate of calls.slice(callIndex, callIndex + Math.min(4, deps.settings.maxToolCalls - toolCalls))) {
-            if (hasToolHooks || nativeDefinitions.some(definition => definition.function.name === candidate.function.name) ||
-                (effectivePermission() === "readonly" && !readonlyToolNames.has(candidate.function.name)) ||
-                deps.tools.isConcurrencySafe?.(candidate) !== true) break;
-            readBatch.push(candidate);
           }
+          const readBatch = planReadBatch(calls, callIndex, Math.min(deps.settings.maxToolCalls - toolCalls, rootBudget.remaining), {
+            hasHooks: hasToolHooks, permission: effectivePermission, tools: deps.tools,
+          });
           if (readBatch.length > 1) {
-            toolCalls += readBatch.length;
-            for (const [offset, read] of readBatch.entries()) {
-              const previewId = previews.id(callIndex + offset);
-              event({ type: "tool_started", call: read, ...(previewId ? { previewId } : {}) });
-            }
-            await save();
-            phase = "tool";
-            const workspace = snapshot.workspace;
-            const outcomes = await Promise.allSettled(readBatch.map(async read => {
-              const result = toolResultSchema.parse(await deps.tools.execute(read, {
-                sessionId: input.sessionId, toolCallId: read.id, workspace,
-                get permission() { return effectivePermission(); }, signal,
-                approve: async () => { throw new ForgeError("tool", "Concurrent read requested an approval."); },
-                onEvent: () => undefined,
-              }));
-              if (result.changes?.length) throw new ForgeError("tool", "Concurrent read reported file changes.");
-              return result;
-            }));
+            const reservation = rootBudget.reserve(input.sessionId, readBatch.length);
+            let outcomes: PromiseSettledResult<import("../shared/schemas").ToolResult>[];
+            try {
+              for (const [offset, read] of readBatch.entries()) {
+                const previewId = previews.id(callIndex + offset);
+                event({ type: "tool_started", call: read, ...(previewId ? { previewId } : {}) });
+              }
+              await save();
+              check();
+              reservation.dispatch(readBatch.length);
+              toolCalls += readBatch.length;
+              phase = "tool";
+              outcomes = await executeReadBatch(readBatch, {
+                tools: deps.tools, sessionId: input.sessionId, workspace: snapshot.workspace,
+                permission: effectivePermission, signal, onModelUsage,
+              });
+            } finally { reservation.release(); }
             check();
             phase = "storage";
             for (const [offset, outcome] of outcomes.entries()) {
@@ -986,280 +978,65 @@ export const createAgentRuntime = (
             callIndex += readBatch.length - 1;
             continue;
           }
-          toolCalls += 1;
-          snapshot = { ...snapshot, pendingTool: call };
-          await save();
+          const reservation = rootBudget.reserve(input.sessionId, 1);
+          try {
+            snapshot = { ...snapshot, pendingTool: call };
+            await save();
+            check();
+            reservation.dispatch();
+            toolCalls += 1;
+          } finally { reservation.release(); }
           const previewId = previews.id(callIndex);
           event({ type: "tool_started", call, ...(previewId ? { previewId } : {}) });
-          let acceptingEvents = true;
-          let requested = false;
-          let toolEvents = 0;
-          let approvalWork: Promise<boolean> | undefined;
-          const approval: ApprovalHandler = (request, approvalSignal) => {
-            const work = (async () => {
-              check();
-              if (
-                !acceptingEvents ||
-                requested ||
-                request.sessionId !== input.sessionId ||
-                request.toolCallId !== call.id
-              )
-                throw new ForgeError(
-                  "tool",
-                  "Invalid or repeated approval request.",
-                );
-              requested = true;
-              if (!snapshot)
-                throw new ForgeError("internal", "Session has not loaded.");
-              snapshot = { ...snapshot, status: "awaiting_approval" };
-              event({ type: "state_changed", status: "awaiting_approval" });
-              await save();
-              try {
-                return await withCancellation(
-                  (() => {
-                    const queued = approvalQueue.then(() => {
-                      check();
-                      event({ type: "approval_requested", request });
-                      return approve(request, approvalSignal);
-                    });
-                    approvalQueue = queued.catch(() => false);
-                    return queued;
-                  })(),
-                  AbortSignal.any([signal, approvalSignal]),
-                );
-              } finally {
-                if (snapshot) snapshot = { ...snapshot, status: "running" };
-                event({ type: "state_changed", status: "running" });
-                await save();
-              }
-            })();
-            // Observe immediately, but join runtime-owned checkpoint cleanup below.
-            void work.catch(() => undefined);
-            if (!approvalWork) approvalWork = work;
-            return work;
-          };
           phase = "tool";
           const toolSnapshot = snapshot;
-          const hookInput = {
-            session: { sessionId: input.sessionId, workspace: snapshot.workspace, get permission() { return effectivePermission(); } },
-            tool: { name: call.function.name, callId: call.id, arguments: call.function.arguments },
-          };
-          const gate = await hooks?.beforeTool(hookInput, { signal });
-          if (gate) hookDiagnostics(gate.diagnostics, call.id);
-          check();
-          const execution: Promise<import("../shared/schemas").ToolResult> =
-            gate?.allowed === false ? Promise.resolve({ content: gate.denialReason ?? "Tool denied by beforeTool hook.", isError: true }) : nativeDefinitions.some(
-              (d) => d.function.name === call.function.name,
-            )
-              ? Promise.resolve()
-                  .then(() =>
-                    executeNative(
-                      call.function.name,
-                      JSON.parse(call.function.arguments),
-                      {
-                        deps,
-                        snapshot: toolSnapshot,
-                        input,
-                        get permission() { return effectivePermission(); },
-                        signal,
-                        children,
-                        onSettled: (childSessionId, child) => event({
-                          type: "agent_update", childSessionId, model: child.model,
-                          status: child.executionError ? "failed" : child.result?.status ?? "failed",
-                          summary: "Agent settled after cleanup; result available through wait_agents/get_agent_result",
-                        }),
-                        saveResolution: async (id, childUpdatedAt, resolution) => {
-                          if (!snapshot) throw new ForgeError("internal", "Session unavailable");
-                          snapshot = { ...snapshot, agentResolutions: [
-                            ...(snapshot.agentResolutions ?? []).filter(item => item.id !== id),
-                            { id: sessionIdSchema.parse(id), childUpdatedAt, resolution },
-                          ] };
-                          await save();
-                        },
-                        savePlan: async (plan) => {
-                          if (!snapshot)
-                            throw new ForgeError(
-                              "internal",
-                              "Session unavailable",
-                            );
-                          snapshot = { ...snapshot, ...recordPlan(snapshot, plan) };
-                          event({ type: "plan_updated", plan });
-                          await save();
-                        },
-                        runChild: async (
-                          childInput,
-                          childApprove,
-                          childSignal,
-                          childControl,
-                          childMaxToolCalls,
-                        ) => {
-                          let childTools: typeof deps.tools | undefined;
-                          const childProgress = createAgentProgress(childInput.sessionId, ephemeral);
-                          try {
-                            const childWorkspace = (await deps.store.get(childInput.sessionId)).workspace;
-                            const childContext = await deps.childContextFactory?.(childWorkspace, childInput, childSignal);
-                            childTools = childContext?.tools ?? (deps.childToolFactory
-                              ? await deps.childToolFactory(
-                                  childWorkspace,
-                                )
-                              : deps.tools);
-                            return await createAgentRuntime({
-                              ...deps,
-                              tools: childTools,
-                              ...(childContext ? { projectInstructions: childContext.instructions } : {}),
-                              ...(childContext?.provider ? { provider: childContext.provider } : {}),
-                              settings: { ...deps.settings, maxToolCalls: childMaxToolCalls ?? deps.settings.maxToolCalls },
-                            }).run(
-                              { ...childInput, ...(childContext?.providerSourceId ? { providerSourceId: childContext.providerSourceId } : {}) },
-                              (childEvent) => {
-                                childProgress(childEvent);
-                                if (childEvent.type === "run_finished") {
-                                  const operation = children.get(childInput.sessionId);
-                                  if (operation) {
-                                    if (childEvent.usage) operation.usage = childEvent.usage;
-                                    if (childEvent.usageComplete !== undefined) operation.usageComplete = childEvent.usageComplete;
-                                  }
-                                }
-                                if (childEvent.type === "tool_started" || childEvent.type === "tool_finished") {
-                                  // Only bounded activity metadata crosses into the parent;
-                                  // arguments/results remain in the child's own transcript.
-                                  event({ type: "agent_update", childSessionId: childInput.sessionId,
-                                    model: childInput.model ?? toolSnapshot.model, status: "running", summary: "",
-                                    ...(childEvent.type === "tool_started" ? { currentTool: toolActivity(childEvent.call) } : {}),
-                                  });
-                                }
-                                // Terminal progress is emitted only after child disposal;
-                                // otherwise a cleanup failure would look successful in CLI.
-                                if (childEvent.type === "run_started")
-                                  event({
-                                    type: "agent_update",
-                                    childSessionId: childInput.sessionId,
-                                    model: childInput.model ?? toolSnapshot.model,
-                                    status: "running",
-                                    summary: "Agent started",
-                                  });
-                              },
-                              childApprove,
-                              childSignal,
-                              childControl,
-                            );
-                          } catch (error) {
-                            if (!childTools) {
-                              const releaseChild = await deps.store.acquire(
-                                childInput.sessionId,
-                              );
-                              try {
-                                const child = await deps.store.get(
-                                  childInput.sessionId,
-                                );
-                                await deps.store.save({
-                                  ...child,
-                                  status: childSignal.aborted
-                                    ? "cancelled"
-                                    : "failed",
-                                });
-                                event({
-                                  type: "agent_update",
-                                  childSessionId: child.id,
-                                  model: child.model,
-                                  status: childSignal.aborted
-                                    ? "cancelled"
-                                    : "failed",
-                                  summary: "Child tool construction failed",
-                                });
-                              } finally {
-                                await releaseChild();
-                              }
-                            }
-                            throw error;
-                          } finally {
-                            if (childTools && childTools !== deps.tools)
-                              await childTools.dispose();
-                          }
-                        },
-                        approveChild:
-                          (childId) => (request, approvalSignal) => {
-                            const work = approvalQueue.then(async () => {
-                              if (signal.aborted || approvalSignal.aborted)
-                                return false;
-                              const envelope = {
-                                ...request,
-                                sessionId: input.sessionId,
-                                childSessionId: childId,
-                                description:
-                                  `[Child ${childId}] ${request.description}`.slice(
-                                    0,
-                                    8192,
-                                  ),
-                              };
-                              event({
-                                type: "approval_requested",
-                                request: envelope,
-                              });
-                              return withCancellation(
-                                approve(envelope, approvalSignal),
-                                AbortSignal.any([signal, approvalSignal]),
-                              );
-                            });
-                            approvalQueue = work.catch(() => false);
-                            return work;
-                          },
-                      },
-                    ),
-                  )
-                  .catch(error => error instanceof SyntaxError ? invalidToolInput(error) : ({
-                    // Safe authored errors retain category; never expose upstream bodies.
-                    content: JSON.stringify(toErrorInfo(error)),
-                    isError: true,
-                  }))
-              : effectivePermission() === "readonly" &&
-                  !readonlyToolNames.has(call.function.name)
-                ? Promise.resolve({
-                    content:
-                      "Core readonly policy denies this tool; no approval can override plan mode.",
-                    isError: true,
-                  })
-                : deps.tools.execute(call, {
-                    sessionId: input.sessionId,
-                    toolCallId: call.id,
-                    workspace: snapshot.workspace,
-                    get permission() { return effectivePermission(); },
-                    signal,
-                    approve: approval,
-                    onModelUsage,
-                    onEvent: (raw) => {
-                      if (!acceptingEvents || toolEvents >= 16) return;
-                      const parsed = agentEventSchema.safeParse(raw);
-                      if (
-                        !parsed.success ||
-                        parsed.data.type !== "approval_requested" ||
-                        parsed.data.sessionId !== input.sessionId ||
-                        parsed.data.request.sessionId !== input.sessionId ||
-                        parsed.data.request.toolCallId !== call.id ||
-                        toolEvents > 0
-                      )
-                        return;
-                      toolEvents += 1;
-                      // Approval event is emitted only when the root queue owns the UI slot.
-                    },
-                  });
-          const result: import("../shared/schemas").ToolResult = await execution
-            .then(toolResultSchema.parse)
-            .catch(async error => {
-              if (hooks?.configured) {
-                const safe = toErrorInfo(error);
-                hookDiagnostics(await hooks.toolError({ ...hookInput,
-                  outcome: toToolHookOutcome({ content: JSON.stringify(safe), isError: true }), errorCode: safe.code,
-                }, { signal }), call.id);
-              }
-              throw error;
-            })
-            .finally(async () => {
-              acceptingEvents = false;
-              // Local tools may race approval against abort. Keep the lock until
-              // the runtime approval handler (including its saves) has settled.
-              if (approvalWork) await approvalWork;
-            });
+          const executed = await executeToolCall({
+            call, sessionId: input.sessionId, workspace: snapshot.workspace, tools: deps.tools,
+            permission: effectivePermission, signal, check, hooks, onModelUsage,
+            diagnostics: items => hookDiagnostics(items, call.id),
+            checkpointApproval: async status => {
+              if (!snapshot) throw new ForgeError("internal", "Session has not loaded.");
+              snapshot = { ...snapshot, status };
+              event({ type: "state_changed", status });
+              await save();
+            },
+            requestApproval: (request, approvalSignal) => approvalQueue.enqueue(() => {
+              check(); event({ type: "approval_requested", request });
+              return approve(request, approvalSignal);
+            }),
+            native: nativeDefinitions.some(item => item.function.name === call.function.name)
+              ? () => executeNative(
+                call.function.name,
+                JSON.parse(call.function.arguments),
+                {
+                  deps: runtimeDeps,
+                  snapshot: toolSnapshot,
+                  input,
+                  get permission() { return effectivePermission(); },
+                  signal,
+                  ...supervisor.native,
+                  saveResolution: async (id, childUpdatedAt, resolution) => {
+                    if (!snapshot) throw new ForgeError("internal", "Session unavailable");
+                    snapshot = { ...snapshot, agentResolutions: [
+                      ...(snapshot.agentResolutions ?? []).filter(item => item.id !== id),
+                      { id: sessionIdSchema.parse(id), childUpdatedAt, resolution },
+                    ] };
+                    await save();
+                  },
+                  savePlan: async (plan) => {
+                    if (!snapshot)
+                      throw new ForgeError(
+                        "internal",
+                        "Session unavailable",
+                      );
+                    snapshot = { ...snapshot, ...recordPlan(snapshot, plan) };
+                    event({ type: "plan_updated", plan });
+                    await save();
+                  },
+                },
+              ) : undefined,
+          });
+          const { result } = executed;
           check();
           phase = "storage";
           const { pendingTool: _completed, ...withoutPending } = snapshot;
@@ -1277,9 +1054,8 @@ export const createAgentRuntime = (
           };
           event({ type: "tool_finished", toolCallId: call.id, result });
           await save();
-          if (hooks?.configured) {
-            const outcome = { ...hookInput, outcome: toToolHookOutcome(result) };
-            hookDiagnostics(await (result.isError ? hooks.toolError(outcome, { signal }) : hooks.afterTool(outcome, { signal })), call.id);
+          if (executed.afterCommit) {
+            await executed.afterCommit();
             await save();
           }
           checkToolFailure(call, result);
@@ -1294,7 +1070,9 @@ export const createAgentRuntime = (
           ...(turn === undefined ? {} : { turn }),
           ...(activeStep === undefined ? {} : { step: activeStep }),
           sessionId: input.sessionId, timestamp: now() })] };
-      const safe = signal.aborted
+      const safe = rootBudget.stopReason === "deadline"
+        ? new ForgeError("budget", "Root run deadline exhausted.")
+        : signal.aborted
         ? new ForgeError("cancelled", "Run cancelled.")
         : error instanceof ForgeError
           ? error
@@ -1307,6 +1085,7 @@ export const createAgentRuntime = (
                   : "Session storage failed.",
               true,
             );
+      if (stopReason !== "local_tools") stopReason = rootBudget.stopReason === "tools" ? "root_tools" : safe.code;
       snapshot = {
         ...snapshot,
         messages: closeCalls(
@@ -1320,8 +1099,12 @@ export const createAgentRuntime = (
       return await finish(safe.code === "cancelled" ? "cancelled" : "failed");
     } finally {
       acceptingTitle = false;
-      try { await hooks?.dispose(); }
-      finally { await writes; await release(); }
+      // Cleanup still joins children if terminal persistence or a hook throws.
+      try { await supervisor.settle(true); }
+      finally {
+        try { await hooks?.dispose(); }
+        finally { try { await writes; await release(); } finally { if (!deps.rootBudget) rootBudget.close(); } }
+      }
     }
   },
 });

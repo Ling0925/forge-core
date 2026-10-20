@@ -23,6 +23,7 @@ const publicFailure = (error: unknown) => error instanceof ForgeError
 const credentialProjection = (source: PublicProviderSource): CredentialInput[] => source.credentials?.map(({ id, label, enabled, type, protocol }) => ({ id, label, enabled, type, ...(protocol ? { protocol } : {}) }))
   ?? [{ id: "default", label: "Default", enabled: true, type: "api-key" }];
 const sourceFields = ({ hasApiKey: _key, credentials: _credentials, connection: _connection, revision: _revision, ...source }: PublicProviderSource) => source;
+type SelectionValidator = (config: ProviderConfig, source: PublicProviderSource | undefined, model: string | undefined) => void;
 
 export function applyModelSelection(upstream: ModelCatalog, source?: PublicProviderSource): ModelCatalog {
   const selection = source?.modelSelection;
@@ -114,13 +115,16 @@ export function createModelAccessService(options: Readonly<{
   const snapshot = async (sourceId?: string, credentialId?: string) => settingsStore.getProviderSnapshot
     ? settingsStore.getProviderSnapshot(sourceId, credentialId)
     : { config: await settingsStore.getProviderConfig(sourceId, credentialId), ...(sourceId ? { source: await findSource(sourceId) } : {}) };
-  async function loadSnapshot(sourceId: string | undefined, credentialId: string | undefined, signal: AbortSignal) {
+  async function loadSnapshot(sourceId: string | undefined, credentialId: string | undefined, signal: AbortSignal,
+    validate?: (config: ProviderConfig, source: PublicProviderSource | undefined) => void) {
     checkSignal(signal);
     let current = await snapshot(sourceId, credentialId);
+    validate?.(current.config, current.source);
     const config = current.config;
     if (config.account && config.sourceId && config.credentialId && settingsStore.refreshAccount) {
       await settingsStore.refreshAccount(config.sourceId, config.credentialId, tokens => accounts.refresh(tokens, signal));
       current = await snapshot(config.sourceId, config.credentialId);
+      validate?.(current.config, current.source);
     }
     checkSignal(signal);
     return current;
@@ -128,8 +132,8 @@ export function createModelAccessService(options: Readonly<{
   async function loadConfig(sourceId: string | undefined, credentialId: string | undefined, signal: AbortSignal): Promise<ProviderConfig> {
     return (await loadSnapshot(sourceId, credentialId, signal)).config;
   }
-  async function resolveProvider(sourceId?: string, credentialId?: string, signal = options.signal, model?: string) {
-    const current = await loadSnapshot(sourceId, credentialId, signal);
+  async function resolveProvider(sourceId?: string, credentialId?: string, signal = options.signal, model?: string, validate?: SelectionValidator) {
+    const current = await loadSnapshot(sourceId, credentialId, signal, validate ? (config, source) => validate(config, source, model) : undefined);
     let { config } = current;
     const { source } = current;
     const selectedModel = model === undefined ? undefined : source?.modelAliases?.[model] ?? model;
@@ -175,7 +179,7 @@ export function createModelAccessService(options: Readonly<{
     };
     return { config, provider, source, ...(selectedModel ? { actualModel: selectedModel } : {}) };
   }
-  async function prepareRoute(group: RouteGroup, signal: AbortSignal) {
+  async function prepareRoute(group: RouteGroup, signal: AbortSignal, validate?: SelectionValidator) {
     const key = (member: RouteMember) => JSON.stringify([member.sourceId, member.model, member.credentialId]);
     const resolved = new Map<string, Awaited<ReturnType<typeof resolveProvider>>>();
     const quotas = new Map<string, RouteQuota>();
@@ -184,7 +188,7 @@ export function createModelAccessService(options: Readonly<{
     for (const member of group.members) {
       if (member.enabled === false) continue;
       try {
-        const current = await resolveProvider(member.sourceId, member.credentialId, signal, member.model);
+        const current = await resolveProvider(member.sourceId, member.credentialId, signal, member.model, validate);
         resolved.set(key(member), current);
         const cached = await catalogStore.inspect(modelCatalogCacheKey(current.config, member.sourceId));
         const reference = current.config.vertex ? await vertexAuth(current.config).listModelCatalog(signal) : current.source?.preset === "bedrock" ? bedrockReferenceCatalog : [];

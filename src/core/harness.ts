@@ -1,6 +1,8 @@
+import { resolveStateDirectory } from "./state-directory";
+import { createRootRunBudget } from "./run-budget";
+import type { RootRunBudget } from "../shared/run-budget";
 import { createHash } from "node:crypto";
 import { stat } from "node:fs/promises";
-import { homedir } from "node:os";
 import { isAbsolute, join, resolve } from "node:path";
 import { createProjectContext } from "../context/index";
 import { createMcpService } from "../mcp/registry";
@@ -58,6 +60,9 @@ import {
   readWorkspaceFilePreview,
 } from "./workspace-files";
 import type { CommandTaskAccess } from "../shared/task-view";
+import { QueueAdmissionError } from "../shared/input-queue";
+import { inputPredecessor, inputProviderBinding, openInputQueue } from "./input-queue";
+import { createSessionWriter } from "./session-writer";
 import { createAgentRuntime, withCancellation } from "./runtime";
 
 // Default per-run tools: local registry with configured-key redaction, plus a
@@ -133,11 +138,7 @@ function inferSourceId(
 export const createHarness = async (
   options: HarnessOptions = {},
 ): Promise<HarnessService> => {
-  const directory = resolve(
-    options.stateDir ??
-      process.env.FORGE_HOME ??
-      join(homedir(), ".local", "share", "forge"),
-  );
+  const directory = resolveStateDirectory(options.stateDir);
   const store = await openSessionStore(directory);
   // Removing a source must not silently strand sessions pinned to it, so the
   // settings store asks the session store which sessions still reference it.
@@ -324,13 +325,54 @@ export const createHarness = async (
     await stopTitle(id);
     const release = await store.acquire(sessionIdSchema.parse(id));
     try {
-      const next = await fn(await store.get(id));
-      await store.save(next);
+      const writer = createSessionWriter(store, id);
+      const next = await fn(await writer.read());
+      await writer.save(next);
       return next;
     } finally {
       await release();
     }
   };
+  // Bind configured selection, not resolved account tokens or normalized cloud URLs.
+  // Route members can be temporarily unavailable; admission must not turn a valid
+  // fallback group into a direct request to its first member.
+  const queueProviderBinding = async (settings: PublicSettings, model: string, sourceId?: string, routeGroupId?: string) => {
+    if (routeGroupId) {
+      const group = settings.routeGroups?.find(item => item.id === routeGroupId);
+      if (!group) throw new ForgeError("not_found", "会话的路由组已不可用，请重新选择。");
+      const members = group.members.map(member => {
+        const source = settings.providerSources?.find(item => item.id === member.sourceId);
+        return [member.sourceId, member.credentialId ?? null, member.enabled ?? true,
+          source?.endpoints?.[source.apiMode ?? "chat-completions"] ?? source?.baseUrl ?? null,
+          source?.apiMode ?? null, source?.modelAliases?.[member.model] ?? member.model];
+      });
+      return createHash("sha256").update(JSON.stringify([group.id, group.strategy, group.sticky ?? false, members])).digest("hex");
+    }
+    const config = await settingsStore.getProviderConfig(sourceId);
+    endpoint(config.baseUrl);
+    const source = settings.providerSources?.find(item => item.id === sourceId);
+    return inputProviderBinding(config, source?.modelAliases?.[model] ?? model, sourceId);
+  };
+  const inputQueue = await openInputQueue({ directory, validateSession: async id => { await store.get(id); },
+    predecessor: async (id, acknowledge) => {
+      if (!acknowledge) return inputPredecessor(await store.get(id));
+      if (controls.has(id)) throw new QueueAdmissionError();
+      const release = await store.acquire(id);
+      try { return inputPredecessor(await store.get(id)); } finally { await release(); }
+    }, prepare: async input => {
+    check();
+    const [snapshot, settings] = await Promise.all([store.get(input.sessionId), settingsStore.getPublic()]);
+    const providerSourceId = input.providerSourceId ?? snapshot.providerSourceId ??
+      inferSourceId(settings, input.model) ?? settings.activeSourceId;
+    const routeGroupId = input.routeGroupId ?? (input.model !== undefined || input.providerSourceId !== undefined ? undefined : snapshot.routeGroupId);
+    const model = settingsFields.model.parse(input.model ?? snapshot.model);
+    const providerBinding = await queueProviderBinding(settings, model, providerSourceId, routeGroupId);
+    const levels = ["readonly", "workspace", "unrestricted"] as const;
+    const permission = levels[Math.min(levels.indexOf(input.mode === "plan" ? "readonly" : input.permission ?? settings.defaultPermission),
+      levels.indexOf(snapshot.permissionCeiling ?? "unrestricted"))] ?? "readonly";
+    return { input: { ...input, model, permission, mode: input.mode ?? "build",
+      ...(providerSourceId ? { providerSourceId } : {}), ...(routeGroupId ? { routeGroupId } : {}) }, providerBinding };
+  } });
   const taskService = createTaskService({
     store,
     commands: () => [...taskAccess, ...recentTaskAccess],
@@ -350,6 +392,7 @@ export const createHarness = async (
     },
   });
   return {
+    inputQueue,
     tasks: {
       listTasks: (...args) => { check(); return taskService.listTasks(...args); },
       getTask: (...args) => { check(); return taskService.getTask(...args); },
@@ -689,14 +732,14 @@ export const createHarness = async (
       const input = runInputSchema.parse(raw);
       if (controls.has(input.sessionId))
         return Promise.reject(
-          new ForgeError(
+          control?.providerBinding ? new QueueAdmissionError() : new ForgeError(
             "busy",
             "This session already has an active run.",
             true,
           ),
         );
       const controller = new AbortController();
-      const signal = AbortSignal.any([
+      let signal = AbortSignal.any([
         callerSignal,
         disposal.signal,
         controller.signal,
@@ -705,15 +748,30 @@ export const createHarness = async (
       const operation = Promise.resolve().then(async () => {
         let tools: LocalToolRegistry | undefined;
         let releaseSession: (() => Promise<void>) | undefined;
+        let rootBudget: RootRunBudget | undefined;
         try {
           await stopTitle(input.sessionId);
-          releaseSession = await store.acquire(input.sessionId, signal);
+          try { releaseSession = await store.acquire(input.sessionId, signal); }
+          catch (error) {
+            if (control?.providerBinding && error instanceof ForgeError && error.code === "busy") throw new QueueAdmissionError();
+            throw error;
+          }
           if (signal.aborted)
             throw new ForgeError("cancelled", "Run cancelled.");
           const [settings, snapshot] = await Promise.all([
             settingsStore.getPublic(),
             store.get(input.sessionId),
           ]);
+          // Recheck under the actual execution lock, before provider/tool construction.
+          if (control?.providerBinding) {
+            const predecessor = inputPredecessor(snapshot);
+            if (predecessor.unsafe && control.acknowledgedPredecessor !== predecessor.token)
+              throw new QueueAdmissionError();
+          }
+          rootBudget = createRootRunBudget({ rootSessionId: input.sessionId,
+            maxToolCalls: settings.maxRootToolCalls ?? settings.maxToolCalls,
+            ...(settings.rootTimeoutMs === undefined ? {} : { timeoutMs: settings.rootTimeoutMs }) });
+          signal = AbortSignal.any([signal, rootBudget.signal]);
           // An explicit selection (the picked model's source) wins; a session
           // keeps the source it was created with; only when neither exists does
           // the model, and finally the remembered fallback, decide.
@@ -734,8 +792,24 @@ export const createHarness = async (
             strategy: directSource.credentialRouting ?? "order", sticky: directSource.sticky,
             members: credentials.map(credential => ({ sourceId: directSource.id, model: requestedModel, credentialId: credential.id })),
           } : undefined);
-          const prepared = selectedGroup ? await modelAccess.prepareRoute(selectedGroup, signal) : undefined;
-          const resolved = prepared?.base ?? await modelAccess.resolveProvider(providerSourceId, undefined, signal, requestedModel);
+          if (control?.providerBinding && control.providerBinding !== await queueProviderBinding(settings, requestedModel, providerSourceId, routeGroupId))
+            throw new ForgeError("invalid_input", "The queued provider selection changed before execution. Nothing was replayed.");
+          const validateSelection: Parameters<typeof modelAccess.resolveProvider>[4] = control?.providerBinding ? (config, source, model) => {
+            const selectedModel = model ?? requestedModel;
+            const actual = inputProviderBinding(config, source?.modelAliases?.[selectedModel] ?? selectedModel, config.sourceId ?? providerSourceId);
+            let expected = control.providerBinding;
+            if (routeGroupId) {
+              const acceptedSource = settings.providerSources?.find(item => item.id === config.sourceId);
+              if (!acceptedSource) throw new ForgeError("invalid_input", "The queued route source is no longer available.");
+              expected = inputProviderBinding({ ...config,
+                baseUrl: acceptedSource.endpoints?.[acceptedSource.apiMode ?? "chat-completions"] ?? acceptedSource.baseUrl,
+                apiMode: acceptedSource.apiMode,
+              }, acceptedSource.modelAliases?.[selectedModel] ?? selectedModel, acceptedSource.id);
+            }
+            if (actual !== expected) throw new ForgeError("invalid_input", "The queued provider selection changed before execution. Nothing was replayed.");
+          } : undefined;
+          const prepared = selectedGroup ? await modelAccess.prepareRoute(selectedGroup, signal, validateSelection) : undefined;
+          const resolved = prepared?.base ?? await modelAccess.resolveProvider(providerSourceId, undefined, signal, requestedModel, validateSelection);
           const { config } = resolved;
           endpoint(config.baseUrl);
           // An explicit source (or one the model alone identifies) is what the
@@ -743,11 +817,12 @@ export const createHarness = async (
           await rememberSource(
             input.providerSourceId ?? inferSourceId(settings, input.model),
           );
+          rootBudget.checkAdmission();
           const provider = selectedGroup && prepared ? createRoutedProvider({
             group: selectedGroup, state: routeState,
             ...(prepared.apiMode ? { apiMode: prepared.apiMode } : {}),
             contextWindow: prepared.contextWindow, quota: prepared.quota, exclude: prepared.exclude,
-            resolve: (member, requestSignal) => modelAccess.resolveProvider(member.sourceId, member.credentialId, requestSignal, member.model),
+            resolve: (member, requestSignal) => modelAccess.resolveProvider(member.sourceId, member.credentialId, requestSignal, member.model, validateSelection),
           }) : resolved.provider;
           if (signal.aborted)
             throw new ForgeError("cancelled", "Run cancelled.");
@@ -758,15 +833,18 @@ export const createHarness = async (
             provider,
           );
           tools = built.tools;
+          rootBudget.checkAdmission();
+          const budget = rootBudget;
           const result = await createAgentRuntime({
+            rootBudget: budget,
             store,
             sessionLock: { id: input.sessionId, release: releaseSession },
             autoTitle: {
               secrets: [config.apiKey, config.baseUrl],
               start: (claimed, apply) => {
                 const titleController = new AbortController();
-                const titleSignal = AbortSignal.any([disposal.signal, titleController.signal]);
-                const naming = autoTitle({ snapshot: claimed, provider: resolved.provider, signal: titleSignal, secrets: [config.apiKey, config.baseUrl] })
+                const titleSignal = AbortSignal.any([signal, titleController.signal, AbortSignal.timeout(Math.max(1, Math.ceil(budget.remainingTimeMs)))]);
+                const naming = autoTitle({ snapshot: claimed, provider: resolved.provider, signal: titleSignal, secrets: [config.apiKey, config.baseUrl], beginUsage: () => budget.beginUsage(input.sessionId) })
                   .then(async title => {
                     if (!title || titleSignal.aborted || await apply(title)) return;
                     // A fast run may finish before inference. Re-read under a
@@ -774,9 +852,10 @@ export const createHarness = async (
                     const unlock = await store.acquire(claimed.id, titleSignal);
                     try {
                       if (titleSignal.aborted) return;
-                      const current = await store.get(claimed.id);
+                      const writer = createSessionWriter(store, claimed.id);
+                      const current = await writer.read();
                       if (current.titleSource === "auto" && current.title === claimed.title && current.autoTitleAttempted)
-                        await store.save({ ...current, title });
+                        await writer.save({ ...current, title });
                     } finally { await unlock(); }
                   }).catch(() => {});
                 titleOperations.set(claimed.id, { controller: titleController, work: naming });
@@ -810,7 +889,7 @@ export const createHarness = async (
             if (tools) await tools.dispose();
           } finally {
             try { await releaseSession?.(); }
-            finally { active.delete(input.sessionId); }
+            finally { rootBudget?.close(); active.delete(input.sessionId); }
           }
         }
       });
@@ -821,10 +900,18 @@ export const createHarness = async (
     dispose() {
       if (closing) return closing;
       disposed = true;
+      inputQueue.stop();
       disposal.abort();
       closing = Promise.allSettled(
         [...controls.values()].map((c) => c.work),
-      ).then(async () => { await modelAccess.dispose(); await Promise.allSettled([...titleTasks]); await memories.close(); await mcp.dispose(); });
+      ).then(async () => {
+        try { await modelAccess.dispose(); }
+        finally {
+          await Promise.allSettled([...titleTasks]);
+          try { await inputQueue.dispose(); }
+          finally { try { await memories.close(); } finally { await mcp.dispose(); } }
+        }
+      });
       return closing;
     },
   };
