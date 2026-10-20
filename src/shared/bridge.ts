@@ -37,6 +37,7 @@ export function createTransportBridge(transport: BridgeTransport): ForgeBridge {
     return response.data.result as Results[M];
   }
   return Object.freeze({
+    getHostState: () => request("getHostState"),
     inputQueue: {
       enqueue: input => request("enqueueInput", { input }),
       list: sessionId => request("listInputs", { sessionId }),

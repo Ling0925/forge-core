@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { hostStateSchema } from "./host";
 import { enqueueInputSchema, inputQueueSnapshotSchema, queuedInputSchema } from "./input-queue";
 import { mcpRemoteRegisterInputSchema } from "../mcp/types";
 import type { HtmlPreviewResponse } from "./html-preview";
@@ -238,6 +239,7 @@ export type RunHandle = z.infer<typeof runHandleSchema>;
 const requestBase = { id: z.string().uuid() };
 export const rpcRequestSchema = z
   .discriminatedUnion("method", [
+    z.object({ ...requestBase, method: z.literal("getHostState") }).strict(),
     z.object({ ...requestBase, method: z.literal("enqueueInput"), input: enqueueInputSchema }).strict(),
     z.object({ ...requestBase, method: z.literal("listInputs"), sessionId: sessionIdSchema }).strict(),
     z.object({ ...requestBase, method: z.literal("cancelInput"), sessionId: sessionIdSchema, inputId: z.string().uuid() }).strict(),
@@ -400,6 +402,7 @@ export const rpcRequestSchema = z
       .object({
         ...requestBase,
         method: z.literal("cancelRun"),
+        wait: z.boolean().optional(),
         runId: runIdSchema,
       })
       .strict(),
@@ -449,6 +452,7 @@ const success = <M extends RpcRequest["method"], S extends z.ZodTypeAny>(
     .strict()
     .readonly();
 export const rpcResponseSchema = z.union([
+  success("getHostState", hostStateSchema),
   success("getSettings", publicSettingsSchema),
   success("updateSettings", publicSettingsSchema),
   success("listModels", z.array(z.string().min(1).max(256)).readonly()),
@@ -505,6 +509,7 @@ export const rpcResponseSchema = z.union([
       id: requestBase.id,
       ok: z.literal(false),
       method: z.enum([
+        "getHostState",
         "getSettings",
         "updateSettings",
         "listModels",
@@ -566,6 +571,7 @@ export const workerMessageSchema = z
 export type WorkerMessage = z.infer<typeof workerMessageSchema>;
 
 export interface ForgeBridge {
+  getHostState?(): Promise<import("./host").HostState>;
   readonly inputQueue?: import("./input-queue").InputQueueService;
   /** Web launch-workspace policy; absent on desktop and older hosts. */
   readonly restrictWorkspace?: boolean;

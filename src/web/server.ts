@@ -483,6 +483,13 @@ export async function createWebHost(
               result: { sessionDelta: update.delta },
             });
         }
+        if (result.ok && result.method === "getHostState" && restrictWorkspace) {
+          const visible = await Promise.all(result.result.runs.map(async run => {
+            const session = await snapshotOf(run.sessionId);
+            return session && await inWorkspace(session.workspace) ? run : undefined;
+          }));
+          return json(response, 200, { ...result, result: { ...result.result, runs: visible.filter(Boolean) } });
+        }
         if (
           result.ok &&
           result.method === "listSessions" &&
