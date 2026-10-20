@@ -566,6 +566,11 @@ export function createResponsesAdapter(h: Helpers, baseUrl: string) {
               throw h.protocol();
             responseId = p.response.id;
           }
+        } else if (e.type === "response.metadata") {
+          const p = z.object({ response_id: id, metadata: z.record(z.unknown()) }).parse(e);
+          if (responseId !== undefined && responseId !== p.response_id)
+            throw h.protocol();
+          responseId = p.response_id;
         } else if (e.type === "response.reasoning_summary_text.delta") {
           // Opaque reasoning is replayed via providerState; this summary text is a
           // bounded display preview persisted on the assistant message.
