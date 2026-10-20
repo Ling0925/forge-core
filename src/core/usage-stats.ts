@@ -4,6 +4,7 @@ import type {
   ModelUsageStat,
   SessionUsageStat,
   UsageFilter,
+  UsageRequest,
   UsageStatsDto,
 } from "../shared/ipc";
 import type { ProviderAttempt } from "../shared/model-access";
@@ -22,6 +23,7 @@ export interface ComputedSessionUsage {
   readonly runStats: readonly SessionRunStat[];
   /** Provider attempts observed in this session; never folded into billed totals. */
   readonly routing: readonly RouteUsageStat[];
+  readonly requests: readonly UsageRequest[];
 }
 
 /**
@@ -128,6 +130,72 @@ export function routeUsageStats(
     merged.set(key, entry);
   }
   return sortRouteUsage([...merged.values()]);
+}
+
+/** Collapse start/result events into individual requests, not route totals. */
+export function sessionRequestRecords(snapshot: SessionSnapshot): readonly UsageRequest[] {
+  const records: UsageRequest[] = [];
+  const pending = new Map<string, number>();
+  for (const [index, event] of snapshot.events.entries()) {
+    // Attempt numbers restart across runs and tool steps. Keep those boundaries.
+    if (event.type === "run_started" || event.type === "run_finished" ||
+        event.type === "step_started" || event.type === "step_finished") {
+      pending.clear();
+      continue;
+    }
+    if (event.type !== "provider_attempt") continue;
+    const selection = event.selection;
+    const key = JSON.stringify([
+      event.turn, event.step, selection.attempt, routeIdentityKey(selection),
+    ]);
+    const record: UsageRequest = {
+      id: `${snapshot.id}:${index}`,
+      sessionId: snapshot.id,
+      sessionTitle: snapshot.title,
+      workspace: snapshot.workspace,
+      ...(event.turn === undefined ? {} : { turn: event.turn }),
+      ...(event.step === undefined ? {} : { step: event.step }),
+      sourceId: selection.sourceId,
+      model: selection.model,
+      apiMode: selection.apiMode,
+      ...(selection.credentialId === undefined ? {} : { credentialId: selection.credentialId }),
+      ...(selection.groupId === undefined ? {} : { groupId: selection.groupId }),
+      attempt: selection.attempt,
+      reason: selection.reason,
+      timestamp: selection.timestamp,
+      outcome: selection.outcome === "started" ? "unknown" : selection.outcome,
+      ...(selection.usage === undefined ? {} : { usage: selection.usage }),
+      ...(selection.errorCode === undefined ? {} : { errorCode: selection.errorCode }),
+    };
+    if (selection.outcome === "started") {
+      pending.set(key, records.length);
+      records.push({ ...record, startedAt: selection.timestamp });
+      continue;
+    }
+    const pendingIndex = pending.get(key);
+    const started = pendingIndex === undefined ? undefined : records[pendingIndex];
+    const durationMs = started?.startedAt === undefined
+      ? Number.NaN
+      : Date.parse(selection.timestamp) - Date.parse(started.startedAt);
+    const completed: UsageRequest = {
+      ...record,
+      ...(started ? { id: started.id, timestamp: started.timestamp, startedAt: started.startedAt } : {}),
+      finishedAt: selection.timestamp,
+      ...(Number.isFinite(durationMs) && durationMs >= 0 ? { durationMs } : {}),
+    };
+    if (pendingIndex === undefined) records.push(completed);
+    else records[pendingIndex] = completed;
+    pending.delete(key);
+  }
+  // Missing results after a finished/interrupted run are unknown, not successful
+  // or free. Only outstanding requests in the current running session are live.
+  if (snapshot.status === "running") {
+    for (const index of pending.values()) {
+      const record = records[index];
+      if (record) records[index] = { ...record, outcome: "started" };
+    }
+  }
+  return records;
 }
 
 const matchesUsageFilter = (
@@ -245,7 +313,7 @@ export function computeSessionUsage(
     runCount,
   };
 
-  return { stat, runStats, routing: routeUsageStats(snapshot.events) };
+  return { stat, runStats, routing: routeUsageStats(snapshot.events), requests: sessionRequestRecords(snapshot) };
 }
 
 export function aggregateRouteUsageStats(
@@ -379,6 +447,11 @@ export function aggregateUsageStats(
     .slice(0, 20);
 
   const routes = aggregateRouteUsageStats(filtered);
+  const cutoff = filter?.days ? Date.now() - filter.days * 86_400_000 : undefined;
+  const requests = computedList.flatMap(item => item.requests).filter(request =>
+    (!filter?.workspace || request.workspace === filter.workspace) &&
+    (cutoff === undefined || Date.parse(request.timestamp) >= cutoff),
+  ).sort((a, b) => b.timestamp.localeCompare(a.timestamp) || a.id.localeCompare(b.id));
   const averageCacheRate =
     totalPromptTokens > 0
       ? Math.min(1, Math.max(0, totalCachedTokens / totalPromptTokens))
@@ -396,6 +469,7 @@ export function aggregateUsageStats(
     daily,
     topSessions,
     ...(routes.length ? { routes } : {}),
+    requests,
   };
 }
 

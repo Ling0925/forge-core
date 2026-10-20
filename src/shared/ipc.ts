@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { modelAccessRequestSchema, modelAccessResultSchema, type ModelAccessRequest, type ModelAccessResult } from "./model-access";
+import { modelAccessRequestSchema, modelAccessResultSchema, providerAttemptSchema, type ModelAccessRequest, type ModelAccessResult } from "./model-access";
 import { mcpRemoteRegisterInputSchema } from "../mcp/types";
 import type { HtmlPreviewResponse } from "./html-preview";
 import type { WorkspaceDirectoryPage } from "./workspaces";
@@ -198,6 +198,20 @@ export const routeUsageStatSchema = z.object({
   unknownUsage: z.number().int().nonnegative(), promptTokens: z.number().int().nonnegative(), completionTokens: z.number().int().nonnegative(),
   cachedTokens: z.number().int().nonnegative(), totalTokens: z.number().int().nonnegative(),
 }).strict().readonly();
+export const usageRequestSchema = providerAttemptSchema.unwrap().extend({
+  id: z.string(),
+  sessionId: sessionIdSchema,
+  sessionTitle: z.string(),
+  workspace: z.string(),
+  turn: z.number().int().positive().optional(),
+  step: z.number().int().positive().optional(),
+  outcome: z.enum(["started", "succeeded", "failed", "unknown"]),
+  startedAt: z.string().optional(),
+  finishedAt: z.string().optional(),
+  durationMs: z.number().nonnegative().optional(),
+}).readonly();
+export type UsageRequest = z.infer<typeof usageRequestSchema>;
+
 export const usageStatsDtoSchema = z
   .object({
     totalPromptTokens: z.number().int().nonnegative(),
@@ -211,6 +225,7 @@ export const usageStatsDtoSchema = z
     daily: z.array(dailyUsageStatSchema).readonly(),
     topSessions: z.array(sessionUsageStatSchema).readonly(),
     routes: z.array(routeUsageStatSchema).readonly().optional(),
+    requests: z.array(usageRequestSchema).readonly().optional(),
   })
   .strict()
   .readonly();

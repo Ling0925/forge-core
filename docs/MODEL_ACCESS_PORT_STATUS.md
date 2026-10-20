@@ -22,7 +22,7 @@
 | 路由 | 显式组及同来源多凭据的 `order`/`rotate`/`usage`/`smart`/`pace`、冷却、粘性；已知协议/工具/视觉不兼容候选在发送前排除；上下文使用已知候选的保守窗口，未知能力不伪造 |
 | 重试 | runtime 是唯一尝试预算；每次 complete 最多一条上游推理。明确 429 拒绝可换候选；超时、断连、5xx、缺失 finish 不能证明未执行，不自动重放。已流出文本、工具预览或 hosted search 同样不重放 |
 | 状态隔离 | Responses、Anthropic、Gemini 的不透明状态绑定 endpoint/model/protocol/source/credential 和鉴权摘要。更换 key 不复用旧账号状态；同账号短期 token 刷新保留稳定身份；旧无身份摘要状态降级为通用消息和完整工具结果 |
-| 观测 | `provider_attempt` 和用量面板显示实际来源、精确模型、凭据 ID、组、原因、序号与结果；失败且无 usage 的成本保持未知。当前统计实际报告 tokens，不承诺已实现所有厂商余额查询或完整货币账单 |
+| 观测 | 用量看板分为「用量统计」「请求记录」；请求记录由持久化 `provider_attempt` 起止事件配对，逐条展示实际来源、精确模型、凭据、结果、tokens 与耗时，详情含组、原因、尝试序号及会话跳转，支持时间/工作区筛选、刷新和翻页。聊天输入框不再显示调用诊断行；缺失结果或 usage 保持未知，不推断为成功或零成本。旧会话若没有 attempt 事件，不补造请求；不采集请求正文或凭据值，也不承诺所有厂商余额查询或完整货币账单 |
 | Gemini | 原生 SSE/JSON、目录分页、图片、完整 functionCall/functionResponse、thoughtSignature、推理、取消/错误处理；工具结果后的用户文本独立成轮；不将 hosted search 替换为本地工具 |
 | Vertex | 仅显式 JSON：service_account JWT、authorized_user 刷新、impersonated_service_account 及显式服务账号模拟；不支持 external_account/WIF；惰性铸造、缓存、刷新、取消。静态参考目录不触发 token 网络请求；不自动读 ADC、环境、gcloud 文件或 metadata 服务 |
 | Azure | 对照 `azure.go` 的 `/openai/v1`、`api-key`、精确部署名称。用户填写资源地址；不声称 classic `api-version` 或 Entra 自动发现/登录 |
