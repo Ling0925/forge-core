@@ -415,11 +415,11 @@ export async function createWebHost(
             return json(response, 403, {
               error: "This server is restricted to its launch workspace",
             });
-          if ("sessionId" in rpc || rpc.method === "startRun") {
+          if ("sessionId" in rpc || rpc.method === "startRun" || rpc.method === "enqueueInput") {
             const id =
               rpc.method === "startRun"
                 ? rpc.input.sessionId
-                : (
+                : rpc.method === "enqueueInput" ? rpc.input.input.sessionId : (
                     rpc as {
                       sessionId: Parameters<HarnessService["getSession"]>[0];
                     }

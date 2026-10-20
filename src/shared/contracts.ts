@@ -25,6 +25,8 @@ export type ApprovalHandler = (
   signal: AbortSignal,
 ) => Promise<boolean>;
 export interface RunControl {
+  /** Trusted queue binding; never accepted directly from public RunInput. */
+  readonly providerBinding?: string;
   readonly getPermission?: () => Permission | undefined;
   /** final=true atomically closes an empty child queue before terminal cleanup. */
   readonly drainSteering: (final?: boolean) => readonly (string | Pick<RunInput, "prompt" | "images">)[];
@@ -92,6 +94,7 @@ export interface SettingsStore {
   update(input: ConfigureInput): Promise<PublicSettings>;
 }
 export interface HarnessService {
+  readonly inputQueue?: import("./input-queue").InputQueueHost;
   /** Local task UI only; optional for older hosts and desktop adapters. */
   readonly tasks?: import("./task-view").TaskService;
   cancelSession(sessionId: SessionId): Promise<boolean>;

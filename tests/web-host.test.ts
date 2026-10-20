@@ -178,10 +178,32 @@ async function setup(restrictWorkspace = true) {
       "X-Forge-Client": data.clientId as string,
     };
   }
-  return { web, directory, url, headers, login };
+  return { web, service, directory, url, headers, login };
 }
 
 describe("Web development host", () => {
+  it("accepts durable inputs without a client event lease and checks their nested session workspace", async () => {
+    const { url, directory, service, login } = await setup();
+    const authA = await login();
+    const authB = await login();
+    const rpc = async (auth: Record<string, string>, data: object) => fetch(`${url}/api/rpc`, {
+      method: "POST", headers: auth, body: JSON.stringify({ id: randomUUID(), ...data }),
+    });
+    const other = await service.createSession({ workspace: tmpdir(), title: "Other" });
+    const rejected = await rpc(authA, { method: "enqueueInput", input: { inputId: randomUUID(), input: { sessionId: other.id, prompt: "outside" } } });
+    expect(rejected.status).toBe(403);
+    const session = await service.createSession({ workspace: directory, title: "Durable" });
+    const inputId = randomUUID();
+    const accepted = await rpc(authA, { method: "enqueueInput", input: { inputId, input: { sessionId: session.id, prompt: "work" } } });
+    expect(accepted.status).toBe(200);
+    expect(await accepted.json()).toMatchObject({ ok: true, result: { inputId } });
+    // Neither page opens an event lease or sends another startRun request.
+    await vi.waitFor(async () => {
+      const observed = await rpc(authB, { method: "listInputs", sessionId: session.id });
+      expect(await observed.json()).toMatchObject({ ok: true, result: { items: [{ inputId, state: "consumed", outcome: "completed" }] } });
+    });
+  });
+
   it("accepts bounded image RPC above the old 1 MiB limit and persists it without changing summary lists", async () => {
     const { url, directory, login } = await setup();
     const auth = await login();

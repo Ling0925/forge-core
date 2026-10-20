@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { enqueueInputSchema, inputQueueSnapshotSchema, queuedInputSchema } from "./input-queue";
 import { mcpRemoteRegisterInputSchema } from "../mcp/types";
 import type { HtmlPreviewResponse } from "./html-preview";
 import type { WorkspaceDirectoryPage } from "./workspaces";
@@ -237,6 +238,11 @@ export type RunHandle = z.infer<typeof runHandleSchema>;
 const requestBase = { id: z.string().uuid() };
 export const rpcRequestSchema = z
   .discriminatedUnion("method", [
+    z.object({ ...requestBase, method: z.literal("enqueueInput"), input: enqueueInputSchema }).strict(),
+    z.object({ ...requestBase, method: z.literal("listInputs"), sessionId: sessionIdSchema }).strict(),
+    z.object({ ...requestBase, method: z.literal("cancelInput"), sessionId: sessionIdSchema, inputId: z.string().uuid() }).strict(),
+    z.object({ ...requestBase, method: z.literal("pauseInputs"), sessionId: sessionIdSchema }).strict(),
+    z.object({ ...requestBase, method: z.literal("resumeInputs"), sessionId: sessionIdSchema }).strict(),
     z.object({ ...requestBase, method: z.literal("getSettings") }).strict(),
     z
       .object({
@@ -447,6 +453,11 @@ export const rpcResponseSchema = z.union([
   success("updateSettings", publicSettingsSchema),
   success("listModels", z.array(z.string().min(1).max(256)).readonly()),
   success("listSessions", z.array(sessionSummarySchema).readonly()),
+  success("enqueueInput", queuedInputSchema),
+  success("listInputs", inputQueueSnapshotSchema),
+  success("cancelInput", z.boolean()),
+  success("pauseInputs", inputQueueSnapshotSchema),
+  success("resumeInputs", inputQueueSnapshotSchema),
   success("createSession", sessionSnapshotSchema),
   success("getSession", sessionSnapshotSchema),
   success("getPublishedFile", publishedFileResponseSchema),
@@ -498,6 +509,11 @@ export const rpcResponseSchema = z.union([
         "updateSettings",
         "listModels",
         "listSessions",
+        "enqueueInput",
+        "listInputs",
+        "cancelInput",
+        "pauseInputs",
+        "resumeInputs",
         "createSession",
         "getSession",
         "getPublishedFile",
@@ -550,6 +566,7 @@ export const workerMessageSchema = z
 export type WorkerMessage = z.infer<typeof workerMessageSchema>;
 
 export interface ForgeBridge {
+  readonly inputQueue?: import("./input-queue").InputQueueService;
   /** Web launch-workspace policy; absent on desktop and older hosts. */
   readonly restrictWorkspace?: boolean;
   getSettings(): Promise<PublicSettings>;

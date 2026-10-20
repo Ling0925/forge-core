@@ -48,6 +48,7 @@ import { openRunMemory } from "./run-memory";
 import { autoTitle } from "./session-title";
 import { createTaskService } from "./task-service";
 import type { CommandTaskAccess } from "../shared/task-view";
+import { inputProviderBinding, openInputQueue } from "./input-queue";
 import { createSessionWriter } from "./session-writer";
 import { createAgentRuntime, withCancellation } from "./runtime";
 
@@ -313,6 +314,20 @@ export const createHarness = async (
       await release();
     }
   };
+  const inputQueue = await openInputQueue({ directory, validateSession: async id => { await store.get(id); }, prepare: async input => {
+    check();
+    const [snapshot, settings] = await Promise.all([store.get(input.sessionId), settingsStore.getPublic()]);
+    const providerSourceId = input.providerSourceId ?? snapshot.providerSourceId ??
+      inferSourceId(settings, input.model) ?? settings.activeSourceId;
+    const config = await settingsStore.getProviderConfig(providerSourceId);
+    endpoint(config.baseUrl);
+    const model = settingsFields.model.parse(input.model ?? snapshot.model);
+    const levels = ["readonly", "workspace", "unrestricted"] as const;
+    const permission = levels[Math.min(levels.indexOf(input.mode === "plan" ? "readonly" : input.permission ?? settings.defaultPermission),
+      levels.indexOf(snapshot.permissionCeiling ?? "unrestricted"))] ?? "readonly";
+    return { input: { ...input, model, permission, mode: input.mode ?? "build",
+      ...(providerSourceId ? { providerSourceId } : {}) }, providerBinding: inputProviderBinding(config, model, providerSourceId) };
+  } });
   const taskService = createTaskService({
     store,
     commands: () => [...taskAccess, ...recentTaskAccess],
@@ -332,6 +347,7 @@ export const createHarness = async (
     },
   });
   return {
+    inputQueue,
     tasks: {
       listTasks: (...args) => { check(); return taskService.listTasks(...args); },
       getTask: (...args) => { check(); return taskService.getTask(...args); },
@@ -669,7 +685,9 @@ export const createHarness = async (
             settings.activeSourceId;
           const config = await settingsStore.getProviderConfig(providerSourceId);
           endpoint(config.baseUrl);
-          settingsFields.model.parse(input.model ?? snapshot.model);
+          const selectedModel = settingsFields.model.parse(input.model ?? snapshot.model);
+          if (control?.providerBinding && control.providerBinding !== inputProviderBinding(config, selectedModel, providerSourceId))
+            throw new ForgeError("invalid_input", "The queued provider selection changed before execution. Nothing was replayed.");
           // An explicit source (or one the model alone identifies) is what the
           // user just chose, so remember it as the fallback for the next run.
           await rememberSource(
@@ -742,10 +760,11 @@ export const createHarness = async (
     dispose() {
       if (closing) return closing;
       disposed = true;
+      inputQueue.stop();
       disposal.abort();
       closing = Promise.allSettled(
         [...controls.values()].map((c) => c.work),
-      ).then(async () => { await Promise.allSettled([...titleTasks]); await mcp.dispose(); });
+      ).then(async () => { await Promise.allSettled([...titleTasks]); await inputQueue.dispose(); await mcp.dispose(); });
       return closing;
     },
   };
