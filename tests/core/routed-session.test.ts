@@ -167,7 +167,7 @@ it("moves a routed turn to the next member only for a request that never ran, on
   let executions = 0;
   const first = providerOf(async (_messages, _tools, request) => {
     seen.push(request.model);
-    throw new ProviderError("network", "The provider connection failed.", true);
+    throw new ProviderError("http", "Rate limited.", true, 429);
   });
   const second = providerOf(async (_messages, _tools, request) => {
     seen.push(request.model);
@@ -314,11 +314,11 @@ it("spends one shared budget across group members and reports unknown failure co
   let secondCalls = 0;
   const first = providerOf(async () => {
     firstCalls += 1;
-    throw new ProviderError("network", "The provider connection failed.", true);
+    throw new ProviderError("http", "Rate limited.", true, 429);
   });
   const second = providerOf(async () => {
     secondCalls += 1;
-    throw new ProviderError("network", "The provider connection failed.", true);
+    throw new ProviderError("http", "Rate limited.", true, 429);
   });
   const run = fixture({ providers: [first, second] });
 

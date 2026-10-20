@@ -549,9 +549,11 @@ export const createAgentRuntime = (
       }
       check();
       const permission = effectivePermission();
-      const { pendingTool: _pending, ...settled } = snapshot;
+      const { pendingTool: _pending, routeGroupId: previousRoute, ...settled } = snapshot;
+      const routeGroupId = input.routeGroupId ?? (input.model !== undefined || input.providerSourceId !== undefined ? undefined : previousRoute);
       snapshot = {
         ...settled,
+        ...(routeGroupId ? { routeGroupId } : {}),
         model: input.model ?? snapshot.model,
         ...(input.providerSourceId ? { providerSourceId: input.providerSourceId } : {}),
         messages: closeCalls(
@@ -1095,7 +1097,7 @@ export const createAgentRuntime = (
                           const childProgress = createAgentProgress(childInput.sessionId, ephemeral);
                           try {
                             const childWorkspace = (await deps.store.get(childInput.sessionId)).workspace;
-                            const childContext = await deps.childContextFactory?.(childWorkspace);
+                            const childContext = await deps.childContextFactory?.(childWorkspace, childInput, childSignal);
                             childTools = childContext?.tools ?? (deps.childToolFactory
                               ? await deps.childToolFactory(
                                   childWorkspace,
@@ -1105,9 +1107,10 @@ export const createAgentRuntime = (
                               ...deps,
                               tools: childTools,
                               ...(childContext ? { projectInstructions: childContext.instructions } : {}),
+                              ...(childContext?.provider ? { provider: childContext.provider } : {}),
                               settings: { ...deps.settings, maxToolCalls: childMaxToolCalls ?? deps.settings.maxToolCalls },
                             }).run(
-                              childInput,
+                              { ...childInput, ...(childContext?.providerSourceId ? { providerSourceId: childContext.providerSourceId } : {}) },
                               (childEvent) => {
                                 childProgress(childEvent);
                                 if (childEvent.type === "run_finished") {

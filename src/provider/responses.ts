@@ -89,6 +89,8 @@ type Helpers = {
   protocol: (reason?: ProtocolReason) => Error;
   parseJson: (text: string) => unknown;
   events: (response: Response) => AsyncIterable<ServerSentEvent>;
+  /** Opaque credential identity; replaying state across accounts is unsafe. */
+  credentialId?: string | undefined;
   notify: (observer: (text: string) => void, text: string) => void;
   /** Display-only generation metadata; isolated like any other observer. */
   notifyToolCall: (
@@ -206,7 +208,10 @@ export function createResponsesAdapter(h: Helpers, baseUrl: string) {
         const sameOrigin =
           state?.apiMode === "responses" &&
           state.baseUrl === baseUrl &&
-          state.model === model;
+          state.model === model &&
+          (h.credentialId === undefined
+            ? state.credentialId === undefined
+            : state.credentialId === h.credentialId);
         if (sameOrigin && state) {
           const original = validatedOutput(state.output, h);
           const nativeCalls = original.filter(
@@ -701,6 +706,7 @@ export function createResponsesAdapter(h: Helpers, baseUrl: string) {
             apiMode: "responses",
             baseUrl,
             model,
+            ...(h.credentialId ? { credentialId: h.credentialId } : {}),
             output,
           },
         },

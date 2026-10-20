@@ -34,6 +34,16 @@ Parse unknown persisted, HTTP, IPC and tool-argument data at the receiving bound
 
 Core interface signatures remain stable. Domain tests belong in `tests/shared`, `tests/core`, `tests/provider`, `tests/tools`, `tests/store`, `tests/cli` and `tests/desktop` using Vitest `*.test.ts`. Shared colocated contract regression tests are also supplied here. Real Electron/browser QA is separate.
 
+## Native model access
+
+`shared/model-access.ts` defines private configuration inputs and public projections; `shared/model-catalog.ts` remains the single catalog contract. `core/model-access.ts` owns presets, discovery/refresh, explicit tests/imports, login and quota operations. CLI, Web RPC and desktop worker/IPC call the same `HarnessService.modelAccess` method; renderer has no direct file or token-store access.
+
+Settings transaction v2 stores sources, credentials, private connection parameters and explicit route groups under one lock. Provider snapshots pair the selected credential with its endpoint/revision. Account refresh performs its compare/update under the settings lock. Catalog disk keys distinguish credentials and stable account/Vertex identity without persisting raw responses or short-lived access tokens.
+
+The runtime remains the sole generation retry owner. The routing adapter chooses one candidate per attempt, records sanitized `provider_attempt` events, and never replays an uncertain failure. Direct selection and explicitly named child models clear inherited route groups. Opaque protocol state is scoped to endpoint, model, protocol, source, credential and a hashed authentication identity; API-key changes invalidate it, while short-lived token rotation within the same account does not.
+
+`provider/accounts/` adapts Codex/Copilot; `provider/cloud.ts` resolves explicit Google credentials lazily. Native Gemini joins the existing three adapters. No ambient ADC/third-party credential scan, Go gateway, or hidden external CLI is introduced. These modules include Magpie-derived behavior; see [license attribution](../THIRD_PARTY_NOTICES.md) and [supported/untested boundaries](MODEL_ACCESS_PORT_STATUS.md).
+
 ## Extended subsystems (current source)
 
 ### Session routing and durable history (2026-10-17)

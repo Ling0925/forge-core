@@ -69,7 +69,9 @@ export interface RouteQuota {
 
 export interface ResolvedRouteMember {
   readonly provider: ModelProvider;
-  /** Private config from the settings store; only `apiMode` is ever read. */
+  /** Exact wire ID after the user's explicit alias, never guessed. */
+  readonly actualModel?: string | undefined;
+  /** Private config; only protocol and credential identifier enter events. */
   readonly config?: ProviderConfig | undefined;
 }
 
@@ -141,6 +143,8 @@ export interface RoutedProviderOptions {
   readonly quota?: (member: RouteMember) => RouteQuota | undefined;
   /** Uniform protocol of every member, when they share one (hosted search needs it). */
   readonly apiMode?: ModelProvider["apiMode"];
+  /** Smallest known candidate window; unknown is null, never a guessed limit. */
+  readonly contextWindow?: number | null;
   readonly now?: () => number;
 }
 
@@ -181,6 +185,15 @@ interface ClassifiedFailure {
   readonly reason?: string | undefined;
 }
 
+// An empty stream is not proof that the server did nothing: connection loss,
+// timeouts and even a 5xx can follow accepted work. Only an explicit capacity
+// rejection qualifies for automatic cross-candidate replay.
+const wasRejectedBeforeExecution = (error: unknown): boolean => {
+  if (!isRetryableProviderFailure(error)) return false;
+  const failure = error as ClassifiedFailure;
+  return (failure.classification === "http" && failure.status === 429) ||
+    (failure.classification === "upstream" && failure.reason === "rate_limit_exceeded");
+};
 const isCancellation = (error: unknown): boolean =>
   (error instanceof ForgeError && error.code === "cancelled") ||
   (typeof error === "object" &&
@@ -476,10 +489,10 @@ export function createRoutedProvider(
       extra: Pick<ProviderAttempt, "usage" | "errorCode"> = {},
     ): ProviderAttempt => ({
       sourceId: member.sourceId,
-      model: member.model,
-      ...(member.credentialId === undefined
+      model: resolved.actualModel ?? member.model,
+      ...((resolved.config?.credentialId ?? member.credentialId) === undefined
         ? {}
-        : { credentialId: member.credentialId }),
+        : { credentialId: resolved.config?.credentialId ?? member.credentialId }),
       apiMode,
       groupId: group.id,
       attempt,
@@ -545,9 +558,9 @@ export function createRoutedProvider(
           ? "cancelled"
           : streamed || hostedSearch
             ? "uncertain"
-            : isRetryableProviderFailure(error)
+            : wasRejectedBeforeExecution(error)
               ? "unexecuted"
-              : "rejected";
+              : isRetryableProviderFailure(error) ? "uncertain" : "rejected";
       const candidate = candidateOf(state, selection.key);
       candidate.started += 1;
       if (kind === "unexecuted" || kind === "rejected") candidate.failed += 1;
@@ -594,6 +607,7 @@ export function createRoutedProvider(
 
   return {
     ...(options.apiMode === undefined ? {} : { apiMode: options.apiMode }),
+    ...(options.contextWindow === undefined ? {} : { getModelContextWindow: async () => options.contextWindow ?? null }),
     // Exact member model ids, in declared order: no network and no aliases.
     listModels: async () => [
       ...new Set(

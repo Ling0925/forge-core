@@ -5,6 +5,7 @@ import type {
 } from "@anthropic-ai/sdk/resources/messages";
 import { z } from "zod";
 import type { ModelProvider } from "../shared/contracts";
+import { scopeProviderState } from "./state-scope";
 import { ForgeError } from "../shared/errors";
 import {
   jsonObjectSchema,
@@ -17,8 +18,10 @@ import {
 import type { Message, ProviderConfig } from "../shared/schemas";
 import { estimateToolCallLines } from "../shared/tool-preview-lines";
 import { ProviderError, protocol } from "./errors";
+import { normalizeModelCatalog } from "./catalog";
+import { createRequestOptions } from "./request-options";
 import { withSdkRequest } from "./sdk-transport";
-import { readModelContextWindow } from "./context-window";
+import type { ModelCatalog } from "../shared/model-catalog";
 
 const contentSchema = z
   .array(
@@ -61,6 +64,7 @@ function history(
   messages: readonly Message[],
   baseUrl: string,
   model: string,
+  credentialId?: string,
 ): MessageParam[] {
   const result: MessageParam[] = [];
   const pending = new Set<string>();
@@ -118,7 +122,10 @@ function history(
     if (
       state?.apiMode === "anthropic" &&
       state.baseUrl === baseUrl &&
-      state.model === model
+      state.model === model &&
+      (credentialId === undefined
+        ? state.credentialId === undefined
+        : state.credentialId === credentialId)
     ) {
       const content = contentSchema.parse(state.output);
       const normalized = summarize(content);
@@ -154,46 +161,56 @@ export function createAnthropicProvider(
   settings: ProviderConfig,
 ): ModelProvider {
   const baseUrl = settings.baseUrl.replace(/\/+$/, "").replace(/\/v1$/, "");
+  const requestOptions = createRequestOptions(settings);
   const clientFor = (fetch: typeof globalThis.fetch) =>
     new Anthropic({
-      apiKey: settings.apiKey,
+      apiKey: null,
       authToken: null,
       baseURL: baseUrl,
       maxRetries: 0,
       timeout: settings.requestTimeoutMs,
       fetch,
       logLevel: "off",
-      defaultHeaders: { "x-api-key": settings.apiKey || null },
+      defaultHeaders: requestOptions.headers,
     });
   let windows = new Map<string, number | null>();
-  let catalogLoaded = false;
-  const listModels = (signal?: AbortSignal) =>
+  let catalog: ModelCatalog | undefined;
+  const loadCatalog = (signal?: AbortSignal) =>
     withSdkRequest(
       settings,
-      { signal, idle: false },
+      { signal, idle: false, fetch: requestOptions.fetch },
       async ({ signal, fetch }) => {
-        const next = new Map<string, number | null>();
+        const raw: unknown[] = [];
         for await (const model of clientFor(fetch).models.list(
           { limit: 100 },
           { signal },
         )) {
-          next.set(settingsFields.model.parse(model.id), readModelContextWindow(model));
-          if (next.size > 10000) throw protocol("output_limit");
+          raw.push({ ...model, id: settingsFields.model.parse(model.id) });
+          if (raw.length > 10000) throw protocol("output_limit");
         }
         // Publish a cache only after every page succeeded.
-        windows = next;
-        catalogLoaded = true;
-        return [...windows.keys()].sort();
+        const next = normalizeModelCatalog(raw, { protocol: "anthropic" });
+        windows = new Map(
+          next
+            .filter((model) => model.contextWindowTokens !== null)
+            .map((model) => [model.id, model.contextWindowTokens] as const),
+        );
+        catalog = next;
+        return next;
       },
     );
-  return {
+  // Always ask the source; the catalog store owns sharing and refresh.
+  const listModels = async (signal?: AbortSignal) => {
+    const models = await loadCatalog(signal);
+    return models.map((model) => model.id).sort();
+  };
+  return scopeProviderState({
     listModels,
-    async listModelCatalog(signal) {
-      const ids = await listModels(signal);
-      return ids.map(id => ({ id, contextWindowTokens: windows.get(id) ?? null }));
+    listModelCatalog(signal) {
+      return loadCatalog(signal);
     },
     async getModelContextWindow(model, signal) {
-      if (!catalogLoaded) await listModels(signal);
+      if (!catalog) await loadCatalog(signal);
       return windows.get(model) ?? null;
     },
     complete: async (messages, tools, options) => {
@@ -211,7 +228,7 @@ export function createAnthropicProvider(
         );
       return withSdkRequest(
         settings,
-        { signal: options.signal, idle: true },
+        { signal: options.signal, idle: true, fetch: requestOptions.fetch },
         async ({ signal, fetch }) => {
           const maxTokens = settings.maxOutputTokens ?? 8192;
           const effort = settings.reasoningEffort ?? "default";
@@ -227,7 +244,7 @@ export function createAnthropicProvider(
               "invalid_input",
               "Anthropic thinking requires maxOutputTokens greater than 1024.",
             );
-          const stream = clientFor(fetch).messages.stream(
+          const body = requestOptions.applyBody(
             {
               model: parsed.data.model,
               max_tokens: maxTokens,
@@ -239,6 +256,7 @@ export function createAnthropicProvider(
                 parsed.data.messages,
                 baseUrl,
                 parsed.data.model,
+                settings.credentialId,
               ),
               ...(parsed.data.tools.length
                 ? {
@@ -256,22 +274,26 @@ export function createAnthropicProvider(
                 : {}),
               ...(effort === "max"
                 ? {
-                    thinking: { type: "adaptive" },
-                    output_config: { effort: "max" },
+                    thinking: { type: "adaptive" as const },
+                    output_config: { effort: "max" as const },
                   }
                 : effort === "none"
-                  ? { thinking: { type: "disabled" } }
+                  ? { thinking: { type: "disabled" as const } }
                   : effort !== "default"
                     ? {
                         thinking: {
-                          type: "enabled",
+                          type: "enabled" as const,
                           budget_tokens: Math.min(budget[effort], maxTokens - 1),
                         },
                       }
                     : {}),
             },
-            { signal },
+            options.sessionId,
           );
+          const stream = clientFor(fetch).messages.stream(body, {
+            signal,
+            headers: requestOptions.headersFor(body),
+          });
           let observerFailure: ProviderError | undefined;
           const argumentsByIndex = new Map<number, string>();
           const notify = (callback: () => void) => {
@@ -396,6 +418,9 @@ export function createAnthropicProvider(
                       apiMode: "anthropic",
                       baseUrl,
                       model: parsed.data.model,
+                      ...(settings.credentialId
+                        ? { credentialId: settings.credentialId }
+                        : {}),
                       output: content,
                     },
                   }
@@ -413,5 +438,5 @@ export function createAnthropicProvider(
         },
       );
     },
-  };
+  }, settings);
 }

@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { sourceAccessFields, providerProtocolSchema, credentialInputSchema, publicCredentialSchema, connectionInputSchema, publicConnectionSchema, routeGroupSchema, routeOperationSchema, accountTokensSchema, providerAttemptSchema } from "./model-access";
 import { createDiffPatch, unavailablePatch } from "./diff";
 import { imageAttachmentsSchema } from "./images";
 import { publishedFilesSchema } from "./published-files";
@@ -64,7 +65,7 @@ export const lspServersSchema = z.array(lspServerSchema).max(8).readonly().refin
   "LSP server IDs and file extensions must be unique",
 ).refine(servers => JSON.stringify(servers).length <= 24000, "LSP configuration is too large");
 export const settingsFields = {
-  apiMode: z.enum(["chat-completions", "responses", "anthropic"]).optional(),
+  apiMode: providerProtocolSchema.optional(),
   // Responses hosted search only. Absent is disabled for existing installations.
   webSearch: webSearchModeSchema.optional(),
   maxOutputTokens: z.number().int().min(1).max(1000000).optional(),
@@ -118,6 +119,7 @@ const configurableSettingsFields = {
 // public projection never carries credentials, only whether a key exists.
 export const providerSourceIdSchema = z.string().regex(/^[a-z][a-z0-9_-]{0,31}$/);
 const providerSourceContentFields = {
+  ...sourceAccessFields,
   label: z.string().trim().min(1).max(80),
   baseUrl: settingsFields.baseUrl,
   // An empty model means "not chosen yet" so a catalog can be listed first.
@@ -141,6 +143,8 @@ export const publicProviderSourceSchema = z
     ...providerSourceFields,
     revision: providerSourceRevisionSchema,
     hasApiKey: z.boolean(),
+    credentials: z.array(publicCredentialSchema).readonly().optional(),
+    connection: publicConnectionSchema.optional(),
   })
   .strict()
   .readonly();
@@ -150,7 +154,8 @@ export const publicSettingsSchema = z
     ...configurableSettingsFields,
     hasApiKey: z.boolean(),
     isConfigured: z.boolean(),
-    providerSources: z.array(publicProviderSourceSchema).max(20).readonly().optional(),
+    providerSources: z.array(publicProviderSourceSchema).readonly().optional(),
+    routeGroups: z.array(routeGroupSchema).readonly().optional(),
     activeSourceId: providerSourceIdSchema.optional(),
     // FORGE_* variables keep priority: the UI must be able to warn about it.
     environmentOverride: z.boolean().optional(),
@@ -197,6 +202,8 @@ export const providerSourceOperationSchema = z
         type: z.literal("save"),
         source: z.object(providerSourceFields).strict().readonly(),
         apiKey: apiKeySchema.optional(),
+        credentials: z.array(credentialInputSchema).readonly().optional(),
+        connection: connectionInputSchema.unwrap().extend({ extraBody: jsonObjectSchema.optional() }).strict().readonly().optional(),
         // Omitted for a brand-new source; required to overwrite a stored one.
         expectedRevision: providerSourceRevisionSchema.optional(),
       })
@@ -221,6 +228,8 @@ export const configureInputSchema = z
   .object({
     apiKey: apiKeySchema.optional(),
     source: providerSourceOperationSchema.optional(),
+    sources: z.array(providerSourceOperationSchema).readonly().optional(),
+    route: routeOperationSchema.optional(),
     settings: z
       .object(configurableSettingsFields)
       .partial()
@@ -240,6 +249,12 @@ export const providerConfigSchema = z
     reasoningEffort: settingsFields.reasoningEffort,
     maxOutputTokens: settingsFields.maxOutputTokens,
     requestTimeoutMs: settingsFields.requestTimeoutMs,
+    ...connectionInputSchema.unwrap().shape,
+    extraBody: jsonObjectSchema.optional(),
+    sourceId: z.string().optional(),
+    sourceRevision: providerSourceRevisionSchema.optional(),
+    credentialId: z.string().optional(),
+    account: accountTokensSchema.optional(),
   })
   .strict()
   .readonly();
@@ -290,7 +305,9 @@ export type ToolDefinition = z.infer<typeof toolDefinitionSchema>;
 export const providerStateSchema = z
   .object({
     version: z.literal(1),
-    apiMode: z.enum(["responses", "anthropic"]),
+    apiMode: z.enum(["responses", "anthropic", "gemini"]),
+    credentialId: z.string().optional(),
+    credentialScope: z.string().optional(),
     baseUrl: settingsFields.baseUrl,
     model: settingsFields.model,
     output: z.array(jsonObjectSchema).max(256).readonly(),
@@ -596,6 +613,7 @@ export const agentEventSchema = z
         text: z.string().max(131072),
       })
       .strict(),
+    z.object({ ...eventBase, type: z.literal("provider_attempt"), selection: providerAttemptSchema }).strict(),
     // Bounded user-visible retry status. Carries no upstream body, prompt or
     // endpoint. Persisted so request retries remain inspectable after resume.
     z
@@ -759,6 +777,7 @@ const summaryFields = {
   model: settingsFields.model,
   createdAt: timestampSchema,
   providerSourceId: providerSourceIdSchema.optional(),
+  routeGroupId: z.string().min(1).optional(),
   updatedAt: timestampSchema,
   status: sessionStatusSchema,
   parentSessionId: sessionIdSchema.optional(),
@@ -806,6 +825,7 @@ export const createSessionInputSchema = z
     title: summaryFields.title.optional(),
     model: settingsFields.model.optional(),
     providerSourceId: providerSourceIdSchema.optional(),
+  routeGroupId: z.string().min(1).optional(),
   })
   .strict()
   .readonly();
@@ -820,6 +840,7 @@ export const runInputSchema = z
     permission: permissionSchema.optional(),
     model: settingsFields.model.optional(),
     providerSourceId: providerSourceIdSchema.optional(),
+  routeGroupId: z.string().min(1).optional(),
   })
   .strict()
   .refine(input => Boolean(input.prompt || input.images?.length), "请输入消息或添加图片。")

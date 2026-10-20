@@ -217,13 +217,9 @@ describe("routed provider", () => {
     ]);
   });
 
-  it("moves to the next member only when the failed request provably never ran", async () => {
+  it("moves to the next member only after an explicit rate-limit rejection", async () => {
     const first = providerOf(async () => {
-      throw new ProviderError(
-        "network",
-        "The provider connection failed.",
-        true,
-      );
+      throw new ProviderError("http", "Rate limited.", true, 429);
     });
     const second = providerOf(async () => answer("second"));
     const fixture = routed({
@@ -256,6 +252,20 @@ describe("routed provider", () => {
     const failure = fixture.attempts[1];
     expect(failure).not.toHaveProperty("usage");
     expect(failure?.errorCode).toBe("provider");
+  });
+
+  it.each([
+    new ProviderError("network", "Disconnected.", true),
+    new ProviderError("timeout", "Timed out.", true),
+    new ProviderError("http", "Server failed.", true, 503),
+    new ProviderError("protocol", "Missing finish.", true, undefined, "missing_finish"),
+  ])("does not infer non-execution from an empty reply: %s", async error => {
+    const fixture = routed({ strategy: "order", members: [member("src-a", "model-a"), member("src-b", "model-b")],
+      providers: [providerOf(async () => { throw error; }), providerOf(async () => answer("must not run"))] });
+    await expect(fixture.run()).rejects.toBe(error);
+    expect(fixture.control.mayRetry("session-1")).toBe(false);
+    await expect(fixture.run({ attempt: 1 })).rejects.toMatchObject({ code: "provider" });
+    expect(fixture.served).toHaveLength(1);
   });
 
   it("refuses to replay an attempt that streamed output or started a hosted search", async () => {
@@ -342,11 +352,7 @@ describe("routed provider", () => {
     const first = providerOf(async () => {
       firstCalls += 1;
       if (firstCalls === 1)
-        throw new ProviderError(
-          "network",
-          "The provider connection failed.",
-          true,
-        );
+        throw new ProviderError("http", "Rate limited.", true, 429);
       return answer("first");
     });
     const second = providerOf(async () => answer("second"));

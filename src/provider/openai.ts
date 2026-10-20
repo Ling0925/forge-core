@@ -1,12 +1,16 @@
 import OpenAI from "openai";
 import { createAnthropicProvider } from "./anthropic";
-import { readModelContextWindow } from "./context-window";
+import { createGeminiProvider } from "./gemini";
+import { normalizeModelCatalog } from "./catalog";
 import { ProviderError, protocol, httpError } from "./errors";
+import { createRequestOptions } from "./request-options";
 import { sdkEvents, withSdkRequest } from "./sdk-transport";
+import type { ModelCatalog } from "../shared/model-catalog";
 export { ProviderError } from "./errors";
 export type { ProviderFailure } from "./errors";
 import { z } from "zod";
 import type { ModelProvider } from "../shared/contracts";
+import { scopeProviderState } from "./state-scope";
 import { ForgeError } from "../shared/errors";
 import {
   messageSchema,
@@ -104,17 +108,10 @@ const jsonResponseSchema = z.object({
   usage: usageWire.nullable().optional(),
 });
 const modelsSchema = z.object({
+  // Keep every upstream metadata field; normalizeModelMetadata decides which
+  // ones are meaningful instead of the wire schema discarding capabilities.
   data: z
-    .array(
-      z.object({
-        id: z.string().trim().min(1).max(256),
-        context_length: z.unknown().optional(),
-        context_window: z.unknown().optional(),
-        max_model_len: z.unknown().optional(),
-        max_input_tokens: z.unknown().optional(),
-        top_provider: z.unknown().optional(),
-      }),
-    )
+    .array(z.object({ id: z.string().trim().min(1).max(256) }).passthrough())
     .max(10000),
 });
 const unsupportedSchema = z.object({
@@ -361,6 +358,7 @@ export function createModelProvider(config: ProviderConfig): ModelProvider {
       false,
     );
   const settings = parsedConfig.data;
+  if (settings.apiMode === "gemini") return createGeminiProvider(settings);
   if (settings.apiMode === "anthropic") {
     const provider = createAnthropicProvider(settings);
     return {
@@ -374,8 +372,16 @@ export function createModelProvider(config: ProviderConfig): ModelProvider {
     };
   }
   const base = settings.baseUrl.replace(/\/+$/, "");
+  const requestOptions = createRequestOptions(settings);
   const responses = createResponsesAdapter(
-    { protocol, parseJson, events: sdkEvents, notify, notifyToolCall },
+    {
+      protocol,
+      parseJson,
+      events: sdkEvents,
+      notify,
+      notifyToolCall,
+      ...(settings.credentialId ? { credentialId: settings.credentialId } : {}),
+    },
     base,
   );
   const clientFor = (fetch: typeof globalThis.fetch) =>
@@ -389,16 +395,14 @@ export function createModelProvider(config: ProviderConfig): ModelProvider {
       logLevel: "off",
       organization: null,
       project: null,
-      defaultHeaders: {
-        Authorization: settings.apiKey ? `Bearer ${settings.apiKey}` : null,
-      },
+      defaultHeaders: requestOptions.headers,
     });
   const windows = new Map<string, number | null>();
-  let catalogLoaded = false;
-  const listModels = (signal?: AbortSignal) =>
+  let catalog: ModelCatalog | undefined;
+  const loadCatalog = (signal?: AbortSignal) =>
     withSdkRequest(
       settings,
-      { signal, idle: false },
+      { signal, idle: false, fetch: requestOptions.fetch },
       async ({ signal: combined, fetch }) => {
         const response = await clientFor(fetch)
           .models.list({ signal: combined, maxRetries: 1 })
@@ -411,21 +415,29 @@ export function createModelProvider(config: ProviderConfig): ModelProvider {
           parseJson(await readText(response)),
         );
         if (!parsed.success) throw protocol();
+        const next = normalizeModelCatalog(parsed.data.data);
         windows.clear();
-        for (const model of parsed.data.data) windows.set(model.id, readModelContextWindow(model));
-        catalogLoaded = true;
-        return [...new Set(parsed.data.data.map((model) => model.id))].sort();
+        for (const model of next)
+          if (model.contextWindowTokens !== null)
+            windows.set(model.id, model.contextWindowTokens);
+        catalog = next;
+        return next;
       },
     );
-  return {
+  // A listing always asks the source: the catalog store and wrappers decide
+  // when a request can be shared, so this adapter never reports a stale list.
+  const listModels = async (signal?: AbortSignal) => {
+    const models = await loadCatalog(signal);
+    return models.map((model) => model.id).sort();
+  };
+  return scopeProviderState({
     apiMode: settings.apiMode ?? "chat-completions",
     listModels,
-    async listModelCatalog(signal) {
-      const ids = await listModels(signal);
-      return ids.map(id => ({ id, contextWindowTokens: windows.get(id) ?? null }));
+    listModelCatalog(signal) {
+      return loadCatalog(signal);
     },
     async getModelContextWindow(model, signal) {
-      if (!catalogLoaded) await listModels(signal);
+      if (!catalog) await loadCatalog(signal);
       return windows.get(model) ?? null;
     },
     complete: (messages, tools, options) => {
@@ -446,28 +458,46 @@ export function createModelProvider(config: ProviderConfig): ModelProvider {
         );
       return withSdkRequest(
         settings,
-        { signal: options.signal, idle: true },
+        { signal: options.signal, idle: true, fetch: requestOptions.fetch },
         async ({ signal: combined, fetch }) => {
           const client = clientFor(fetch);
           if (settings.apiMode === "responses") {
+            const body = requestOptions.applyBody(
+              {
+                ...responses.body(
+                  history.data,
+                  definitions.data,
+                  model.data,
+                  options.webSearch,
+                ),
+                ...(settings.maxOutputTokens
+                  ? { max_output_tokens: settings.maxOutputTokens }
+                  : {}),
+                ...(settings.reasoningEffort &&
+                settings.reasoningEffort !== "default"
+                  ? { reasoning: { effort: settings.reasoningEffort } }
+                  : {}),
+              },
+              options.sessionId,
+            );
             const response = await client.responses
-              .create(
-                {
-                  ...responses.body(history.data, definitions.data, model.data, options.webSearch),
-                  ...(settings.maxOutputTokens
-                    ? { max_output_tokens: settings.maxOutputTokens }
-                    : {}),
-                  ...(settings.reasoningEffort &&
-                  settings.reasoningEffort !== "default"
-                    ? { reasoning: { effort: settings.reasoningEffort } }
-                    : {}),
-                },
-                { signal: combined },
-              )
+              .create(body, {
+                signal: combined,
+                headers: requestOptions.headersFor(body),
+              })
               .asResponse()
               .catch((error: unknown) => {
-                if (hostedSearch && error instanceof OpenAI.APIError && [400, 404, 422].includes(error.status ?? 0))
-                  throw new ProviderError("http", "The Responses request with native web_search was rejected. Check endpoint/model support or explicitly set --web-search disabled; Forge will not retry without search or fall back to Bing.", false, error.status);
+                if (
+                  hostedSearch &&
+                  error instanceof OpenAI.APIError &&
+                  [400, 404, 422].includes(error.status ?? 0)
+                )
+                  throw new ProviderError(
+                    "http",
+                    "The Responses request with native web_search was rejected. Check endpoint/model support or explicitly set --web-search disabled; Forge will not retry without search or fall back to Bing.",
+                    false,
+                    error.status,
+                  );
                 throw error;
               });
             if (!response.ok) {
@@ -494,81 +524,84 @@ export function createModelProvider(config: ProviderConfig): ModelProvider {
               options.onWebSearch,
             );
           }
-          const request = async (stream: boolean): Promise<Response> =>
-            client.chat.completions
-              .create(
-                {
-                  model: model.data,
-                  ...(settings.maxOutputTokens
-                    ? { max_completion_tokens: settings.maxOutputTokens }
-                    : {}),
-                  ...(settings.reasoningEffort &&
-                  settings.reasoningEffort !== "default"
-                    ? { reasoning_effort: settings.reasoningEffort }
-                    : {}),
-                  messages: history.data.map(
-                    (
-                      message,
-                    ): OpenAI.Chat.Completions.ChatCompletionMessageParam =>
-                      message.role === "assistant"
+          const request = async (stream: boolean): Promise<Response> => {
+            const body = requestOptions.applyBody(
+              {
+                model: model.data,
+                ...(settings.maxOutputTokens
+                  ? { max_completion_tokens: settings.maxOutputTokens }
+                  : {}),
+                ...(settings.reasoningEffort &&
+                settings.reasoningEffort !== "default"
+                  ? { reasoning_effort: settings.reasoningEffort }
+                  : {}),
+                messages: history.data.map(
+                  (
+                    message,
+                  ): OpenAI.Chat.Completions.ChatCompletionMessageParam =>
+                    message.role === "assistant"
+                      ? {
+                          role: message.role,
+                          content: message.content,
+                          ...(message.tool_calls
+                            ? {
+                                tool_calls: message.tool_calls.map((call) => ({
+                                  ...call,
+                                  function: { ...call.function },
+                                })),
+                              }
+                            : {}),
+                        }
+                      : message.role === "tool"
                         ? {
-                            role: message.role,
+                            role: "tool",
                             content: message.content,
-                            ...(message.tool_calls
-                              ? {
-                                  tool_calls: message.tool_calls.map(
-                                    (call) => ({
-                                      ...call,
-                                      function: { ...call.function },
-                                    }),
-                                  ),
-                                }
-                              : {}),
+                            tool_call_id: message.tool_call_id,
                           }
-                        : message.role === "tool"
-                          ? {
-                              role: "tool",
-                              content: message.content,
-                              tool_call_id: message.tool_call_id,
-                            }
-                          : message.role === "system"
-                            ? { role: "system", content: message.content }
-                            : {
-                                role: "user",
-                                content: message.images?.length
-                                  ? [
-                                      ...(message.content
-                                        ? [
-                                            {
-                                              type: "text" as const,
-                                              text: message.content,
-                                            },
-                                          ]
-                                        : []),
-                                      ...message.images.map((image) => ({
-                                        type: "image_url" as const,
-                                        image_url: { url: image.dataUrl },
-                                      })),
-                                    ]
-                                  : message.content,
-                              },
-                  ),
-                  ...(definitions.data.length
-                    ? { tools: definitions.data.map(tool => ({
+                        : message.role === "system"
+                          ? { role: "system", content: message.content }
+                          : {
+                              role: "user",
+                              content: message.images?.length
+                                ? [
+                                    ...(message.content
+                                      ? [
+                                          {
+                                            type: "text" as const,
+                                            text: message.content,
+                                          },
+                                        ]
+                                      : []),
+                                    ...message.images.map((image) => ({
+                                      type: "image_url" as const,
+                                      image_url: { url: image.dataUrl },
+                                    })),
+                                  ]
+                                : message.content,
+                            },
+                ),
+                ...(definitions.data.length
+                  ? {
+                      tools: definitions.data.map((tool) => ({
                         ...tool,
                         function: { ...tool.function, strict: false },
-                      })) }
-                    : {}),
-                  stream,
-                  // Ask spec-compliant gateways to report usage in the stream; without
-                  // this the footer never receives a real cache rate during a run.
-                  ...(stream
-                    ? { stream_options: { include_usage: true } }
-                    : {}),
-                },
-                { signal: combined },
-              )
+                      })),
+                    }
+                  : {}),
+                stream,
+                // Ask spec-compliant gateways to report usage in the stream; without
+                // this the footer never receives a real cache rate during a run.
+                ...(stream ? { stream_options: { include_usage: true } } : {}),
+              },
+              options.sessionId,
+            );
+            return client.chat.completions
+              .create(body, {
+                signal: combined,
+                headers: requestOptions.headersFor(body),
+              })
               .asResponse();
+          };
           let response: Response;
           try {
             response = await request(true);
@@ -654,5 +687,5 @@ export function createModelProvider(config: ProviderConfig): ModelProvider {
         },
       );
     },
-  };
+  }, settings);
 }

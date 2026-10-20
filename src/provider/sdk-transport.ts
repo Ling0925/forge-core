@@ -18,6 +18,8 @@ export async function withSdkRequest<T>(
   options: {
     readonly signal?: AbortSignal | undefined;
     readonly idle: boolean;
+    /** Proxy-aware transport; bounds and abort handling still wrap it. */
+    readonly fetch?: typeof globalThis.fetch | undefined;
   },
   operation: (request: Request) => Promise<T>,
 ): Promise<T> {
@@ -34,8 +36,9 @@ export async function withSdkRequest<T>(
     if (options.idle && !controller.signal.aborted) timer.refresh();
   };
   let bodyFailure: unknown;
+  const baseFetch = options.fetch ?? globalThis.fetch;
   const fetch: typeof globalThis.fetch = async (input, init) => {
-    const response = await globalThis.fetch(input, {
+    const response = await baseFetch(input, {
       ...init,
       signal: controller.signal,
     });

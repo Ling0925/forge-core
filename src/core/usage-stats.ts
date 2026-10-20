@@ -378,6 +378,7 @@ export function aggregateUsageStats(
     .sort((a, b) => b.totalTokens - a.totalTokens)
     .slice(0, 20);
 
+  const routes = aggregateRouteUsageStats(filtered);
   const averageCacheRate =
     totalPromptTokens > 0
       ? Math.min(1, Math.max(0, totalCachedTokens / totalPromptTokens))
@@ -394,6 +395,7 @@ export function aggregateUsageStats(
     models,
     daily,
     topSessions,
+    ...(routes.length ? { routes } : {}),
   };
 }
 

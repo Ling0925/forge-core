@@ -42,6 +42,7 @@ export function createTransportBridge(transport: BridgeTransport): ForgeBridge {
   }
   return Object.freeze({
     getSettings: () => request("getSettings"),
+    modelAccess: (input) => request("modelAccess", { input }),
     updateSettings: (input) => request("updateSettings", { input }),
     listModels: (sourceId, refresh) => request("listModels", {
       ...(sourceId === undefined ? {} : { sourceId }),

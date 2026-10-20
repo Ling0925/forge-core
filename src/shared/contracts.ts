@@ -31,10 +31,10 @@ export interface RunControl {
   readonly onSteeringApplied?: () => void;
 }
 export interface ModelProvider {
-  readonly apiMode?: "chat-completions" | "responses" | "anthropic";
+  readonly apiMode?: "chat-completions" | "responses" | "anthropic" | "gemini";
   listModels(signal?: AbortSignal, refresh?: boolean): Promise<readonly string[]>;
   /** Complete normalized metadata from one catalog request; no guessed windows. */
-  listModelCatalog?(signal?: AbortSignal): Promise<import("./model-catalog").ModelCatalog>;
+  listModelCatalog?(signal?: AbortSignal, refresh?: boolean): Promise<import("./model-catalog").ModelCatalog>;
   getModelContextWindow?(model: string, signal?: AbortSignal): Promise<number | null>;
   complete(
     messages: readonly Message[],
@@ -42,6 +42,9 @@ export interface ModelProvider {
     options: Readonly<{
       model: string;
       signal: AbortSignal;
+      attempt?: number;
+      sessionId?: string;
+      onAttempt?: (selection: import("./model-access").ProviderAttempt) => void;
       /** Request-scoped authorization; omitted for title generation/compaction. */
       webSearch?: import("./web-search").WebSearchMode;
       onWebSearch?: (search: import("./web-search").WebSearchProgress) => void;
@@ -82,7 +85,7 @@ export interface SessionStore {
   list(): Promise<readonly SessionSummary[]>;
   get(id: SessionId): Promise<SessionSnapshot>;
   create(
-    input: Readonly<{ workspace: string; title: string; model: string; providerSourceId?: string; titleSource?: "default" | "user" }>,
+    input: Readonly<{ workspace: string; title: string; model: string; providerSourceId?: string; routeGroupId?: string; titleSource?: "default" | "user" }>,
   ): Promise<SessionSnapshot>;
   save(snapshot: SessionSnapshot): Promise<void>;
   acquire(id: SessionId, signal?: AbortSignal): Promise<() => Promise<void>>;
@@ -90,7 +93,11 @@ export interface SessionStore {
 export interface SettingsStore {
   getPublic(): Promise<PublicSettings>;
   /** Without an id: the active source (legacy top-level settings when none). */
-  getProviderConfig(sourceId?: string): Promise<ProviderConfig>;
+  getProviderConfig(sourceId?: string, credentialId?: string): Promise<ProviderConfig>;
+  /** Endpoint, credential and source metadata from the same immutable read. */
+  getProviderSnapshot?(sourceId?: string, credentialId?: string): Promise<{ config: ProviderConfig; source?: import("./schemas").PublicProviderSource }>;
+
+  refreshAccount?(sourceId: string, credentialId: string, refresh: (tokens: import("./model-access").AccountTokens) => Promise<import("./model-access").AccountTokens>): Promise<ProviderConfig>;
   update(input: ConfigureInput): Promise<PublicSettings>;
 }
 export interface HarnessService {
@@ -99,6 +106,8 @@ export interface HarnessService {
   cancelSession(sessionId: SessionId): Promise<boolean>;
   getSettings(): Promise<PublicSettings>;
   updateSettings(input: ConfigureInput): Promise<PublicSettings>;
+  modelAccess?(input: import("./model-access").ModelAccessRequest, signal?: AbortSignal): Promise<import("./model-access").ModelAccessResult>;
+  listModelCatalog?(signal?: AbortSignal, sourceId?: string, refresh?: boolean): Promise<import("./model-catalog").ModelCatalog>;
   getToolHooks?(): Promise<import("./tool-hooks").ToolHooksConfig>;
   setToolHooks?(config: import("./tool-hooks").ToolHooksConfig): Promise<void>;
   listModels(signal?: AbortSignal, sourceId?: string, refresh?: boolean): Promise<readonly string[]>;
@@ -190,7 +199,9 @@ export interface AgentRuntimeDependencies {
   readonly agentWorktrees?: ReturnType<typeof import("../core/agent-worktrees").createAgentWorktreeService>;
   readonly settings: PublicSettings;
   readonly childToolFactory?: ToolFactory;
-  readonly childContextFactory?: (workspace: string) => Promise<{ readonly tools: LocalToolRegistry; readonly instructions: string }>;
+  readonly childContextFactory?: (workspace: string, input?: RunInput, signal?: AbortSignal) => Promise<{
+    readonly tools: LocalToolRegistry; readonly instructions: string; readonly provider?: ModelProvider; readonly providerSourceId?: string;
+  }>;
   readonly onChildOperation?: (
     id: SessionId,
     controller: AbortController,

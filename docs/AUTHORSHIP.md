@@ -1,6 +1,6 @@
 # Authorship and evidence limits
 
-Forge is original work developed with API models; it is not a copy of another harness. The user explicitly authorized the coordinator (root) to implement *minimum runtime bootstrap repairs* (event typing/streaming/cancellation, CLI schema/arguments/budget, local async tool errors, credential-redaction wiring, bounded snapshot reads and focused tests). Beyond that, root performed only the minimum authorized bootstrap plus manual QA and review of proposals and check results; root did not author post-bootstrap product source. Native agents provided read-only reviews.
+Forge's shared runtime is original work developed with API models. Later Magpie-derived model-access adaptations are credited in [THIRD_PARTY_NOTICES.md](../THIRD_PARTY_NOTICES.md) and the phase record below. The remainder of this opening paragraph describes the original bootstrap phase: the user explicitly authorized the coordinator (root) to implement *minimum runtime bootstrap repairs* (event typing/streaming/cancellation, CLI schema/arguments/budget, local async tool errors, credential-redaction wiring, bounded snapshot reads and focused tests). Beyond that, root performed only the minimum authorized bootstrap plus manual QA and review of proposals and check results; root did not author post-bootstrap product source. Native agents provided read-only reviews.
 
 ## Model work streams
 
@@ -221,3 +221,11 @@ provider check sent only a programmatically generated public digit image through
 the image-message transport to the same Gemini route, which returned `73`.
 These checks do not claim physical-phone testing, a desktop package release or
 activation of an already-running Web backend.
+
+## Native model-access migration (2026-10-20)
+
+This phase includes actual TypeScript adaptations of Magpie's MIT-licensed model-access behavior and protocol data, pinned to `2374ffe161439b02a8e7f23b793461b39a635bf8`. Earlier statements about no source adaptation describe the earlier harness work, not this phase. [THIRD_PARTY_NOTICES.md](../THIRD_PARTY_NOTICES.md) preserves the license and lists the adapted modules.
+
+The main agent authored shared contracts, migration/host integration, isolation fixes, focused regressions and documentation, and took over unfinished CLI integration. Delegated provider/catalog, routing, account, cloud and renderer work used DeepSeek V4.1 Flash; after the user's explicit ID correction, children used `cn:deepseek-v4.1-flash`. The CLI child exhausted its tool budget; its partial edits were inspected and completed by the main agent, not silently replayed on a different model. These are workstream credits, not per-line attribution or claims about failed requests.
+
+The implementation and verification matrix is maintained in [MODEL_ACCESS_PORT_STATUS.md](MODEL_ACCESS_PORT_STATUS.md). Local HTTP/Chromium fixtures do not establish live subscription eligibility or cloud interoperability. No real credentials were read and no third-party login or paid inference was performed during this port.

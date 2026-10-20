@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { modelAccessRequestSchema, modelAccessResultSchema, type ModelAccessRequest, type ModelAccessResult } from "./model-access";
 import { mcpRemoteRegisterInputSchema } from "../mcp/types";
 import type { HtmlPreviewResponse } from "./html-preview";
 import type { WorkspaceDirectoryPage } from "./workspaces";
@@ -191,6 +192,12 @@ export const sessionUsageStatSchema = z
   .readonly();
 export type SessionUsageStat = z.infer<typeof sessionUsageStatSchema>;
 
+export const routeUsageStatSchema = z.object({
+  groupId: z.string().optional(), sourceId: z.string(), credentialId: z.string().optional(), model: z.string(), apiMode: z.string(),
+  attempts: z.number().int().nonnegative(), succeeded: z.number().int().nonnegative(), failed: z.number().int().nonnegative(),
+  unknownUsage: z.number().int().nonnegative(), promptTokens: z.number().int().nonnegative(), completionTokens: z.number().int().nonnegative(),
+  cachedTokens: z.number().int().nonnegative(), totalTokens: z.number().int().nonnegative(),
+}).strict().readonly();
 export const usageStatsDtoSchema = z
   .object({
     totalPromptTokens: z.number().int().nonnegative(),
@@ -203,6 +210,7 @@ export const usageStatsDtoSchema = z
     models: z.array(modelUsageStatSchema).readonly(),
     daily: z.array(dailyUsageStatSchema).readonly(),
     topSessions: z.array(sessionUsageStatSchema).readonly(),
+    routes: z.array(routeUsageStatSchema).readonly().optional(),
   })
   .strict()
   .readonly();
@@ -283,6 +291,7 @@ export const rpcRequestSchema = z
       })
       .strict(),
     z.object({ ...requestBase, method: z.literal("listModels"), sourceId: z.string().regex(/^[a-z][a-z0-9_-]{0,31}$/).optional(), refresh: z.boolean().optional() }).strict(),
+    z.object({ ...requestBase, method: z.literal("modelAccess"), input: modelAccessRequestSchema }).strict(),
     z.object({ ...requestBase, method: z.literal("listSessions") }).strict(),
     z
       .object({
@@ -499,6 +508,7 @@ export const rpcResponseSchema = z.union([
   success("getSettings", publicSettingsSchema),
   success("updateSettings", publicSettingsSchema),
   success("listModels", z.array(z.string().min(1).max(256)).readonly()),
+  success("modelAccess", modelAccessResultSchema),
   success("listSessions", z.array(sessionSummarySchema).readonly()),
   success("createSession", sessionSnapshotSchema),
   success("getSession", sessionSnapshotSchema),
@@ -552,6 +562,7 @@ export const rpcResponseSchema = z.union([
         "getSettings",
         "updateSettings",
         "listModels",
+        "modelAccess",
         "listSessions",
         "createSession",
         "getSession",
@@ -612,6 +623,7 @@ export interface ForgeBridge {
   getSettings(): Promise<PublicSettings>;
   updateSettings(input: ConfigureInput): Promise<PublicSettings>;
   listModels(sourceId?: string, refresh?: boolean): Promise<readonly string[]>;
+  modelAccess?(input: ModelAccessRequest): Promise<ModelAccessResult>;
   listSessions(): Promise<readonly SessionSummary[]>;
   createSession(input: CreateSessionInput): Promise<SessionSnapshot>;
   getSession(sessionId: SessionId): Promise<SessionSnapshot>;

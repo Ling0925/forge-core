@@ -22,7 +22,10 @@ export function modelCatalogCacheKey(config: ProviderConfig, sourceId?: string):
   // credential nor the endpoint is stored in the file name or cache payload.
   return createHash("sha256").update(JSON.stringify([
     sourceId ?? null, config.baseUrl.replace(/\/+$/, ""),
-    config.apiMode ?? "chat-completions", config.apiKey,
+    config.apiMode ?? "chat-completions", config.vertex ?? (config.account?.accountId ? [config.account.platform, config.account.accountId] : config.apiKey),
+    config.sourceRevision ?? null, config.credentialId ?? null,
+    config.headers ?? null, config.auth ?? null, config.proxyUrl ?? null,
+    config.account?.accountId ?? null,
   ])).digest("hex");
 }
 
@@ -68,6 +71,7 @@ export async function openModelCatalogStore(home: string) {
     });
   };
   return {
+    inspect: read,
     async load(
       key: string,
       loader: (signal: AbortSignal) => Promise<ModelCatalog>,

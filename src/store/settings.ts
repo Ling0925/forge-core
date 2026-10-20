@@ -14,6 +14,7 @@ import {
 import type { ProviderSourceOperation, PublicSettings } from "../shared/schemas";
 import { atomicJson, privateDirectory, readJson, storageError } from "./io";
 import { fileLock } from "./lock";
+import { accountTokensSchema, credentialInputSchema, connectionInputSchema, routeGroupSchema, sourceAccessFields, type CredentialInput, type RouteGroup } from "../shared/model-access";
 
 async function settingsLock(path: string): Promise<() => Promise<void>> {
   for (let attempt = 0; attempt < 1000; attempt += 1) {
@@ -27,9 +28,8 @@ async function settingsLock(path: string): Promise<() => Promise<void>> {
   throw new ForgeError("busy", "Settings are currently locked.", true);
 }
 
-const MAX_PROVIDER_SOURCES = 20;
-// The authoritative transaction also holds one credential per provider source.
-const TRANSACTION_LIMIT = 256 * 1024;
+// One authoritative transaction holds sources, private credentials and routes.
+const TRANSACTION_LIMIT = 16 * 1024 * 1024;
 const NEW_SOURCE_ID = "default";
 const NEW_SOURCE_LABEL = "Default";
 
@@ -48,6 +48,8 @@ const storedSourceSchema = providerSourceSchema
   .unwrap()
   .extend({
     apiKey: credentialValueSchema,
+    credentials: z.array(credentialInputSchema).readonly().optional(),
+    connection: connectionInputSchema.optional(),
     // Every committed edit bumps this; UI writes must echo the revision they saw.
     revision: providerSourceRevisionSchema.optional(),
   })
@@ -58,6 +60,8 @@ type StoredSource = z.infer<typeof storedSourceSchema> & {
   readonly revision: number;
 };
 type StoredState = Readonly<{
+  version?: 1 | 2;
+  routeGroups?: readonly RouteGroup[];
   settings: StoredSettings;
   apiKey: string;
   sources: readonly StoredSource[];
@@ -67,10 +71,11 @@ type StoredState = Readonly<{
 // together, so an interruption can never expose a mixed provider pair.
 const transactionSchema = z
   .object({
-    version: z.literal(1),
+    version: z.union([z.literal(1), z.literal(2)]),
     settings: fieldsSchema,
     apiKey: credentialValueSchema,
-    sources: z.array(storedSourceSchema).max(MAX_PROVIDER_SOURCES).optional(),
+    sources: z.array(storedSourceSchema).optional(),
+    routeGroups: z.array(routeGroupSchema).readonly().optional(),
     activeSourceId: providerSourceIdSchema.optional(),
   })
   .strict()
@@ -140,17 +145,56 @@ function projectActive(state: StoredState, source: StoredSource): StoredState {
   return { ...state, settings: settings as StoredSettings, apiKey: source.apiKey };
 }
 
+function sourceCredentials(source: StoredSource): readonly CredentialInput[] {
+  return source.credentials ?? [{ id: "default", label: "Default", type: "api-key", enabled: true, apiKey: source.apiKey }];
+}
+function selectedCredential(source: StoredSource, id?: string): CredentialInput {
+  const credentials = sourceCredentials(source);
+  const requested = id ?? source.activeCredentialId;
+  const credential = requested === undefined
+    ? credentials.find(item => item.enabled && (!item.protocol || item.protocol === (source.apiMode ?? "chat-completions")))
+    : credentials.find(item => item.id === requested);
+  if (!credential || !credential.enabled) throw invalid("此来源没有可用的凭据。");
+  if (credential.protocol && credential.protocol !== (source.apiMode ?? "chat-completions")) throw invalid("凭据与所选协议不匹配。");
+  return credential;
+}
 function publicSource(source: StoredSource) {
+  const { apiKey, credentials: _credentials, connection, ...fields } = source;
   return {
-    id: source.id,
-    label: source.label,
-    baseUrl: source.baseUrl,
-    model: source.model,
-    ...(source.apiMode === undefined ? {} : { apiMode: source.apiMode }),
-    revision: source.revision,
-    // Presence only: the stored credential itself never reaches a renderer.
-    hasApiKey: source.apiKey !== "",
+    ...fields,
+    hasApiKey: sourceCredentials(source).some(item => !!item.apiKey || !!item.account?.accessToken),
+    ...(source.credentials ? { credentials: source.credentials.map(item => ({
+      id: item.id, label: item.label, type: item.type, enabled: item.enabled,
+      ...(item.protocol ? { protocol: item.protocol } : {}),
+      ...(item.account ? { platform: item.account.platform, ...(item.account.expiresAt === undefined ? {} : { expiresAt: item.account.expiresAt }) } : {}),
+      status: !item.enabled ? "disabled" : item.type === "account" && !item.account ? "signed-out"
+        : item.account?.expiresAt !== undefined && item.account.expiresAt <= Date.now() ? "expired" : "ready",
+    })) } : {}),
+    ...(connection ? { connection: {
+      ...(connection.auth ? { auth: { type: connection.auth.type, ...(connection.auth.header ? { header: connection.auth.header } : {}) } } : {}),
+      headerNames: Object.keys(connection.headers ?? {}), hasExtraBody: Object.keys(connection.extraBody ?? {}).length > 0, hasProxy: !!connection.proxyUrl,
+      ...(connection.vertex ? { hasVertex: true } : {}),
+    } } : {}),
   };
+}
+function validateReferences(state: StoredState): void {
+  const groups = state.routeGroups ?? [];
+  if (new Set(groups.map(group => group.id)).size !== groups.length) throw invalid("路由组 ID 重复。");
+  for (const source of state.sources) {
+    const credentials = sourceCredentials(source);
+    if (new Set(credentials.map(item => item.id)).size !== credentials.length) throw invalid("凭据 ID 重复。");
+    if (source.activeCredentialId && !credentials.some(item => item.id === source.activeCredentialId)) throw invalid("所选凭据不存在。");
+  }
+  for (const group of groups) for (const member of group.members) {
+    const source = state.sources.find(item => item.id === member.sourceId);
+    if (!source || (member.credentialId && !sourceCredentials(source).some(item => item.id === member.credentialId)))
+      throw invalid("路由仍引用此来源或凭据，请先更新路由成员。");
+  }
+}
+function hasExtendedState(state: StoredState): boolean {
+  return state.version === 2 || state.routeGroups !== undefined || state.settings.apiMode === "gemini" || state.sources.some(source =>
+    source.credentials !== undefined || source.connection !== undefined || source.apiMode === "gemini" ||
+    Object.keys(sourceAccessFields).some(key => source[key as keyof StoredSource] !== undefined));
 }
 
 export async function openSettingsStore(
@@ -174,16 +218,27 @@ export async function openSettingsStore(
     }
   };
   const record = (state: StoredState) => ({
-    version: 1 as const,
+    version: hasExtendedState(state) ? 2 as const : 1 as const,
     settings: state.settings,
     apiKey: state.apiKey,
     sources: [...state.sources],
+    ...(state.routeGroups === undefined ? {} : { routeGroups: state.routeGroups }),
     ...(state.activeSourceId === undefined
       ? {}
       : { activeSourceId: state.activeSourceId }),
   });
   const commitState = async (state: StoredState): Promise<void> => {
-    await atomicJson(transactionPath, record(state), TRANSACTION_LIMIT);
+    validateReferences(state);
+    const next = record(state);
+    if (next.version === 2) {
+      const previous = await optionalRecord(transactionPath, TRANSACTION_LIMIT);
+      if (previous && (previous as { version?: unknown }).version === 1) {
+        const backup = join(folder, "state.v1.backup.json");
+        if (await optionalRecord(backup, TRANSACTION_LIMIT) === undefined)
+          await atomicJson(backup, previous, TRANSACTION_LIMIT);
+      }
+    }
+    await atomicJson(transactionPath, next, TRANSACTION_LIMIT);
   };
   const commitAll = async (state: StoredState): Promise<void> => {
     // Single authoritative commit includes endpoint and credential together.
@@ -203,7 +258,9 @@ export async function openSettingsStore(
       await readJson(transactionPath, TRANSACTION_LIMIT),
     );
     if (!parsed.success) throw storageError();
-    return {
+    const state: StoredState = {
+      version: parsed.data.version,
+      ...(parsed.data.routeGroups === undefined ? {} : { routeGroups: parsed.data.routeGroups }),
       settings: parsed.data.settings,
       apiKey: parsed.data.apiKey,
       sources: (parsed.data.sources ?? []).map((source) => ({
@@ -214,6 +271,8 @@ export async function openSettingsStore(
         ? {}
         : { activeSourceId: parsed.data.activeSourceId }),
     };
+    try { validateReferences(state); } catch { throw storageError(); }
+    return state;
   };
   const initialize = async () => {
     const transaction = await optionalRecord(
@@ -301,6 +360,7 @@ export async function openSettingsStore(
         hasApiKey: apiKey !== "",
         isConfigured: settings.baseUrl !== "" && settings.model !== "",
         providerSources: stored.sources.map(publicSource),
+        ...(stored.routeGroups === undefined ? {} : { routeGroups: stored.routeGroups }),
         ...(stored.activeSourceId === undefined
           ? {}
           : { activeSourceId: stored.activeSourceId }),
@@ -308,44 +368,66 @@ export async function openSettingsStore(
       }),
     };
   };
+  const providerSnapshot = async (sourceId?: string, credentialId?: string) => {
+    const state = await effective();
+    if (sourceId === undefined && !state.environmentOverride) sourceId = state.stored.activeSourceId;
+    if (sourceId !== undefined) {
+      const source = state.stored.sources.find(candidate => candidate.id === sourceId);
+      if (!source) throw unknownSource();
+      const credential = selectedCredential(source, credentialId);
+      if (credential.type === "account" && !credential.account) throw invalid("账号已退出，请重新登录。");
+      return {
+        source: state.public.providerSources!.find(candidate => candidate.id === source.id)!,
+        config: providerConfigSchema.parse({
+          ...source.connection,
+          baseUrl: source.endpoints?.[source.apiMode ?? "chat-completions"] ?? source.baseUrl,
+          apiKey: credential.apiKey ?? credential.account?.accessToken ?? "",
+          credentialId: credential.id, sourceId: source.id, sourceRevision: source.revision,
+          ...(credential.account ? { account: credential.account } : {}),
+          requestTimeoutMs: state.public.requestTimeoutMs, apiMode: source.apiMode,
+          reasoningEffort: state.public.reasoningEffort, maxOutputTokens: state.public.maxOutputTokens,
+        }),
+      };
+    }
+    const config = state.public;
+    if (!config.baseUrl) throw new ForgeError("invalid_input", "Configure a provider endpoint before listing models.");
+    return { config: providerConfigSchema.parse({
+      baseUrl: config.baseUrl, apiKey: state.apiKey, requestTimeoutMs: config.requestTimeoutMs,
+      apiMode: config.apiMode, reasoningEffort: config.reasoningEffort, maxOutputTokens: config.maxOutputTokens,
+    }) };
+  };
   await locked(initialize);
   let tail: Promise<void> = Promise.resolve();
   return {
     async getPublic() {
       return (await effective()).public;
     },
-    async getProviderConfig(sourceId) {
-      const state = await effective();
-      if (sourceId !== undefined) {
-        // An explicit source is self-contained: environment endpoint/key
-        // overrides must not be mixed into it.
-        const source = state.stored.sources.find(
-          (candidate) => candidate.id === sourceId,
-        );
-        if (!source) throw unknownSource();
-        return providerConfigSchema.parse({
-          baseUrl: source.baseUrl,
-          apiKey: source.apiKey,
-          requestTimeoutMs: state.public.requestTimeoutMs,
-          apiMode: source.apiMode,
-          reasoningEffort: state.public.reasoningEffort,
-          maxOutputTokens: state.public.maxOutputTokens,
-        });
+    getProviderSnapshot: providerSnapshot,
+    async getProviderConfig(sourceId, credentialId) {
+      const snapshot = await providerSnapshot(sourceId, credentialId);
+      if (snapshot.source && !snapshot.source.credentials) {
+        // Preserve the legacy private-config shape for older injected hosts.
+        const { sourceId: _id, sourceRevision: _revision, credentialId: _credential, ...legacy } = snapshot.config;
+        return legacy;
       }
-      const config = state.public;
-      if (!config.baseUrl)
-        throw new ForgeError(
-          "invalid_input",
-          "Configure a provider endpoint before listing models.",
-        );
-      return providerConfigSchema.parse({
-        baseUrl: config.baseUrl,
-        apiKey: state.apiKey,
-        requestTimeoutMs: config.requestTimeoutMs,
-        apiMode: config.apiMode,
-        reasoningEffort: config.reasoningEffort,
-        maxOutputTokens: config.maxOutputTokens,
+      return snapshot.config;
+    },
+    async refreshAccount(sourceId, credentialId, refresh) {
+      await locked(async () => {
+        const state = await load();
+        const source = state.sources.find(item => item.id === sourceId);
+        if (!source) throw unknownSource();
+        const credential = selectedCredential(source, credentialId);
+        if (!credential.account) throw invalid("未找到订阅账号。");
+        if (credential.account.expiresAt === undefined || credential.account.expiresAt > Date.now() + 30_000) return;
+        // The same cross-process lock spans token rotation and commit. Another
+        // reader rechecks expiry after acquiring it instead of reusing a stale token.
+        const account = accountTokensSchema.parse(await refresh(credential.account));
+        const saved = { ...source, revision: source.revision + 1, credentials: sourceCredentials(source).map(item =>
+          item.id === credentialId ? { ...item, account } : item) };
+        await commitAll({ ...state, version: 2, sources: state.sources.map(item => item.id === sourceId ? saved : item) });
       });
+      return (await providerSnapshot(sourceId, credentialId)).config;
     },
     update(input) {
       const operation = tail.then(() =>
@@ -356,23 +438,19 @@ export async function openSettingsStore(
               "invalid_input",
               "Settings failed validation.",
             );
-          if (
-            parsed.data.source !== undefined &&
-            (parsed.data.settings !== undefined ||
-              parsed.data.apiKey !== undefined)
-          )
-            throw invalid(
-              "来源操作不能与普通设置或密钥更新同时提交。",
-            );
+          const { source, sources: batch, route, settings, apiKey } = parsed.data;
+          if ((source || batch) && (settings !== undefined || apiKey !== undefined))
+            throw invalid("来源操作不能与普通设置或密钥更新同时提交。");
+          if (source && batch) throw invalid("不能同时提交单个来源和来源批次。");
           const stored = await load();
-          const next =
-            parsed.data.source === undefined
-              ? updateLegacy(stored, parsed.data)
-              : await updateSource(
-                  stored,
-                  parsed.data.source,
-                  options.referencedSessions ?? (async () => []),
-                );
+          let next = settings !== undefined || apiKey !== undefined ? updateLegacy(stored, parsed.data) : stored;
+          for (const operation of batch ?? (source ? [source] : []))
+            next = await updateSource(next, operation, options.referencedSessions ?? (async () => []));
+          if (route) {
+            const groups = (next.routeGroups ?? []).filter(group => group.id !== (route.type === "save" ? route.group.id : route.id));
+            if (route.type === "save") groups.push(route.group);
+            next = { ...next, version: 2, routeGroups: groups };
+          }
           await commitAll(next);
           return (await effective()).public;
         }),
@@ -397,10 +475,6 @@ async function updateSource(
       (source) => source.id === operation.source.id,
     );
     const existing = index === -1 ? undefined : sources[index];
-    if (existing === undefined && sources.length >= MAX_PROVIDER_SOURCES)
-      throw invalid(
-        `最多支持 ${MAX_PROVIDER_SOURCES} 个模型来源。`,
-      );
     // Optimistic lock: a renderer that opened the editor must prove it saw the
     // committed revision, so a concurrent desktop/CLI edit cannot be clobbered.
     if (
@@ -421,11 +495,28 @@ async function updateSource(
       throw invalid(
         "修改来源地址时必须重新提供新地址的密钥（或明确清除已保存的密钥），以免把旧密钥发往新地址。",
       );
-    const saved: StoredSource = {
+    const previousCredentials = existing ? sourceCredentials(existing) : [];
+    let credentials = operation.credentials?.map(item => {
+      const previous = previousCredentials.find(value => value.id === item.id && value.type === item.type);
+      return { ...item, ...(item.type === "api-key" ? { apiKey: item.apiKey ?? previous?.apiKey ?? "" }
+        : { account: item.account ?? previous?.account }) };
+    }) ?? existing?.credentials;
+    if (credentials && operation.apiKey !== undefined) {
+      const id = operation.source.activeCredentialId ?? existing?.activeCredentialId ?? credentials[0]?.id ?? "default";
+      credentials = credentials.map(item => item.id === id ? { ...item, type: "api-key" as const, apiKey: operation.apiKey!, account: undefined } : item);
+    }
+    let saved: StoredSource = {
+      ...existing,
       ...operation.source,
+      ...(credentials === undefined ? {} : { credentials }),
+      ...(operation.connection === undefined ? {} : { connection: { ...existing?.connection, ...operation.connection } }),
       apiKey: operation.apiKey ?? existing?.apiKey ?? "",
       revision: (existing?.revision ?? 0) + 1,
     };
+    if (saved.credentials) {
+      const selected = saved.credentials.find(item => item.id === saved.activeCredentialId) ?? saved.credentials.find(item => item.enabled);
+      saved = { ...saved, apiKey: selected?.type === "api-key" ? selected.apiKey ?? "" : "" };
+    }
     if (existing === undefined) sources.push(saved);
     else sources[index] = saved;
     // The active source is only a fallback for callers that name no source: it
@@ -468,7 +559,9 @@ async function updateSource(
   if (next === undefined) {
     // Nothing left: clear the legacy projection so no stale pair stays usable.
     const { apiMode: _apiMode, ...rest } = state.settings as Record<string, unknown>;
+    const { activeSourceId: _active, ...persistent } = state;
     return {
+      ...persistent,
       settings: { ...rest, baseUrl: "", model: "" } as StoredSettings,
       apiKey: "",
       sources,
@@ -484,6 +577,7 @@ function updateLegacy(
     apiKey?: string | undefined;
   }>,
 ): StoredState {
+  const { activeSourceId: _active, ...persistent } = state;
   const patch = input.settings ?? {};
   const settings: Record<string, unknown> = {
     ...state.settings,
@@ -502,6 +596,7 @@ function updateLegacy(
     // source (and its key) but stop projecting it as the active one.
     if (baseUrl === undefined || baseUrl === "") {
       const next: StoredState = {
+        ...persistent,
         settings: settings as StoredSettings,
         apiKey,
         sources,
@@ -518,8 +613,12 @@ function updateLegacy(
     };
     // `apiMode` is optional: dropping it when unset keeps the source exact.
     if (settings.apiMode === undefined) delete (synced as { apiMode?: unknown }).apiMode;
-    sources[index] = { ...synced, apiKey };
+    const providerChanged = input.apiKey !== undefined || ["baseUrl", "model", "apiMode"].some(key => Object.hasOwn(patch, key));
+    const credentials = current.credentials && input.apiKey !== undefined ? current.credentials.map(item =>
+      item.id === (current.activeCredentialId ?? current.credentials?.[0]?.id) ? { ...item, type: "api-key" as const, apiKey, account: undefined } : item) : current.credentials;
+    sources[index] = { ...synced, apiKey, ...(credentials ? { credentials } : {}), revision: current.revision + (providerChanged ? 1 : 0) };
     return {
+      ...persistent,
       settings: settings as StoredSettings,
       apiKey,
       sources,
@@ -528,14 +627,10 @@ function updateLegacy(
   }
   const baseUrl = settings.baseUrl;
   if (baseUrl === undefined || baseUrl === "")
-    return { settings: settings as StoredSettings, apiKey, sources };
+    return { ...persistent, settings: settings as StoredSettings, apiKey, sources };
   // A legacy CLI update that sets an endpoint where no source exists yet
   // creates the "default" source so both views stay describable.
   const existing = sources.findIndex((source) => source.id === NEW_SOURCE_ID);
-  if (existing === -1 && sources.length >= MAX_PROVIDER_SOURCES)
-    throw invalid(
-      `最多支持 ${MAX_PROVIDER_SOURCES} 个模型来源。`,
-    );
   const created: StoredSource = {
     id: NEW_SOURCE_ID,
     label: existing === -1 ? NEW_SOURCE_LABEL : sources[existing]!.label,
@@ -550,6 +645,7 @@ function updateLegacy(
   if (existing === -1) sources.push(created);
   else sources[existing] = created;
   return {
+    ...persistent,
     settings: settings as StoredSettings,
     apiKey,
     sources,

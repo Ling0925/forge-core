@@ -127,6 +127,7 @@ export async function openSessionStore(
           ...(titleSource ? { titleSource } : {}),
           model: parsed.data.model,
           ...(parsed.data.providerSourceId ? { providerSourceId: parsed.data.providerSourceId } : {}),
+          ...(parsed.data.routeGroupId ? { routeGroupId: parsed.data.routeGroupId } : {}),
           createdAt: now,
           updatedAt: now,
           status: "idle",

@@ -5,7 +5,8 @@ import { isAbsolute, join, resolve } from "node:path";
 import { createProjectContext } from "../context/index";
 import { createMcpService } from "../mcp/registry";
 import { createModelProvider } from "../provider/openai";
-import { createCachedProviderFactory } from "../provider/catalog-cache";
+import { createModelAccessService } from "./model-access";
+import { createRoutedProvider, createRouteState } from "../provider/routing";
 import { openModelCatalogStore } from "../store/model-catalog";
 import type {
   HarnessOptions,
@@ -18,7 +19,6 @@ import { ForgeError } from "../shared/errors";
 import {
   configureInputSchema,
   createSessionInputSchema,
-  providerConfigSchema,
   runInputSchema,
   sessionIdSchema,
   sessionTitleSchema,
@@ -259,9 +259,8 @@ export const createHarness = async (
       { protectedStateRoot: directory },
     );
   };
-  const providerFactory = createCachedProviderFactory(
-    await openModelCatalogStore(directory), options.providerFactory ?? createModelProvider,
-  );
+  const catalogStore = await openModelCatalogStore(directory);
+  const routeState = createRouteState();
   /**
    * The "active" source is only the fallback for callers that name no source.
    * Whenever a caller does name one, remember it, so selecting a model in any
@@ -279,6 +278,8 @@ export const createHarness = async (
     }
   };
   const disposal = new AbortController();
+  const modelAccess = createModelAccessService({ settingsStore, catalogStore,
+    providerFactory: options.providerFactory ?? createModelProvider, signal: disposal.signal });
   const active = new Map<SessionId, Promise<SessionSnapshot>>();
   const controls = new Map<
     SessionId,
@@ -378,14 +379,15 @@ export const createHarness = async (
         ]);
         const settings = await settingsStore.getPublic();
         const providerSourceId = s.providerSourceId ?? settings.activeSourceId;
-        const config = providerConfigSchema.parse(
-          await settingsStore.getProviderConfig(providerSourceId),
-        );
-        const provider = providerFactory(config, providerSourceId);
-        const bound = providerSourceId ? { ...s, providerSourceId } : s;
-        let reported: number | null = null;
+        const group = s.routeGroupId ? settings.routeGroups?.find(item => item.id === s.routeGroupId) : undefined;
+        if (s.routeGroupId && !group) throw new ForgeError("not_found", "会话的路由组已不可用，请重新选择。");
+        const prepared = group ? await modelAccess.prepareRoute(group, signal) : undefined;
+        const resolved = prepared?.base ?? await modelAccess.resolveProvider(providerSourceId, undefined, signal, s.model);
+        const { provider } = resolved;
+        const bound = providerSourceId && providerSourceId !== s.providerSourceId ? { ...s, providerSourceId } : s;
+        let reported: number | null = prepared?.contextWindow ?? null;
         const metadataSignal = AbortSignal.any([signal, AbortSignal.timeout(2000)]);
-        try { reported = await withCancellation(provider.getModelContextWindow?.(s.model, metadataSignal) ?? Promise.resolve(null), metadataSignal); }
+        try { reported ??= await withCancellation(provider.getModelContextWindow?.(resolved.actualModel ?? s.model, metadataSignal) ?? Promise.resolve(null), metadataSignal); }
         catch { /* Optional metadata must not prevent compaction. */ }
         const window = resolveContextWindow(s.model, settings, reported);
         const next = await summarizeWorkingState(bound, provider, signal, s.messages.length, Math.floor(window * 0.8));
@@ -440,6 +442,7 @@ export const createHarness = async (
           title: `Fork: ${source.title}`.slice(0, 256),
           model: source.model,
           ...(source.providerSourceId ? { providerSourceId: source.providerSourceId } : {}),
+          ...(source.routeGroupId ? { routeGroupId: source.routeGroupId } : {}),
         });
         const next = {
           ...fork,
@@ -567,11 +570,10 @@ export const createHarness = async (
         const settings = await settingsStore.getPublic();
         if (!settings.environmentOverride) sourceId = settings.activeSourceId;
       }
-      const config = providerConfigSchema.parse(await settingsStore.getProviderConfig(sourceId));
-      endpoint(config.baseUrl);
+      const requestSignal = AbortSignal.any(signal ? [signal, disposal.signal] : [disposal.signal]);
+      const { provider } = await modelAccess.resolveProvider(sourceId, undefined, requestSignal, model);
       check();
-      return await providerFactory(config, sourceId).getModelContextWindow?.(model,
-        AbortSignal.any(signal ? [signal, disposal.signal] : [disposal.signal])) ?? null;
+      return await provider.getModelContextWindow?.(model, requestSignal) ?? null;
     },
     async listModels(signal, sourceId, refresh) {
       check();
@@ -579,14 +581,22 @@ export const createHarness = async (
         const settings = await settingsStore.getPublic();
         if (!settings.environmentOverride) sourceId = settings.activeSourceId;
       }
-      const config = providerConfigSchema.parse(
-        await settingsStore.getProviderConfig(sourceId),
-      );
+      const requestSignal = AbortSignal.any(signal ? [signal, disposal.signal] : [disposal.signal]);
+      const { provider } = await modelAccess.resolveProvider(sourceId, undefined, requestSignal);
       check();
-      return providerFactory(config, sourceId).listModels(
-        AbortSignal.any(signal ? [signal, disposal.signal] : [disposal.signal]), refresh,
-      );
+      return provider.listModels(requestSignal, refresh);
     },
+    async listModelCatalog(signal, sourceId, refresh) {
+      check();
+      if (sourceId === undefined) {
+        const settings = await settingsStore.getPublic();
+        if (!settings.environmentOverride) sourceId = settings.activeSourceId;
+      }
+      const requestSignal = AbortSignal.any(signal ? [signal, disposal.signal] : [disposal.signal]);
+      const { provider } = await modelAccess.resolveProvider(sourceId, undefined, requestSignal);
+      return provider.listModelCatalog!(requestSignal, refresh);
+    },
+    async modelAccess(input, signal) { check(); return modelAccess.request(input, signal); },
     async listSessions() {
       check();
       return store.list();
@@ -632,12 +642,15 @@ export const createHarness = async (
       const settings = await settingsStore.getPublic();
       // A new session pins the source of the model the user picked, so choosing
       // a model alone is enough to switch providers.
-      const providerSourceId =
+      const group = input.routeGroupId ? settings.routeGroups?.find(item => item.id === input.routeGroupId) : undefined;
+      if (input.routeGroupId && !group) throw new ForgeError("not_found", "未找到所选路由组。");
+      const firstMember = group?.members.find(member => member.enabled !== false);
+      const providerSourceId = firstMember?.sourceId ??
         input.providerSourceId ?? inferSourceId(settings, input.model) ?? settings.activeSourceId;
       const source = settings.providerSources?.find(candidate => candidate.id === providerSourceId);
       if (providerSourceId && !source)
         throw new ForgeError("invalid_input", "The session's provider source is unavailable. Select an existing source explicitly.");
-      const model = input.model ?? source?.model ?? settings.model;
+      const model = firstMember?.model ?? input.model ?? source?.model ?? settings.model;
       if (!model)
         throw new ForgeError(
           "invalid_input",
@@ -668,6 +681,7 @@ export const createHarness = async (
         titleSource: input.title === undefined ? "default" : "user",
         model: settingsFields.model.parse(model),
         ...(providerSourceId ? { providerSourceId } : {}),
+        ...(group ? { routeGroupId: group.id } : {}),
       });
     },
     run(raw, onEvent, approve, callerSignal, control) {
@@ -708,16 +722,33 @@ export const createHarness = async (
             snapshot.providerSourceId ??
             inferSourceId(settings, input.model) ??
             settings.activeSourceId;
-          const config = await settingsStore.getProviderConfig(providerSourceId);
+          const routeGroupId = input.routeGroupId ?? (input.model !== undefined || input.providerSourceId !== undefined ? undefined : snapshot.routeGroupId);
+          const group = routeGroupId ? settings.routeGroups?.find(item => item.id === routeGroupId) : undefined;
+          if (routeGroupId && !group) throw new ForgeError("not_found", "会话的路由组已不可用，请重新选择。");
+          const requestedModel = settingsFields.model.parse(input.model ?? snapshot.model);
+          const directSource = settings.providerSources?.find(source => source.id === providerSourceId);
+          const credentials = directSource?.credentials?.filter(item => item.enabled);
+          // Direct selections rotate only their explicitly configured credentials.
+          const selectedGroup = group ?? (credentials && credentials.length > 1 && directSource ? {
+            id: `credentials:${directSource.id}`, label: directSource.label,
+            strategy: directSource.credentialRouting ?? "order", sticky: directSource.sticky,
+            members: credentials.map(credential => ({ sourceId: directSource.id, model: requestedModel, credentialId: credential.id })),
+          } : undefined);
+          const prepared = selectedGroup ? await modelAccess.prepareRoute(selectedGroup, signal) : undefined;
+          const resolved = prepared?.base ?? await modelAccess.resolveProvider(providerSourceId, undefined, signal, requestedModel);
+          const { config } = resolved;
           endpoint(config.baseUrl);
-          settingsFields.model.parse(input.model ?? snapshot.model);
           // An explicit source (or one the model alone identifies) is what the
           // user just chose, so remember it as the fallback for the next run.
           await rememberSource(
             input.providerSourceId ?? inferSourceId(settings, input.model),
           );
-          // Endpoint, credential and protocol come from the same atomic source snapshot.
-          const provider = providerFactory(providerConfigSchema.parse(config), providerSourceId);
+          const provider = selectedGroup && prepared ? createRoutedProvider({
+            group: selectedGroup, state: routeState,
+            ...(prepared.apiMode ? { apiMode: prepared.apiMode } : {}),
+            contextWindow: prepared.contextWindow, quota: prepared.quota, exclude: prepared.exclude,
+            resolve: (member, requestSignal) => modelAccess.resolveProvider(member.sourceId, member.credentialId, requestSignal, member.model),
+          }) : resolved.provider;
           if (signal.aborted)
             throw new ForgeError("cancelled", "Run cancelled.");
           const built = await buildTools(
@@ -735,7 +766,7 @@ export const createHarness = async (
               start: (claimed, apply) => {
                 const titleController = new AbortController();
                 const titleSignal = AbortSignal.any([disposal.signal, titleController.signal]);
-                const naming = autoTitle({ snapshot: claimed, provider, signal: titleSignal, secrets: [config.apiKey, config.baseUrl] })
+                const naming = autoTitle({ snapshot: claimed, provider: resolved.provider, signal: titleSignal, secrets: [config.apiKey, config.baseUrl] })
                   .then(async title => {
                     if (!title || titleSignal.aborted || await apply(title)) return;
                     // A fast run may finish before inference. Re-read under a
@@ -764,8 +795,15 @@ export const createHarness = async (
             tools,
             projectInstructions: built.instructions,
             onChildOperation: track,
-            childContextFactory: workspace => buildTools(workspace, settings, config.apiKey, provider),
-          }).run({ ...input, ...(providerSourceId ? { providerSourceId } : {}) }, onEvent, approve, signal, control);
+            childContextFactory: async (workspace, childInput, childSignal) => {
+              // Delegated model IDs remain exact, even when the parent chose a group.
+              const current = await settingsStore.getPublic();
+              const childSourceId = inferSourceId(current, childInput?.model) ?? providerSourceId;
+              const child = await modelAccess.resolveProvider(childSourceId, undefined, childSignal ?? signal, childInput?.model);
+              return { ...await buildTools(workspace, current, child.config.apiKey, child.provider), provider: child.provider,
+                ...(childSourceId ? { providerSourceId: childSourceId } : {}) };
+            },
+          }).run({ ...input, ...(providerSourceId ? { providerSourceId } : {}), ...(routeGroupId ? { routeGroupId } : {}) }, onEvent, approve, signal, control);
           return result;
         } finally {
           try {
@@ -786,7 +824,7 @@ export const createHarness = async (
       disposal.abort();
       closing = Promise.allSettled(
         [...controls.values()].map((c) => c.work),
-      ).then(async () => { await Promise.allSettled([...titleTasks]); await memories.close(); await mcp.dispose(); });
+      ).then(async () => { await modelAccess.dispose(); await Promise.allSettled([...titleTasks]); await memories.close(); await mcp.dispose(); });
       return closing;
     },
   };

@@ -16,7 +16,7 @@ export function createCachedProviderFactory(store: ModelCatalogStore, factory: P
       ...(provider.apiMode ? { apiMode: provider.apiMode } : {}),
       listModels: async (signal, refresh) => (await load(signal, refresh)).map(model => model.id),
       ...(provider.listModelCatalog ? {
-        listModelCatalog: (signal?: AbortSignal) => load(signal),
+        listModelCatalog: (signal?: AbortSignal, refresh?: boolean) => load(signal, refresh),
         getModelContextWindow: async (model: string, signal?: AbortSignal) =>
           (await load(signal)).find(entry => entry.id === model)?.contextWindowTokens ?? null,
       } : provider.getModelContextWindow ? {
