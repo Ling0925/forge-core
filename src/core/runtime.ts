@@ -542,12 +542,15 @@ export const createAgentRuntime = (
           "prior execution was interrupted; inspect effects before retry",
         ),
       };
+      const definitions = [...deps.tools.definitions, ...nativeDefinitions];
+      const toolNames = definitions.map(definition => definition.function.name);
       let currentInstructions = buildSystemInstructions({
         session: snapshot,
         permission,
         mode: input.mode,
         maxToolCalls: deps.settings.maxToolCalls,
         projectInstructions: deps.projectInstructions,
+        toolNames,
       });
       if (!snapshot.contextSummary && !snapshot.messages.some((message) => message.role === "system"))
         snapshot = {
@@ -597,7 +600,6 @@ export const createAgentRuntime = (
         catch { /* Optional metadata must not prevent a model request. */ }
       }
       const windowTokens = resolveContextWindow(snapshot.model, deps.settings, reportedWindow);
-      const definitions = [...deps.tools.definitions, ...nativeDefinitions];
       const budget = resolveContextBudget(windowTokens, deps.settings);
       // Raw size of the exact messages a request would carry. `measureContext` is
       // a character heuristic, not the provider tokenizer, so this must not be
@@ -617,7 +619,7 @@ export const createAgentRuntime = (
         const rawTarget = budget.target / scale;
         check();
         currentInstructions = buildSystemInstructions({ session: snapshot, permission: effectivePermission(), mode: input.mode,
-          maxToolCalls: deps.settings.maxToolCalls, projectInstructions: deps.projectInstructions });
+          maxToolCalls: deps.settings.maxToolCalls, projectInstructions: deps.projectInstructions, toolNames });
         await drainSteering();
         check();
         const project = (state: SessionSnapshot) => {
