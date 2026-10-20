@@ -8,9 +8,14 @@ import {
 import { resolve } from "node:path";
 import { WebSocket, WebSocketServer } from "ws";
 import { z } from "zod";
-import type { RuntimeHost } from "../shared/runtime-host";
+import { resolveStateDirectory } from "../core/state-directory";
 import { createRuntimeHub } from "../host/runtime";
 import type { HarnessService } from "../shared/contracts";
+import {
+  type AuthorizedDevice,
+  type DeviceAuthorization,
+  pairingExchangeSchema,
+} from "../shared/device-authorization";
 import {
   HTML_PREVIEW_CSP,
   htmlPreviewRequestSchema,
@@ -22,8 +27,10 @@ import {
   type RunEvent,
   rpcRequestSchema,
 } from "../shared/ipc";
+import type { RuntimeHost } from "../shared/runtime-host";
 import type { SessionSnapshot } from "../shared/schemas";
 import { workspaceBrowseRequestSchema } from "../shared/workspaces";
+import { openDeviceAuthorization } from "../store/devices";
 import {
   HtmlPreviewStore,
   PreviewFileError,
@@ -68,7 +75,11 @@ async function body(
   }
   return JSON.parse(Buffer.concat(chunks).toString("utf8"));
 }
-function json(response: ServerResponse, status: number, value: unknown): void {
+function writeJson(
+  response: ServerResponse,
+  status: number,
+  value: unknown,
+): void {
   response.writeHead(status, {
     "Content-Type": "application/json",
     "Cache-Control": "no-store",
@@ -77,6 +88,10 @@ function json(response: ServerResponse, status: number, value: unknown): void {
 }
 
 interface WebHostOptions {
+  /** Explicit compatibility mode for a fully trusted network; never client-selectable. */
+  trustedLan?: boolean;
+  authorization?: DeviceAuthorization;
+  stateDir?: string;
   workspace: string;
   host: string;
   port: number;
@@ -94,8 +109,9 @@ interface WebHostOptions {
  * HTTP/WebSocket front end over one shared controller runtime.
  *
  * The runtime is injected when a desktop worker already owns it (LAN hosting);
- * otherwise this host creates and owns it. `close()` never disposes an injected
- * runtime, because the desktop or another Web page may still be using it.
+ * otherwise this host creates and owns it. `close()` only stops publishing and
+ * never cancels accepted tasks. Explicit `dispose()` also stops an owned runtime;
+ * an injected runtime always remains its caller's responsibility.
  */
 export async function createWebHost(
   options: WebHostOptions &
@@ -104,6 +120,7 @@ export async function createWebHost(
       | { runtime: RuntimeHost; service?: undefined }
     ),
 ) {
+  const trustedLan = options.trustedLan === true;
   const restrictWorkspace = options.restrictWorkspace !== false;
   const requested = resolve(options.workspace);
   // The restricted mode keeps the original strict realpath contract; the
@@ -116,15 +133,30 @@ export async function createWebHost(
   const renderer = options.rendererRoot
     ? await createStaticRenderer({ rendererRoot: options.rendererRoot })
     : undefined;
+  const authorization = trustedLan
+    ? undefined
+    : (options.authorization ??
+      (await openDeviceAuthorization({
+        directory: resolveStateDirectory(options.stateDir),
+      })));
+  const ownsAuthorization = !trustedLan && options.authorization === undefined;
   const authority = `${options.host}:${options.port}`;
   const origin = `http://${authority}`;
   let sequence = 0;
   let bytes = 0;
   const events: { cursor: number; data: RunEvent; bytes: number }[] = [];
-  const clients = new Map<
-    string,
-    { socket: WebSocket | undefined; heartbeat: number; lastSeen: number }
-  >();
+  interface Client {
+    socket: WebSocket | undefined;
+    heartbeat: number;
+    lastSeen: number;
+    deviceId: string | undefined;
+    lastSent: number;
+    pumping: boolean;
+    pending: boolean;
+  }
+  const clients = new Map<string, Client>();
+  let pairingsInFlight = 0;
+  let upgradesInFlight = 0;
   const requestIds = new Set<string>();
   const injected = options.runtime;
   const runtime: RuntimeHost = injected ?? createRuntimeHub(options.service);
@@ -143,89 +175,203 @@ export async function createWebHost(
     }
     sendEvents([message.data]);
   });
-  const sendTo = (socket: WebSocket, batch: RunEvent[]): void => {
+  const sendTo = (
+    socket: WebSocket,
+    batch: RunEvent[],
+    cursor = sequence,
+  ): void => {
     if (socket.readyState !== WebSocket.OPEN) return;
     if (socket.bufferedAmount > MAX_EVENT_BYTES) {
       socket.terminate();
       return;
     }
-    socket.send(
-      JSON.stringify({ cursor: sequence, events: batch }),
-      (error) => {
-        if (error) socket.terminate();
-      },
-    );
+    socket.send(JSON.stringify({ cursor, events: batch }), (error) => {
+      if (error) socket.terminate();
+    });
   };
   const validHost = (request: IncomingMessage): boolean =>
     request.headers.host === authority;
   const server = createServer();
+  let stopped = false;
   const sockets = new WebSocketServer({
     noServer: true,
     maxPayload: 1024,
     perMessageDeflate: false,
   });
+  const credentialOf = (request: IncomingMessage): string | undefined => {
+    const headers = request.rawHeaders.filter(
+      (_value, index) =>
+        index % 2 === 0 &&
+        request.rawHeaders[index]?.toLowerCase() === "authorization",
+    );
+    if (headers.length > 1) return undefined;
+    const bearer = request.headers.authorization;
+    const cookies = (request.headers.cookie ?? "")
+      .split(";")
+      .map((item) => item.trim())
+      .filter((item) => item.startsWith("forge_device="));
+    if (cookies.length > 1 || (bearer && cookies.length)) return undefined;
+    if (bearer)
+      return /^Bearer [A-Za-z0-9_.-]+$/.test(bearer)
+        ? bearer.slice(7)
+        : undefined;
+    return cookies[0]?.slice("forge_device=".length);
+  };
+  const authenticate = (
+    request: IncomingMessage,
+  ): Promise<AuthorizedDevice | undefined> =>
+    authorization?.verify(credentialOf(request) ?? "") ??
+    Promise.resolve(undefined);
+  const removeClient = (id: string, client: Client) => {
+    client.socket?.terminate();
+    if (clients.get(id) === client) clients.delete(id);
+  };
+  const sweep = async () => {
+    if (!authorization) return;
+    const checks = new Map<string, Promise<boolean>>();
+    await Promise.all(
+      [...clients].map(async ([id, client]) => {
+        if (!client.deviceId) {
+          removeClient(id, client);
+          return;
+        }
+        let check = checks.get(client.deviceId);
+        if (!check) {
+          check = authorization
+            .isAuthorized(client.deviceId)
+            .catch(() => false);
+          checks.set(client.deviceId, check);
+        }
+        if (!(await check)) removeClient(id, client);
+      }),
+    );
+  };
+  const unsubscribeAuthorization = authorization?.subscribe(sweep);
+  // One coalescing pump per page, backed by the bounded shared replay ring.
+  // Never create an unbounded queue of auth checks/event copies for a slow client.
+  const pump = (id: string, client: Client) => {
+    client.pending = true;
+    if (client.pumping || !authorization) return;
+    client.pumping = true;
+    void (async () => {
+      while (client.pending && clients.get(id) === client && client.socket) {
+        client.pending = false;
+        const socket = client.socket;
+        if (
+          !client.deviceId ||
+          !(await authorization.isAuthorized(client.deviceId))
+        ) {
+          removeClient(id, client);
+          return;
+        }
+        if (clients.get(id) !== client || client.socket !== socket) continue;
+        if (client.lastSent < (events[0]?.cursor ?? sequence + 1) - 1) {
+          socket.close(4009, "Event history expired");
+          return;
+        }
+        const cursor = sequence;
+        const batch = events
+          .filter(
+            (entry) => entry.cursor > client.lastSent && entry.cursor <= cursor,
+          )
+          .map((entry) => entry.data);
+        sendTo(socket, batch, cursor);
+        client.lastSent = cursor;
+      }
+    })()
+      .catch(() => removeClient(id, client))
+      .finally(() => {
+        client.pumping = false;
+        if (client.pending && clients.get(id) === client && client.socket)
+          pump(id, client);
+      });
+  };
   function sendEvents(batch: RunEvent[]): void {
-    for (const client of clients.values())
-      if (client.socket) sendTo(client.socket, batch);
+    for (const [id, client] of clients)
+      if (client.socket) {
+        if (trustedLan) sendTo(client.socket, batch);
+        else pump(id, client);
+      }
   }
   // Keep both event and Vite HMR sockets restricted to the launch origin.
   server.on("upgrade", (request, socket, head) => {
-    if (!validHost(request) || request.headers.origin !== origin) {
+    if (stopped || !validHost(request) || request.headers.origin !== origin) {
       socket.destroy();
       return;
     }
     const url = new URL(request.url ?? "/", origin);
     if (url.pathname !== "/api/events") return;
-    const requestedClient = url.searchParams.get("clientId");
-    const client = requestedClient ? clients.get(requestedClient) : undefined;
-    const rawCursor = url.searchParams.get("cursor");
-    const cursor = rawCursor === null ? Number.NaN : Number(rawCursor);
-    const oldest = events[0]?.cursor ?? sequence + 1;
-    if (
-      !client ||
-      !Number.isSafeInteger(cursor) ||
-      cursor < oldest - 1 ||
-      cursor > sequence ||
-      request.headers["sec-websocket-protocol"]
-    ) {
+    if (upgradesInFlight >= 16) {
       socket.destroy();
       return;
     }
-    sockets.handleUpgrade(request, socket, head, (ws) => {
-      client.socket?.close(4000, "Connection replaced");
-      client.socket = ws;
-      client.heartbeat = Date.now();
-      client.lastSeen = Date.now();
-      const owner = requestedClient;
-      const ownsConnection = () => {
-        const current = owner ? clients.get(owner) : undefined;
-        return current?.socket === ws;
-      };
-      ws.on("error", () => ws.terminate());
-      ws.on("close", () => {
-        if (client.socket === ws) client.socket = undefined;
-      });
-      ws.on("pong", () => {
-        if (!ownsConnection()) return;
+    upgradesInFlight++;
+    void (async () => {
+      const device = trustedLan ? undefined : await authenticate(request);
+      if (stopped || (!trustedLan && !device)) {
+        socket.destroy();
+        return;
+      }
+      const requestedClient = url.searchParams.get("clientId");
+      const client = requestedClient ? clients.get(requestedClient) : undefined;
+      const rawCursor = url.searchParams.get("cursor");
+      const cursor = rawCursor === null ? Number.NaN : Number(rawCursor);
+      const oldest = events[0]?.cursor ?? sequence + 1;
+      if (
+        !client ||
+        (!trustedLan && client.deviceId !== device?.id) ||
+        !Number.isSafeInteger(cursor) ||
+        cursor < oldest - 1 ||
+        cursor > sequence ||
+        request.headers["sec-websocket-protocol"] ||
+        socket.destroyed
+      ) {
+        socket.destroy();
+        return;
+      }
+      sockets.handleUpgrade(request, socket, head, (ws) => {
+        client.socket?.close(4000, "Connection replaced");
+        client.socket = ws;
         client.heartbeat = Date.now();
         client.lastSeen = Date.now();
-      });
-      ws.on("message", (data, binary) => {
-        if (!ownsConnection()) return;
-        try {
-          const ack = ackSchema.parse(JSON.parse(data.toString()));
-          if (binary || ack.cursor > sequence)
-            return ws.close(1008, "Invalid cursor");
+        client.lastSent = cursor;
+        const owner = requestedClient;
+        const ownsConnection = () =>
+          (owner ? clients.get(owner) : undefined)?.socket === ws;
+        ws.on("error", () => ws.terminate());
+        ws.on("close", () => {
+          if (client.socket === ws) client.socket = undefined;
+        });
+        ws.on("pong", () => {
+          if (!ownsConnection()) return;
+          client.heartbeat = Date.now();
           client.lastSeen = Date.now();
-        } catch {
-          ws.close(1008, "Invalid acknowledgement");
-        }
+        });
+        ws.on("message", (data, binary) => {
+          if (!ownsConnection()) return;
+          try {
+            const ack = ackSchema.parse(JSON.parse(data.toString()));
+            if (binary || ack.cursor > sequence)
+              return ws.close(1008, "Invalid cursor");
+            client.lastSeen = Date.now();
+          } catch {
+            ws.close(1008, "Invalid acknowledgement");
+          }
+        });
+        if (trustedLan)
+          sendTo(
+            ws,
+            events
+              .filter((entry) => entry.cursor > cursor)
+              .map((entry) => entry.data),
+          );
+        else if (owner) pump(owner, client);
       });
-      const replay = events
-        .filter((entry) => entry.cursor > cursor)
-        .map((entry) => entry.data);
-      sendTo(ws, replay);
-    });
+    })()
+      .catch(() => socket.destroy())
+      .finally(() => {
+        upgradesInFlight--;
+      });
   });
   const heartbeat = setInterval(() => {
     const now = Date.now();
@@ -269,9 +415,32 @@ export async function createWebHost(
     response: ServerResponse,
     next: () => void,
   ): Promise<void> {
+    let device: AuthorizedDevice | undefined;
+    let protectedRequest = false;
+    const authorized = async () => {
+      if (stopped) return false;
+      if (trustedLan) return true;
+      const valid =
+        !!device && (await authorization?.isAuthorized(device.id)) === true;
+      return !stopped && valid;
+    };
+    const json = async (
+      target: ServerResponse,
+      status: number,
+      value: unknown,
+    ): Promise<void> => {
+      if (protectedRequest && status < 400 && !(await authorized())) {
+        target.removeHeader("X-Forge-Snapshot");
+        return writeJson(target, 401, {
+          error: "Device authorization required",
+        });
+      }
+      writeJson(target, status, value);
+    };
     response.setHeader("Referrer-Policy", "no-referrer");
     response.setHeader("X-Content-Type-Options", "nosniff");
     response.setHeader("X-Frame-Options", "DENY");
+    if (stopped) return json(response, 503, { error: "Listener stopped" });
     if (!validHost(request))
       return json(response, 403, { error: "Unexpected host" });
     const path = request.url?.split("?")[0];
@@ -283,6 +452,30 @@ export async function createWebHost(
       ) {
         return json(response, 403, { error: "Same-origin JSON POST required" });
       }
+      if (path === "/api/pair") {
+        if (!authorization || pairingsInFlight >= 8)
+          return json(response, 503, { error: "Pairing unavailable" });
+        pairingsInFlight++;
+        try {
+          const input = pairingExchangeSchema.parse(await body(request, 1024));
+          const result = await authorization.exchange(input.token);
+          response.setHeader(
+            "Set-Cookie",
+            `forge_device=${result.credential}; HttpOnly; SameSite=Strict; Path=/; Max-Age=31536000`,
+          );
+          return json(response, 200, result);
+        } catch {
+          return json(response, 401, {
+            error: "Pairing unavailable or expired",
+          });
+        } finally {
+          pairingsInFlight--;
+        }
+      }
+      device = trustedLan ? undefined : await authenticate(request);
+      if (!trustedLan && !device)
+        return json(response, 401, { error: "Device authorization required" });
+      protectedRequest = true;
       try {
         const input = await body(
           request,
@@ -292,10 +485,22 @@ export async function createWebHost(
               ? MAX_PREVIEW_BODY
               : MAX_BODY,
         );
+        if (!(await authorized()))
+          return json(response, 401, {
+            error: "Device authorization required",
+          });
         if (path === "/api/connect") {
+          if (clients.size >= 1024)
+            return json(response, 503, {
+              error: "Page connection limit reached",
+            });
           const clientId = randomUUID();
           clients.set(clientId, {
             socket: undefined,
+            deviceId: device?.id,
+            lastSent: sequence,
+            pumping: false,
+            pending: false,
             heartbeat: 0,
             lastSeen: Date.now(),
           });
@@ -312,7 +517,11 @@ export async function createWebHost(
           typeof requestedClient === "string"
             ? clients.get(requestedClient)
             : undefined;
-        if (!requestedClient || !client)
+        if (
+          !requestedClient ||
+          !client ||
+          (!trustedLan && client.deviceId !== device?.id)
+        )
           return json(response, 410, {
             error: "Page connection expired. Reload to reconnect.",
           });
@@ -415,15 +624,21 @@ export async function createWebHost(
             return json(response, 403, {
               error: "This server is restricted to its launch workspace",
             });
-          if ("sessionId" in rpc || rpc.method === "startRun" || rpc.method === "enqueueInput") {
+          if (
+            "sessionId" in rpc ||
+            rpc.method === "startRun" ||
+            rpc.method === "enqueueInput"
+          ) {
             const id =
               rpc.method === "startRun"
                 ? rpc.input.sessionId
-                : rpc.method === "enqueueInput" ? rpc.input.input.sessionId : (
-                    rpc as {
-                      sessionId: Parameters<HarnessService["getSession"]>[0];
-                    }
-                  ).sessionId;
+                : rpc.method === "enqueueInput"
+                  ? rpc.input.input.sessionId
+                  : (
+                      rpc as {
+                        sessionId: Parameters<HarnessService["getSession"]>[0];
+                      }
+                    ).sessionId;
             const session = await snapshotOf(id);
             if (!session)
               return json(response, 403, {
@@ -436,7 +651,11 @@ export async function createWebHost(
               });
           }
         }
-        // Workspace lookups above yield: recheck ownership before any effects.
+        // Workspace lookups above yield: recheck device and page ownership before any effects.
+        if (!(await authorized()))
+          return json(response, 401, {
+            error: "Device authorization required",
+          });
         if (
           typeof requestedClient !== "string" ||
           clients.get(requestedClient) !== client
@@ -483,12 +702,23 @@ export async function createWebHost(
               result: { sessionDelta: update.delta },
             });
         }
-        if (result.ok && result.method === "getHostState" && restrictWorkspace) {
-          const visible = await Promise.all(result.result.runs.map(async run => {
-            const session = await snapshotOf(run.sessionId);
-            return session && await inWorkspace(session.workspace) ? run : undefined;
-          }));
-          return json(response, 200, { ...result, result: { ...result.result, runs: visible.filter(Boolean) } });
+        if (
+          result.ok &&
+          result.method === "getHostState" &&
+          restrictWorkspace
+        ) {
+          const visible = await Promise.all(
+            result.result.runs.map(async (run) => {
+              const session = await snapshotOf(run.sessionId);
+              return session && (await inWorkspace(session.workspace))
+                ? run
+                : undefined;
+            }),
+          );
+          return json(response, 200, {
+            ...result,
+            result: { ...result.result, runs: visible.filter(Boolean) },
+          });
         }
         if (
           result.ok &&
@@ -516,6 +746,9 @@ export async function createWebHost(
       return;
     }
     if (path === "/preview/document") {
+      device = trustedLan ? undefined : await authenticate(request);
+      if (!(await authorized()))
+        return json(response, 401, { error: "Device authorization required" });
       const query = new URL(request.url ?? "/", origin).searchParams;
       const parsed = previewDocumentSchema.safeParse({ id: query.get("id") });
       const html = parsed.success ? previews.get(parsed.data.id) : undefined;
@@ -533,20 +766,30 @@ export async function createWebHost(
     }
     // The packaged React renderer, only from the build output directory.
     if (renderer && (await renderer.handle(request, response, origin))) return;
+    // An unbuilt dev server may expose source modules through its fallback.
+    if (!renderer && !trustedLan) {
+      device = await authenticate(request);
+      if (!(await authorized()))
+        return json(response, 401, { error: "Device authorization required" });
+    }
     next();
   }
   let closing: Promise<void> | undefined;
   function close(): Promise<void> {
     if (closing) return closing;
+    stopped = true;
     clearInterval(heartbeat);
     unsubscribe();
+    unsubscribeAuthorization?.();
     for (const socket of sockets.clients) socket.terminate();
     sockets.close();
     server.closeAllConnections();
-    const listenerClosed = new Promise<void>((done) => server.close(() => done()));
+    const listenerClosed = new Promise<void>((done) =>
+      server.close(() => done()),
+    );
     closing = (async () => {
       try {
-        if (ownsRuntime) await runtime.dispose();
+        if (ownsAuthorization) await authorization?.close();
       } finally {
         await listenerClosed;
         clients.clear();
@@ -554,5 +797,22 @@ export async function createWebHost(
     })();
     return closing;
   }
-  return { server, handle, close, origin, workspace, runtime, ownsRuntime };
+  let disposing: Promise<void> | undefined;
+  const dispose = (): Promise<void> => {
+    if (!disposing)
+      disposing = close().finally(async () => {
+        if (ownsRuntime) await runtime.dispose();
+      });
+    return disposing;
+  };
+  return {
+    server,
+    handle,
+    close,
+    dispose,
+    origin,
+    workspace,
+    runtime,
+    ownsRuntime,
+  };
 }

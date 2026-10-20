@@ -142,7 +142,7 @@ async function setup(restrictWorkspace = true) {
     settings: { baseUrl: "http://localhost:1234/v1", model: "test-model" },
   });
   // Host is deliberately fixed; listen(0) below keeps tests independent of port availability.
-  const web = await createWebHost({
+  const web = await createWebHost({ trustedLan: true,
     service,
     workspace: directory,
     host: "127.0.0.1",
@@ -155,7 +155,7 @@ async function setup(restrictWorkspace = true) {
     });
   });
   await new Promise<void>((done) => web.server.listen(0, "127.0.0.1", done));
-  cleanup.push(() => web.close());
+  cleanup.push(() => web.dispose());
   const address = web.server.address() as { port: number };
   const url = `http://127.0.0.1:${address.port}`;
   const headers = {
@@ -181,7 +181,7 @@ async function setup(restrictWorkspace = true) {
   return { web, service, directory, url, headers, login };
 }
 
-describe("Web development host", () => {
+describe("Web host in explicitly enabled trusted-LAN compatibility mode", () => {
   it("accepts durable inputs without a client event lease and checks their nested session workspace", async () => {
     const { url, directory, service, login } = await setup();
     const authA = await login();

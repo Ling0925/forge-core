@@ -1,9 +1,13 @@
 import { realpath } from "node:fs/promises";
 import { resolve } from "node:path";
+import type { DeviceAuthorization } from "../shared/device-authorization";
 import type { RuntimeHost } from "../shared/runtime-host";
 import { createWebHost } from "./server";
 
 export interface LanHostOptions {
+  trustedLan?: boolean;
+  authorization?: DeviceAuthorization;
+  stateDir?: string;
   runtime: RuntimeHost;
   /** A concrete IPv4 literal; `0.0.0.0` is never accepted. */
   host: string;
@@ -74,7 +78,7 @@ export function validLanEndpoint(host: string, port: number): boolean {
  * LAN hosting for one already-running shared runtime.
  *
  * The listener is only created when this is called, and it is bound to one
- * concrete IPv4 address (no `0.0.0.0`, no hostnames, no TLS, no accounts).
+ * concrete IPv4 address (no `0.0.0.0`, no hostnames, no TLS; paired device authorization by default).
  * Closing the host stops accepting new pages and releases this HTTP host's
  * subscriptions, but never disposes the injected runtime: active runs keep
  * running and remain controllable from the desktop.
@@ -95,6 +99,13 @@ export async function createLanWebHost(options: LanHostOptions) {
     port: options.port,
     rendererRoot: options.rendererRoot,
     restrictWorkspace: options.restrictWorkspace ?? false,
+    ...(options.trustedLan === undefined
+      ? {}
+      : { trustedLan: options.trustedLan }),
+    ...(options.authorization === undefined
+      ? {}
+      : { authorization: options.authorization }),
+    ...(options.stateDir === undefined ? {} : { stateDir: options.stateDir }),
   });
   // This host owns its server: everything is answered by `handle`, and an
   // unknown path is a plain 404 rather than a hanging request. A thrown

@@ -1,3 +1,4 @@
+import { openDeviceAuthorization } from "../src/store/devices";
 import { randomUUID } from "node:crypto";
 import { request as httpRequest } from "node:http";
 import { createWebHost } from "../src/web/server";
@@ -157,7 +158,10 @@ it("wires real runtime publication, authenticated RPC, forks, reopen and CLI sav
   const otherWorkspace = join(root, "other-workspace");
   await mkdir(otherWorkspace);
   const other = await service.createSession({ workspace: otherWorkspace });
-  const web = await createWebHost({ service, workspace, host: "127.0.0.1", port: 5173 });
+  const authorization = await openDeviceAuthorization({ directory: stateDir });
+  cleanups.push(() => authorization.close());
+  const device = await authorization.exchange((await authorization.createPairing("isolated attachment fixture")).token);
+  const web = await createWebHost({ authorization, service, workspace, host: "127.0.0.1", port: 5173 });
   web.server.on("request", (req, res) => { void web.handle(req, res, () => res.end()); });
   await new Promise<void>(done => web.server.listen(0, "127.0.0.1", done));
   const address = web.server.address() as { port: number };
@@ -173,15 +177,18 @@ it("wires real runtime publication, authenticated RPC, forks, reopen and CLI sav
   });
   try {
     const rpc = { id: randomUUID(), method: "getPublishedFile", sessionId: session.id, fileId: file.id };
-    expect((await post("/api/rpc", rpc)).status).toBe(410);
-    const login = await post("/api/connect", {});
-    const auth = { "X-Forge-Client": login.data.clientId };
+    expect((await post("/api/rpc", rpc)).status).toBe(401);
+    const credential = { Authorization: `Bearer ${device.credential}` };
+    const login = await post("/api/connect", {}, credential);
+    const auth = { ...credential, "X-Forge-Client": login.data.clientId };
     const downloaded = await post("/api/rpc", rpc, auth);
     expect(downloaded.status).toBe(200);
     expect(Buffer.from(downloaded.data.result.base64, "base64").toString()).toBe("# delivered\n");
     expect((await post("/api/rpc", { ...rpc, id: randomUUID(), sessionId: other.id }, auth)).status).toBe(403);
     expect((await post("/api/rpc", { ...rpc, id: randomUUID() }, { ...auth, Origin: "http://evil.invalid" })).status).toBe(403);
-  } finally { await web.close(); }
+    await authorization.revoke(device.device.id);
+    expect((await post("/api/rpc", { ...rpc, id: randomUUID() }, auth)).status).toBe(401);
+  } finally { await web.dispose(); }
   await rm(join(workspace, "report.md"));
   await service.dispose();
   const reopened = await createHarness({ stateDir });

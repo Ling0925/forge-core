@@ -1,8 +1,8 @@
+import { resolveStateDirectory } from "./state-directory";
 import { createRootRunBudget } from "./run-budget";
 import type { RootRunBudget } from "../shared/run-budget";
 import { createHash } from "node:crypto";
 import { stat } from "node:fs/promises";
-import { homedir } from "node:os";
 import { isAbsolute, join, resolve } from "node:path";
 import { createProjectContext } from "../context/index";
 import { createMcpService } from "../mcp/registry";
@@ -136,11 +136,7 @@ function inferSourceId(
 export const createHarness = async (
   options: HarnessOptions = {},
 ): Promise<HarnessService> => {
-  const directory = resolve(
-    options.stateDir ??
-      process.env.FORGE_HOME ??
-      join(homedir(), ".local", "share", "forge"),
-  );
+  const directory = resolveStateDirectory(options.stateDir);
   const store = await openSessionStore(directory);
   // Removing a source must not silently strand sessions pinned to it, so the
   // settings store asks the session store which sessions still reference it.
