@@ -35,3 +35,32 @@ Measured on Linux / Node v22.23.1 using baseline `86478a4`, five reads per case 
 | 5,000 | 32 | 1039.65 → 1.59 | 1031.59 → 122.16 | 78.44 → 4.7 |
 
 Old and new executables must not write the same state directory concurrently. Older executables do not understand v2 journals; terminal base checkpoints remain ordinary v1 snapshots, but downgrading while a v2 generation is active requires explicit migration/recovery rather than discarding the journal.
+
+### Concurrent read prefixes and writer ownership
+
+The incremental reader preserves the concurrent-read contract introduced by
+`1e83855`: immutable, hash-validated records from a captured generation form a
+consistent prefix even while a writer appends, rotates a checkpoint, or creates
+a temporary file. `get`, versioned `read`, `changesSince`, and summary fallback
+need not wait for a quiet interval. A captured record's replacement or corruption
+still invalidates the read; temporary files are never committed records.
+
+A prefix whose base/directory changed is never installed as the writer cache or
+written to the summary index. Writes retain stable-head validation and revision
+CAS. Reading a valid older prefix does not grant permission to commit against an
+advanced head. Old generations remain available for readers of that prefix.
+
+### Recheck against master `6bcb776` (2026-10-20)
+
+Linux / Node 22.23.1, five local synthetic samples, median milliseconds; no production SLO.
+
+| Messages | Journal records | Warm get, master → updated | Cold get, master → updated | Metadata write, master → updated |
+|---:|---:|---:|---:|---:|
+| 1000 | 0 | 30.61 → 0.31 | 20.07 → 36.99 | 20.29 → 1.82 |
+| 1000 | 8 | 86.18 → 0.37 | 59.57 → 25.17 | 13.18 → 1.17 |
+| 1000 | 16 | 92.59 → 0.61 | 104.78 → 24.95 | 12.26 → 3 |
+| 1000 | 32 | 136.68 → 4.69 | 161.39 → 58.53 | 9.63 → 3.15 |
+| 5000 | 0 | 50.92 → 0.23 | 57.38 → 90.13 | 52.86 → 3.65 |
+| 5000 | 8 | 247.66 → 0.4 | 212.7 → 92.6 | 48.77 → 4 |
+| 5000 | 16 | 375.64 → 0.57 | 359.17 → 92.11 | 50.9 → 2.01 |
+| 5000 | 32 | 663.77 → 1.1 | 632.58 → 88.64 | 45.69 → 3.47 |

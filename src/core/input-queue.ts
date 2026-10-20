@@ -3,6 +3,7 @@ import { join } from "node:path";
 import { z } from "zod";
 import { ForgeError } from "../shared/errors";
 import {
+  QueueAdmissionError,
   enqueueInputSchema,
   inputQueueSnapshotSchema,
   queuedInputSchema,
@@ -13,7 +14,12 @@ import type {
   QueuedInput,
 } from "../shared/input-queue";
 import { runInputSchema, sessionIdSchema } from "../shared/schemas";
-import type { ProviderConfig, RunInput, SessionId } from "../shared/schemas";
+import type {
+  ProviderConfig,
+  RunInput,
+  SessionId,
+  SessionSnapshot,
+} from "../shared/schemas";
 import {
   atomicJson,
   privateDirectory,
@@ -34,9 +40,32 @@ export const inputProviderBinding = (
   model: string,
   sourceId?: string,
 ) => digest([sourceId ?? null, config.baseUrl, config.apiMode ?? null, model]);
+export function inputPredecessor(snapshot: SessionSnapshot) {
+  const active =
+    ["running", "awaiting_approval"].includes(snapshot.status) ||
+    !!snapshot.pendingTool;
+  return {
+    active,
+    unsafe:
+      active ||
+      ["failed", "cancelled", "interrupted"].includes(snapshot.status),
+    // Titles, context counters and unrelated metadata do not acknowledge or
+    // invalidate review of a particular predecessor and uncertain tool intent.
+    token: digest([
+      snapshot.id,
+      snapshot.status,
+      snapshot.pendingTool ?? null,
+      snapshot.events.findLast((event) => event.type === "run_started") ?? null,
+      snapshot.events.findLast((event) => event.type === "run_finished") ??
+        null,
+    ]),
+  };
+}
+type Predecessor = ReturnType<typeof inputPredecessor>;
 const storedItemSchema = queuedInputSchema.unwrap().extend({
   requestHash: z.string().length(64),
   providerBinding: z.string().length(64),
+  acknowledgedPredecessor: z.string().length(64).optional(),
 });
 const ledgerSchema = z
   .object({
@@ -60,6 +89,7 @@ const pending = (item: QueuedInput) =>
 const publicItem = ({
   requestHash: _requestHash,
   providerBinding: _providerBinding,
+  acknowledgedPredecessor: _acknowledgedPredecessor,
   ...item
 }: StoredItem): QueuedInput => queuedInputSchema.parse(item);
 
@@ -67,6 +97,8 @@ const publicItem = ({
 export async function openInputQueue(options: {
   directory: string;
   validateSession(id: SessionId): Promise<void>;
+  /** acknowledge=true must inspect under the session lock with no live owner. */
+  predecessor?(id: SessionId, acknowledge?: boolean): Promise<Predecessor>;
   prepare(
     input: RunInput,
   ): Promise<{ input: RunInput; providerBinding: string }>;
@@ -201,6 +233,21 @@ export async function openInputQueue(options: {
               (item) => item.sessionId === sessionId && item.state === "queued",
             );
             if (!item?.input) return undefined;
+            const predecessor = await options.predecessor?.(sessionId);
+            if (
+              predecessor?.unsafe &&
+              item.acknowledgedPredecessor !== predecessor.token
+            ) {
+              item.state = "blocked";
+              item.reason =
+                "Previous execution needs review. Explicit resume is required.";
+              item.updatedAt = new Date().toISOString();
+              setState(ledger, sessionId, {
+                paused: true,
+                reason: item.reason,
+              });
+              return undefined;
+            }
             try {
               const prepared = await options.prepare(item.input);
               if (prepared.providerBinding !== item.providerBinding)
@@ -230,6 +277,7 @@ export async function openInputQueue(options: {
               item.input,
               item.runId,
               item.providerBinding,
+              item.acknowledgedPredecessor,
             );
             if (
               result === "completed" ||
@@ -238,8 +286,30 @@ export async function openInputQueue(options: {
               result === "interrupted"
             )
               status = result;
-          } catch {
-            /* A bound attempt is never automatically replayed. */
+          } catch (error) {
+            if (error instanceof QueueAdmissionError) {
+              await transaction((ledger) => {
+                const entry = ledger.items.find(
+                  (candidate) => candidate.inputId === item.inputId,
+                );
+                if (
+                  !entry ||
+                  entry.state !== "bound" ||
+                  entry.runId !== item.runId
+                )
+                  throw storageError();
+                entry.state = "blocked";
+                entry.runId = null;
+                entry.reason = error.message;
+                entry.updatedAt = new Date().toISOString();
+                setState(ledger, sessionId, {
+                  paused: true,
+                  reason: error.message,
+                });
+              });
+              return;
+            }
+            /* Any other bound attempt is never automatically replayed. */
           }
           await transaction((ledger) => {
             const entry = ledger.items.find(
@@ -351,6 +421,23 @@ export async function openInputQueue(options: {
           requestHash,
           providerBinding: prepared.providerBinding,
         };
+        const predecessor = await options.predecessor?.(input.sessionId);
+        // A new explicit request after an old terminal failure is not permanently
+        // banned. Never implicitly acknowledge live or uncertain pending effects.
+        if (
+          predecessor?.unsafe &&
+          !predecessor.active &&
+          !runner?.isBusy(input.sessionId)
+        ) {
+          try {
+            const checked = await options.predecessor?.(input.sessionId, true);
+            if (checked && !checked.active)
+              entry.acknowledgedPredecessor = checked.token;
+          } catch (error) {
+            if (!(error instanceof ForgeError) || error.code !== "busy")
+              throw error;
+          }
+        }
         ledger.items.push(entry);
         return publicItem(entry);
       });
@@ -399,11 +486,17 @@ export async function openInputQueue(options: {
       const sessionId = sessionIdSchema.parse(id);
       check();
       await options.validateSession(sessionId);
-      const result = await transaction((ledger) => {
+      const result = await transaction(async (ledger) => {
+        if (runner?.isBusy(sessionId)) throw new QueueAdmissionError();
+        const predecessor = await options.predecessor?.(sessionId, true);
         setState(ledger, sessionId, { paused: false });
         for (const item of ledger.items)
-          if (item.sessionId === sessionId && item.state === "blocked") {
+          if (
+            item.sessionId === sessionId &&
+            ["blocked", "queued"].includes(item.state)
+          ) {
             item.state = "queued";
+            if (predecessor) item.acknowledgedPredecessor = predecessor.token;
             Reflect.deleteProperty(item, "reason");
           }
         return snapshot(ledger, sessionId);
@@ -416,7 +509,7 @@ export async function openInputQueue(options: {
       attaching = (async () => {
         ownerRelease = await fileLock(join(directory, "consumer.lock"));
         try {
-          const sessions = await transaction((ledger) => {
+          const sessions = await transaction(async (ledger) => {
             for (const item of ledger.items)
               if (item.state === "bound") {
                 item.state = "uncertain";
@@ -428,6 +521,22 @@ export async function openInputQueue(options: {
                   reason: item.reason,
                 });
               }
+            const checked = new Set<SessionId>();
+            for (const item of ledger.items) {
+              if (item.state !== "queued" || checked.has(item.sessionId))
+                continue;
+              checked.add(item.sessionId);
+              const predecessor = await options.predecessor?.(item.sessionId);
+              if (
+                predecessor?.unsafe &&
+                item.acknowledgedPredecessor !== predecessor.token
+              )
+                setState(ledger, item.sessionId, {
+                  paused: true,
+                  reason:
+                    "Previous execution needs review. Explicit resume is required.",
+                });
+            }
             return [
               ...new Set(
                 ledger.items

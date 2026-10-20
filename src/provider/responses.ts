@@ -1,4 +1,5 @@
 import type { ServerSentEvent } from "openai/core/streaming";
+import { isDeepStrictEqual } from "node:util";
 import type {
   ResponseCreateParamsStreaming,
   ResponseInput,
@@ -8,6 +9,7 @@ import type { ProtocolReason } from "../shared/errors";
 import { providerResponseSchema, toolCallSchema } from "../shared/schemas";
 import type { WebCitation, WebSearchMode, WebSearchProgress } from "../shared/web-search";
 import { citationRecord, searchRecord, urlCitation, webSearchCall } from "./responses-web-search";
+import { responseFailure } from "./responses-errors";
 import type {
   Message,
   ProviderResponse,
@@ -34,13 +36,15 @@ const message = z
     status: z.literal("completed"),
     content: z
       .array(
-        z
+        z.union([z
           .object({
             type: z.literal("output_text"),
             text: z.string().max(2_000_000),
             annotations: z.array(urlCitation).max(256).optional(),
           })
           .passthrough(),
+          z.object({ type: z.literal("refusal"), refusal: z.string().max(2_000_000) }).passthrough(),
+        ]),
       )
       .max(256),
   })
@@ -50,10 +54,20 @@ const reasoning = z
     type: z.literal("reasoning"),
     id,
     summary: z.array(z.unknown()).max(256),
-    encrypted_content: z.string().max(1_000_000).optional(),
+    encrypted_content: z.string().max(1_000_000).nullable().optional(),
+    content: z.array(z.object({ type: z.literal("reasoning_text"), text: z.string() }).passthrough()).optional(),
   })
   .passthrough();
 const outputItem = z.union([call, message, reasoning, webSearchCall]);
+const prose = (part: z.infer<typeof message>["content"][number]): string =>
+  part.type === "output_text" ? part.text : part.refusal;
+const stateEvents = new Set([
+  "response.created", "response.in_progress", "response.completed", "response.failed", "response.incomplete", "error",
+  "response.output_item.added", "response.output_item.done", "response.output_text.delta", "response.output_text.done",
+  "response.refusal.delta", "response.refusal.done", "response.function_call_arguments.delta", "response.function_call_arguments.done",
+  "response.web_search_call.in_progress", "response.web_search_call.searching", "response.web_search_call.completed",
+  "response.output_text.annotation.added", "response.reasoning_summary_text.delta", "response.reasoning_text.delta", "response.reasoning_text.done",
+]);
 const terminal = z.object({
   id,
   status: z.literal("completed"),
@@ -126,37 +140,33 @@ function sameItem(
   if (a.type === "message" && b.type === "message")
     return (
       a.role === b.role &&
-      JSON.stringify(a.content) === JSON.stringify(b.content)
+      isDeepStrictEqual(a.content, b.content)
     );
   return (
     (a.type === "reasoning" || a.type === "web_search_call") &&
     a.type === b.type &&
-    JSON.stringify(a) === JSON.stringify(b)
+    isDeepStrictEqual(a, b)
   );
 }
 
 // Continuation lives on the exact assistant message, not in provider-instance memory.
 // Validate both externally supplied session state and the wire output before replay.
-const MAX_STATE_BYTES = 250_000;
 function validatedOutput(
   output: unknown,
   h: Helpers,
 ): z.infer<typeof outputItem>[] {
   const parsed = z.array(outputItem).max(256).parse(output);
-  if (
-    new TextEncoder().encode(JSON.stringify(parsed)).byteLength >
-    MAX_STATE_BYTES
-  )
-    throw h.protocol();
   const ids = new Set<string>();
   const calls = new Set<string>();
   for (const item of parsed) {
     if (ids.has(item.id)) throw h.protocol();
     ids.add(item.id);
     if (item.type === "message")
-      for (const part of item.content)
+      for (const part of item.content) {
+        if (part.type !== "output_text") continue;
         for (const citation of part.annotations ?? [])
           if (citation.end_index > part.text.length) throw h.protocol();
+      }
     if (item.type === "function_call") {
       if (
         calls.has(item.call_id) ||
@@ -206,15 +216,16 @@ export function createResponsesAdapter(h: Helpers, baseUrl: string) {
             m.content !==
               (original
                 .filter((item) => item.type === "message")
-                .flatMap((item) => item.content.map((part) => part.text))
+                .flatMap((item) => item.content.map(prose))
                 .join("") || null) ||
-            JSON.stringify(
+            !isDeepStrictEqual(
               nativeCalls.map((item) => ({
                 id: item.call_id,
                 type: "function",
                 function: { name: item.name, arguments: item.arguments },
               })),
-            ) !== JSON.stringify(m.tool_calls ?? [])
+              m.tool_calls ?? [],
+            )
           )
             throw h.protocol();
           result.push(...original);
@@ -294,6 +305,9 @@ export function createResponsesAdapter(h: Helpers, baseUrl: string) {
       const ended = new Map<number, z.infer<typeof outputItem>>();
       const added = new Map<number, unknown>();
       const textParts = new Map<string, string>();
+      const textKinds = new Map<string, "output_text" | "refusal">();
+      const reasoningParts = new Map<string, string>();
+      const reasoningDone = new Set<string>();
       const annotations = new Map<string, z.infer<typeof urlCitation>>();
       const searchStatuses = new Map<string, WebSearchProgress["status"]>();
       const notifySearch = (id: string, status: WebSearchProgress["status"]) => {
@@ -332,17 +346,24 @@ export function createResponsesAdapter(h: Helpers, baseUrl: string) {
           transportDone = true;
           return;
         }
-        if (transportDone || completed) throw h.protocol();
         const e = z
           .object({ type: z.string() })
           .passthrough()
           .parse(h.parseJson(payload));
-        if (completed || (eventName && eventName !== e.type))
+        if (eventName && eventName !== e.type)
           throw h.protocol();
+        if (e.type === "response.metadata") {
+          const p = z.object({ response_id: id, metadata: z.record(z.unknown()) }).parse(e);
+          if (responseId !== undefined && responseId !== p.response_id) throw h.protocol();
+          responseId = p.response_id;
+          return;
+        }
+        if (!stateEvents.has(e.type)) return;
+        if (transportDone || completed) throw h.protocol();
         if (
           ["error", "response.failed", "response.incomplete"].includes(e.type)
         )
-          throw h.protocol();
+          throw responseFailure(e);
         if (e.type === "response.output_item.added") {
           const p = z
             .object({
@@ -408,6 +429,7 @@ export function createResponsesAdapter(h: Helpers, baseUrl: string) {
           }
         } else if (
           e.type === "response.output_text.delta" ||
+          e.type === "response.refusal.delta" ||
           e.type === "response.function_call_arguments.delta"
         ) {
           const p = z
@@ -421,10 +443,13 @@ export function createResponsesAdapter(h: Helpers, baseUrl: string) {
           const item = items.get(p.output_index);
           if (!item || item.id !== p.item_id || ended.has(p.output_index))
             throw h.protocol();
-          if (e.type === "response.output_text.delta") {
+          if (e.type !== "response.function_call_arguments.delta") {
             if (item.type !== "message") throw h.protocol();
             if (p.content_index === undefined) throw h.protocol();
             const partKey = `${p.output_index}:${p.content_index}`;
+            const kind = e.type === "response.refusal.delta" ? "refusal" : "output_text";
+            if (textKinds.has(partKey) && textKinds.get(partKey) !== kind) throw h.protocol();
+            textKinds.set(partKey, kind);
             if (textDone.has(partKey)) throw h.protocol();
             textParts.set(partKey, (textParts.get(partKey) ?? "") + p.delta);
             text += p.delta;
@@ -504,25 +529,27 @@ export function createResponsesAdapter(h: Helpers, baseUrl: string) {
             names.set(p.item.id, p.item.name);
             notifyToolPreview(p.output_index);
           }
-        } else if (e.type === "response.output_text.done") {
+        } else if (e.type === "response.output_text.done" || e.type === "response.refusal.done") {
           const p = z
             .object({
               output_index: z.number().int(),
               item_id: id,
               content_index: z.number().int().min(0).max(255),
-              text: z.string(),
+              text: z.string().optional(),
+              refusal: z.string().optional(),
             })
             .parse(e);
           const key = `${p.output_index}:${p.content_index}`;
+          const value = e.type === "response.refusal.done" ? p.refusal : p.text;
           if (
             items.get(p.output_index)?.id !== p.item_id ||
             items.get(p.output_index)?.type !== "message" ||
             ended.has(p.output_index) ||
             textDone.has(key) ||
-            textParts.get(key) !== p.text
+            value === undefined || (textParts.get(key) ?? "") !== value
           )
             throw h.protocol();
-          textDone.set(key, p.text);
+          textDone.set(key, value);
         } else if (e.type === "response.completed") {
           const p = z.object({ response: terminal }).parse(e);
           if (responseId !== undefined && responseId !== p.response.id)
@@ -554,6 +581,7 @@ export function createResponsesAdapter(h: Helpers, baseUrl: string) {
           });
           completedOutput = output;
           completed = p.response;
+          responseId = p.response.id;
         } else if (
           e.type === "response.created" ||
           e.type === "response.in_progress"
@@ -565,6 +593,21 @@ export function createResponsesAdapter(h: Helpers, baseUrl: string) {
             if (responseId !== undefined && responseId !== p.response.id)
               throw h.protocol();
             responseId = p.response.id;
+          }
+        } else if (e.type === "response.reasoning_text.delta" || e.type === "response.reasoning_text.done") {
+          const p = z.object({ item_id: id, output_index: z.number().int(), content_index: z.number().int(), delta: z.string().optional(), text: z.string().optional() }).parse(e);
+          const item = items.get(p.output_index);
+          const key = `${p.output_index}:${p.content_index}`;
+          if (item?.id !== p.item_id || item.type !== "reasoning" || ended.has(p.output_index) || reasoningDone.has(key)) throw h.protocol();
+          if (e.type === "response.reasoning_text.done") {
+            if (p.text === undefined || (reasoningParts.get(key) ?? "") !== p.text) throw h.protocol();
+            reasoningDone.add(key);
+          } else {
+            if (p.delta === undefined) throw h.protocol();
+            reasoningParts.set(key, (reasoningParts.get(key) ?? "") + p.delta);
+            reasoning += p.delta.slice(0, Math.max(0, 131072 - reasoning.length));
+            for (let start = 0; start < p.delta.length; start += 65536)
+              h.notify(onReasoning, p.delta.slice(start, start + 65536));
           }
         } else if (e.type === "response.reasoning_summary_text.delta") {
           // Opaque reasoning is replayed via providerState; this summary text is a
@@ -580,16 +623,7 @@ export function createResponsesAdapter(h: Helpers, baseUrl: string) {
             reasoning += p.delta.slice(0, 131072 - reasoning.length);
           for (let start = 0; start < p.delta.length; start += 65536)
             h.notify(onReasoning, p.delta.slice(start, start + 65536));
-        } else if (
-          ![
-            "response.content_part.added",
-            "response.content_part.done",
-            "response.reasoning_summary_part.added",
-            "response.reasoning_summary_part.done",
-            "response.reasoning_summary_text.done",
-          ].includes(e.type)
-        )
-          throw h.protocol();
+        }
       };
       for await (const event of h.events(response))
         dispatch(event.data, event.event);
@@ -600,31 +634,40 @@ export function createResponsesAdapter(h: Helpers, baseUrl: string) {
         const entry = output[index];
         if (entry?.type !== "message") continue;
         for (let part = 0; part < entry.content.length; part++) {
-          if (textParts.get(`${index}:${part}`) !== entry.content[part]?.text)
+          const value = entry.content[part];
+          const key = `${index}:${part}`;
+          if (!value || (textParts.get(key) ?? "") !== prose(value) || (textKinds.has(key) && textKinds.get(key) !== value.type))
             throw h.protocol();
         }
       }
       for (const key of textParts.keys()) {
         const [index, part] = key.split(":").map(Number);
         const entry = output[index ?? -1];
+        const content = entry?.type === "message" ? entry.content[part ?? -1] : undefined;
         if (
-          entry?.type !== "message" ||
-          entry.content[part ?? -1]?.text !== textParts.get(key)
+          !content || prose(content) !== textParts.get(key)
         )
           throw h.protocol();
+      }
+      for (const [key, value] of reasoningParts) {
+        const [index, part] = key.split(":").map(Number);
+        const entry = output[index ?? -1];
+        if (entry?.type !== "reasoning" || entry.content?.[part ?? -1]?.text !== value) throw h.protocol();
       }
       for (const [key, annotation] of annotations) {
         const [index, part, annotationIndex] = key.split(":").map(Number);
         const entry = output[index ?? -1];
-        if (entry?.type !== "message" || JSON.stringify(entry.content[part ?? -1]?.annotations?.[annotationIndex ?? -1]) !== JSON.stringify(annotation)) throw h.protocol();
+        const content = entry?.type === "message" ? entry.content[part ?? -1] : undefined;
+        if (content?.type !== "output_text" || !isDeepStrictEqual(content.annotations?.[annotationIndex ?? -1], annotation)) throw h.protocol();
       }
       const citations: WebCitation[] = [];
       let textOffset = 0;
       for (const item of output) {
         if (item.type !== "message") continue;
         for (const part of item.content) {
-          for (const citation of part.annotations ?? []) citations.push(citationRecord(citation, textOffset));
-          textOffset += part.text.length;
+          if (part.type === "output_text")
+            for (const citation of part.annotations ?? []) citations.push(citationRecord(citation, textOffset));
+          textOffset += prose(part).length;
         }
       }
       if (citations.length > 256) throw h.protocol("output_limit");
@@ -641,7 +684,7 @@ export function createResponsesAdapter(h: Helpers, baseUrl: string) {
         );
       const finalText = output
         .filter((i) => i.type === "message")
-        .flatMap((i) => i.content.map((c) => c.text))
+        .flatMap((i) => i.content.map(prose))
         .join("");
       if (text !== finalText || (!text && !calls.length)) throw h.protocol();
       const u = completed.usage;

@@ -85,3 +85,25 @@ configuration changes, cancellation and count/byte/receipt limits. Host tests us
 real Harness and runtime RPC to cover two clients, disconnects, pinned defaults,
 permission ceilings and ordinary-run cancellation. Web tests cover operation
 without event leases and workspace checks on nested enqueue requests.
+
+## Ordinary predecessor recovery and admission
+
+Recovery also inspects the durable predecessor of an unbound queued input. A
+running/awaiting-approval, failed/cancelled/interrupted, or uncertain pending-tool
+predecessor pauses the queue until explicit review/resume, even if the ordinary
+`startRun` was never a queue item or crashed before queue pause was persisted.
+An existing bound item still becomes uncertain and is never automatically replayed.
+
+Resume acknowledges the current predecessor under the session lock and refuses a
+live owner. The private acknowledgment is tied to status, pending intent, and the
+latest run start/finish, not titles or unrelated metadata. A new explicit input
+after an old terminal failure may acknowledge that predecessor; old queued work
+does not silently inherit that new intent. A pending/uncertain effect cannot be
+implicitly acknowledged this way.
+
+Admission is checked again under the actual execution lock before provider/tool
+construction. If a newer predecessor or competing owner invalidates admission,
+the item returns to blocked with its input intact and no run binding, rather than
+being consumed. This specific pre-effect refusal is distinct from an uncertain
+bound attempt after execution might have begun; the latter is never auto-replayed.
+No acknowledgment grants tool permission or answers an approval request.

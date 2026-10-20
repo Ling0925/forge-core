@@ -44,6 +44,21 @@ export function toolActivity(call: ToolCall): { name: string; target: string } {
       if (call.function.name === "run_command" && Array.isArray(args.argv)) {
         const argv = args.argv.filter((a): a is string => typeof a === "string");
         target = redactCommandArguments(argv).join(" ");
+      } else if (call.function.name === "command_task") {
+        const action = typeof args.action === "string" ? args.action : "";
+        const id = typeof args.id === "string" ? args.id : "";
+        const actionText =
+          action === "wait"
+            ? "等待完成"
+            : action === "read"
+              ? "读取输出"
+              : action === "stop"
+                ? "终止任务"
+                : action === "list"
+                  ? "任务列表"
+                  : action;
+        const shortId = id ? `#${id.slice(0, 8)}` : "";
+        target = [actionText, shortId].filter(Boolean).join(" · ");
       } else {
         for (const key of targetKeys) {
           const field = args[key];

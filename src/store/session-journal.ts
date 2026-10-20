@@ -67,6 +67,8 @@ type Loaded = {
   count: number;
   bytes: number;
   legacy: boolean;
+  // A valid read prefix is not necessarily the current writable head.
+  cacheable: boolean;
   records: readonly { stamp: Stamp; change: SessionChange }[];
 };
 const baseRecordSchema = z
@@ -157,6 +159,7 @@ export function createSessionJournal(
         Object.entries(metadata).filter(([key]) => key in shape),
       ),
     );
+    if (!loaded.cacheable) return summary;
     await atomicJson(
       indexPath(loaded.snapshot.id),
       {
@@ -194,7 +197,7 @@ export function createSessionJournal(
     );
     return { journal, entries };
   };
-  const load = async (id: SessionId): Promise<Loaded> => {
+  const load = async (id: SessionId, readOnly = false): Promise<Loaded> => {
     for (let attempt = 0; attempt < 3; attempt++) {
       const base = await stamp(basePath(id));
       if (!base)
@@ -218,6 +221,7 @@ export function createSessionJournal(
           bytes: 0,
           legacy: !stored.generation,
           records: [],
+          cacheable: true,
         };
       }
       const directory = journalPath(id, loaded.baseHash);
@@ -281,24 +285,35 @@ export function createSessionJournal(
         currentHash = record.after;
         bytes += entry.stamp.size;
       }
-      if (
-        !same(base, await stamp(basePath(id))) ||
-        !same(journal, await stamp(directory, true)) ||
-        (await Promise.all(entries.map((entry) => stamp(entry.path)))).some(
-          (info, i) => !same(info, entries[i]?.stamp ?? null),
-        )
-      )
+      const currentBase = await stamp(basePath(id));
+      const currentJournal = await stamp(directory, true);
+      // Unlike harmless appends/rotation, replacement of a captured immutable
+      // record must never be accepted as a valid cached prefix.
+      const stableRecords = (
+        await Promise.all(entries.map((entry) => stamp(entry.path)))
+      ).every((info, i) => same(info, entries[i]?.stamp ?? null));
+      if (!stableRecords) {
+        cache.delete(id);
         continue;
+      }
+      const cacheable =
+        same(base, currentBase) && same(journal, currentJournal);
+      // Closed generations are retained. Readers can return the validated
+      // captured prefix without a quiet interval; writers/CAS and legacy bases
+      // still require a stable head. A stale prefix cannot replace a newer
+      // in-process writer cache or publish a stale summary index.
+      if (!cacheable && (!readOnly || loaded.legacy)) continue;
       loaded = {
         ...loaded,
         snapshot,
         hash: currentHash,
         journal,
+        cacheable,
         count: records.length,
         bytes,
         records,
       };
-      remember(id, loaded);
+      if (cacheable) remember(id, loaded);
       return loaded;
     }
     throw new ForgeError(
@@ -380,6 +395,7 @@ export function createSessionJournal(
         count: 0,
         bytes: 0,
         legacy: false,
+        cacheable: true,
         records: [],
       };
     } else {
@@ -423,14 +439,14 @@ export function createSessionJournal(
   };
   return {
     async get(id: SessionId) {
-      return (await load(id)).snapshot;
+      return (await load(id, true)).snapshot;
     },
     async read(id: SessionId) {
-      const loaded = await load(id);
+      const loaded = await load(id, true);
       return { revision: revision(loaded), snapshot: loaded.snapshot };
     },
     async changesSince(id: SessionId, baseRevision: string) {
-      const loaded = await load(id);
+      const loaded = await load(id, true);
       const current = revision(loaded);
       if (baseRevision === current) return { revision: current, changes: [] };
       const index = loaded.records.findIndex(
@@ -483,7 +499,7 @@ export function createSessionJournal(
         if (!(error instanceof ForgeError) && !(error instanceof z.ZodError))
           throw error;
       }
-      return writeIndex(await load(id));
+      return writeIndex(await load(id, true));
     },
   };
 }

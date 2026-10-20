@@ -45,6 +45,21 @@ describe("tool activity description", () => {
     ).toBe("");
   });
 
+  it("formats command_task activity targets cleanly with action and short id", () => {
+    expect(
+      toolActivity(
+        call("command_task", {
+          action: "wait",
+          id: "aa118abe-d428-4184-bd72-c45459a6eb79",
+        }),
+      ),
+    ).toEqual({ name: "command_task", target: "等待完成 · #aa118abe" });
+
+    expect(
+      toolActivity(call("command_task", { action: "list" })),
+    ).toEqual({ name: "command_task", target: "任务列表" });
+  });
+
   it("returns the redacted command and cwd for command tools only", () => {
     expect(
       commandActivity(

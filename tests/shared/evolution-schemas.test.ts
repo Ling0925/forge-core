@@ -48,7 +48,7 @@ it("accepts legacy snapshots and enforces plan invariants", () => {
   ).toBeUndefined();
 });
 
-it("bounds opaque continuation and keeps child provenance only in approval envelopes", () => {
+it("preserves large opaque continuation and keeps child provenance only in approval envelopes", () => {
   const state = {
     version: 1,
     apiMode: "responses",
@@ -84,7 +84,7 @@ it("bounds opaque continuation and keeps child provenance only in approval envel
       ...state,
       output: [{ text: "界".repeat(90000) }],
     }).success,
-  ).toBe(false);
+  ).toBe(true);
   const id = "12345678-1234-4234-8234-123456789abc";
   expect(
     toolDefinitionSchema.safeParse({
