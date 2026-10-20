@@ -293,6 +293,16 @@ export const createAgentRuntime = (
     let toolCalls = 0;
     let usage: Usage = { promptTokens: 0, completionTokens: 0, totalTokens: 0 };
     let reportedUsageTurns = 0;
+    let auxiliaryUsageComplete = true;
+    const onModelUsage = (incoming: Usage | undefined) => {
+      if (!incoming) { auxiliaryUsageComplete = false; return; }
+      const cached = incoming.cachedPromptTokens === undefined ? usage.cachedPromptTokens
+        : (usage.cachedPromptTokens ?? 0) + incoming.cachedPromptTokens;
+      usage = { promptTokens: usage.promptTokens + incoming.promptTokens,
+        completionTokens: usage.completionTokens + incoming.completionTokens,
+        totalTokens: usage.totalTokens + incoming.totalTokens,
+        ...(cached === undefined ? {} : { cachedPromptTokens: cached }) };
+    };
     let hadProviderRetries = false;
     const checkToolFailure = createToolFailureGuard();
     let phase: "storage" | "provider" | "tool" = "storage";
@@ -457,7 +467,7 @@ export const createAgentRuntime = (
         messageIndex: snapshot.messages.length,
         toolCalls,
         usage,
-        usageComplete: !hadProviderRetries && reportedUsageTurns === turns,
+        usageComplete: auxiliaryUsageComplete && !hadProviderRetries && reportedUsageTurns === turns,
         ...(supervisor.size ? { childUsage, totalUsage: addUsage(usage, childUsage),
           childUsageComplete: supervisor.operations().every(child => child.usageComplete === true) } : {}),
       });
@@ -887,7 +897,7 @@ export const createAgentRuntime = (
             phase = "tool";
             const outcomes = await executeReadBatch(readBatch, {
               tools: deps.tools, sessionId: input.sessionId, workspace: snapshot.workspace,
-              permission: effectivePermission, signal,
+              permission: effectivePermission, signal, onModelUsage,
             });
             check();
             phase = "storage";
@@ -921,7 +931,7 @@ export const createAgentRuntime = (
           const toolSnapshot = snapshot;
           const executed = await executeToolCall({
             call, sessionId: input.sessionId, workspace: snapshot.workspace, tools: deps.tools,
-            permission: effectivePermission, signal, check, hooks,
+            permission: effectivePermission, signal, check, hooks, onModelUsage,
             diagnostics: items => hookDiagnostics(items, call.id),
             checkpointApproval: async status => {
               if (!snapshot) throw new ForgeError("internal", "Session has not loaded.");
@@ -996,6 +1006,8 @@ export const createAgentRuntime = (
       if (!snapshot) throw error;
       if (incompleteText) snapshot = { ...snapshot, events: [...snapshot.events,
         agentEventSchema.parse({ type: "text_delta", text: incompleteText,
+          ...(turn === undefined ? {} : { turn }),
+          ...(activeStep === undefined ? {} : { step: activeStep }),
           sessionId: input.sessionId, timestamp: now() })] };
       const safe = signal.aborted
         ? new ForgeError("cancelled", "Run cancelled.")

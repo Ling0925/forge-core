@@ -1,10 +1,15 @@
 import { describe, expect, it } from "vitest";
 import { createApprovalQueue } from "../../src/core/approval-queue";
-import { executeToolCall } from "../../src/core/tool-executor";
+import {
+  executeReadBatch,
+  executeToolCall,
+  planReadBatch,
+} from "../../src/core/tool-executor";
 import type { LocalToolRegistry } from "../../src/shared/contracts";
 import {
   type ApprovalRequest,
   type ToolCall,
+  type Usage,
   sessionIdSchema,
 } from "../../src/shared/schemas";
 import type { ToolHookService } from "../../src/shared/tool-hooks";
@@ -129,4 +134,53 @@ describe("tool execution ownership", () => {
     expect(await second).toBe(true);
     expect(order).toEqual([1, 2]);
   });
+});
+
+it("forwards reported and missing auxiliary usage through serial tool execution", async () => {
+  const usage: Usage = { promptTokens: 3, completionTokens: 2, totalTokens: 5 };
+  const observed: (Usage | undefined)[] = [];
+  await executeToolCall({
+    ...options(async (_call, context) => {
+      context.onModelUsage?.(usage);
+      context.onModelUsage?.(undefined);
+      return { content: "done", isError: false };
+    }),
+    onModelUsage: (value) => observed.push(value),
+  });
+  expect(observed).toEqual([usage, undefined]);
+});
+
+it("preserves readonly memory-read admission and usage observers in concurrent batches", async () => {
+  const calls = ["get_memory", "search_memory"].map((name, i) => ({
+    ...call,
+    id: `read-${i}`,
+    function: { name, arguments: "{}" },
+  }));
+  const usage: Usage = { promptTokens: 1, completionTokens: 1, totalTokens: 2 };
+  const observed: (Usage | undefined)[] = [];
+  const tools: LocalToolRegistry = {
+    definitions: [],
+    isConcurrencySafe: () => true,
+    dispose: async () => {},
+    execute: async (_call, context) => {
+      context.onModelUsage?.(usage);
+      return { content: "memory", isError: false };
+    },
+  };
+  const planned = planReadBatch(calls, 0, 2, {
+    hasHooks: false,
+    permission: () => "readonly",
+    tools,
+  });
+  expect(planned).toEqual(calls);
+  const result = await executeReadBatch(planned, {
+    tools,
+    sessionId,
+    workspace: "/fixture",
+    permission: () => "readonly",
+    signal: new AbortController().signal,
+    onModelUsage: (value) => observed.push(value),
+  });
+  expect(result.map((item) => item.status)).toEqual(["fulfilled", "fulfilled"]);
+  expect(observed).toEqual([usage, usage]);
 });

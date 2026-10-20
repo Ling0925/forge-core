@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { ForgeError } from "./errors";
 import { permissionSchema, runInputSchema, sessionIdSchema } from "./schemas";
 import type { RunInput, SessionId, SessionStatus } from "./schemas";
 
@@ -61,6 +62,7 @@ export interface InputQueueRunner {
     input: RunInput,
     runId: string,
     providerBinding: string,
+    acknowledgedPredecessor?: string,
   ): Promise<SessionStatus>;
 }
 /** Trusted host lifecycle, never a public RPC accepting callbacks or bindings. */
@@ -69,4 +71,15 @@ export interface InputQueueHost extends InputQueueService {
   finished(sessionId: SessionId, status: SessionStatus): Promise<void>;
   stop(): void;
   dispose(): Promise<void>;
+}
+
+/** Internal signal: admission failed before constructing a provider or tools. */
+export class QueueAdmissionError extends ForgeError {
+  constructor() {
+    super(
+      "busy",
+      "The predecessor is active or needs review. Explicit queue resume is required; no queued effects started.",
+      true,
+    );
+  }
 }

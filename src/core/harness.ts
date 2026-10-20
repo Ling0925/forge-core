@@ -9,6 +9,7 @@ import type {
   HarnessOptions,
   HarnessService,
   LocalToolRegistry,
+  ModelProvider,
 } from "../shared/contracts";
 import { budgetUsage, measureContext, resolveContextBudget, resolveContextWindow } from "../shared/context-usage";
 import { ForgeError } from "../shared/errors";
@@ -31,6 +32,9 @@ import { openPublishedFileStore } from "../store/published-files";
 import { collectPublishedFiles, publishedFileIdSchema } from "../shared/published-files";
 import { createPublishedFileTool } from "../tools/published-files";
 import { openSessionStore } from "../store/sessions";
+import { openMemoryStore } from "../store/memory";
+import { createMemoryToolRegistry } from "../tools/memory";
+import { forgeMemory } from "./forge-memory";
 import { openSettingsStore } from "../store/settings";
 import { openToolHooksStore } from "../store/tool-hooks";
 import { createAgentWorktreeService } from "./agent-worktrees";
@@ -47,8 +51,13 @@ import { summarizeWorkingState } from "./working-memory";
 import { openRunMemory } from "./run-memory";
 import { autoTitle } from "./session-title";
 import { createTaskService } from "./task-service";
+import {
+  listWorkspaceDirectory,
+  readWorkspaceFilePreview,
+} from "./workspace-files";
 import type { CommandTaskAccess } from "../shared/task-view";
-import { inputProviderBinding, openInputQueue } from "./input-queue";
+import { QueueAdmissionError } from "../shared/input-queue";
+import { inputPredecessor, inputProviderBinding, openInputQueue } from "./input-queue";
 import { createSessionWriter } from "./session-writer";
 import { createAgentRuntime, withCancellation } from "./runtime";
 
@@ -140,6 +149,7 @@ export const createHarness = async (
         .map((session) => session.id),
   });
   const runMemory = await openRunMemory(directory);
+  const memories = await openMemoryStore(directory);
   const toolHooksStore = await openToolHooksStore(directory);
   const agentWorktrees = createAgentWorktreeService(directory);
   const publishedFiles = await openPublishedFileStore(directory);
@@ -154,6 +164,7 @@ export const createHarness = async (
     workspace: string,
     settings: PublicSettings,
     apiKey: string,
+    provider: ModelProvider,
   ) => {
     let local: LocalToolRegistry | undefined;
     let context: Awaited<ReturnType<typeof createProjectContext>> | undefined;
@@ -184,7 +195,12 @@ export const createHarness = async (
       await context.refresh();
       const combined = createCombinedToolRegistry(
         local,
-        ...(!options.toolFactory ? [await createPublishedFileTool(workspace, publishedFiles, { protectedRoots: [directory], redactValues: [apiKey] })] : []),
+        ...(!options.toolFactory ? [
+          await createPublishedFileTool(workspace, publishedFiles, { protectedRoots: [directory], redactValues: [apiKey] }),
+          createMemoryToolRegistry(memories, { redactValues: [apiKey],
+            forge: (input, toolContext) => forgeMemory(input, { sessions: store, memories, provider, context: toolContext, secrets: [apiKey] }),
+          }),
+        ] : []),
         createSkillTool(context),
       );
       const ownedService = service;
@@ -314,7 +330,13 @@ export const createHarness = async (
       await release();
     }
   };
-  const inputQueue = await openInputQueue({ directory, validateSession: async id => { await store.get(id); }, prepare: async input => {
+  const inputQueue = await openInputQueue({ directory, validateSession: async id => { await store.get(id); },
+    predecessor: async (id, acknowledge) => {
+      if (!acknowledge) return inputPredecessor(await store.get(id));
+      if (controls.has(id)) throw new QueueAdmissionError();
+      const release = await store.acquire(id);
+      try { return inputPredecessor(await store.get(id)); } finally { await release(); }
+    }, prepare: async input => {
     check();
     const [snapshot, settings] = await Promise.all([store.get(input.sessionId), settingsStore.getPublic()]);
     const providerSourceId = input.providerSourceId ?? snapshot.providerSourceId ??
@@ -590,6 +612,22 @@ export const createHarness = async (
       check();
       return store.get(sessionIdSchema.parse(id));
     },
+    async listWorkspaceEntries(id, path) {
+      check();
+      const session = await store.get(sessionIdSchema.parse(id));
+      return listWorkspaceDirectory(session.workspace, path, {
+        protectedRoots: [directory],
+        redactValues: [...taskSecrets],
+      });
+    },
+    async readWorkspaceFile(id, path) {
+      check();
+      const session = await store.get(sessionIdSchema.parse(id));
+      return readWorkspaceFilePreview(session.workspace, path, {
+        protectedRoots: [directory],
+        redactValues: [...taskSecrets],
+      });
+    },
     async getPublishedFile(rawSessionId, rawFileId) {
       check();
       const session = await store.get(sessionIdSchema.parse(rawSessionId));
@@ -650,7 +688,7 @@ export const createHarness = async (
       const input = runInputSchema.parse(raw);
       if (controls.has(input.sessionId))
         return Promise.reject(
-          new ForgeError(
+          control?.providerBinding ? new QueueAdmissionError() : new ForgeError(
             "busy",
             "This session already has an active run.",
             true,
@@ -668,13 +706,23 @@ export const createHarness = async (
         let releaseSession: (() => Promise<void>) | undefined;
         try {
           await stopTitle(input.sessionId);
-          releaseSession = await store.acquire(input.sessionId, signal);
+          try { releaseSession = await store.acquire(input.sessionId, signal); }
+          catch (error) {
+            if (control?.providerBinding && error instanceof ForgeError && error.code === "busy") throw new QueueAdmissionError();
+            throw error;
+          }
           if (signal.aborted)
             throw new ForgeError("cancelled", "Run cancelled.");
           const [settings, snapshot] = await Promise.all([
             settingsStore.getPublic(),
             store.get(input.sessionId),
           ]);
+          // Recheck under the actual execution lock, before provider/tool construction.
+          if (control?.providerBinding) {
+            const predecessor = inputPredecessor(snapshot);
+            if (predecessor.unsafe && control.acknowledgedPredecessor !== predecessor.token)
+              throw new QueueAdmissionError();
+          }
           // An explicit selection (the picked model's source) wins; a session
           // keeps the source it was created with; only when neither exists does
           // the model, and finally the remembered fallback, decide.
@@ -701,6 +749,7 @@ export const createHarness = async (
             snapshot.workspace,
             settings,
             config.apiKey,
+            provider,
           );
           tools = built.tools;
           const result = await createAgentRuntime({
@@ -741,7 +790,7 @@ export const createHarness = async (
             tools,
             projectInstructions: built.instructions,
             onChildOperation: track,
-            childContextFactory: workspace => buildTools(workspace, settings, config.apiKey),
+            childContextFactory: workspace => buildTools(workspace, settings, config.apiKey, provider),
           }).run({ ...input, ...(providerSourceId ? { providerSourceId } : {}) }, onEvent, approve, signal, control);
           return result;
         } finally {
@@ -764,7 +813,11 @@ export const createHarness = async (
       disposal.abort();
       closing = Promise.allSettled(
         [...controls.values()].map((c) => c.work),
-      ).then(async () => { await Promise.allSettled([...titleTasks]); await inputQueue.dispose(); await mcp.dispose(); });
+      ).then(async () => {
+        await Promise.allSettled([...titleTasks]);
+        try { await inputQueue.dispose(); }
+        finally { try { await memories.close(); } finally { await mcp.dispose(); } }
+      });
       return closing;
     },
   };

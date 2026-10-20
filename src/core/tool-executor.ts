@@ -5,6 +5,7 @@ import {
   type SessionId,
   type ToolCall,
   type ToolResult,
+  type Usage,
   agentEventSchema,
   toolResultSchema,
 } from "../shared/schemas";
@@ -24,6 +25,8 @@ const readonlyToolNames = new Set([
   "git_status",
   "git_diff",
   "git_log",
+  "get_memory",
+  "search_memory",
 ]);
 
 /** Pure admission: no effects, budget mutation, event emission or persistence. */
@@ -62,6 +65,7 @@ export function executeReadBatch(
     workspace: string;
     permission(): Permission;
     signal: AbortSignal;
+    onModelUsage?: (usage: Usage | undefined) => void;
   },
 ): Promise<PromiseSettledResult<ToolResult>[]> {
   return Promise.allSettled(
@@ -81,6 +85,9 @@ export function executeReadBatch(
               "Concurrent read requested an approval.",
             );
           },
+          ...(options.onModelUsage
+            ? { onModelUsage: options.onModelUsage }
+            : {}),
           onEvent: () => undefined,
         }),
       );
@@ -96,6 +103,7 @@ interface ToolExecution {
   workspace: string;
   tools: LocalToolRegistry;
   signal: AbortSignal;
+  onModelUsage?: (usage: Usage | undefined) => void;
   permission(): Permission;
   check(): void;
   /** Explicit storage transitions; executor never reads/mutates the snapshot. */
@@ -198,6 +206,7 @@ export async function executeToolCall(options: ToolExecution): Promise<{
         },
         signal,
         approve: approval,
+        ...(options.onModelUsage ? { onModelUsage: options.onModelUsage } : {}),
         onEvent: (raw) => {
           if (!acceptingEvents || toolEvents >= 16) return;
           const parsed = agentEventSchema.safeParse(raw);

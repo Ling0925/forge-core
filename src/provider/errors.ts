@@ -1,5 +1,5 @@
 import { ForgeError } from "../shared/errors";
-import type { ProtocolReason } from "../shared/errors";
+import type { ProtocolReason, ProviderReason } from "../shared/errors";
 
 export type ProviderFailure =
   | "http"
@@ -7,21 +7,22 @@ export type ProviderFailure =
   | "network"
   | "timeout"
   | "aborted"
+  | "upstream"
   | "observer";
 export class ProviderError extends ForgeError {
   readonly classification: ProviderFailure;
   readonly status: number | undefined;
-  readonly reason: ProtocolReason | undefined;
+  readonly reason: ProviderReason | undefined;
   constructor(
     classification: ProviderFailure,
     message: string,
     retryable = false,
     status?: number,
-    reason?: ProtocolReason,
+    reason?: ProviderReason,
   ) {
     super(
       "provider",
-      classification === "protocol" || classification === "http"
+      classification === "protocol" || classification === "http" || classification === "upstream"
         ? `${message} [${classification}${status === undefined ? "" : ` HTTP ${status}`}]${reason === undefined ? "" : ` (${reason})`}`
         : message,
       retryable,

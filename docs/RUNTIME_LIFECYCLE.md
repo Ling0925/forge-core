@@ -53,3 +53,14 @@ without replay, approval cancellation before terminal/unlock, ordered joined rea
 batches, child construction/disposal failure, borrowed resources, delayed delivery
 acknowledgement and parent cancellation joining child cleanup. The pre-existing
 fixed-wording edit-preview assertion remains tracked separately by issue #10.
+
+## Compatibility with memory tools and auxiliary inference
+
+The extracted execution boundary retains the host-owned `onModelUsage` callback
+for serial calls and trusted read batches. The coordinator aggregates reported
+auxiliary inference and marks incomplete usage when it is missing; child reports
+retain that same completeness information. These are observations, not exact
+pre-request cost limits. Readonly admission continues to allow `get_memory` and
+`search_memory`; memory writes/synthesis still follow the existing permission
+checks. The new memory store remains harness-owned and closes after active work,
+queue and title settlement. Failed stream fragments retain their turn/step tags.

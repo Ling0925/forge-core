@@ -13,7 +13,11 @@ import {
 } from "../../src/host/local-client";
 import { createLocalHost } from "../../src/host/local-server";
 import { localMessageSchema } from "../../src/host/protocol";
-import type { EventSink, HarnessService } from "../../src/shared/contracts";
+import type {
+  EventSink,
+  HarnessService,
+  RunControl,
+} from "../../src/shared/contracts";
 import { type RunEvent, rpcRequestSchema } from "../../src/shared/ipc";
 import {
   type SessionSnapshot,
@@ -93,6 +97,126 @@ const aborted = (signal: AbortSignal) =>
   });
 
 export function registerLocalHostTests() {
+  for (const command of ["steer", "cancel"] as const) {
+    it.each(["count", "bytes"] as const)(
+      `${command} retains one delayed RPC acknowledgment beyond the %s event bound`,
+      async (bound) => {
+        const otherId = parseSessionId(randomUUID());
+        let emitOther: EventSink = () => {};
+        let control: RunControl | undefined;
+        let release = () => {};
+        const gate = new Promise<void>((done) => {
+          release = done;
+        });
+        const f = await fixture({
+          run: async (input, emit, _approve, signal, ownedControl) => {
+            if (input.sessionId === otherId) emitOther = emit;
+            else control = ownedControl;
+            await aborted(signal);
+            if (input.sessionId !== otherId && command === "cancel") await gate;
+            return { ...snapshot, id: input.sessionId, status: "cancelled" };
+          },
+        });
+        const observer = await f.connect({ onEvent: () => {} });
+        const target = await request(observer, {
+          method: "startRun",
+          input: { sessionId, prompt: "target" },
+        });
+        if (!target.ok || target.method !== "startRun")
+          throw new Error("Missing target");
+        const other = await request(observer, {
+          method: "startRun",
+          input: { sessionId: otherId, prompt: "unrelated" },
+        });
+        if (!other.ok || other.method !== "startRun")
+          throw new Error("Missing other run");
+        let requests = 0;
+        const original = f.runtime.request.bind(f.runtime);
+        const spy = vi.spyOn(f.runtime, "request").mockImplementation((rpc) => {
+          if (rpc.method === (command === "steer" ? "steerRun" : "cancelRun"))
+            requests++;
+          return original(rpc);
+        });
+        const lines: string[] = [];
+        const args = [
+          "--socket",
+          f.socketPath,
+          command,
+          target.result.runId,
+          ...(command === "steer" ? ["continue"] : []),
+        ];
+        const done = runAttach(args, {
+          stdout: (text) => lines.push(text),
+          stderr: () => {},
+          onInterrupt: () => () => {},
+        }).then(
+          (code) => ({ code }),
+          (error) => ({ error }),
+        );
+        try {
+          await vi.waitFor(() => expect(requests).toBe(1));
+          const count = bound === "count" ? 2100 : 34;
+          for (let index = 0; index < count; index++) {
+            emitOther({
+              type: "text_delta",
+              sessionId: otherId,
+              timestamp,
+              text: bound === "count" ? "x" : "x".repeat(131072),
+            });
+            // Keep socket flow below its per-write bound; total unread events
+            // still exceed the client backlog. This is not a slow socket test.
+            if (index % 8 === 0)
+              await new Promise<void>((resolve) => setImmediate(resolve));
+          }
+          await new Promise<void>((resolve) => setImmediate(resolve));
+          expect(lines).toHaveLength(0);
+          if (command === "steer") {
+            expect(control?.drainSteering()).toEqual(["continue"]);
+            control?.onSteeringApplied?.();
+          } else release();
+          expect(await done).toEqual({ code: 0 });
+          expect(lines).toHaveLength(1);
+          expect(JSON.parse(lines[0] ?? "")).toMatchObject({
+            kind: "response",
+            response: { ok: true },
+          });
+          expect(requests).toBe(1);
+          expect(
+            f.runtime
+              .hostState()
+              .runs.some((run) => run.runId === other.result.runId),
+          ).toBe(true);
+        } finally {
+          release();
+          spy.mockRestore();
+        }
+      },
+    );
+  }
+
+  it("still bounds an unconsumed watcher and leaves the host run alive", async () => {
+    let emit: EventSink = () => {};
+    const f = await fixture({
+      run: async (_input, sink, _approve, signal) => {
+        emit = sink;
+        await aborted(signal);
+        return snapshot;
+      },
+    });
+    const client = await f.connect();
+    await request(client, {
+      method: "startRun",
+      input: { sessionId, prompt: "observe" },
+    });
+    for (let index = 0; index < 2100; index++) {
+      emit({ type: "text_delta", sessionId, timestamp, text: "x" });
+      if (index % 8 === 0)
+        await new Promise<void>((resolve) => setImmediate(resolve));
+    }
+    await client.closed;
+    expect(f.runtime.hostState().runs).toHaveLength(1);
+  });
+
   it("starts through CLI attach without owning the run, reconnects missed events and waits for explicit cancellation cleanup", async () => {
     let emit: EventSink = () => {};
     let release = () => {};
