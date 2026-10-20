@@ -35,6 +35,7 @@ import { createToolFailureGuard } from "./tool-failure-guard";
 import { createToolHookService, toToolHookOutcome } from "./tool-hooks";
 import type { ToolHookDiagnostic } from "../shared/tool-hooks";
 import { claimAutoTitle } from "./session-title";
+import { routeRetryControl } from "../provider/routing";
 import { budgetUsage, measureContext, reportedContext, resolveContextBudget, resolveContextWindow } from "../shared/context-usage";
 
 type EventBody = {
@@ -715,8 +716,10 @@ export const createAgentRuntime = (
         }
         // One provider request per agent turn. Only requests without hosted
         // search may retry transient failures, without consuming turns or
-        // re-running any completed local tool.
+        // re-running any completed local tool. A route group shares this one
+        // budget and may only move to another member while nothing was sent.
         let attempt = 0;
+        const routing = routeRetryControl(deps.provider);
         let response: ProviderResponse;
         let previews: ReturnType<typeof createToolPreviewStream>;
         for (;;) {
@@ -765,6 +768,11 @@ export const createAgentRuntime = (
                 {
                   model: snapshot.model,
                   signal,
+                  attempt,
+                  sessionId: input.sessionId,
+                  // Bounded, key-free selection record; the group provider owns
+                  // candidate binding and emits one record per attempt.
+                  onAttempt: selection => event({ type: "provider_attempt", selection }),
                   webSearch,
                   onWebSearch: (search) => {
                     if (streaming) ephemeral({ type: "web_search", search });
@@ -816,7 +824,12 @@ export const createAgentRuntime = (
               // frame. Never replay an uncertain provider-owned operation.
               webSearch !== "disabled" ||
               attempt >= MAX_GENERATION_RETRIES ||
-              !isRetryableProviderFailure(error)
+              !isRetryableProviderFailure(error) ||
+              // A route group's members share this budget. Only a request that
+              // provably never reached the provider may spend the next attempt
+              // on another member; partial output, unknown execution, hosted
+              // search and cancellation are never replayed.
+              (routing !== undefined && !routing.mayRetry(input.sessionId))
             )
               throw error;
             attempt += 1;

@@ -1,4 +1,4 @@
-import type { SessionSnapshot } from "../shared/schemas";
+import type { SessionStore } from "../shared/contracts";
 import type {
   DailyUsageStat,
   ModelUsageStat,
@@ -6,7 +6,8 @@ import type {
   UsageFilter,
   UsageStatsDto,
 } from "../shared/ipc";
-import type { SessionStore } from "../shared/contracts";
+import type { ProviderAttempt } from "../shared/model-access";
+import type { AgentEvent, SessionSnapshot } from "../shared/schemas";
 
 export interface SessionRunStat {
   readonly date: string;
@@ -19,7 +20,131 @@ export interface SessionRunStat {
 export interface ComputedSessionUsage {
   readonly stat: SessionUsageStat;
   readonly runStats: readonly SessionRunStat[];
+  /** Provider attempts observed in this session; never folded into billed totals. */
+  readonly routing: readonly RouteUsageStat[];
 }
+
+/**
+ * What one route selection actually served, keyed by group/source/credential/
+ * model/protocol. Every field is an id, a counter or a token count: no key,
+ * endpoint or request text is ever read from an event. `unknownUsage` keeps a
+ * failed attempt whose usage was not reported from being counted as free.
+ */
+export interface RouteUsageStat {
+  readonly groupId?: string | undefined;
+  readonly sourceId: string;
+  readonly credentialId?: string | undefined;
+  readonly model: string;
+  readonly apiMode: string;
+  /** Selection records written before a request was sent. */
+  readonly attempts: number;
+  readonly succeeded: number;
+  readonly failed: number;
+  /** Terminal attempts that reported no usage: cost unknown, never zero. */
+  readonly unknownUsage: number;
+  readonly promptTokens: number;
+  readonly completionTokens: number;
+  readonly cachedTokens: number;
+  readonly totalTokens: number;
+}
+
+type MutableRouteUsage = {
+  -readonly [K in keyof RouteUsageStat]: RouteUsageStat[K];
+};
+type RouteIdentity = Pick<
+  RouteUsageStat,
+  "groupId" | "sourceId" | "credentialId" | "model" | "apiMode"
+>;
+
+const routeIdentityKey = (entry: RouteIdentity): string =>
+  [
+    entry.groupId ?? "",
+    entry.sourceId,
+    entry.credentialId ?? "",
+    entry.model,
+    entry.apiMode,
+  ].join("\u0000");
+
+const emptyRouteUsage = (identity: RouteIdentity): MutableRouteUsage => ({
+  ...(identity.groupId === undefined ? {} : { groupId: identity.groupId }),
+  sourceId: identity.sourceId,
+  ...(identity.credentialId === undefined
+    ? {}
+    : { credentialId: identity.credentialId }),
+  model: identity.model,
+  apiMode: identity.apiMode,
+  attempts: 0,
+  succeeded: 0,
+  failed: 0,
+  unknownUsage: 0,
+  promptTokens: 0,
+  completionTokens: 0,
+  cachedTokens: 0,
+  totalTokens: 0,
+});
+
+const addAttempt = (
+  entry: MutableRouteUsage,
+  selection: ProviderAttempt,
+): void => {
+  if (selection.outcome === "started") {
+    entry.attempts += 1;
+    return;
+  }
+  if (selection.outcome === "succeeded") entry.succeeded += 1;
+  else entry.failed += 1;
+  if (selection.usage === undefined) {
+    // A failed request may have been billed; absence stays unknown, not zero.
+    entry.unknownUsage += 1;
+    return;
+  }
+  entry.promptTokens += selection.usage.promptTokens;
+  entry.completionTokens += selection.usage.completionTokens;
+  entry.cachedTokens += selection.usage.cachedPromptTokens ?? 0;
+  entry.totalTokens += selection.usage.totalTokens;
+};
+
+const sortRouteUsage = (
+  entries: readonly RouteUsageStat[],
+): readonly RouteUsageStat[] =>
+  [...entries].sort(
+    (a, b) =>
+      b.totalTokens - a.totalTokens ||
+      a.sourceId.localeCompare(b.sourceId) ||
+      a.model.localeCompare(b.model) ||
+      a.apiMode.localeCompare(b.apiMode),
+  );
+
+export function routeUsageStats(
+  events: readonly AgentEvent[],
+): readonly RouteUsageStat[] {
+  const merged = new Map<string, MutableRouteUsage>();
+  for (const event of events) {
+    if (event.type !== "provider_attempt") continue;
+    const selection = event.selection;
+    const key = routeIdentityKey(selection);
+    const entry = merged.get(key) ?? emptyRouteUsage(selection);
+    addAttempt(entry, selection);
+    merged.set(key, entry);
+  }
+  return sortRouteUsage([...merged.values()]);
+}
+
+const matchesUsageFilter = (
+  stat: SessionUsageStat,
+  filter?: UsageFilter,
+): boolean => {
+  if (filter?.workspace && stat.workspace !== filter.workspace) return false;
+  if (filter?.days && filter.days > 0) {
+    const updatedTime = Date.parse(stat.updatedAt);
+    if (
+      Number.isFinite(updatedTime) &&
+      updatedTime < Date.now() - filter.days * 86_400_000
+    )
+      return false;
+  }
+  return true;
+};
 
 export function computeSessionUsage(
   snapshot: SessionSnapshot,
@@ -120,28 +245,40 @@ export function computeSessionUsage(
     runCount,
   };
 
-  return { stat, runStats };
+  return { stat, runStats, routing: routeUsageStats(snapshot.events) };
+}
+
+export function aggregateRouteUsageStats(
+  computedList: readonly ComputedSessionUsage[],
+  filter?: UsageFilter,
+): readonly RouteUsageStat[] {
+  const merged = new Map<string, MutableRouteUsage>();
+  for (const item of computedList) {
+    if (!matchesUsageFilter(item.stat, filter)) continue;
+    for (const observed of item.routing) {
+      const key = routeIdentityKey(observed);
+      const entry = merged.get(key) ?? emptyRouteUsage(observed);
+      entry.attempts += observed.attempts;
+      entry.succeeded += observed.succeeded;
+      entry.failed += observed.failed;
+      entry.unknownUsage += observed.unknownUsage;
+      entry.promptTokens += observed.promptTokens;
+      entry.completionTokens += observed.completionTokens;
+      entry.cachedTokens += observed.cachedTokens;
+      entry.totalTokens += observed.totalTokens;
+      merged.set(key, entry);
+    }
+  }
+  return sortRouteUsage([...merged.values()]);
 }
 
 export function aggregateUsageStats(
   computedList: readonly ComputedSessionUsage[],
   filter?: UsageFilter,
 ): UsageStatsDto {
-  const filtered = computedList.filter((item) => {
-    if (filter?.workspace && item.stat.workspace !== filter.workspace) {
-      return false;
-    }
-    if (filter?.days && filter.days > 0) {
-      const updatedTime = Date.parse(item.stat.updatedAt);
-      if (
-        Number.isFinite(updatedTime) &&
-        updatedTime < Date.now() - filter.days * 86_400_000
-      ) {
-        return false;
-      }
-    }
-    return true;
-  });
+  const filtered = computedList.filter((item) =>
+    matchesUsageFilter(item.stat, filter),
+  );
 
   let totalPromptTokens = 0;
   let totalCompletionTokens = 0;
