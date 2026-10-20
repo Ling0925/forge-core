@@ -202,6 +202,7 @@ export interface HarnessOptions {
   readonly toolFactory?: ToolFactory;
 }
 export interface AgentRuntimeDependencies {
+  readonly rootBudget?: import("./run-budget").RootRunBudget;
   readonly sessionLock?: Readonly<{
     id: SessionId;
     release: () => Promise<void>;

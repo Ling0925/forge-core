@@ -89,6 +89,9 @@ export function agentSummary(snapshot: SessionSnapshot, limit = 4096) {
     errors: snapshot.events.filter(event => event.type === "error").slice(-1).map(event => ({
       code: event.error.code, message: event.error.message.slice(0, 256),
     })),
+    ...(terminal?.type === "run_finished" && terminal.budget ? { budget: {
+      ...terminal.budget, sessions: terminal.budget.sessions.filter(item => item.sessionId === snapshot.id),
+    } } : {}),
     ...(terminal?.type === "run_finished" && terminal.usage ? { usage: terminal.usage, usageComplete: terminal.usageComplete ?? false } : {}),
   };
 }
@@ -157,6 +160,7 @@ export async function executeAgentOperation(name: string, args: Record<string, u
   check(env.signal);
   switch (name) {
     case "spawn_agent": {
+      deps.rootBudget?.checkAdmission();
       const parsed = spawnArgs.parse(args);
       if (snapshot.parentSessionId) throw new ForgeError("invalid_input", "Child agents cannot spawn further agents.");
       if ([...children.values()].filter(child => child.active).length >= MAX_ACTIVE_AGENTS)
@@ -174,6 +178,8 @@ export async function executeAgentOperation(name: string, args: Record<string, u
         throw new ForgeError("tool", "This host cannot construct tools for an isolated child workspace.");
       const conflicts = parsed.isolation === "worktree" ? [] : [...children.entries()].filter(([, child]) => child.active && child.isolation !== "worktree" && child.writePaths.some(a => writePaths.some(b => overlaps(a, b))));
       if (conflicts.length) return { content: JSON.stringify({ code: "scope_conflict", error: "Declared write paths overlap active children. Wait or assign disjoint paths; this is coordination, not a sandbox.", ids: conflicts.map(([id]) => id) }), isError: true };
+      deps.rootBudget?.checkAdmission();
+      check(env.signal);
       const child = await deps.store.create({ workspace: snapshot.workspace, title: parsed.task.slice(0, 256), model: parsed.model ?? snapshot.model,
         ...(snapshot.providerSourceId ? { providerSourceId: snapshot.providerSourceId } : {}) });
       await deps.store.save({ ...child, parentSessionId: input.sessionId, agentTask: parsed.task,
@@ -182,6 +188,8 @@ export async function executeAgentOperation(name: string, args: Record<string, u
       let childWorkspace = child.workspace;
       if (parsed.isolation === "worktree" && deps.agentWorktrees) {
         try {
+          deps.rootBudget?.checkAdmission();
+          check(env.signal);
           const isolated = await deps.agentWorktrees.create({ workspace: snapshot.workspace, sessionId: child.id, signal: env.signal });
           childWorkspace = isolated.workspace;
           const { workspace: _workspace, ...agentWorktree } = isolated;

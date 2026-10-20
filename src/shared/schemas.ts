@@ -1,3 +1,4 @@
+import { rootBudgetSnapshotSchema, rootTimeoutSchema, rootToolLimitSchema } from "./run-budget";
 import { z } from "zod";
 import { createDiffPatch, unavailablePatch } from "./diff";
 import { imageAttachmentsSchema } from "./images";
@@ -93,6 +94,8 @@ export const settingsFields = {
   defaultPermission: permissionSchema,
   maxTurns: z.number().int().min(1).max(1000),
   maxToolCalls: z.number().int().min(1).max(10000),
+  maxRootToolCalls: rootToolLimitSchema.optional(),
+  rootTimeoutMs: rootTimeoutSchema.optional(),
   requestTimeoutMs: z.number().int().min(1000).max(600000),
   // Legacy fallback for unknown model windows, not a cap on known windows.
   contextBudgetChars: z.number().int().min(4096).max(2000000),
@@ -674,6 +677,7 @@ export const agentEventSchema = z
       .object({
         ...eventBase,
         type: z.literal("run_started"),
+        budget: rootBudgetSnapshotSchema.optional(),
         messageIndex: z.number().int().nonnegative().optional(),
         model: settingsFields.model,
         permission: permissionSchema,
@@ -691,6 +695,7 @@ export const agentEventSchema = z
       .object({
         ...eventBase,
         type: z.literal("run_finished"),
+        budget: rootBudgetSnapshotSchema.optional(),
         status: z.enum(["completed", "cancelled", "failed", "interrupted"]),
         turns: z.number().int().nonnegative(),
         steps: z.number().int().nonnegative().optional(),

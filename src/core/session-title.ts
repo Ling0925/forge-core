@@ -1,5 +1,5 @@
 import type { ModelProvider } from "../shared/contracts";
-import type { SessionSnapshot } from "../shared/schemas";
+import type { SessionSnapshot, Usage } from "../shared/schemas";
 import { withCancellation } from "./runtime";
 
 /** Metadata only: never copy tool output, system prompts or private config. */
@@ -57,12 +57,16 @@ export async function autoTitle(options: {
   readonly provider: ModelProvider;
   readonly signal: AbortSignal;
   readonly secrets: readonly string[];
+  readonly beginUsage?: () => (usage: Usage | undefined) => void;
 }): Promise<string | undefined> {
   const { snapshot, provider, signal, secrets } = options;
   const user = snapshot.messages.find((m) => m.role === "user" && !m.origin)?.content ?? "";
   if (signal.aborted || !user.trim()) return;
+  let observed = false;
+  let observation: ((usage: Usage | undefined) => void) | undefined;
   try {
     const deadline = AbortSignal.any([signal, AbortSignal.timeout(2000)]);
+    observation = options.beginUsage?.();
     const result = await withCancellation(
       provider.complete(
         [
@@ -81,9 +85,12 @@ export async function autoTitle(options: {
       ),
       deadline,
     );
+    observed = true;
+    observation?.(result.usage);
     if (signal.aborted || result.message.tool_calls?.length) return;
     return cleanTitle(result.message.content ?? "", secrets) || undefined;
   } catch {
+    if (!observed) observation?.(undefined);
     // Keep the persisted fallback without logging provider details or retrying.
     return;
   }

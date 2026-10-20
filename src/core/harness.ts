@@ -1,3 +1,5 @@
+import { createRootRunBudget } from "./run-budget";
+import type { RootRunBudget } from "../shared/run-budget";
 import { createHash } from "node:crypto";
 import { stat } from "node:fs/promises";
 import { homedir } from "node:os";
@@ -695,7 +697,7 @@ export const createHarness = async (
           ),
         );
       const controller = new AbortController();
-      const signal = AbortSignal.any([
+      let signal = AbortSignal.any([
         callerSignal,
         disposal.signal,
         controller.signal,
@@ -704,6 +706,7 @@ export const createHarness = async (
       const operation = Promise.resolve().then(async () => {
         let tools: LocalToolRegistry | undefined;
         let releaseSession: (() => Promise<void>) | undefined;
+        let rootBudget: RootRunBudget | undefined;
         try {
           await stopTitle(input.sessionId);
           try { releaseSession = await store.acquire(input.sessionId, signal); }
@@ -723,6 +726,10 @@ export const createHarness = async (
             if (predecessor.unsafe && control.acknowledgedPredecessor !== predecessor.token)
               throw new QueueAdmissionError();
           }
+          rootBudget = createRootRunBudget({ rootSessionId: input.sessionId,
+            maxToolCalls: settings.maxRootToolCalls ?? settings.maxToolCalls,
+            ...(settings.rootTimeoutMs === undefined ? {} : { timeoutMs: settings.rootTimeoutMs }) });
+          signal = AbortSignal.any([signal, rootBudget.signal]);
           // An explicit selection (the picked model's source) wins; a session
           // keeps the source it was created with; only when neither exists does
           // the model, and finally the remembered fallback, decide.
@@ -742,6 +749,7 @@ export const createHarness = async (
             input.providerSourceId ?? inferSourceId(settings, input.model),
           );
           // Endpoint, credential and protocol come from the same atomic source snapshot.
+          rootBudget.checkAdmission();
           const provider = providerFactory(providerConfigSchema.parse(config));
           if (signal.aborted)
             throw new ForgeError("cancelled", "Run cancelled.");
@@ -752,15 +760,18 @@ export const createHarness = async (
             provider,
           );
           tools = built.tools;
+          rootBudget.checkAdmission();
+          const budget = rootBudget;
           const result = await createAgentRuntime({
+            rootBudget: budget,
             store,
             sessionLock: { id: input.sessionId, release: releaseSession },
             autoTitle: {
               secrets: [config.apiKey, config.baseUrl],
               start: (claimed, apply) => {
                 const titleController = new AbortController();
-                const titleSignal = AbortSignal.any([disposal.signal, titleController.signal]);
-                const naming = autoTitle({ snapshot: claimed, provider, signal: titleSignal, secrets: [config.apiKey, config.baseUrl] })
+                const titleSignal = AbortSignal.any([signal, titleController.signal, AbortSignal.timeout(Math.max(1, Math.ceil(budget.remainingTimeMs)))]);
+                const naming = autoTitle({ snapshot: claimed, provider, signal: titleSignal, secrets: [config.apiKey, config.baseUrl], beginUsage: () => budget.beginUsage(input.sessionId) })
                   .then(async title => {
                     if (!title || titleSignal.aborted || await apply(title)) return;
                     // A fast run may finish before inference. Re-read under a
@@ -798,7 +809,7 @@ export const createHarness = async (
             if (tools) await tools.dispose();
           } finally {
             try { await releaseSession?.(); }
-            finally { active.delete(input.sessionId); }
+            finally { rootBudget?.close(); active.delete(input.sessionId); }
           }
         }
       });

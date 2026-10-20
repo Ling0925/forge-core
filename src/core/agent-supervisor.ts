@@ -53,13 +53,19 @@ export function createAgentSupervisor(options: SupervisorOptions) {
   ) => {
     let tools: typeof deps.tools | undefined;
     try {
+      deps.rootBudget?.checkAdmission();
+      if (childSignal.aborted) throw new Error("Child construction cancelled.");
       const workspace = (await deps.store.get(input.sessionId)).workspace;
+      deps.rootBudget?.checkAdmission();
       const context = await deps.childContextFactory?.(workspace);
-      tools =
-        context?.tools ??
-        (deps.childToolFactory
-          ? await deps.childToolFactory(workspace)
-          : deps.tools);
+      tools = context?.tools;
+      deps.rootBudget?.checkAdmission();
+      if (childSignal.aborted) throw new Error("Child construction cancelled.");
+      tools ??= deps.childToolFactory
+        ? await deps.childToolFactory(workspace)
+        : deps.tools;
+      deps.rootBudget?.checkAdmission();
+      if (childSignal.aborted) throw new Error("Child construction cancelled.");
       return await options
         .createRuntime({
           ...deps,
