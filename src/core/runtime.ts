@@ -1259,6 +1259,8 @@ export const createAgentRuntime = (
       if (!snapshot) throw error;
       if (incompleteText) snapshot = { ...snapshot, events: [...snapshot.events,
         agentEventSchema.parse({ type: "text_delta", text: incompleteText,
+          ...(turn === undefined ? {} : { turn }),
+          ...(activeStep === undefined ? {} : { step: activeStep }),
           sessionId: input.sessionId, timestamp: now() })] };
       const safe = signal.aborted
         ? new ForgeError("cancelled", "Run cancelled.")
