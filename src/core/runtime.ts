@@ -1,8 +1,10 @@
 import { randomUUID } from "node:crypto";
+import { withCancellation } from "./cancellation";
+import { createApprovalQueue } from "./approval-queue";
+import { executeReadBatch, executeToolCall, planReadBatch } from "./tool-executor";
 import type {
   AgentRuntime,
   AgentRuntimeDependencies,
-  ApprovalHandler,
   RunControl,
 } from "../shared/contracts";
 import { ForgeError, isRetryableProviderFailure, providerRetryReason, toErrorInfo } from "../shared/errors";
@@ -14,7 +16,6 @@ import {
   providerResponseSchema,
   runInputSchema,
   sessionIdSchema,
-  toolResultSchema,
 } from "../shared/schemas";
 import type {
   AgentEvent,
@@ -25,14 +26,13 @@ import type {
 } from "../shared/schemas";
 import { createSessionWriter } from "./session-writer";
 import { agentSummary, executeNative, nativeDefinitions } from "./agents";
-import { invalidToolInput } from "../shared/tool-input";
 import { boundedReports, childReport, type ChildOperation } from "./agent-operations";
 import { projectSummary, summaryBoundary } from "./context";
 import { summarizeWorkingState } from "./working-memory";
 import { buildSystemInstructions } from "./prompts";
 import { createToolPreviewStream } from "./tool-preview";
 import { createToolFailureGuard } from "./tool-failure-guard";
-import { createToolHookService, toToolHookOutcome } from "./tool-hooks";
+import { createToolHookService } from "./tool-hooks";
 import type { ToolHookDiagnostic } from "../shared/tool-hooks";
 import { claimAutoTitle } from "./session-title";
 import { budgetUsage, measureContext, reportedContext, resolveContextBudget, resolveContextWindow } from "../shared/context-usage";
@@ -43,31 +43,7 @@ type EventBody = {
     "sessionId" | "timestamp"
   >;
 }[AgentEvent["type"]];
-const readonlyToolNames = new Set([
-  "list_files", "read_file", "read_command_output", "search_files", "project_context",
-  "load_skill", "git_status", "git_diff", "git_log",
-]);
-
-/** Race even adapters that fail to honor cancellation; never replay their uncertain effects. */
-export const withCancellation = async <T>(
-  operation: Promise<T>,
-  signal: AbortSignal,
-): Promise<T> => {
-  if (signal.aborted) {
-    void operation.catch(() => undefined);
-    throw new ForgeError("cancelled", "Operation cancelled.");
-  }
-  let cancel = (): void => undefined;
-  const aborted = new Promise<never>((_resolve, reject) => {
-    cancel = () => reject(new ForgeError("cancelled", "Operation cancelled."));
-    signal.addEventListener("abort", cancel, { once: true });
-  });
-  try {
-    return await Promise.race([operation, aborted]);
-  } finally {
-    signal.removeEventListener("abort", cancel);
-  }
-};
+export { withCancellation } from "./cancellation";
 
 const isHumanTurn = (message: Message | undefined): boolean =>
   message?.role === "user" && message.origin !== "agent_reconciliation";
@@ -325,7 +301,7 @@ export const createAgentRuntime = (
     /** Learned estimate->real-input scale for this run; see CONTEXT_SCALE_FLOOR. */
     let contextScale = CONTEXT_SCALE_FLOOR;
     const children = new Map<string, ChildOperation>();
-    let approvalQueue: Promise<unknown> = Promise.resolve();
+    const approvalQueue = createApprovalQueue();
     const now = deps.now ?? (() => new Date().toISOString());
     const notify = (event: AgentEvent): void => {
       try {
@@ -678,13 +654,12 @@ export const createAgentRuntime = (
             await save();
             let allowed = false;
             try {
-              const work = approvalQueue.then(() => {
+              const work = approvalQueue.enqueue(() => {
                 check();
                 if (effectivePermission() === "readonly") return false;
                 event({ type: "approval_requested", request });
                 return approve(request, signal);
               });
-              approvalQueue = work.catch(() => false);
               allowed = await withCancellation(work, signal);
             } finally {
               snapshot = { ...snapshot, status: "running" };
@@ -908,13 +883,9 @@ export const createAgentRuntime = (
           check();
           if (toolCalls >= deps.settings.maxToolCalls)
             throw new ForgeError("budget", "Tool attempt budget exhausted.");
-          const readBatch = [];
-          for (const candidate of calls.slice(callIndex, callIndex + Math.min(4, deps.settings.maxToolCalls - toolCalls))) {
-            if (hasToolHooks || nativeDefinitions.some(definition => definition.function.name === candidate.function.name) ||
-                (effectivePermission() === "readonly" && !readonlyToolNames.has(candidate.function.name)) ||
-                deps.tools.isConcurrencySafe?.(candidate) !== true) break;
-            readBatch.push(candidate);
-          }
+          const readBatch = planReadBatch(calls, callIndex, deps.settings.maxToolCalls - toolCalls, {
+            hasHooks: hasToolHooks, permission: effectivePermission, tools: deps.tools,
+          });
           if (readBatch.length > 1) {
             toolCalls += readBatch.length;
             for (const [offset, read] of readBatch.entries()) {
@@ -923,17 +894,10 @@ export const createAgentRuntime = (
             }
             await save();
             phase = "tool";
-            const workspace = snapshot.workspace;
-            const outcomes = await Promise.allSettled(readBatch.map(async read => {
-              const result = toolResultSchema.parse(await deps.tools.execute(read, {
-                sessionId: input.sessionId, toolCallId: read.id, workspace,
-                get permission() { return effectivePermission(); }, signal,
-                approve: async () => { throw new ForgeError("tool", "Concurrent read requested an approval."); },
-                onEvent: () => undefined,
-              }));
-              if (result.changes?.length) throw new ForgeError("tool", "Concurrent read reported file changes.");
-              return result;
-            }));
+            const outcomes = await executeReadBatch(readBatch, {
+              tools: deps.tools, sessionId: input.sessionId, workspace: snapshot.workspace,
+              permission: effectivePermission, signal,
+            });
             check();
             phase = "storage";
             for (const [offset, outcome] of outcomes.entries()) {
@@ -962,69 +926,24 @@ export const createAgentRuntime = (
           await save();
           const previewId = previews.id(callIndex);
           event({ type: "tool_started", call, ...(previewId ? { previewId } : {}) });
-          let acceptingEvents = true;
-          let requested = false;
-          let toolEvents = 0;
-          let approvalWork: Promise<boolean> | undefined;
-          const approval: ApprovalHandler = (request, approvalSignal) => {
-            const work = (async () => {
-              check();
-              if (
-                !acceptingEvents ||
-                requested ||
-                request.sessionId !== input.sessionId ||
-                request.toolCallId !== call.id
-              )
-                throw new ForgeError(
-                  "tool",
-                  "Invalid or repeated approval request.",
-                );
-              requested = true;
-              if (!snapshot)
-                throw new ForgeError("internal", "Session has not loaded.");
-              snapshot = { ...snapshot, status: "awaiting_approval" };
-              event({ type: "state_changed", status: "awaiting_approval" });
-              await save();
-              try {
-                return await withCancellation(
-                  (() => {
-                    const queued = approvalQueue.then(() => {
-                      check();
-                      event({ type: "approval_requested", request });
-                      return approve(request, approvalSignal);
-                    });
-                    approvalQueue = queued.catch(() => false);
-                    return queued;
-                  })(),
-                  AbortSignal.any([signal, approvalSignal]),
-                );
-              } finally {
-                if (snapshot) snapshot = { ...snapshot, status: "running" };
-                event({ type: "state_changed", status: "running" });
-                await save();
-              }
-            })();
-            // Observe immediately, but join runtime-owned checkpoint cleanup below.
-            void work.catch(() => undefined);
-            if (!approvalWork) approvalWork = work;
-            return work;
-          };
           phase = "tool";
           const toolSnapshot = snapshot;
-          const hookInput = {
-            session: { sessionId: input.sessionId, workspace: snapshot.workspace, get permission() { return effectivePermission(); } },
-            tool: { name: call.function.name, callId: call.id, arguments: call.function.arguments },
-          };
-          const gate = await hooks?.beforeTool(hookInput, { signal });
-          if (gate) hookDiagnostics(gate.diagnostics, call.id);
-          check();
-          const execution: Promise<import("../shared/schemas").ToolResult> =
-            gate?.allowed === false ? Promise.resolve({ content: gate.denialReason ?? "Tool denied by beforeTool hook.", isError: true }) : nativeDefinitions.some(
-              (d) => d.function.name === call.function.name,
-            )
-              ? Promise.resolve()
-                  .then(() =>
-                    executeNative(
+          const executed = await executeToolCall({
+            call, sessionId: input.sessionId, workspace: snapshot.workspace, tools: deps.tools,
+            permission: effectivePermission, signal, check, hooks,
+            diagnostics: items => hookDiagnostics(items, call.id),
+            checkpointApproval: async status => {
+              if (!snapshot) throw new ForgeError("internal", "Session has not loaded.");
+              snapshot = { ...snapshot, status };
+              event({ type: "state_changed", status });
+              await save();
+            },
+            requestApproval: (request, approvalSignal) => approvalQueue.enqueue(() => {
+              check(); event({ type: "approval_requested", request });
+              return approve(request, approvalSignal);
+            }),
+            native: nativeDefinitions.some(item => item.function.name === call.function.name)
+              ? () => executeNative(
                       call.function.name,
                       JSON.parse(call.function.arguments),
                       {
@@ -1147,7 +1066,7 @@ export const createAgentRuntime = (
                         },
                         approveChild:
                           (childId) => (request, approvalSignal) => {
-                            const work = approvalQueue.then(async () => {
+                            const work = approvalQueue.enqueue(async () => {
                               if (signal.aborted || approvalSignal.aborted)
                                 return false;
                               const envelope = {
@@ -1169,64 +1088,12 @@ export const createAgentRuntime = (
                                 AbortSignal.any([signal, approvalSignal]),
                               );
                             });
-                            approvalQueue = work.catch(() => false);
-                            return work;
+                                          return work;
                           },
                       },
-                    ),
-                  )
-                  .catch(error => error instanceof SyntaxError ? invalidToolInput(error) : ({
-                    // Safe authored errors retain category; never expose upstream bodies.
-                    content: JSON.stringify(toErrorInfo(error)),
-                    isError: true,
-                  }))
-              : effectivePermission() === "readonly" &&
-                  !readonlyToolNames.has(call.function.name)
-                ? Promise.resolve({
-                    content:
-                      "Core readonly policy denies this tool; no approval can override plan mode.",
-                    isError: true,
-                  })
-                : deps.tools.execute(call, {
-                    sessionId: input.sessionId,
-                    toolCallId: call.id,
-                    workspace: snapshot.workspace,
-                    get permission() { return effectivePermission(); },
-                    signal,
-                    approve: approval,
-                    onEvent: (raw) => {
-                      if (!acceptingEvents || toolEvents >= 16) return;
-                      const parsed = agentEventSchema.safeParse(raw);
-                      if (
-                        !parsed.success ||
-                        parsed.data.type !== "approval_requested" ||
-                        parsed.data.sessionId !== input.sessionId ||
-                        parsed.data.request.sessionId !== input.sessionId ||
-                        parsed.data.request.toolCallId !== call.id ||
-                        toolEvents > 0
-                      )
-                        return;
-                      toolEvents += 1;
-                      // Approval event is emitted only when the root queue owns the UI slot.
-                    },
-                  });
-          const result: import("../shared/schemas").ToolResult = await execution
-            .then(toolResultSchema.parse)
-            .catch(async error => {
-              if (hooks?.configured) {
-                const safe = toErrorInfo(error);
-                hookDiagnostics(await hooks.toolError({ ...hookInput,
-                  outcome: toToolHookOutcome({ content: JSON.stringify(safe), isError: true }), errorCode: safe.code,
-                }, { signal }), call.id);
-              }
-              throw error;
-            })
-            .finally(async () => {
-              acceptingEvents = false;
-              // Local tools may race approval against abort. Keep the lock until
-              // the runtime approval handler (including its saves) has settled.
-              if (approvalWork) await approvalWork;
-            });
+                    ) : undefined,
+          });
+          const { result } = executed;
           check();
           phase = "storage";
           const { pendingTool: _completed, ...withoutPending } = snapshot;
@@ -1244,9 +1111,8 @@ export const createAgentRuntime = (
           };
           event({ type: "tool_finished", toolCallId: call.id, result });
           await save();
-          if (hooks?.configured) {
-            const outcome = { ...hookInput, outcome: toToolHookOutcome(result) };
-            hookDiagnostics(await (result.isError ? hooks.toolError(outcome, { signal }) : hooks.afterTool(outcome, { signal })), call.id);
+          if (executed.afterCommit) {
+            await executed.afterCommit();
             await save();
           }
           checkToolFailure(call, result);
