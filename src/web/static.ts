@@ -1,7 +1,10 @@
+import { createHash } from "node:crypto";
 import { constants, type Stats } from "node:fs";
 import { lstat, open, realpath } from "node:fs/promises";
 import type { IncomingMessage, ServerResponse } from "node:http";
-import { extname, join, resolve, sep } from "node:path";
+import { basename, extname, join, resolve, sep } from "node:path";
+import { pipeline } from "node:stream/promises";
+import { constants as zlibConstants, createBrotliCompress, createGzip } from "node:zlib";
 
 const CONTENT_TYPES: Readonly<Record<string, string>> = Object.freeze({
   ".css": "text/css; charset=utf-8",
@@ -24,6 +27,45 @@ const CONTENT_TYPES: Readonly<Record<string, string>> = Object.freeze({
   ".woff2": "font/woff2",
 });
 const MAX_FILE_BYTES = 64 * 1024 * 1024;
+const COMPRESSIBLE = new Set([".css", ".js", ".json", ".map", ".mjs", ".svg", ".webmanifest"]);
+const SECURITY_HEADERS = {
+  "Referrer-Policy": "no-referrer",
+  "X-Content-Type-Options": "nosniff",
+  "X-Frame-Options": "DENY",
+};
+type Encoding = "br" | "gzip" | "identity";
+
+/** Respect explicit exclusions and quality weights, with identity as fallback. */
+function negotiateEncoding(header: string | undefined, compressible: boolean): Encoding | undefined {
+  const weights = new Map<string, number>();
+  for (const entry of (header ?? "").split(",")) {
+    const [name, ...parameters] = entry.trim().toLowerCase().split(";");
+    if (!name) continue;
+    const quality = parameters.map((part) => part.trim()).find((part) => part.startsWith("q="));
+    const weight = quality === undefined ? 1 : Number(quality.slice(2));
+    weights.set(name.trim(), Number.isFinite(weight) && weight >= 0 && weight <= 1 ? weight : 0);
+  }
+  let selected: Encoding | undefined;
+  let best = 0;
+  if (compressible) {
+    for (const encoding of ["br", "gzip"] as const) {
+      const weight = weights.get(encoding) ?? weights.get("*") ?? 0;
+      if (weight > best) { selected = encoding; best = weight; }
+    }
+  }
+  const identity = weights.get("identity") ?? (weights.get("*") === 0 ? 0 : undefined);
+  if (identity === undefined) return selected ?? "identity";
+  if (identity > best) return "identity";
+  return selected;
+}
+
+function notModified(request: IncomingMessage, etag: string): boolean {
+  // GET and HEAD use weak comparison, including when a proxy removes W/.
+  return (request.headers["if-none-match"] ?? "").split(",").some((value) => {
+    const tag = value.trim();
+    return tag === "*" || tag.replace(/^W\//, "") === etag.replace(/^W\//, "");
+  });
+}
 
 /**
  * The built renderer is loaded from `file://` by Electron, where its CSP says
@@ -125,14 +167,21 @@ export async function createStaticRenderer(options: {
     handle: Awaited<ReturnType<typeof open>>,
   ): Promise<void> => {
     const html = rendererCspForOrigin(await handle.readFile("utf8"), origin);
-    response.writeHead(200, {
+    // Hash the rewritten document: CSP depends on this host's origin. HTML
+    // always revalidates so a rebuilt renderer's new asset URLs are discovered.
+    const etag = `"${createHash("sha256").update(html).digest("base64url")}"`;
+    const headers = {
+      ...SECURITY_HEADERS,
       "Content-Type": "text/html; charset=utf-8",
-      "Content-Length": String(Buffer.byteLength(html)),
       "Cache-Control": "no-cache",
-      "Referrer-Policy": "no-referrer",
-      "X-Content-Type-Options": "nosniff",
-      "X-Frame-Options": "DENY",
-    });
+      ETag: etag,
+    };
+    if (notModified(request, etag)) {
+      response.writeHead(304, headers);
+      response.end();
+      return;
+    }
+    response.writeHead(200, { ...headers, "Content-Length": String(Buffer.byteLength(html)) });
     response.end(request.method === "HEAD" ? undefined : html);
   };
 
@@ -140,29 +189,54 @@ export async function createStaticRenderer(options: {
     response: ServerResponse,
     request: IncomingMessage,
     path: string,
-    size: number,
+    info: Stats,
     handle: Awaited<ReturnType<typeof open>>,
   ): Promise<void> => {
+    const extension = extname(path).toLowerCase();
+    const compressible = info.size >= 1024 && COMPRESSIBLE.has(extension);
+    const encoding = negotiateEncoding(request.headers["accept-encoding"], compressible);
+    // Vite embeds an eight-character content hash in these filenames. Do not
+    // give stable names (or any HTML/API/session data) an immutable lifetime.
+    const fingerprinted = path.startsWith(join(root, "assets") + sep) &&
+      /-[\w-]{8}\.[\w]+$/.test(basename(path));
+    // Weak validators describe the same bytes across gzip/br/identity. ctime
+    // also invalidates files replaced with an unchanged size and mtime.
+    const etag = `W/"${info.size.toString(16)}-${info.mtimeMs.toString(16)}-${info.ctimeMs.toString(16)}"`;
+    const headers = {
+      ...SECURITY_HEADERS,
+      "Content-Type": CONTENT_TYPES[extension] ?? "application/octet-stream",
+      "Cache-Control": fingerprinted ? "public, max-age=31536000, immutable" : "no-cache",
+      ETag: etag,
+      Vary: "Accept-Encoding",
+    };
+    if (!encoding) {
+      response.writeHead(406, { ...SECURITY_HEADERS, Vary: "Accept-Encoding", "Cache-Control": "no-store" });
+      response.end();
+      return;
+    }
+    if (notModified(request, etag)) {
+      response.writeHead(304, headers);
+      response.end();
+      return;
+    }
     response.writeHead(200, {
-      "Content-Type":
-        CONTENT_TYPES[extname(path).toLowerCase()] ??
-        "application/octet-stream",
-      "Content-Length": String(size),
-      "Cache-Control": "no-cache",
-      "Referrer-Policy": "no-referrer",
-      "X-Content-Type-Options": "nosniff",
-      "X-Frame-Options": "DENY",
+      ...headers,
+      ...(encoding === "identity" ? { "Content-Length": String(info.size) } : { "Content-Encoding": encoding }),
     });
     if (request.method === "HEAD") {
       response.end();
       return;
     }
-    await new Promise<void>((done, reject) => {
-      const stream = handle.createReadStream({ autoClose: false });
-      stream.on("error", reject);
-      stream.on("end", () => done());
-      stream.pipe(response);
-    });
+    const stream = handle.createReadStream({ autoClose: false });
+    if (encoding === "identity") await pipeline(stream, response);
+    else {
+      // Asynchronous streaming avoids buffering whole bundles or blocking the
+      // shared agent runtime. Already-compressed fonts/images are left alone.
+      const compression = encoding === "br"
+        ? createBrotliCompress({ params: { [zlibConstants.BROTLI_PARAM_QUALITY]: 4 } })
+        : createGzip();
+      await pipeline(stream, compression, response);
+    }
   };
 
   return {
@@ -184,9 +258,12 @@ export async function createStaticRenderer(options: {
         if (!info.isFile() || info.size > MAX_FILE_BYTES) return false;
         if (path.toLowerCase().endsWith(".html"))
           await serveHtml(response, request, origin, handle);
-        else await serveFile(response, request, path, info.size, handle);
+        else await serveFile(response, request, path, info, handle);
         return true;
       } catch {
+        // A disconnected client/failed stream must not fall through to a
+        // second response after headers have already been sent.
+        if (response.headersSent) { response.destroy(); return true; }
         return false;
       } finally {
         await handle?.close().catch(() => {});
