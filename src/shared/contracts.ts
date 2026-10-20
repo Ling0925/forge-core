@@ -27,6 +27,8 @@ export type ApprovalHandler = (
 export interface RunControl {
   /** Trusted queue binding; never accepted directly from public RunInput. */
   readonly providerBinding?: string;
+  /** Trusted predecessor acknowledgment; never a public RunInput field. */
+  readonly acknowledgedPredecessor?: string;
   readonly getPermission?: () => Permission | undefined;
   /** final=true atomically closes an empty child queue before terminal cleanup. */
   readonly drainSteering: (final?: boolean) => readonly (string | Pick<RunInput, "prompt" | "images">)[];
@@ -61,6 +63,8 @@ export interface ToolContext {
   readonly signal: AbortSignal;
   readonly approve: ApprovalHandler;
   readonly onEvent: EventSink;
+  /** Host-owned accounting for auxiliary inference; undefined marks missing usage. */
+  readonly onModelUsage?: (usage: import("./schemas").Usage | undefined) => void;
   /** Host-owned observers; not model tools and never permission grants. */
   readonly onCommandStarted?: () => void;
   readonly onCommandOutput?: (stream: "stdout" | "stderr", text: string) => void;
@@ -140,6 +144,14 @@ export interface HarnessService {
     id: SessionId,
     checkpointId: string,
   ): Promise<SessionSnapshot>;
+  listWorkspaceEntries?(
+    id: SessionId,
+    path?: string,
+  ): Promise<import("./ipc").WorkspaceDirectoryListingDto>;
+  readWorkspaceFile?(
+    id: SessionId,
+    path: string,
+  ): Promise<import("./ipc").WorkspaceFilePreviewDto>;
   compactSession(id: SessionId, signal?: AbortSignal): Promise<SessionSnapshot>;
   forkSession(id: SessionId, boundary?: number): Promise<SessionSnapshot>;
   renameSession(id: SessionId, title: string): Promise<SessionSnapshot>;

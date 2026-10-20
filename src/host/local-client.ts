@@ -32,6 +32,8 @@ export async function connectLocalHost(options: {
   hostId?: string;
   cursor?: number;
   requestTimeoutMs?: number;
+  /** Install before handshake/replay; RPC-only clients may explicitly discard events. */
+  onEvent?: (event: RunEvent, cursor: number) => void;
 }): Promise<LocalHostClient> {
   if (options.cursor !== undefined && !options.hostId)
     throw hostError(
@@ -50,6 +52,7 @@ export async function connectLocalHost(options: {
   let disconnected = false;
   let error: Error | undefined;
   const listeners = new Set<(event: RunEvent, cursor: number) => void>();
+  if (options.onEvent) listeners.add(options.onEvent);
   const buffer: { data: RunEvent; cursor: number }[] = [];
   let bufferedBytes = 0;
   const used = new Set<string>();
