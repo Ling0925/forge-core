@@ -207,6 +207,43 @@ export const usageStatsDtoSchema = z
   .strict()
   .readonly();
 export type UsageStatsDto = z.infer<typeof usageStatsDtoSchema>;
+export const workspaceFileEntryDtoSchema = z
+  .object({
+    name: z.string().min(1).max(255),
+    path: z.string().min(1).max(4096),
+    kind: z.enum(["directory", "file"]),
+    sizeBytes: z.number().int().nonnegative().optional(),
+    updatedAt: z.string().datetime().optional(),
+  })
+  .strict()
+  .readonly();
+export type WorkspaceFileEntryDto = z.infer<typeof workspaceFileEntryDtoSchema>;
+export const workspaceDirectoryListingDtoSchema = z
+  .object({
+    workspace: z.string().min(1).max(4096),
+    path: z.string().min(1).max(4096),
+    parentPath: z.string().min(1).max(4096).nullable(),
+    entries: z.array(workspaceFileEntryDtoSchema).max(500).readonly(),
+    truncated: z.boolean(),
+  })
+  .strict()
+  .readonly();
+export type WorkspaceDirectoryListingDto = z.infer<
+  typeof workspaceDirectoryListingDtoSchema
+>;
+export const workspaceFilePreviewDtoSchema = z
+  .object({
+    path: z.string().min(1).max(4096),
+    sizeBytes: z.number().int().nonnegative(),
+    content: z.string().max(131072),
+    truncated: z.boolean(),
+    binary: z.boolean(),
+  })
+  .strict()
+  .readonly();
+export type WorkspaceFilePreviewDto = z.infer<
+  typeof workspaceFilePreviewDtoSchema
+>;
 export const externalUrlSchema = z
   .string()
   .max(4096)
@@ -415,6 +452,22 @@ export const rpcRequestSchema = z
         filter: usageFilterSchema,
       })
       .strict(),
+    z
+      .object({
+        ...requestBase,
+        method: z.literal("listWorkspaceEntries"),
+        sessionId: sessionIdSchema,
+        path: z.string().min(1).max(4096).optional(),
+      })
+      .strict(),
+    z
+      .object({
+        ...requestBase,
+        method: z.literal("readWorkspaceFile"),
+        sessionId: sessionIdSchema,
+        path: z.string().min(1).max(4096),
+      })
+      .strict(),
   ])
   .readonly();
 export type RpcRequest = z.infer<typeof rpcRequestSchema>;
@@ -489,6 +542,8 @@ export const rpcResponseSchema = z.union([
   success("steerRun", z.null()),
   success("answerApproval", z.null()),
   success("getUsageStats", usageStatsDtoSchema),
+  success("listWorkspaceEntries", workspaceDirectoryListingDtoSchema),
+  success("readWorkspaceFile", workspaceFilePreviewDtoSchema),
   z
     .object({
       id: requestBase.id,
@@ -526,6 +581,8 @@ export const rpcResponseSchema = z.union([
         "steerRun",
         "answerApproval",
         "getUsageStats",
+        "listWorkspaceEntries",
+        "readWorkspaceFile",
       ]),
       error: errorInfoSchema,
     })
@@ -591,6 +648,14 @@ export interface ForgeBridge {
     sessionId: SessionId,
     checkpointId: string,
   ): Promise<SessionSnapshot>;
+  listWorkspaceEntries?(
+    sessionId: SessionId,
+    path?: string,
+  ): Promise<WorkspaceDirectoryListingDto>;
+  readWorkspaceFile?(
+    sessionId: SessionId,
+    path: string,
+  ): Promise<WorkspaceFilePreviewDto>;
   openExternal(url: string): Promise<void>;
   chooseWorkspace(): Promise<string | null>;
   /** Web-only server directory browser; absent on fixed-workspace and desktop hosts. */

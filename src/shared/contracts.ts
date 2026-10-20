@@ -135,6 +135,14 @@ export interface HarnessService {
     id: SessionId,
     checkpointId: string,
   ): Promise<SessionSnapshot>;
+  listWorkspaceEntries?(
+    id: SessionId,
+    path?: string,
+  ): Promise<import("./ipc").WorkspaceDirectoryListingDto>;
+  readWorkspaceFile?(
+    id: SessionId,
+    path: string,
+  ): Promise<import("./ipc").WorkspaceFilePreviewDto>;
   compactSession(id: SessionId, signal?: AbortSignal): Promise<SessionSnapshot>;
   forkSession(id: SessionId, boundary?: number): Promise<SessionSnapshot>;
   renameSession(id: SessionId, title: string): Promise<SessionSnapshot>;

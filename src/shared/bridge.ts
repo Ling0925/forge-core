@@ -59,6 +59,8 @@ export function createTransportBridge(transport: BridgeTransport): ForgeBridge {
     listCheckpoints: (sessionId) => request("listCheckpoints", { sessionId }),
     getCheckpointDiff: (sessionId, checkpointId) => request("getCheckpointDiff", { sessionId, checkpointId }),
     restoreCheckpoint: (sessionId, checkpointId) => request("restoreCheckpoint", { sessionId, checkpointId }),
+    listWorkspaceEntries: (sessionId, path) => request("listWorkspaceEntries", path === undefined ? { sessionId } : { sessionId, path }),
+    readWorkspaceFile: (sessionId, path) => request("readWorkspaceFile", { sessionId, path }),
     openExternal: async (url) => { await request("openExternal", { url }); },
     chooseWorkspace: () => request("chooseWorkspace"),
     exportSession: (sessionId) => request("exportSession", { sessionId }),

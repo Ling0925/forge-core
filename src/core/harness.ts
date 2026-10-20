@@ -47,6 +47,10 @@ import { summarizeWorkingState } from "./working-memory";
 import { openRunMemory } from "./run-memory";
 import { autoTitle } from "./session-title";
 import { createTaskService } from "./task-service";
+import {
+  listWorkspaceDirectory,
+  readWorkspaceFilePreview,
+} from "./workspace-files";
 import type { CommandTaskAccess } from "../shared/task-view";
 import { createAgentRuntime, withCancellation } from "./runtime";
 
@@ -571,6 +575,22 @@ export const createHarness = async (
     async getSession(id) {
       check();
       return store.get(sessionIdSchema.parse(id));
+    },
+    async listWorkspaceEntries(id, path) {
+      check();
+      const session = await store.get(sessionIdSchema.parse(id));
+      return listWorkspaceDirectory(session.workspace, path, {
+        protectedRoots: [directory],
+        redactValues: [...taskSecrets],
+      });
+    },
+    async readWorkspaceFile(id, path) {
+      check();
+      const session = await store.get(sessionIdSchema.parse(id));
+      return readWorkspaceFilePreview(session.workspace, path, {
+        protectedRoots: [directory],
+        redactValues: [...taskSecrets],
+      });
     },
     async getPublishedFile(rawSessionId, rawFileId) {
       check();
