@@ -9,9 +9,17 @@ const selectionSchema = z.object({
   planId: z.string().trim().min(1).max(128).optional(),
 }).strict();
 
-const createArgs = taskPlanSchema.innerType().omit({ id: true, title: true }).extend({
+const createArgs = z.object({
   name: z.string().trim().min(1).max(256),
+  ...taskPlanSchema.innerType().omit({ id: true, title: true }).shape,
 }).strict();
+
+export const planArgumentSchemas = {
+  create_plan: createArgs,
+  update_plan: taskPlanSchema.innerType().omit({ id: true, title: true }).extend({
+    planId: selectionSchema.shape.planId.describe("Existing plan ID returned by create_plan or update_plan. Never invent an ID."),
+  }).strict(),
+} as const;
 
 export function createSessionPlan(
   snapshot: Pick<SessionSnapshot, "plan" | "plans">,

@@ -2,6 +2,7 @@ import { z } from "zod";
 import { createDiffPatch, unavailablePatch } from "./diff";
 import { imageAttachmentsSchema } from "./images";
 import { publishedFilesSchema } from "./published-files";
+import { toolHookDiagnosticSchema } from "./tool-hooks";
 import { webSearchModeSchema, webCitationSchema, webSearchRecordSchema, webSearchProgressSchema } from "./web-search";
 
 export type JsonValue =
@@ -642,6 +643,9 @@ export const agentEventSchema = z
         result: toolResultSchema,
       })
       .strict(),
+    z.object({ ...eventBase, type: z.literal("tool_hook"),
+      diagnostic: toolHookDiagnosticSchema, toolCallId: z.string().min(1).max(128).optional(),
+    }).strict(),
     z
       .object({
         ...eventBase,
@@ -770,6 +774,11 @@ export const sessionSnapshotSchema = z
     plans: z.array(taskPlanSchema).max(10000).readonly().optional(),
     parentSessionId: sessionIdSchema.optional(),
     agentTask: z.string().max(16384).optional(),
+    agentWorktree: z.object({
+      repository: z.string().min(1).max(4096),
+      worktree: z.string().min(1).max(4096),
+      baseRevision: z.string().regex(/^[a-f0-9]{40,64}$/),
+    }).strict().readonly().optional(),
     ownership: z.string().max(4096).optional(),
     writePaths: z.array(z.string().min(1).max(512)).max(32).readonly().optional(),
     agentResolutions: z.array(z.object({

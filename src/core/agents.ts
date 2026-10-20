@@ -1,11 +1,12 @@
+import { defineTool } from "../shared/tool-definition";
 import { z } from "zod";
 import { invalidToolInput } from "../shared/tool-input";
 import type { ToolDefinition, ToolResult } from "../shared/schemas";
 import type { TaskPlan } from "../shared/schemas";
-import { createSessionPlan, updateSessionPlan } from "./plans";
+import { createSessionPlan, updateSessionPlan, planArgumentSchemas } from "./plans";
 import { ForgeError, formatValidationError } from "../shared/errors";
 import { executeHistory, historyDefinitions } from "./history";
-import { executeAgentOperation, type AgentEnvironment } from "./agent-operations";
+import { executeAgentOperation, agentArgumentSchemas, type AgentEnvironment } from "./agent-operations";
 export { agentSummary } from "./agent-operations";
 const modelListArgs = z
   .object({
@@ -15,134 +16,21 @@ const modelListArgs = z
   })
   .strict();
 const MODEL_CATALOG_BYTES = 32768;
-const planContentProperties = {
-  explanation: { type: "string", minLength: 1, maxLength: 4096 },
-  steps: {
-    type: "array",
-    minItems: 1,
-    maxItems: 100,
-    items: {
-      type: "object",
-      properties: {
-        step: { type: "string", minLength: 1, maxLength: 1024 },
-        status: { type: "string", enum: ["pending", "in_progress", "completed"] },
-      },
-      required: ["step", "status"],
-      additionalProperties: false,
-    },
-  },
-} as const;
+
 
 export const nativeDefinitions: readonly ToolDefinition[] = [
   ...historyDefinitions,
-  {
-    name: "list_models",
-    description:
-      "Readonly discovery of exact IDs from the configured provider catalog. Optional substring query and pagination. Catalog presence does not prove live quota or availability; no capability, pricing, or quota guarantees. Discover IDs before choosing distinct delegation models; preserve IDs explicitly supplied by the user. If discovery fails, report it and use explicitly supplied IDs, not invented alternatives. Never automatically replay or fallback an effectful task.",
-    properties: {
-      query: { type: "string", maxLength: 256 },
-      offset: {
-        type: "integer",
-        minimum: 0,
-        maximum: Number.MAX_SAFE_INTEGER,
-        default: 0,
-      },
-      limit: { type: "integer", minimum: 1, maximum: 100, default: 50 },
-    },
-    required: [],
-  },
-  {
-    name: "create_plan",
-    description: "Create an independent plan for a new multi-step task, preserving prior plans. Supply a concise name and full steps (at most one in_progress); the result supplies the generated id. No ID or action input. Use update_plan with the returned id for milestones in this task. Simple questions need no plan.",
-    properties: {
-      name: { type: "string", minLength: 1, maxLength: 256 },
-      ...planContentProperties,
-    },
-    required: ["name", "explanation", "steps"],
-  },
-  {
-    name: "update_plan",
-    description: "Revise an existing task plan using its returned id as planId and its full steps (at most one in_progress). Omit planId to continue the current unfinished plan. For a new task use create_plan, not an invented planId. Prior plans remain intact. Legacy selector-free calls can still create a plan when none is unfinished.",
-    properties: {
-      planId: { type: "string", minLength: 1, maxLength: 128,
-        description: "Existing plan ID returned by create_plan or update_plan. Never invent an ID." },
-      ...planContentProperties,
-    },
-    required: ["explanation", "steps"],
-  },
-  {
-    name: "spawn_agent",
-    description: "Start an independent child with inherited permission. Depth one, four active slots (released after cleanup), separate total limit 32 per run. Declare disjoint literal writePaths to reject overlapping active assignments; ownership is coordination, NOT a filesystem sandbox. Optional maxToolCalls may only lower the child budget. No automatic retry or model fallback.",
-    properties: {
-      task: { type: "string", minLength: 1, maxLength: 16384 },
-      ownership: { type: "string", minLength: 1, maxLength: 4096 },
-      model: { type: "string", minLength: 1, maxLength: 256 },
-      writePaths: { type: "array", maxItems: 32, items: { type: "string", minLength: 1, maxLength: 512 } },
-      maxToolCalls: { type: "integer", minimum: 1, maximum: 10000 },
-    },
-    required: ["task"],
-  },
-  {
-    name: "list_agents",
-    description: "Page persisted children of this parent session. currentRun/active/controllable distinguish historical records from locally owned work; historical running status may be stale. No tasks are resumed.",
-    properties: {
-      offset: { type: "integer", minimum: 0, maximum: Number.MAX_SAFE_INTEGER, default: 0 },
-      limit: { type: "integer", minimum: 1, maximum: 50, default: 20 },
-      currentRun: { type: "boolean", default: false },
-    },
-    required: [],
-  },
-  {
-    name: "wait_agents",
-    description: "Wait for all/any selected children (default all current-run children). Judge timeout_ms based on expected task complexity; defaults to 10 minutes (600000ms) if omitted so long tasks can finish without frequent timeout polling. Set 0 to poll immediately. Returns completed summaries AND active statuses; timeout never cancels tasks. Historical child results are readable but not joined. Returned settled results are delivered once, avoiding automatic duplicate reconciliation. Use get_agent_result for truncated text; resolve_agent explicitly records handled failures.",
-    properties: {
-      ids: { type: "array", maxItems: 32, items: { type: "string", format: "uuid" } },
-      mode: { type: "string", enum: ["all", "any"], default: "all" },
-      timeout_ms: { type: "integer", minimum: 0, maximum: 1800000, default: 600000 },
-    },
-    required: [],
-  },
-  {
-    name: "cancel_agent",
-    description: "Cancel and join a child owned by this run. Does not cancel siblings or erase failure; use resolve_agent with evidence after inspecting effects. Historical children cannot be cancelled here.",
-    properties: { id: { type: "string", format: "uuid" } },
-    required: ["id"],
-  },
-  {
-    name: "get_agent_result",
-    description: "Read a bounded page of a current or historical child's latest assistant result. Only direct children of this parent are accessible. Offsets count UTF-16 string units. Returns truncation, nextOffset, errors and reported usage; no task is resumed. This partial read does not mark a result fully delivered.",
-    properties: {
-      id: { type: "string", format: "uuid" },
-      offset: { type: "integer", minimum: 0, maximum: Number.MAX_SAFE_INTEGER, default: 0 },
-      limit: { type: "integer", minimum: 1, maximum: 8192, default: 4096 },
-    },
-    required: ["id"],
-  },
-  {
-    name: "send_agent_message",
-    description: "Queue bounded guidance for an active child owned by this run. Consumed at the next model boundary, not an interrupt; queued does not mean executed. Cannot increase permissions, reopen settled tasks or replay effects. Queue limit eight messages.",
-    properties: { id: { type: "string", format: "uuid" }, message: { type: "string", minLength: 1, maxLength: 16384 } },
-    required: ["id", "message"],
-  },
-  {
-    name: "resolve_agent",
-    description: "After inspecting a settled child's outcome/effects, persist why its failure or cancellation is handled (e.g. independently completed and verified, or deliberately abandoned). Allows parent success without rewriting child status or replaying work. Never use to hide unresolved failures. Active tasks cannot be resolved.",
-    properties: { id: { type: "string", format: "uuid" }, resolution: { type: "string", minLength: 1, maxLength: 4096 } },
-    required: ["id", "resolution"],
-  },
-].map((d) => ({
-  type: "function",
-  function: {
-    name: d.name,
-    description: d.description,
-    parameters: {
-      type: "object",
-      properties: d.properties,
-      required: d.required,
-      additionalProperties: false,
-    },
-  },
-})) as ToolDefinition[];
+  { name: "list_models", description: "Readonly discovery of exact IDs from the configured provider catalog. Optional substring query and pagination. Catalog presence does not prove live quota or availability; no capability, pricing, or quota guarantees. Discover IDs before choosing distinct delegation models; preserve IDs explicitly supplied by the user. If discovery fails, report it and use explicitly supplied IDs, not invented alternatives. Never automatically replay or fallback an effectful task.", input: modelListArgs },
+  { name: "create_plan", description: "Create an independent plan for a new multi-step task, preserving prior plans. Supply a concise name and full steps (at most one in_progress); the result supplies the generated id. No ID or action input. Use update_plan with the returned id for milestones in this task. Simple questions need no plan.", input: planArgumentSchemas.create_plan },
+  { name: "update_plan", description: "Revise an existing task plan using its returned id as planId and its full steps (at most one in_progress). Omit planId to continue the current unfinished plan. For a new task use create_plan, not an invented planId. Prior plans remain intact. Legacy selector-free calls can still create a plan when none is unfinished.", input: planArgumentSchemas.update_plan },
+  { name: "spawn_agent", description: "Start an independent child with inherited permission. Depth one, four active slots (released after cleanup), separate total limit 32 per run. Declare disjoint literal writePaths to reject overlapping active assignments; ownership is coordination, NOT a filesystem sandbox. Optional maxToolCalls may only lower the child budget. No automatic retry or model fallback.", input: agentArgumentSchemas.spawn_agent },
+  { name: "list_agents", description: "Page persisted children of this parent session. currentRun/active/controllable distinguish historical records from locally owned work; historical running status may be stale. No tasks are resumed.", input: agentArgumentSchemas.list_agents },
+  { name: "wait_agents", description: "Wait for all/any selected children (default all current-run children). Judge timeout_ms based on expected task complexity; defaults to 10 minutes (600000ms) if omitted so long tasks can finish without frequent timeout polling. Set 0 to poll immediately. Returns completed summaries AND active statuses; timeout never cancels tasks. Historical child results are readable but not joined. Returned settled results are delivered once, avoiding automatic duplicate reconciliation. Use get_agent_result for truncated text; resolve_agent explicitly records handled failures.", input: agentArgumentSchemas.wait_agents },
+  { name: "cancel_agent", description: "Cancel and join a child owned by this run. Does not cancel siblings or erase failure; use resolve_agent with evidence after inspecting effects. Historical children cannot be cancelled here.", input: agentArgumentSchemas.cancel_agent },
+  { name: "get_agent_result", description: "Read a bounded page of a current or historical child's latest assistant result. Only direct children of this parent are accessible. Offsets count UTF-16 string units. Returns truncation, nextOffset, errors and reported usage; no task is resumed. This partial read does not mark a result fully delivered.", input: agentArgumentSchemas.get_agent_result },
+  { name: "send_agent_message", description: "Queue bounded guidance for an active child owned by this run. Consumed at the next model boundary, not an interrupt; queued does not mean executed. Cannot increase permissions, reopen settled tasks or replay effects. Queue limit eight messages.", input: agentArgumentSchemas.send_agent_message },
+  { name: "resolve_agent", description: "After inspecting a settled child's outcome/effects, persist why its failure or cancellation is handled (e.g. independently completed and verified, or deliberately abandoned). Allows parent success without rewriting child status or replaying work. Never use to hide unresolved failures. Active tasks cannot be resolved.", input: agentArgumentSchemas.resolve_agent },
+].map(d => defineTool(d.name, d.description, d.input));
 export async function executeNative(
   ...parameters: Parameters<typeof executeNativeUnchecked>
 ): Promise<ToolResult> {

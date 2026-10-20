@@ -1,3 +1,4 @@
+import { defineTool } from "../shared/tool-definition";
 import { constants } from "node:fs";
 import { lstat, open, realpath } from "node:fs/promises";
 import { basename, extname } from "node:path";
@@ -12,7 +13,7 @@ import { createWorkspacePathGuard } from "./path-guard";
 
 const argumentsSchema = z.object({
   path: z.string().min(1).max(4096),
-  displayName: publishedFileNameSchema.optional(),
+  displayName: publishedFileNameSchema.optional().describe("Optional download filename; defaults to the file's name."),
   description: z.string().trim().min(1).max(1000).optional(),
 }).strict();
 const fail = (message: string): never => { throw new ForgeError("tool", message); };
@@ -52,15 +53,7 @@ export async function createPublishedFileTool(workspace: string, store: Publishe
   const unsafe = (text: string) => secretText(text) || known.some(secret => text.includes(secret));
   let disposed = false;
   return {
-    definitions: [{ type: "function", function: {
-      name: "publish_file",
-      description: "Deliver an existing workspace file to this conversation as an immutable downloadable attachment. Use after generating a user-facing report, image or archive; writing a file alone does not send it. Workspace-relative only, no symlinks/hardlinks, credentials or sensitive content; protected state is inaccessible even unrestricted. Maximum 8 MiB/file, 128 files/64 MiB per session. Readonly denied. Only metadata enters context; original bytes are preserved. Do not claim delivery unless this tool succeeds.",
-      parameters: { type: "object", properties: {
-        path: { type: "string", minLength: 1, maxLength: 4096 },
-        displayName: { type: "string", minLength: 1, maxLength: 200, description: "Optional plain download filename; no directories." },
-        description: { type: "string", minLength: 1, maxLength: 1000 },
-      }, required: ["path"], additionalProperties: false },
-    } }],
+    definitions: [defineTool("publish_file", "Deliver an existing workspace file to this conversation as an immutable downloadable attachment. Use after generating a user-facing report, image or archive; writing a file alone does not send it. Workspace-relative only, no symlinks/hardlinks, credentials or sensitive content; protected state is inaccessible even unrestricted. Maximum 8 MiB/file, 128 files/64 MiB per session. Readonly denied. Only metadata enters context; original bytes are preserved. Do not claim delivery unless this tool succeeds.", argumentsSchema)],
     async execute(call, context) {
       try {
         check(context.signal);

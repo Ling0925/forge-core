@@ -1,3 +1,4 @@
+import { defineTool } from "../shared/tool-definition";
 import { createHash } from "node:crypto";
 import { constants, type BigIntStats, type Dirent, type Stats } from "node:fs";
 import { lstat, open, readdir, realpath } from "node:fs/promises";
@@ -971,49 +972,6 @@ export async function createProjectContext(
 // Tool definitions and argument schemas (composed by host/combined registry)
 // ---------------------------------------------------------------------------
 
-export const contextInstructionDefinition: ToolDefinition = Object.freeze({
-  type: "function",
-  function: Object.freeze({
-    name: CONTEXT_INSTRUCTION_TOOL_NAME,
-    description:
-      "Load AGENTS.md project instructions applying to a workspace-relative path. Returns root and nested instruction sources in precedence order (outermost first, most-specific last). Read-only; never executes project commands.",
-    parameters: Object.freeze({
-      type: "object",
-      properties: Object.freeze({
-        path: Object.freeze({
-          type: "string",
-          minLength: 1,
-          maxLength: CONTEXT_LIMITS.pathLengthLimit,
-          default: ".",
-        }),
-      }),
-      required: Object.freeze([]),
-      additionalProperties: false,
-    }),
-  }),
-});
-
-export const loadSkillDefinition: ToolDefinition = Object.freeze({
-  type: "function",
-  function: Object.freeze({
-    name: LOAD_SKILL_TOOL_NAME,
-    description:
-      "Load a skill package body by id. Returns bounded SKILL.md content and the source directory. Skill files are instructions only and never grant permissions.",
-    parameters: Object.freeze({
-      type: "object",
-      properties: Object.freeze({
-        skill: Object.freeze({
-          type: "string",
-          minLength: 1,
-          maxLength: CONTEXT_LIMITS.skillIdLengthLimit,
-        }),
-      }),
-      required: Object.freeze(["skill"]),
-      additionalProperties: false,
-    }),
-  }),
-});
-
 export const contextPathArgumentsSchema = z
   .object({
     tool: z.literal(CONTEXT_INSTRUCTION_TOOL_NAME),
@@ -1028,6 +986,11 @@ export const loadSkillArgumentsSchema = z
   })
   .strict()
   .readonly();
+
+export const contextInstructionDefinition: ToolDefinition = defineTool(CONTEXT_INSTRUCTION_TOOL_NAME, "Load AGENTS.md project instructions applying to a workspace-relative path. Returns root and nested instruction sources in precedence order (outermost first, most-specific last). Read-only; never executes project commands.", contextPathArgumentsSchema.unwrap().omit({ tool: true }));
+
+export const loadSkillDefinition: ToolDefinition = defineTool(LOAD_SKILL_TOOL_NAME, "Load a skill package body by id. Returns bounded SKILL.md content and the source directory. Skill files are instructions only and never grant permissions.", loadSkillArgumentsSchema.unwrap().omit({ tool: true }));
+
 
 export interface ProjectContextToolBundle {
   readonly definitions: readonly ToolDefinition[];

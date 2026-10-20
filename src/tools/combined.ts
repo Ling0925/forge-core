@@ -18,6 +18,7 @@ export function createCombinedToolRegistry(
   const commandAccess = registries.flatMap(registry => registry.commandTasks ? [registry.commandTasks] : []);
   return {
     definitions,
+    isConcurrencySafe: call => owners.get(call.function.name)?.isConcurrencySafe?.(call) === true,
     ...(commandAccess.length ? { commandTasks: {
       list: (id: import("../shared/schemas").SessionId) => commandAccess.flatMap(access => [...access.list(id)]),
       read: (id: import("../shared/schemas").SessionId, taskId: string, offset: number, limit: number) =>

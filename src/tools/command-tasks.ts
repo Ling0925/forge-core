@@ -1,16 +1,18 @@
+import { defineTool } from "../shared/tool-definition";
 import { randomUUID } from "node:crypto";
 import { z } from "zod";
 import type { LocalToolRegistry, ToolContext } from "../shared/contracts";
 import { ForgeError } from "../shared/errors";
 import { invalidToolInput } from "../shared/tool-input";
 import type { ToolCall, ToolDefinition, ToolResult } from "../shared/schemas";
+import { jsonObjectSchema } from "../shared/schemas";
 import type { CommandTaskAccess, TaskView } from "../shared/task-view";
 import { redactCommandArguments } from "../shared/tool-activity";
 
 const RESULT_LIMIT = 128 * 1024;
 const taskArguments = z.object({
   action: z.enum(["list", "read", "wait", "stop"]),
-  id: z.string().min(1).max(128).optional(),
+  id: z.string().min(1).max(128).optional().describe("Required for read, wait and stop; use list to discover task IDs."),
   offset: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER).default(0),
   limit: z.number().int().min(1).max(12000).default(12000),
   timeout_ms: z.number().int().min(0).max(120000).default(30000),
@@ -27,25 +29,9 @@ const completionMetadata = z.object({
   preview_truncated: z.boolean().optional(),
   spawn_failed: z.boolean().optional(),
 });
-const taskDefinition: ToolDefinition = {
-  type: "function",
-  function: {
-    name: "command_task",
-    description: "Inspect/join/stop this run's already-approved commands; readonly denied. Running reads return status only; settled output is redacted before UTF-16 pagination (not arbitrary-secret detection). Wait timeout does not cancel; stop joins. Capacity: 4 active/32 total. No cross-run recovery; uninspected tasks are joined at parent finalization.",
-    parameters: {
-      type: "object",
-      properties: {
-        action: { type: "string", enum: ["list", "read", "wait", "stop"] },
-        id: { type: "string", minLength: 1, maxLength: 128, description: "Required for read, wait and stop. Use an ID returned by run_command or command_task list; omit for list." },
-        offset: { type: "integer", minimum: 0, maximum: Number.MAX_SAFE_INTEGER, default: 0 },
-        limit: { type: "integer", minimum: 1, maximum: 12000, default: 12000 },
-        timeout_ms: { type: "integer", minimum: 0, maximum: 120000, default: 30000 },
-      },
-      required: ["action"],
-      additionalProperties: false,
-    },
-  },
-};
+const backgroundArguments = z.object({ background: z.boolean().default(false) });
+const backgroundProperties = defineTool("background", "Command scheduling options", backgroundArguments).function.parameters.properties;
+const taskDefinition: ToolDefinition = defineTool("command_task", "Inspect/join/stop this run's already-approved commands; readonly denied. Running reads return status only; settled output is redacted before UTF-16 pagination (not arbitrary-secret detection). Wait timeout does not cancel; stop joins. Capacity: 4 active/32 total. No cross-run recovery; uninspected tasks are joined at parent finalization.", taskArguments);
 
 type Outcome = { result: ToolResult } | { error: unknown };
 type Task = {
@@ -96,7 +82,7 @@ export function withCommandTasks(
         description: `${definition.function.description} Optional background (default false) returns a task id only after approval and successful spawn, with original command limits unchanged. Use command_task for status/completed output and join every task before parent completion.`,
         parameters: {
           ...parameters,
-          properties: { ...properties, background: { type: "boolean", default: false } },
+          properties: { ...properties, ...jsonObjectSchema.parse(backgroundProperties) },
         },
       },
     };
@@ -331,6 +317,7 @@ export function withCommandTasks(
 
   return {
     definitions,
+    isConcurrencySafe: call => call.function.name !== "run_command" && call.function.name !== "command_task" && base.isConcurrencySafe?.(call) === true,
     commandTasks,
     async execute(call, context) {
       if (disposal) return result({ error: "Tool registry is disposed." }, true);
@@ -341,10 +328,11 @@ export function withCommandTasks(
       if (!args || typeof args !== "object" || Array.isArray(args) || !("background" in args))
         return base.execute(call, context);
       const { background, ...foreground } = args;
-      if (typeof background !== "boolean") return invalidToolInput("background must be a boolean.");
+      const scheduling = backgroundArguments.safeParse({ background });
+      if (!scheduling.success) return invalidToolInput(scheduling.error);
       const command = { ...call, function: { ...call.function, arguments: JSON.stringify(foreground) } };
       // Do not change foreground permissions, contexts, results, or cancellation.
-      if (!background || context.permission === "readonly") return base.execute(command, context);
+      if (!scheduling.data.background || context.permission === "readonly") return base.execute(command, context);
       return start(command, context);
     },
     async settleBackground(sessionId, signal) {

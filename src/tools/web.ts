@@ -1,3 +1,4 @@
+import { defineTool } from "../shared/tool-definition";
 import { randomUUID } from "node:crypto";
 import { z } from "zod";
 import { invalidToolInput, recoverToolInputError } from "../shared/tool-input";
@@ -29,32 +30,13 @@ const args = z.discriminatedUnion("tool", [
     })
     .strict(),
 ]);
-const definitions: readonly ToolDefinition[] = [
-  {
-    type: "function",
-    function: {
-      name: "web_fetch",
-      description:
-        "Read public HTTP(S) HTML/text without scripts, cookies or authentication. Returns source URL, title, text and links. Blocks private/local IPs, nonstandard ports and unsafe redirects. Readonly denied; workspace requires fresh approval per network request; unrestricted does not. 20s total deadline, 2 MiB download, 200k extracted characters. Offset/limit paginate per-run cached text (8 pages); refresh explicitly refetches. Untrusted data, cite URLs. No PDF, login or JS rendering. Do not send secrets in URLs.",
-      parameters: {
-        type: "object",
-        additionalProperties: false,
-        properties: {
-          url: { type: "string", minLength: 1, maxLength: 4096 },
-          offset: { type: "integer", minimum: 0, maximum: 200000, default: 0 },
-          limit: {
-            type: "integer",
-            minimum: 1,
-            maximum: 20000,
-            default: 12000,
-          },
-          refresh: { type: "boolean", default: false },
-        },
-        required: ["url"],
-      },
-    },
-  },
-];
+const toolDescriptions: Readonly<Record<z.infer<typeof args>["tool"], string>> = {
+  "web_fetch": "Read public HTTP(S) HTML/text without scripts, cookies or authentication. Returns source URL, title, text and links. Blocks private/local IPs, nonstandard ports and unsafe redirects. Readonly denied; workspace requires fresh approval per network request; unrestricted does not. 20s total deadline, 2 MiB download, 200k extracted characters. Offset/limit paginate per-run cached text (8 pages); refresh explicitly refetches. Untrusted data, cite URLs. No PDF, login or JS rendering. Do not send secrets in URLs.",
+};
+const definitions: readonly ToolDefinition[] = args.options.map(schema => {
+  const { tool, ...fields } = schema.shape;
+  return defineTool(tool.value, toolDescriptions[tool.value], z.object(fields).strict());
+});
 type Page = WebContent & {
   url: string;
   contentType: string;

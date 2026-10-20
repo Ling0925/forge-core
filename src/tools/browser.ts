@@ -1,10 +1,11 @@
+import { defineTool } from "../shared/tool-definition";
 import { randomUUID } from "node:crypto";
 import { constants } from "node:fs";
 import { open, rename, unlink } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { type Browser, type Page, chromium } from "playwright";
 import { z } from "zod";
-import { invalidToolInput, noArgumentFields, noArgumentProperties, recoverToolInputError } from "../shared/tool-input";
+import { invalidToolInput, noArgumentFields, recoverToolInputError } from "../shared/tool-input";
 import type {
   BrowserToolOptions,
   LocalToolRegistry,
@@ -41,82 +42,18 @@ const args = z.discriminatedUnion("tool", [
     .strict(),
   z.object({ tool: z.literal("browser_close"), ...noArgumentFields }).strict(),
 ]);
-const props = { type: "object", additionalProperties: false } as const;
-const definitions: readonly ToolDefinition[] = [
-  {
-    type: "function",
-    function: {
-      name: "browser_navigate",
-      description:
-        "Navigate to an exact allowlisted HTTP(S) origin. Forge readonly/plan mode denies browser tools. Workspace requires approval; unrestricted does not. Scripts may have remote side effects.",
-      parameters: {
-        ...props,
-        properties: { url: { type: "string", format: "uri", maxLength: 4096 } },
-        required: ["url"],
-      },
-    },
-  },
-  {
-    type: "function",
-    function: {
-      name: "browser_read",
-      description: "Read bounded visible page text.",
-      parameters: { ...props, properties: noArgumentProperties, required: [] },
-    },
-  },
-  {
-    type: "function",
-    function: {
-      name: "browser_click",
-      description:
-        "Click a selector (1000 chars max); readonly denied. Workspace requires scoped approval.",
-      parameters: {
-        ...props,
-        properties: {
-          selector: { type: "string", minLength: 1, maxLength: 1000 },
-        },
-        required: ["selector"],
-      },
-    },
-  },
-  {
-    type: "function",
-    function: {
-      name: "browser_fill",
-      description:
-        "Fill a selector; readonly denied. Workspace requires scoped approval.",
-      parameters: {
-        ...props,
-        properties: {
-          selector: { type: "string", minLength: 1, maxLength: 1000 },
-          text: { type: "string", minLength: 1, maxLength: 4000 },
-        },
-        required: ["selector", "text"],
-      },
-    },
-  },
-  {
-    type: "function",
-    function: {
-      name: "browser_screenshot",
-      description:
-        "Save a 1280x720 PNG (at most 2 MiB) to a safe relative workspace path with an existing parent. Readonly cannot write; workspace requires approval. Returns text metadata, not image pixels.",
-      parameters: {
-        ...props,
-        properties: { path: { type: "string", minLength: 1, maxLength: 4096 } },
-        required: [],
-      },
-    },
-  },
-  {
-    type: "function",
-    function: {
-      name: "browser_close",
-      description: "Close the ephemeral browser context.",
-      parameters: { ...props, properties: noArgumentProperties, required: [] },
-    },
-  },
-];
+const toolDescriptions: Readonly<Record<z.infer<typeof args>["tool"], string>> = {
+  "browser_navigate": "Navigate to an exact allowlisted HTTP(S) origin. Forge readonly/plan mode denies browser tools. Workspace requires approval; unrestricted does not. Scripts may have remote side effects.",
+  "browser_read": "Read bounded visible page text.",
+  "browser_click": "Click a selector (1000 chars max); readonly denied. Workspace requires scoped approval.",
+  "browser_fill": "Fill a selector; readonly denied. Workspace requires scoped approval.",
+  "browser_screenshot": "Save a 1280x720 PNG (at most 2 MiB) to a safe relative workspace path with an existing parent. Readonly cannot write; workspace requires approval. Returns text metadata, not image pixels.",
+  "browser_close": "Close the ephemeral browser context.",
+};
+const definitions: readonly ToolDefinition[] = args.options.map(schema => {
+  const { tool, ...fields } = schema.shape;
+  return defineTool(tool.value, toolDescriptions[tool.value], z.object(fields).strict());
+});
 const result = (value: JsonValue, isError = false): ToolResult => ({
   content: JSON.stringify(value),
   isError,

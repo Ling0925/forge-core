@@ -1,3 +1,4 @@
+import { defineTool } from "../shared/tool-definition";
 import { spawn } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import { constants } from "node:fs";
@@ -8,7 +9,7 @@ import { TextDecoder } from "node:util";
 import { z } from "zod";
 import type { LocalToolRegistry, ToolContext } from "../shared/contracts";
 import { ForgeError, formatValidationError } from "../shared/errors";
-import { noArgumentFields, noArgumentProperties } from "../shared/tool-input";
+import { noArgumentFields } from "../shared/tool-input";
 import { createDiffPatch } from "../shared/diff";
 import type {
   FileChange,
@@ -137,157 +138,29 @@ const argumentsSchema = z.discriminatedUnion("tool", [
     .readonly()
     .unwrap(),
 ]);
-const stringParameter = {
-  type: "string",
-  minLength: 1,
-  maxLength: 4096,
-} as const;
-function definition(
-  name: string,
-  description: string,
-  properties: Readonly<Record<string, JsonValue>>,
-  required: readonly string[],
-): ToolDefinition {
-  return Object.freeze({
-    type: "function",
-    function: Object.freeze({
-      name,
-      description,
-      parameters: {
-        type: "object",
-        properties,
-        required,
-        additionalProperties: false,
-      },
-    }),
-  });
-}
 const fileBoundaries =
   "Workspace-relative only; no symlinks or sensitive files (.env*, credentials, private keys, .ssh, .config, .git). Files at most 16 MiB; generate large files in small chunks. ";
 const policies = `${fileBoundaries}Readonly forbids mutations and commands. `;
 const writePolicies = `${fileBoundaries}Readonly forbids mutations. `;
-const definitions: readonly ToolDefinition[] = Object.freeze([
-  definition(
-    "git_status",
-    "Read-only repository status. Sensitive paths omitted; secrets redacted; no shell execution.",
-    noArgumentProperties,
-    [],
-  ),
-  definition(
-    "git_diff",
-    "Read-only unstaged repository diff. Sensitive paths omitted; secrets redacted; no shell execution.",
-    noArgumentProperties,
-    [],
-  ),
-  definition(
-    "git_log",
-    "Read-only recent repository log. Secrets redacted; no shell execution.",
-    noArgumentProperties,
-    [],
-  ),
-  definition(
-    "list_files",
-    `${policies}List paginated entries; optional root-relative glob (*, **, ?). Bounded traversal (1000 entries, 8 levels); dependency/build/cache directories excluded. scan_truncated marks incomplete traversal, truncated remaining page results.`,
-    {
-      path: { ...stringParameter, default: "." },
-      recursive: { type: "boolean", default: false },
-      glob: { type: "string", minLength: 1, maxLength: 1024 },
-      offset: { type: "integer", minimum: 0, maximum: Number.MAX_SAFE_INTEGER, default: 0 },
-      limit: { type: "integer", minimum: 1, maximum: ENTRY_LIMIT, default: ENTRY_LIMIT },
-    },
-    [],
-  ),
-  definition(
-    "read_file",
-    `${policies}Numbered UTF-8 pages with zero-based offset, SHA-256 version, byte size, inclusive end_line and cache status. Matching if_version returns unchanged:true without content or new write authority. A nonempty page authorizes write/edit in this run; own successful writes refresh that version, external changes require a new read. Binary rejected; output bounded.`,
-    {
-      path: stringParameter,
-      offset: { type: "integer", minimum: 0, maximum: FILE_LIMIT, default: 0 },
-      limit: { type: "integer", minimum: 1, maximum: 200, default: 100 },
-      if_version: { type: "string", maxLength: 128 },
-    },
-    ["path"],
-  ),
-  definition(
-    "write_file",
-    `Default tool for creating files or replacing complete content. No append or expected_bytes input; use append_file for chunks and edit_file for targeted edits. Overwriting requires read_file of the current version in this run; new files need no read. Own successful writes refresh read authority. Unchanged content is a no-op. Returns size_bytes and a bounded display diff patch. Atomic writes use restorable checkpoints when a checkpoint store is configured; restore uses checkpoints, not the patch. Create missing parents with make_directory. ${writePolicies}`,
-    {
-      path: stringParameter,
-      content: { type: "string", maxLength: 2 * 1024 * 1024 },
-    },
-    ["path", "content"],
-  ),
-  definition(
-    "append_file",
-    `Append a small chunk (prefer <=16000 characters). Pass expected_bytes from the last successful write/read, or 0 for a new file. A mismatched byte size fails without appending; never blindly replay a chunk. Existing files require read_file in this run or a successful own write. Returns size_bytes for the next chunk and a bounded display diff patch. Atomic writes use restorable checkpoints when a checkpoint store is configured; restore uses checkpoints, not the patch. Create missing parents with make_directory. ${writePolicies}`,
-    {
-      path: stringParameter,
-      content: { type: "string", maxLength: 2 * 1024 * 1024 },
-      expected_bytes: { type: "integer", minimum: 0, maximum: FILE_LIMIT },
-    },
-    ["path", "content", "expected_bytes"],
-  ),
-  definition(
-    "edit_file",
-    `Default tool for targeted file edits instead of command scripts. Atomically replace literal old_text (nonempty); exactly one occurrence is required unless replace_all is true. Read the current version with read_file in this run first. Own writes refresh authority; external changes or a new run require reading again. Identical replacement is a no-op. Edits use restorable checkpoints when a checkpoint store is configured; the bounded display diff patch is separate. ${writePolicies}`,
-    {
-      path: stringParameter,
-      old_text: { type: "string", minLength: 1, maxLength: 2 * 1024 * 1024 },
-      new_text: { type: "string", maxLength: 2 * 1024 * 1024 },
-      replace_all: { type: "boolean", default: false },
-    },
-    ["path", "old_text", "new_text"],
-  ),
-  definition(
-    "make_directory",
-    `${policies}Create directories recursively without traversing symlinks. Existing directories are accepted.`,
-    { path: stringParameter },
-    ["path"],
-  ),
-  definition(
-    "run_command",
-    "Run builds, tests, git and package managers with explicit argv (no implicit shell). For authored files use write_file/edit_file; command effects are not checkpointed. Readonly denied; workspace requests per-call approval under the host policy. NOT an OS sandbox; cwd is guarded. Minimal environment; HOME is the host user's home. Choose and pass timeout_ms: maximum 30 minutes (1800000 ms), no default; allow enough time for builds/tests. Output never terminates a command: private logs retain up to 16 MiB/command and 128 MiB/run, then stop capture. Results show 12000 characters/stream; read_command_output pages the redacted log during this run. Encoded result cap 128 KiB. Cancellation waits for process close.",
-    {
-      argv: {
-        type: "array",
-        minItems: 1,
-        maxItems: 256,
-        items: { type: "string", maxLength: 8192 },
-      },
-      cwd: { ...stringParameter, default: "." },
-      timeout_ms: {
-        type: "integer",
-        minimum: 1,
-        maximum: MAX_COMMAND_TIMEOUT_MS,
-        description: "Required execution timeout in milliseconds. Choose for the expected command duration, up to 30 minutes (1800000 ms).",
-      },
-    },
-    ["argv", "timeout_ms"],
-  ),
-  definition(
-    "read_command_output",
-    "Read a completed command's redacted log without rerunning it. IDs belong to this session/run; logs expire at run end. Offset and limit are UTF-16 characters, not bytes. Readonly permitted.",
-    { id: { type: "string", format: "uuid" }, stream: { type: "string", enum: ["stdout", "stderr"], default: "stdout" },
-      offset: { type: "integer", minimum: 0, default: 0 }, limit: { type: "integer", minimum: 1, maximum: 12000, default: 12000 } },
-    ["id"],
-  ),
-  definition(
-    "search_files",
-    `${policies}Literal search by default; optional bounded regex, root-relative glob (*, **, ?), context and pagination. Modes return line matches, files or per-file matching-line counts in matches. Traversal capped at 1000 entries/8 levels; binary/oversize/sensitive files skipped. scan_truncated marks incomplete scan, truncated remaining page results.`,
-    {
-      query: { type: "string", minLength: 1, maxLength: 1024 },
-      path: { ...stringParameter, default: "." },
-      glob: { type: "string", minLength: 1, maxLength: 1024 },
-      mode: { type: "string", enum: ["content", "files", "count"], default: "content" },
-      case_sensitive: { type: "boolean", default: true },
-      regex: { type: "boolean", default: false },
-      context_lines: { type: "integer", minimum: 0, maximum: 3, default: 0 },
-      offset: { type: "integer", minimum: 0, maximum: Number.MAX_SAFE_INTEGER, default: 0 },
-      limit: { type: "integer", minimum: 1, maximum: 100, default: 100 },
-    },
-    ["query"],
-  ),
-]);
+const toolDescriptions: Readonly<Record<z.infer<typeof argumentsSchema>["tool"], string>> = {
+  "git_status": "Read-only repository status. Sensitive paths omitted; secrets redacted; no shell execution.",
+  "git_diff": "Read-only unstaged repository diff. Sensitive paths omitted; secrets redacted; no shell execution.",
+  "git_log": "Read-only recent repository log. Secrets redacted; no shell execution.",
+  "list_files": `${policies}List paginated entries; optional root-relative glob (*, **, ?). Bounded traversal (1000 entries, 8 levels); dependency/build/cache directories excluded. scan_truncated marks incomplete traversal, truncated remaining page results.`,
+  "read_file": `${policies}Numbered UTF-8 pages with zero-based offset, SHA-256 version, byte size, inclusive end_line and cache status. Matching if_version returns unchanged:true without content or new write authority. A nonempty page authorizes write/edit in this run; own successful writes refresh that version, external changes require a new read. Binary rejected; output bounded.`,
+  "write_file": `Default tool for creating files or replacing complete content. No append or expected_bytes input; use append_file for chunks and edit_file for targeted edits. Overwriting requires read_file of the current version in this run; new files need no read. Own successful writes refresh read authority. Unchanged content is a no-op. Returns size_bytes and a bounded display diff patch. Atomic writes use restorable checkpoints when a checkpoint store is configured; restore uses checkpoints, not the patch. Create missing parents with make_directory. ${writePolicies}`,
+  "append_file": `Append a small chunk (prefer <=16000 characters). Pass expected_bytes from the last successful write/read, or 0 for a new file. A mismatched byte size fails without appending; never blindly replay a chunk. Existing files require read_file in this run or a successful own write. Returns size_bytes for the next chunk and a bounded display diff patch. Atomic writes use restorable checkpoints when a checkpoint store is configured; restore uses checkpoints, not the patch. Create missing parents with make_directory. ${writePolicies}`,
+  "edit_file": `Default tool for targeted file edits instead of command scripts. Atomically replace literal old_text (nonempty); exactly one occurrence is required unless replace_all is true. Read the current version with read_file in this run first. Own writes refresh authority; external changes or a new run require reading again. Identical replacement is a no-op. Edits use restorable checkpoints when a checkpoint store is configured; the bounded display diff patch is separate. ${writePolicies}`,
+  "make_directory": `${policies}Create directories recursively without traversing symlinks. Existing directories are accepted.`,
+  "run_command": "Run builds, tests, git and package managers with explicit argv (no implicit shell). For authored files use write_file/edit_file; command effects are not checkpointed. Readonly denied; workspace requests per-call approval under the host policy. NOT an OS sandbox; cwd is guarded. Minimal environment; HOME is the host user's home. Choose and pass timeout_ms: maximum 30 minutes (1800000 ms), no default; allow enough time for builds/tests. Output never terminates a command: private logs retain up to 16 MiB/command and 128 MiB/run, then stop capture. Results show 12000 characters/stream; read_command_output pages the redacted log during this run. Encoded result cap 128 KiB. Cancellation waits for process close.",
+  "read_command_output": "Read a completed command's redacted log without rerunning it. IDs belong to this session/run; logs expire at run end. Offset and limit are UTF-16 characters, not bytes. Readonly permitted.",
+  "search_files": `${policies}Literal search by default; optional bounded regex, root-relative glob (*, **, ?), context and pagination. Modes return line matches, files or per-file matching-line counts in matches. Traversal capped at 1000 entries/8 levels; binary/oversize/sensitive files skipped. scan_truncated marks incomplete scan, truncated remaining page results.`,
+};
+const definitions: readonly ToolDefinition[] = argumentsSchema.options.map(schema => {
+  const { tool, ...fields } = schema.shape;
+  const name = tool.value;
+  return defineTool(name, toolDescriptions[name], z.object(fields).strict(), name === "write_file" ? ["append", "expected_bytes"] : []);
+});
 
 function fail(message: string, code: "tool" | "invalid_input" = "tool"): never {
   throw new ForgeError(code, message);
@@ -1198,6 +1071,7 @@ export async function createLocalToolRegistry(
   }
   return Object.freeze({
     definitions,
+    isConcurrencySafe: (call: ToolCall) => ["read_file", "list_files", "search_files", "read_command_output", "git_status", "git_diff", "git_log"].includes(call.function.name),
     execute(call: ToolCall, context: ToolContext): Promise<ToolResult> {
       const task = executeInner(call, context);
       active.add(task);

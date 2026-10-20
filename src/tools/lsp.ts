@@ -1,3 +1,4 @@
+import { defineTool } from "../shared/tool-definition";
 import { randomUUID } from "node:crypto";
 import { constants } from "node:fs";
 import { open, lstat } from "node:fs/promises";
@@ -30,8 +31,8 @@ const languageIds: Readonly<Record<string, string>> = {
 const argsSchema = z.object({
   operation: z.enum(["symbols", "definition", "references", "hover"]),
   path: z.string().min(1).max(4096),
-  line: z.number().int().min(1).max(2_097_153).optional(),
-  character: z.number().int().min(1).max(2_097_153).optional(),
+  line: z.number().int().min(1).max(2_097_153).optional().describe("1-based line; required except for symbols."),
+  character: z.number().int().min(1).max(2_097_153).optional().describe("1-based character; required except for symbols."),
   offset: z.number().int().min(0).max(1000).default(0),
   limit: z.number().int().min(1).max(100).default(50),
 }).strict().superRefine((args, ctx) => {
@@ -40,26 +41,7 @@ const argsSchema = z.object({
     if (args[field] === undefined)
       ctx.addIssue({ code: z.ZodIssueCode.custom, path: [field], message: "Required for definition, references and hover." });
 });
-const definition: ToolDefinition = {
-  type: "function",
-  function: {
-    name: "lsp",
-    description: "Read-only semantic queries through explicitly configured local stdio language servers (not an OS sandbox). readonly denies execution; workspace needs fresh approval per call. Workspace-relative UTF-8 files only, no symlinks/sensitive paths; 1-based UTF-16 positions. Bounded, filtered and paginated results; no automatic install or retry.",
-    parameters: {
-      type: "object",
-      properties: {
-        operation: { type: "string", enum: ["symbols", "definition", "references", "hover"] },
-        path: { type: "string", minLength: 1, maxLength: 4096 },
-        line: { type: "integer", minimum: 1, maximum: 2_097_153, description: "Required for definition, references and hover; omit for symbols. 1-based line." },
-        character: { type: "integer", minimum: 1, maximum: 2_097_153, description: "Required for definition, references and hover; omit for symbols. 1-based UTF-16 column." },
-        offset: { type: "integer", minimum: 0, maximum: 1000, default: 0 },
-        limit: { type: "integer", minimum: 1, maximum: 100, default: 50 },
-      },
-      required: ["operation", "path"],
-      additionalProperties: false,
-    },
-  },
-};
+const definition: ToolDefinition = defineTool("lsp", "Read-only semantic queries through explicitly configured local stdio language servers (not an OS sandbox). readonly denies execution; workspace needs fresh approval per call. Workspace-relative UTF-8 files only, no symlinks/sensitive paths; 1-based UTF-16 positions. Bounded, filtered and paginated results; no automatic install or retry.", argsSchema);
 const object = (value: unknown): value is Record<string, unknown> =>
   typeof value === "object" && value !== null && !Array.isArray(value);
 // Match local filesystem tools' path/content policy without exposing their internals.

@@ -32,6 +32,8 @@ import { summarizeWorkingState } from "./working-memory";
 import { buildSystemInstructions } from "./prompts";
 import { createToolPreviewStream } from "./tool-preview";
 import { createToolFailureGuard } from "./tool-failure-guard";
+import { createToolHookService, toToolHookOutcome } from "./tool-hooks";
+import type { ToolHookDiagnostic } from "../shared/tool-hooks";
 import { claimAutoTitle } from "./session-title";
 import { budgetUsage, measureContext, reportedContext, resolveContextBudget, resolveContextWindow } from "../shared/context-usage";
 
@@ -41,6 +43,10 @@ type EventBody = {
     "sessionId" | "timestamp"
   >;
 }[AgentEvent["type"]];
+const readonlyToolNames = new Set([
+  "list_files", "read_file", "read_command_output", "search_files", "project_context",
+  "load_skill", "git_status", "git_diff", "git_log",
+]);
 
 /** Race even adapters that fail to honor cancellation; never replay their uncertain effects. */
 export const withCancellation = async <T>(
@@ -91,14 +97,25 @@ export const CONTEXT_SCALE_CEILING = 2;
  */
 export function seedContextScale(events: readonly AgentEvent[]): number {
   const ratios: number[] = [];
-  for (let index = 0; index + 1 < events.length; index += 1) {
-    const estimated = events[index];
-    const reported = events[index + 1];
-    if (estimated?.type !== "context_usage" || estimated.usage.basis !== "projected") continue;
-    if (reported?.type !== "context_usage" || reported.usage.basis === "projected") continue;
+  let estimated: Extract<AgentEvent, { type: "context_usage" }> | undefined;
+  for (const reported of events) {
+    if (reported.type === "run_started" || reported.type === "run_finished" ||
+        reported.type === "step_finished" || reported.type === "error") {
+      estimated = undefined;
+      continue;
+    }
+    if (reported.type !== "context_usage") continue;
+    if (reported.usage.basis === "projected") {
+      estimated = reported;
+      continue;
+    }
+    if (!estimated) continue;
     const estimatedTokens = estimated.usage.usedTokens;
+    const sameStep = (estimated.turn === undefined || reported.turn === undefined || estimated.turn === reported.turn)
+      && (estimated.step === undefined || reported.step === undefined || estimated.step === reported.step);
+    estimated = undefined;
     const reportedTokens = reported.usage.promptTokens;
-    if (estimatedTokens <= 0 || reportedTokens === undefined || reportedTokens <= 0) continue;
+    if (!sameStep || estimatedTokens <= 0 || reportedTokens === undefined || reportedTokens <= 0) continue;
     ratios.push(reportedTokens / estimatedTokens);
   }
   if (ratios.length === 0) return CONTEXT_SCALE_FLOOR;
@@ -280,9 +297,18 @@ export const createAgentRuntime = (
 ): AgentRuntime => ({
   async run(rawInput, onEvent, approve, signal, control?: RunControl) {
     const input = runInputSchema.parse(rawInput);
+    const hooks = deps.toolHooks ? createToolHookService(deps.toolHooks) : undefined;
+    const hasToolHooks = !!deps.toolHooks && [deps.toolHooks.beforeTool, deps.toolHooks.afterTool, deps.toolHooks.toolError].some(entries => entries.length > 0);
     const release = deps.sessionLock?.id === input.sessionId
       ? deps.sessionLock.release : await deps.store.acquire(input.sessionId, signal);
     let snapshot: SessionSnapshot | undefined;
+    const levels = ["readonly", "workspace", "unrestricted"] as const;
+    const effectivePermission = () => levels[Math.min(
+      levels.indexOf(input.mode === "plan" ? "readonly" : control?.getPermission?.() ?? input.permission ?? deps.settings.defaultPermission),
+      levels.indexOf(snapshot?.permissionCeiling ?? "unrestricted"),
+    )] ?? "readonly";
+    let hookFailed = false;
+    let ranEndHooks = false;
     let turns = 0;
     let turn: number | undefined;
     let activeStep: number | undefined;
@@ -325,6 +351,12 @@ export const createAgentRuntime = (
       event({ type: "step_finished", turn, step: activeStep, status, messageIndex: snapshot.messages.length });
       steps += 1;
       activeStep = undefined;
+    };
+    const hookDiagnostics = (diagnostics: readonly ToolHookDiagnostic[], toolCallId?: string): void => {
+      for (const diagnostic of diagnostics) {
+        if (["failed", "timed_out", "cancelled"].includes(diagnostic.status)) hookFailed = true;
+        event({ type: "tool_hook", diagnostic, ...(toolCallId ? { toolCallId } : {}) });
+      }
     };
     // Display-only, never persisted: live reasoning preview is not transcript state.
     const ephemeral = (body: EventBody): void => {
@@ -423,6 +455,15 @@ export const createAgentRuntime = (
       )
         status = "failed";
       if (signal.aborted) status = "cancelled";
+      if (status === "completed" && hookFailed) status = "failed";
+      if (hooks?.configured && !ranEndHooks) {
+        ranEndHooks = true;
+        hookDiagnostics(await hooks.runEnd({
+          session: { sessionId: input.sessionId, workspace: snapshot.workspace, permission: effectivePermission() },
+          run: { status, toolCalls, steps: steps + (activeStep === undefined ? 0 : 1) },
+        }, { signal }));
+      }
+      if (status === "completed" && hookFailed) status = "failed";
       closeStep(status);
       const addUsage = (a: Usage, b: Usage): Usage => ({
         promptTokens: a.promptTokens + b.promptTokens,
@@ -490,19 +531,6 @@ export const createAgentRuntime = (
         await save();
       }
       check();
-      const levels = ["readonly", "workspace", "unrestricted"] as const;
-      const requestedPermission =
-        input.mode === "plan"
-          ? "readonly"
-          : (input.permission ?? deps.settings.defaultPermission);
-      const permissionCeiling = snapshot.permissionCeiling;
-      const effectivePermission = () =>
-        levels[
-          Math.min(
-            levels.indexOf(input.mode === "plan" ? "readonly" : control?.getPermission?.() ?? requestedPermission),
-            levels.indexOf(permissionCeiling ?? "unrestricted"),
-          )
-        ] ?? "readonly";
       const permission = effectivePermission();
       const { pendingTool: _pending, ...settled } = snapshot;
       snapshot = {
@@ -582,11 +610,11 @@ export const createAgentRuntime = (
       // Every budget comparison below uses the calibrated size, and every raw
       // limit handed to trimming is divided by the scale, so the messages that
       // leave Forge are the ones measured against the budget.
-      const scale = budget.unit === "tokens" ? contextScale : 1;
-      const calibratedSize = (messages: readonly Message[]) => contextSize(messages) * scale;
-      const rawLimit = budget.limit / scale;
-      const rawTarget = budget.target / scale;
       while (true) {
+        const scale = budget.unit === "tokens" ? contextScale : 1;
+        const calibratedSize = (messages: readonly Message[]) => contextSize(messages) * scale;
+        const rawLimit = budget.limit / scale;
+        const rawTarget = budget.target / scale;
         check();
         currentInstructions = buildSystemInstructions({ session: snapshot, permission: effectivePermission(), mode: input.mode,
           maxToolCalls: deps.settings.maxToolCalls, projectInstructions: deps.projectInstructions });
@@ -873,10 +901,61 @@ export const createAgentRuntime = (
         // All parameters are now complete and validated; queued calls are no
         // longer generating while an earlier call executes or waits for approval.
         if (previews.size) ephemeral({ type: "tool_preview_reset" });
-        for (const [callIndex, call] of calls.entries()) {
+        for (let callIndex = 0; callIndex < calls.length; callIndex += 1) {
+          const call = calls[callIndex];
+          if (!call) throw new ForgeError("internal", "Missing tool call.");
           check();
           if (toolCalls >= deps.settings.maxToolCalls)
             throw new ForgeError("budget", "Tool attempt budget exhausted.");
+          const readBatch = [];
+          for (const candidate of calls.slice(callIndex, callIndex + Math.min(4, deps.settings.maxToolCalls - toolCalls))) {
+            if (hasToolHooks || nativeDefinitions.some(definition => definition.function.name === candidate.function.name) ||
+                (effectivePermission() === "readonly" && !readonlyToolNames.has(candidate.function.name)) ||
+                deps.tools.isConcurrencySafe?.(candidate) !== true) break;
+            readBatch.push(candidate);
+          }
+          if (readBatch.length > 1) {
+            toolCalls += readBatch.length;
+            for (const [offset, read] of readBatch.entries()) {
+              const previewId = previews.id(callIndex + offset);
+              event({ type: "tool_started", call: read, ...(previewId ? { previewId } : {}) });
+            }
+            await save();
+            phase = "tool";
+            const workspace = snapshot.workspace;
+            const outcomes = await Promise.allSettled(readBatch.map(async read => {
+              const result = toolResultSchema.parse(await deps.tools.execute(read, {
+                sessionId: input.sessionId, toolCallId: read.id, workspace,
+                get permission() { return effectivePermission(); }, signal,
+                approve: async () => { throw new ForgeError("tool", "Concurrent read requested an approval."); },
+                onEvent: () => undefined,
+              }));
+              if (result.changes?.length) throw new ForgeError("tool", "Concurrent read reported file changes.");
+              return result;
+            }));
+            check();
+            phase = "storage";
+            for (const [offset, outcome] of outcomes.entries()) {
+              const read = readBatch[offset];
+              if (!read) throw new ForgeError("internal", "Missing read result.");
+              const result = outcome.status === "fulfilled" ? outcome.value : {
+                content: JSON.stringify(toErrorInfo(outcome.reason)), isError: true,
+              };
+              snapshot = { ...snapshot, messages: [...snapshot.messages, {
+                role: "tool", tool_call_id: read.id, content: JSON.stringify(result),
+              }] };
+              event({ type: "tool_finished", toolCallId: read.id, result });
+            }
+            await save();
+            const failed = outcomes.find(outcome => outcome.status === "rejected");
+            if (failed?.status === "rejected") throw new ForgeError("tool", "Concurrent read failed; all reads have settled.");
+            for (const [offset, outcome] of outcomes.entries()) {
+              const read = readBatch[offset];
+              if (read && outcome.status === "fulfilled") checkToolFailure(read, outcome.value);
+            }
+            callIndex += readBatch.length - 1;
+            continue;
+          }
           toolCalls += 1;
           snapshot = { ...snapshot, pendingTool: call };
           await save();
@@ -931,8 +1010,15 @@ export const createAgentRuntime = (
           };
           phase = "tool";
           const toolSnapshot = snapshot;
+          const hookInput = {
+            session: { sessionId: input.sessionId, workspace: snapshot.workspace, get permission() { return effectivePermission(); } },
+            tool: { name: call.function.name, callId: call.id, arguments: call.function.arguments },
+          };
+          const gate = await hooks?.beforeTool(hookInput, { signal });
+          if (gate) hookDiagnostics(gate.diagnostics, call.id);
+          check();
           const execution: Promise<import("../shared/schemas").ToolResult> =
-            nativeDefinitions.some(
+            gate?.allowed === false ? Promise.resolve({ content: gate.denialReason ?? "Tool denied by beforeTool hook.", isError: true }) : nativeDefinitions.some(
               (d) => d.function.name === call.function.name,
             )
               ? Promise.resolve()
@@ -979,14 +1065,17 @@ export const createAgentRuntime = (
                         ) => {
                           let childTools: typeof deps.tools | undefined;
                           try {
-                            childTools = deps.childToolFactory
+                            const childWorkspace = (await deps.store.get(childInput.sessionId)).workspace;
+                            const childContext = await deps.childContextFactory?.(childWorkspace);
+                            childTools = childContext?.tools ?? (deps.childToolFactory
                               ? await deps.childToolFactory(
-                                  toolSnapshot.workspace,
+                                  childWorkspace,
                                 )
-                              : deps.tools;
+                              : deps.tools);
                             return await createAgentRuntime({
                               ...deps,
                               tools: childTools,
+                              ...(childContext ? { projectInstructions: childContext.instructions } : {}),
                               settings: { ...deps.settings, maxToolCalls: childMaxToolCalls ?? deps.settings.maxToolCalls },
                             }).run(
                               childInput,
@@ -1091,17 +1180,7 @@ export const createAgentRuntime = (
                     isError: true,
                   }))
               : effectivePermission() === "readonly" &&
-                  ![
-                    "list_files",
-                    "read_file",
-                    "read_command_output",
-                    "search_files",
-                    "project_context",
-                    "load_skill",
-                    "git_status",
-                    "git_diff",
-                    "git_log",
-                  ].includes(call.function.name)
+                  !readonlyToolNames.has(call.function.name)
                 ? Promise.resolve({
                     content:
                       "Core readonly policy denies this tool; no approval can override plan mode.",
@@ -1132,6 +1211,15 @@ export const createAgentRuntime = (
                   });
           const result: import("../shared/schemas").ToolResult = await execution
             .then(toolResultSchema.parse)
+            .catch(async error => {
+              if (hooks?.configured) {
+                const safe = toErrorInfo(error);
+                hookDiagnostics(await hooks.toolError({ ...hookInput,
+                  outcome: toToolHookOutcome({ content: JSON.stringify(safe), isError: true }), errorCode: safe.code,
+                }, { signal }), call.id);
+              }
+              throw error;
+            })
             .finally(async () => {
               acceptingEvents = false;
               // Local tools may race approval against abort. Keep the lock until
@@ -1155,6 +1243,11 @@ export const createAgentRuntime = (
           };
           event({ type: "tool_finished", toolCallId: call.id, result });
           await save();
+          if (hooks?.configured) {
+            const outcome = { ...hookInput, outcome: toToolHookOutcome(result) };
+            hookDiagnostics(await (result.isError ? hooks.toolError(outcome, { signal }) : hooks.afterTool(outcome, { signal })), call.id);
+            await save();
+          }
           checkToolFailure(call, result);
         }
         closeStep("completed");
@@ -1191,8 +1284,8 @@ export const createAgentRuntime = (
       return await finish(safe.code === "cancelled" ? "cancelled" : "failed");
     } finally {
       acceptingTitle = false;
-      await writes;
-      await release();
+      try { await hooks?.dispose(); }
+      finally { await writes; await release(); }
     }
   },
 });

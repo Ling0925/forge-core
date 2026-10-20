@@ -32,6 +32,8 @@ import { collectPublishedFiles, publishedFileIdSchema } from "../shared/publishe
 import { createPublishedFileTool } from "../tools/published-files";
 import { openSessionStore } from "../store/sessions";
 import { openSettingsStore } from "../store/settings";
+import { openToolHooksStore } from "../store/tool-hooks";
+import { createAgentWorktreeService } from "./agent-worktrees";
 import { createCombinedToolRegistry } from "../tools/combined";
 import { createLocalToolRegistry } from "../tools/local";
 import { withCommandTasks } from "../tools/command-tasks";
@@ -136,6 +138,8 @@ export const createHarness = async (
         .map((session) => session.id),
   });
   const runMemory = await openRunMemory(directory);
+  const toolHooksStore = await openToolHooksStore(directory);
+  const agentWorktrees = createAgentWorktreeService(directory);
   const publishedFiles = await openPublishedFileStore(directory);
   const usageStatsService = createUsageStatsService(store);
   const mcp = await createMcpService({ home: directory });
@@ -191,6 +195,7 @@ export const createHarness = async (
         instructions: context.getSystemContext(),
         tools: {
           definitions: combined.definitions,
+          isConcurrencySafe: call => combined.isConcurrencySafe?.(call) === true,
           execute: combined.execute,
           ...(combined.settleBackground ? { settleBackground: combined.settleBackground } : {}),
           async dispose() {
@@ -531,6 +536,8 @@ export const createHarness = async (
       check();
       return settingsStore.getPublic();
     },
+    async getToolHooks() { check(); return toolHooksStore.get(); },
+    async setToolHooks(config) { check(); await toolHooksStore.set(config); },
     async updateSettings(input) {
       check();
       return settingsStore.update(configureInputSchema.parse(input));
@@ -706,15 +713,14 @@ export const createHarness = async (
               },
             },
             runMemory,
+            toolHooks: await toolHooksStore.get(),
+            agentWorktrees,
             settings,
             provider,
             tools,
             projectInstructions: built.instructions,
             onChildOperation: track,
-            childToolFactory: async (workspace) => {
-              return (await buildTools(workspace, settings, config.apiKey))
-                .tools;
-            },
+            childContextFactory: workspace => buildTools(workspace, settings, config.apiKey),
           }).run({ ...input, ...(providerSourceId ? { providerSourceId } : {}) }, onEvent, approve, signal, control);
           return result;
         } finally {

@@ -889,6 +889,49 @@ it("seeds the estimate scale from recorded usage pairs and ignores unusable ones
   ])).toBe(CONTEXT_SCALE_CEILING);
 });
 
+it("restores calibration from real step events instead of requiring adjacent usage records", async () => {
+  const f = fixture({ ...finalProvider, complete: async (messages, definitions) => {
+    const promptTokens = measureContext(messages, 300000, definitions).usedTokens * 2;
+    return { message: { role: "assistant", content: "done" },
+      usage: { promptTokens, completionTokens: 1, totalTokens: promptTokens + 1 } };
+  } }, emptyTools);
+
+  const result = await f.runtime.run(input, () => {}, async () => false, signal());
+
+  expect(result.status).toBe("completed");
+  expect(seedContextScale(result.events)).toBe(2);
+});
+
+it("applies newly observed calibration before the next generation in the same run", async () => {
+  const previous: Message[] = [
+    { role: "user", content: "prior request" },
+    { role: "assistant", content: "x".repeat(6000) },
+  ];
+  const sent: number[] = [];
+  const f = fixture({ ...finalProvider, complete: async (messages, definitions) => {
+    if (!definitions.length) return { message: { role: "assistant", content: JSON.stringify({
+      goal: "continue", constraints: [], decisions: [], completed: [], nextSteps: [], verification: [], uncertainties: [],
+    }) } };
+    const promptTokens = measureContext(messages, 64000, definitions).usedTokens * 2;
+    sent.push(promptTokens);
+    return { message: sent.length === 1
+      ? { role: "assistant", content: null, tool_calls: [call("inspect")] }
+      : { role: "assistant", content: "done" },
+      usage: { promptTokens, completionTokens: 1, totalTokens: promptTokens + 1 } };
+  } }, { ...emptyTools, execute: async () => ({ content: "x".repeat(6000), isError: false }) },
+  { ...initial(), messages: previous });
+  const runtime = createAgentRuntime({ ...f.deps,
+    settings: { ...defaultPublicSettings, modelContextWindows: { chosen: 64000 }, contextBudgetTokens: 12000 } });
+
+  const result = await runtime.run(input, () => {}, async () => false, signal());
+
+  expect(result.status).toBe("completed");
+  expect(sent).toHaveLength(2);
+  expect(sent[1]).toBeLessThanOrEqual(12000);
+  expect(result.events.some(event => event.type === "context_compacted")).toBe(true);
+  expect(result.messages.filter(message => message.role !== "system").slice(0, 2)).toEqual(previous);
+});
+
 it("compacts a long run before the provider sees the oversized request", async () => {
   // The local heuristic under-counts CJK against the real tokenizer. Real usage
   // is simulated at 1.6x the local estimate, inside the recorded error

@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { mcpRemoteRegisterInputSchema } from "../mcp/types";
 import type { HtmlPreviewResponse } from "./html-preview";
 import type { WorkspaceDirectoryPage } from "./workspaces";
 import { publishedFileIdSchema, publishedFileResponseSchema, type PublishedFileResponse } from "./published-files";
@@ -71,7 +72,7 @@ export const projectContextDtoSchema = z
   .strict()
   .readonly();
 export type ProjectContextDto = z.infer<typeof projectContextDtoSchema>;
-export const mcpRegisterDtoSchema = z
+const mcpStdioRegisterDtoSchema = z
   .object({
     id: z.string().regex(/^[a-z0-9][a-z0-9-]{0,31}$/),
     label: z.string().min(1).max(64),
@@ -82,28 +83,34 @@ export const mcpRegisterDtoSchema = z
   })
   .strict()
   .readonly();
+export const mcpRegisterDtoSchema = z.union([mcpStdioRegisterDtoSchema, mcpRemoteRegisterInputSchema]);
 export type McpRegisterDto = z.infer<typeof mcpRegisterDtoSchema>;
 export const mcpRecordDtoSchema = z
   .object({
-    id: mcpRegisterDtoSchema.unwrap().shape.id,
-    label: mcpRegisterDtoSchema.unwrap().shape.label,
-    command: mcpRegisterDtoSchema.unwrap().shape.command,
-    args: mcpRegisterDtoSchema.unwrap().shape.args,
+    id: mcpStdioRegisterDtoSchema.unwrap().shape.id,
+    label: mcpStdioRegisterDtoSchema.unwrap().shape.label,
+    command: z.string().max(4096),
+    args: mcpStdioRegisterDtoSchema.unwrap().shape.args,
     enabled: z.boolean(),
     requestTimeoutMs: z.number().int(),
     envNameCount: z.number().int().nonnegative(),
     hasPrivateEnv: z.boolean(),
+    transport: z.enum(["stdio", "http", "sse"]).optional(),
+    url: z.string().max(4096).optional(),
+    headerCount: z.number().int().nonnegative().optional(),
+    hasPrivateHeaders: z.boolean().optional(),
   })
   .strict()
   .readonly();
 export type McpRecordDto = z.infer<typeof mcpRecordDtoSchema>;
 export const mcpHealthDtoSchema = z
   .object({
-    id: mcpRegisterDtoSchema.unwrap().shape.id,
+    id: mcpStdioRegisterDtoSchema.unwrap().shape.id,
     enabled: z.boolean(),
     connected: z.boolean(),
     negotiatedProtocolVersion: z.string().max(128).nullable(),
     lastError: z.string().max(4096).nullable(),
+    transport: z.enum(["stdio", "http", "sse"]).optional(),
   })
   .strict()
   .readonly();
@@ -312,7 +319,7 @@ export const rpcRequestSchema = z
       .object({
         ...requestBase,
         method: z.literal("setMcpEnabled"),
-        serverId: mcpRegisterDtoSchema.unwrap().shape.id,
+        serverId: mcpStdioRegisterDtoSchema.unwrap().shape.id,
         enabled: z.boolean(),
       })
       .strict(),
@@ -320,14 +327,14 @@ export const rpcRequestSchema = z
       .object({
         ...requestBase,
         method: z.literal("removeMcpServer"),
-        serverId: mcpRegisterDtoSchema.unwrap().shape.id,
+        serverId: mcpStdioRegisterDtoSchema.unwrap().shape.id,
       })
       .strict(),
     z
       .object({
         ...requestBase,
         method: z.literal("getMcpHealth"),
-        serverId: mcpRegisterDtoSchema.unwrap().shape.id,
+        serverId: mcpStdioRegisterDtoSchema.unwrap().shape.id,
       })
       .strict(),
     z

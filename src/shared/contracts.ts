@@ -65,6 +65,8 @@ export interface ToolContext {
 }
 export interface LocalToolRegistry {
   readonly definitions: readonly ToolDefinition[];
+  /** Trusted host metadata: these calls have no effects or approval requests. */
+  isConcurrencySafe?(call: ToolCall): boolean;
   execute(call: ToolCall, context: ToolContext): Promise<ToolResult>;
   /** Join and report only undelivered background work before model finalization. */
   settleBackground?(sessionId: SessionId, signal: AbortSignal): Promise<ToolResult | undefined>;
@@ -93,6 +95,8 @@ export interface HarnessService {
   cancelSession(sessionId: SessionId): Promise<boolean>;
   getSettings(): Promise<PublicSettings>;
   updateSettings(input: ConfigureInput): Promise<PublicSettings>;
+  getToolHooks?(): Promise<import("./tool-hooks").ToolHooksConfig>;
+  setToolHooks?(config: import("./tool-hooks").ToolHooksConfig): Promise<void>;
   listModels(signal?: AbortSignal, sourceId?: string): Promise<readonly string[]>;
   getModelContextWindow?(model: string, signal?: AbortSignal, sourceId?: string): Promise<number | null>;
   listSessions(): Promise<readonly SessionSummary[]>;
@@ -170,8 +174,11 @@ export interface AgentRuntimeDependencies {
   readonly store: SessionStore;
   readonly provider: ModelProvider;
   readonly tools: LocalToolRegistry;
+  readonly toolHooks?: import("./tool-hooks").ToolHooksConfig;
+  readonly agentWorktrees?: ReturnType<typeof import("../core/agent-worktrees").createAgentWorktreeService>;
   readonly settings: PublicSettings;
   readonly childToolFactory?: ToolFactory;
+  readonly childContextFactory?: (workspace: string) => Promise<{ readonly tools: LocalToolRegistry; readonly instructions: string }>;
   readonly onChildOperation?: (
     id: SessionId,
     controller: AbortController,

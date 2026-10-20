@@ -1,3 +1,4 @@
+import { defineTool } from "../shared/tool-definition";
 import { randomUUID } from "node:crypto";
 import { z } from "zod";
 import { boundedText, checkDiscovery } from "../mcp/bounds";
@@ -36,7 +37,7 @@ const callArgs = z
     tool: z.literal("mcp_call_tool"),
     toolName: z.string().min(1).max(64),
     arguments: z.record(z.unknown()).optional(),
-    arguments_json: z.string().max(MCP_CALL_ARGUMENT_LIMIT).optional(),
+    arguments_json: z.string().max(MCP_CALL_ARGUMENT_LIMIT).optional().describe("JSON object encoded as a string, matching the selected MCP tool's input schema."),
   })
   .strict()
   .readonly();
@@ -52,39 +53,15 @@ const description =
   "automatically against explicitly registered and enabled servers only. " +
   "Server environments are minimal and never inherit credentials.";
 
-const definitions: readonly ToolDefinition[] = Object.freeze([
-  {
-    type: "function",
-    function: {
-      name: "mcp_list_tools",
-      description: `${description} Lists a registered server's tools with their real input schemas (bounded discovery, lazy connect).`,
-      parameters: {
-        type: "object",
-        properties: {
-          server: { type: "string", minLength: 1, maxLength: 32 },
-        },
-        required: ["server"],
-        additionalProperties: false,
-      },
-    },
-  },
-  {
-    type: "function",
-    function: {
-      name: "mcp_call_tool",
-      description: `${description} Calls an MCP tool by its discovered namespaced name (mcp__<server>__<tool>). Encode its input object as arguments_json using the schema returned by mcp_list_tools. Omit for an empty object. At most 64 KiB including the call envelope; returns bounded sanitized text content.`,
-      parameters: {
-        type: "object",
-        properties: {
-          toolName: { type: "string", minLength: 1, maxLength: 64 },
-          arguments_json: { type: "string", maxLength: MCP_CALL_ARGUMENT_LIMIT, description: 'JSON-encoded input object, for example {"text":"hello"}. Preserve the discovered tool\'s field names and value types. Omit for {}.' },
-        },
-        required: ["toolName"],
-        additionalProperties: false,
-      },
-    },
-  },
-]);
+const toolDescriptions: Readonly<Record<z.infer<typeof args>["tool"], string>> = {
+  "mcp_list_tools": `${description} Lists a registered server's tools with their real input schemas (bounded discovery, lazy connect).`,
+  "mcp_call_tool": `${description} Calls an MCP tool by its discovered namespaced name (mcp__<server>__<tool>). Encode its input object as arguments_json using the schema returned by mcp_list_tools. Omit for an empty object. At most 64 KiB including the call envelope; returns bounded sanitized text content.`,
+};
+const definitions: readonly ToolDefinition[] = args.options.map(schema => {
+  const { tool, ...fields } = schema.shape;
+  const name = tool.value;
+  return defineTool(name, toolDescriptions[name], z.object(fields).strict(), name === "mcp_call_tool" ? ["arguments"] : []);
+});
 
 const result = (value: JsonValue, isError = false): ToolResult => ({
   content: JSON.stringify(value) ?? "null",
@@ -160,7 +137,7 @@ export async function createMcpToolRegistry(
           await authorize(
             ctx,
             call,
-            `List tools of MCP server "${server.id}" (${server.command} ${server.args.join(" ")}).`,
+            `List tools of MCP server "${server.id}" (${server.url ?? `${server.command} ${server.args.join(" ")}`}).`,
           );
           const tools = await service.listTools(parsed.server, {
             signal: ctx.signal,
@@ -221,7 +198,7 @@ export async function createMcpToolRegistry(
         await authorize(
           ctx,
           call,
-          `Call MCP tool "${route.tool}" on server "${server.id}" (${server.command} ${server.args.join(" ")}).`,
+          `Call MCP tool "${route.tool}" on server "${server.id}" (${server.url ?? `${server.command} ${server.args.join(" ")}`}).`,
         );
         const outcome = await service.callTool(
           route.server,

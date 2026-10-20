@@ -18,6 +18,7 @@ export interface ChildOperation {
   acceptingMessages: boolean;
   delivered: boolean;
   writePaths: readonly string[];
+  isolation?: "shared" | "worktree";
   messages: string[];
   result?: SessionSnapshot;
   executionError?: boolean;
@@ -48,6 +49,7 @@ const spawnArgs = z.object({
   model: settingsFields.model.optional(),
   writePaths: z.array(pathSchema).max(32).optional(),
   maxToolCalls: z.number().int().min(1).max(10000).optional(),
+  isolation: z.enum(["shared", "worktree"]).default("shared").describe("shared keeps the parent workspace; worktree uses a separate detached checkout of committed HEAD and retains its changes for inspection/merge."),
 }).strict();
 const listArgs = z.object({
   offset: z.number().int().min(0).max(Number.MAX_SAFE_INTEGER).default(0),
@@ -67,6 +69,12 @@ const resultArgs = idArgs.extend({
 const messageArgs = idArgs.extend({ message: z.string().trim().min(1).max(16384) }).strict();
 const resolveArgs = idArgs.extend({ resolution: z.string().trim().min(1).max(4096) }).strict();
 
+export const agentArgumentSchemas = {
+  spawn_agent: spawnArgs, list_agents: listArgs, wait_agents: waitArgs,
+  cancel_agent: idArgs, get_agent_result: resultArgs,
+  send_agent_message: messageArgs, resolve_agent: resolveArgs,
+} as const;
+
 export function agentResultText(snapshot: SessionSnapshot): string {
   return snapshot.messages.findLast(message => message.role === "assistant" && !!message.content)?.content ?? "No result";
 }
@@ -75,6 +83,7 @@ export function agentSummary(snapshot: SessionSnapshot, limit = 4096) {
   const terminal = snapshot.events.findLast(event => event.type === "run_finished");
   return {
     id: snapshot.id, status: snapshot.status, model: snapshot.model,
+    workspace: snapshot.workspace, ...(snapshot.agentWorktree ? { worktree: snapshot.agentWorktree } : {}),
     summary: text.slice(0, limit), totalChars: text.length, truncated: text.length > limit,
     nextOffset: text.length > limit ? limit : null,
     errors: snapshot.events.filter(event => event.type === "error").slice(-1).map(event => ({
@@ -157,17 +166,35 @@ export async function executeAgentOperation(name: string, args: Record<string, u
       if (parsed.maxToolCalls !== undefined && parsed.maxToolCalls > deps.settings.maxToolCalls)
         throw new ForgeError("invalid_input", "Child tool budget cannot exceed the parent per-run ceiling.");
       const writePaths = [...new Set(parsed.writePaths ?? [])];
-      const conflicts = [...children.entries()].filter(([, child]) => child.active && child.writePaths.some(a => writePaths.some(b => overlaps(a, b))));
+      if (parsed.isolation === "worktree" && env.permission === "readonly")
+        throw new ForgeError("tool", "Readonly mode cannot create a worktree.");
+      if (parsed.isolation === "worktree" && !deps.agentWorktrees)
+        throw new ForgeError("tool", "This host does not provide agent worktrees.");
+      if (parsed.isolation === "worktree" && !deps.childContextFactory && !deps.childToolFactory)
+        throw new ForgeError("tool", "This host cannot construct tools for an isolated child workspace.");
+      const conflicts = parsed.isolation === "worktree" ? [] : [...children.entries()].filter(([, child]) => child.active && child.isolation !== "worktree" && child.writePaths.some(a => writePaths.some(b => overlaps(a, b))));
       if (conflicts.length) return { content: JSON.stringify({ code: "scope_conflict", error: "Declared write paths overlap active children. Wait or assign disjoint paths; this is coordination, not a sandbox.", ids: conflicts.map(([id]) => id) }), isError: true };
       const child = await deps.store.create({ workspace: snapshot.workspace, title: parsed.task.slice(0, 256), model: parsed.model ?? snapshot.model,
         ...(snapshot.providerSourceId ? { providerSourceId: snapshot.providerSourceId } : {}) });
       await deps.store.save({ ...child, parentSessionId: input.sessionId, agentTask: parsed.task,
         ...(parsed.ownership ? { ownership: parsed.ownership } : {}),
         ...(parsed.writePaths ? { writePaths } : {}), permissionCeiling: env.permission });
+      let childWorkspace = child.workspace;
+      if (parsed.isolation === "worktree" && deps.agentWorktrees) {
+        try {
+          const isolated = await deps.agentWorktrees.create({ workspace: snapshot.workspace, sessionId: child.id, signal: env.signal });
+          childWorkspace = isolated.workspace;
+          const { workspace: _workspace, ...agentWorktree } = isolated;
+          await deps.store.save({ ...await deps.store.get(child.id), workspace: childWorkspace, agentWorktree });
+        } catch (error) {
+          await deps.store.save({ ...await deps.store.get(child.id), status: env.signal.aborted ? "cancelled" : "failed" });
+          throw error;
+        }
+      }
       const controller = new AbortController();
       const operation: ChildOperation = {
         controller, work: Promise.resolve(child), model: child.model, active: true,
-        acceptingMessages: true, delivered: false, writePaths, messages: [],
+        acceptingMessages: true, delivered: false, writePaths, isolation: parsed.isolation, messages: [],
       };
       // Reserve before any child code runs; release the active slot only after cleanup settles.
       children.set(child.id, operation);
@@ -209,8 +236,10 @@ export async function executeAgentOperation(name: string, args: Record<string, u
       });
       void operation.work.catch(() => undefined);
       deps.onChildOperation?.(child.id, controller, operation.work);
-      return output({ childSessionId: child.id, model: child.model, declaredWritePathCount: writePaths.length,
-        warning: "Shared workspace. Declared paths only prevent overlapping assignments; commands and file writes are not sandboxed by ownership." });
+      return output({ childSessionId: child.id, model: child.model, workspace: childWorkspace, isolation: parsed.isolation, declaredWritePathCount: writePaths.length,
+        warning: parsed.isolation === "worktree"
+          ? "Separate checkout of committed HEAD; parent uncommitted files are not copied. Changes are retained here for inspection and merge."
+          : "Shared workspace. Declared paths only prevent overlapping assignments; commands and file writes are not sandboxed by ownership." });
     }
     case "list_agents": {
       const { offset, limit, currentRun } = listArgs.parse(args);
@@ -264,6 +293,7 @@ export async function executeAgentOperation(name: string, args: Record<string, u
       const text = agentResultText(child);
       const end = Math.min(text.length, offset + limit);
       return output({ id, status: operation?.executionError ? "failed" : child.status, model: child.model,
+        workspace: child.workspace, ...(child.agentWorktree ? { worktree: child.agentWorktree } : {}),
         content: text.slice(offset, end), offset, totalChars: text.length, nextOffset: end < text.length ? end : null,
         truncated: end < text.length, currentRun: !!operation, active: operation?.active ?? false,
         handled: !!operation?.resolution || handled(env, child),

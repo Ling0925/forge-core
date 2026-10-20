@@ -4,36 +4,69 @@ import { ForgeError } from "../shared/errors";
 import { atomicJson, privateDirectory, readJson } from "../store/io";
 import { fileLock } from "../store/lock";
 import { checkDiscovery } from "./bounds";
+import { createRemoteConnection } from "./http";
 import { StdioMcpConnection } from "./protocol";
+import type { McpConnection } from "./rpc";
 import {
   MCP_MAX_SERVERS,
   type McpHealth,
+  type McpRegisterAnyInput,
+  type McpRemoteServerConfig,
   type McpServerConfig,
   type McpServerRecord,
   type McpToolInfo,
-  mcpRegisterInputSchema,
+  mcpRegisterAnyInputSchema,
+  mcpRemoteServerConfigSchema,
   mcpServerConfigSchema,
+  mcpStdioServerConfigSchema,
 } from "./types";
 
 const catalogSchema = z
   .object({ version: z.literal(1), servers: z.array(mcpServerConfigSchema) })
   .strict();
 
-const record = (config: McpServerConfig): McpServerRecord => ({
-  id: config.id,
-  label: config.label,
-  command: config.command,
-  args: [...config.args],
-  enabled: config.enabled,
-  requestTimeoutMs: config.requestTimeoutMs,
-  envNameCount: Object.keys(config.envNames).length,
-  hasPrivateEnv: Object.keys(config.env).length > 0,
-});
+const record = (config: McpServerConfig): McpServerRecord => {
+  if (isRemote(config)) {
+    return {
+      id: config.id,
+      label: config.label,
+      // Legacy fields stay present for callers that always read them.
+      command: "",
+      args: [],
+      enabled: config.enabled,
+      requestTimeoutMs: config.requestTimeoutMs,
+      envNameCount: 0,
+      hasPrivateEnv: false,
+      transport: config.transport,
+      url: config.url,
+      // Never expose header names or values, only presence/counts.
+      headerCount: Object.keys(config.headers).length,
+      hasPrivateHeaders: Object.keys(config.headers).length > 0,
+    };
+  }
+  return {
+    id: config.id,
+    label: config.label,
+    command: config.command,
+    args: [...config.args],
+    enabled: config.enabled,
+    requestTimeoutMs: config.requestTimeoutMs,
+    envNameCount: Object.keys(config.envNames).length,
+    hasPrivateEnv: Object.keys(config.env).length > 0,
+    // Additive transport marker; stdio records keep every historical field.
+    transport: "stdio",
+    headerCount: 0,
+    hasPrivateHeaders: false,
+  };
+};
 
 const notFound = (): ForgeError =>
   new ForgeError("not_found", "MCP server was not found.");
 const revoked = (): ForgeError =>
   new ForgeError("tool", "MCP server is not registered or not enabled.");
+
+const isRemote = (config: McpServerConfig): config is McpRemoteServerConfig =>
+  config.transport === "http" || config.transport === "sse";
 
 /**
  * The user-owned private MCP catalog. Every operation that can produce an
@@ -64,7 +97,7 @@ export interface McpService {
       redactValues?: readonly string[];
     }>,
   ): Promise<Readonly<{ text: string; isError: boolean; truncated: boolean }>>;
-  /** Terminate this instance's live process for `id` if present. */
+  /** Terminate this instance's live connection for `id` if present. */
   revoke(id: string): Promise<void>;
   dispose(): Promise<void>;
 }
@@ -82,13 +115,13 @@ export async function createMcpService(options: {
   const folder = await privateDirectory(join(options.home, "mcp"));
   const catalogPath = join(folder, "servers.json");
   const lockPath = join(folder, "servers.lock");
-  // Each live process remembers the exact definition signature it was launched
-  // under, so any authoritative change (disable, removal, re-point, env change)
-  // is detected as a revocation even when the *current* config still looks
-  // enabled to a stale reader.
+  // Each live connection remembers the exact definition signature it was
+  // opened under, so any authoritative change (disable, removal, re-point,
+  // env/header change) is detected as a revocation even when the *current*
+  // config still looks enabled to a stale reader.
   const connections = new Map<
     string,
-    Readonly<{ connection: StdioMcpConnection; signature: string }>
+    Readonly<{ connection: McpConnection; signature: string }>
   >();
 
   const readCatalog = async (): Promise<McpServerConfig[]> => {
@@ -183,11 +216,11 @@ export async function createMcpService(options: {
   /**
    * Resolve a server for an *effectful* operation: re-read the authoritative
    * catalog under the store lock, then compare the authoritative definition
-   * signature to the signature any *live* process in this instance was launched
-   * under. If this instance holds a stale process (the operator disabled,
-   * removed, re-pointed or edited the server through any other instance or
-   * process) it is terminated before proceeding. A revoked server never
-   * proceeds on stale state.
+   * signature to the signature any *live* connection in this instance was
+   * opened under. If this instance holds a stale connection (the operator
+   * disabled, removed, re-pointed or edited the server through any other
+   * instance or process) it is closed before proceeding. A revoked server
+   * never proceeds on stale state.
    */
   const resolveForEffect = async (id: string): Promise<McpServerConfig> => {
     const config = await authoritative(id);
@@ -197,7 +230,7 @@ export async function createMcpService(options: {
     }
     const live = connections.get(id);
     if (live && live.signature !== signature(config)) {
-      // The stored definition changed; never reuse the old process.
+      // The stored definition changed; never reuse the old connection.
       await closeConnection(id);
     }
     return config;
@@ -206,7 +239,7 @@ export async function createMcpService(options: {
   const connection = async (
     config: McpServerConfig,
     signal?: AbortSignal,
-  ): Promise<StdioMcpConnection> => {
+  ): Promise<McpConnection> => {
     if (signal?.aborted)
       throw new ForgeError("cancelled", "Tool execution cancelled.");
     const expected = signature(config);
@@ -220,18 +253,27 @@ export async function createMcpService(options: {
       return existing.connection;
     }
     if (existing) await closeConnection(config.id);
-    const env: Record<string, string> = {};
-    for (const [child, host] of Object.entries(config.envNames)) {
-      const value = process.env[host];
-      if (value !== undefined) env[child] = value;
+    let created: McpConnection;
+    if (isRemote(config)) {
+      created = createRemoteConnection(config.transport, {
+        url: config.url,
+        headers: config.headers,
+        requestTimeoutMs: config.requestTimeoutMs,
+      });
+    } else {
+      const env: Record<string, string> = {};
+      for (const [child, host] of Object.entries(config.envNames)) {
+        const value = process.env[host];
+        if (value !== undefined) env[child] = value;
+      }
+      for (const [name, value] of Object.entries(config.env)) env[name] = value;
+      created = new StdioMcpConnection({
+        command: config.command,
+        args: config.args,
+        env,
+        requestTimeoutMs: config.requestTimeoutMs,
+      });
     }
-    for (const [name, value] of Object.entries(config.env)) env[name] = value;
-    const created = new StdioMcpConnection({
-      command: config.command,
-      args: config.args,
-      env,
-      requestTimeoutMs: config.requestTimeoutMs,
-    });
     connections.set(config.id, { connection: created, signature: expected });
     try {
       await created.connect(signal);
@@ -247,16 +289,12 @@ export async function createMcpService(options: {
     opts:
       | Readonly<{ signal?: AbortSignal; redactValues?: readonly string[] }>
       | undefined,
-    action: (open: StdioMcpConnection, values: readonly string[]) => Promise<T>,
+    action: (open: McpConnection, values: readonly string[]) => Promise<T>,
   ): Promise<T> => {
     if (opts?.signal?.aborted)
       throw new ForgeError("cancelled", "Tool execution cancelled.");
     const config = await resolveForEffect(id);
-    const values = [
-      ...Object.values(config.env),
-      ...Object.values(config.envNames).map((name) => process.env[name] ?? ""),
-      ...(opts?.redactValues ?? []),
-    ];
+    const values = [...secretValues(config), ...(opts?.redactValues ?? [])];
     try {
       const open = await connection(config, opts?.signal);
       return await action(open, values);
@@ -274,12 +312,8 @@ export async function createMcpService(options: {
 
   return {
     async register(input) {
-      const parsed = mcpRegisterInputSchema.parse(input);
-      const config: McpServerConfig = mcpServerConfigSchema.parse({
-        ...parsed,
-        enabled: parsed.enabled ?? false,
-        requestTimeoutMs: parsed.requestTimeoutMs ?? 15000,
-      });
+      const parsed = mcpRegisterAnyInputSchema.parse(input);
+      const config = normalizeRegistration(parsed);
       return mutate((servers) => {
         if (servers.some((entry) => entry.id === config.id))
           throw new ForgeError(
@@ -309,7 +343,7 @@ export async function createMcpService(options: {
         });
       });
       // The persisted status is authoritative immediately; close our live
-      // process on disable so no stale instance keeps a revoked server alive.
+      // connection on disable so no stale instance keeps a revoked server alive.
       if (!enabled) await closeConnection(id);
       return record(result);
     },
@@ -394,12 +428,56 @@ export async function createMcpService(options: {
 }
 
 /**
+ * Normalize an accepted registration into a stored config. Legacy stdio input
+ * (no `transport`, or `transport: "stdio"`) keeps its exact shape; remote
+ * input must carry an explicit `http`/`sse` transport and a URL.
+ */
+function normalizeRegistration(input: McpRegisterAnyInput): McpServerConfig {
+  if (input.transport === "http" || input.transport === "sse") {
+    return mcpRemoteServerConfigSchema.parse({
+      id: input.id,
+      label: input.label,
+      transport: input.transport,
+      url: input.url,
+      headers: input.headers ?? {},
+      enabled: input.enabled ?? false,
+      requestTimeoutMs: input.requestTimeoutMs ?? 15000,
+    });
+  }
+  return mcpStdioServerConfigSchema.parse({
+    ...input,
+    transport: "stdio",
+    enabled: input.enabled ?? false,
+    requestTimeoutMs: input.requestTimeoutMs ?? 15000,
+  });
+}
+
+/** Private values that must never surface in remote errors or results. */
+function secretValues(config: McpServerConfig): string[] {
+  if (isRemote(config)) return Object.values(config.headers);
+  return [
+    ...Object.values(config.env),
+    ...Object.values(config.envNames).map((name) => process.env[name] ?? ""),
+  ];
+}
+
+/**
  * Identity of a server definition that affects effectful behavior. Enabled
- * state and the env shape are included so a status or environment change is
- * observed as a revocation of any previously launched process.
+ * state, transport, endpoint, env shape and header values are included so a
+ * status or definition change is observed as a revocation.
  */
 function signature(config: McpServerConfig): string {
+  if (isRemote(config)) {
+    return [
+      "remote",
+      config.transport,
+      config.url,
+      JSON.stringify(config.headers),
+      String(config.requestTimeoutMs),
+    ].join("\u0001");
+  }
   return [
+    "stdio",
     config.command,
     config.args.join("\u0000"),
     JSON.stringify(config.envNames),
