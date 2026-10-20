@@ -296,11 +296,6 @@ export const providerStateSchema = z
     output: z.array(jsonObjectSchema).max(256).readonly(),
   })
   .strict()
-  .refine(
-    (state) =>
-      new TextEncoder().encode(JSON.stringify(state)).byteLength <= 262144,
-    "Provider continuation exceeds 256 KiB",
-  )
   .readonly();
 export type ProviderState = z.infer<typeof providerStateSchema>;
 export const assistantMessageSchema = z
@@ -604,6 +599,7 @@ export const agentEventSchema = z
           "network",
           "timeout",
           "http",
+          "upstream",
         ]),
       })
       .strict(),

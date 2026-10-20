@@ -1,3 +1,4 @@
+import { ForgeError } from "./errors";
 import { type ForgeBridge, type RpcRequest, type RpcResponse, type RunEvent, rpcRequestSchema, rpcResponseSchema, runEventSchema } from "./ipc";
 
 export interface BridgeTransport {
@@ -33,7 +34,10 @@ export function createTransportBridge(transport: BridgeTransport): ForgeBridge {
     // Never replay uncertain effects when the transport fails.
     const response = rpcResponseSchema.safeParse(await transport.request(input));
     if (!response.success || response.data.id !== input.id || response.data.method !== method) throw new Error("Invalid host response.");
-    if (!response.data.ok) throw new Error(response.data.error.message);
+    if (!response.data.ok) {
+      const { code, message, retryable } = response.data.error;
+      throw new ForgeError(code, message, retryable);
+    }
     return response.data.result as Results[M];
   }
   return Object.freeze({
@@ -59,6 +63,8 @@ export function createTransportBridge(transport: BridgeTransport): ForgeBridge {
     listCheckpoints: (sessionId) => request("listCheckpoints", { sessionId }),
     getCheckpointDiff: (sessionId, checkpointId) => request("getCheckpointDiff", { sessionId, checkpointId }),
     restoreCheckpoint: (sessionId, checkpointId) => request("restoreCheckpoint", { sessionId, checkpointId }),
+    listWorkspaceEntries: (sessionId, path) => request("listWorkspaceEntries", path === undefined ? { sessionId } : { sessionId, path }),
+    readWorkspaceFile: (sessionId, path) => request("readWorkspaceFile", { sessionId, path }),
     openExternal: async (url) => { await request("openExternal", { url }); },
     chooseWorkspace: () => request("chooseWorkspace"),
     exportSession: (sessionId) => request("exportSession", { sessionId }),

@@ -102,6 +102,25 @@ const textStream = (text: string) => {
     completed([m])
   );
 };
+
+it("accepts gateway response metadata between text and terminal frames", async () => {
+  const stream = textStream("OK").replace(
+    "event: response.output_text.done",
+    `${wire("response.metadata", { response_id: "resp_1", metadata: { route: "fixture" } })}event: response.output_text.done`,
+  );
+  const origin = await setup((_req, res) => send(res, stream));
+  expect((await run(origin)).message.content).toBe("OK");
+});
+
+it("rejects metadata for another response without accepting its text", async () => {
+  const stream = textStream("OK").replace(
+    "event: response.output_text.done",
+    `${wire("response.metadata", { response_id: "other", metadata: {} })}event: response.output_text.done`,
+  );
+  const origin = await setup((_req, res) => send(res, stream));
+  await expect(run(origin)).rejects.toSatisfy(classification("protocol"));
+});
+
 async function setup(
   handler: (req: IncomingMessage, res: ServerResponse, body: unknown) => void,
   mode: "responses" | "chat-completions" = "responses",
@@ -404,7 +423,7 @@ it.each(["response.failed", "response.incomplete", "error"])(
         }),
       );
     });
-    await expect(run(p)).rejects.toSatisfy(classification("protocol"));
+    await expect(run(p)).rejects.toSatisfy(classification("upstream"));
     expect(requests).toBe(1);
   },
 );
