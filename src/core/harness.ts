@@ -50,6 +50,7 @@ import { createMcpToolRegistry } from "../tools/mcp";
 import { createSkillTool } from "../tools/skills";
 import { createWebToolRegistry } from "../tools/web";
 import { createUsageStatsService } from "./usage-stats";
+import { createModelPricingService } from "./model-pricing";
 import { assertBoundary, projectSummary } from "./context";
 import { summarizeWorkingState } from "./working-memory";
 import { openRunMemory } from "./run-memory";
@@ -153,7 +154,9 @@ export const createHarness = async (
   const toolHooksStore = await openToolHooksStore(directory);
   const agentWorktrees = createAgentWorktreeService(directory);
   const publishedFiles = await openPublishedFileStore(directory);
-  const usageStatsService = createUsageStatsService(store);
+  const usageStatsService = createUsageStatsService(store, createModelPricingService({
+    cacheDirectory: directory,
+  }));
   const mcp = await createMcpService({ home: directory });
   const liveMcp = new Set<Awaited<ReturnType<typeof createMcpService>>>();
   // Keep live access and a bounded recent history without retaining disposed tools.

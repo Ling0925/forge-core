@@ -1,3 +1,6 @@
+import { join } from "node:path";
+import type { UsagePricingStatus } from "../shared/ipc";
+import { atomicJson, privateDirectory, readJson } from "../store/io";
 import type { ModelCatalogEntry } from "../shared/model-catalog";
 import type { Usage } from "../shared/schemas";
 
@@ -15,7 +18,8 @@ export interface ModelPrice {
 }
 export type ModelPrices = ReadonlyMap<string, ModelPrice>;
 export interface ModelPricingService {
-  getPrices(): Promise<ModelPrices>;
+  getPrices(refresh?: boolean): Promise<ModelPrices>;
+  getStatus?(): UsagePricingStatus;
 }
 
 /** Match a configured source/model or source:model by its concrete model ID. */
@@ -120,29 +124,72 @@ export function estimateRequestCostUsd(usage: Usage | undefined, price: ModelPri
 export function createModelPricingService(options: {
   readonly fetch?: typeof fetch;
   readonly now?: () => number;
+  /** Only the public price catalog is persisted here, never provider configuration. */
+  readonly cacheDirectory?: string;
 } = {}): ModelPricingService {
   const fetcher = options.fetch ?? globalThis.fetch;
   const now = options.now ?? Date.now;
+  const cachePath = options.cacheDirectory && join(options.cacheDirectory, "model-prices.json");
+  const maxCacheBytes = 16 * 1024 * 1024;
   let prices: ModelPrices = new Map();
+  let status: UsagePricingStatus = { state: "unavailable" };
+  let cacheLoaded = false;
   let refreshAt = 0;
   let pending: Promise<ModelPrices> | undefined;
   return {
-    async getPrices() {
+    getStatus: () => status,
+    async getPrices(refresh = false) {
       if (pending) return pending;
-      if (now() < refreshAt) return prices;
+      if (!refresh && now() < refreshAt) return prices;
       pending = (async () => {
+        if (!cacheLoaded) {
+          cacheLoaded = true;
+          if (cachePath) {
+            try {
+              const cached = record(await readJson(cachePath, maxCacheBytes));
+              const fetchedAt = amount(cached?.fetchedAt);
+              if (cached?.version === 1 && cached.source === MODEL_PRICES_URL &&
+                  fetchedAt !== undefined && fetchedAt <= now()) {
+                const restored = parseModelPrices(cached.catalog);
+                if (restored.size > 0) {
+                  prices = restored;
+                  refreshAt = fetchedAt + refreshIntervalMs;
+                  status = { state: now() < refreshAt ? "ready" : "stale",
+                    fetchedAt: new Date(fetchedAt).toISOString() };
+                }
+              }
+            } catch {
+              // Missing/corrupt cache does not prevent a fresh public download.
+            }
+          }
+        }
+        if (!refresh && now() < refreshAt) return prices;
         try {
           const response = await fetcher(MODEL_PRICES_URL, {
             headers: { Accept: "application/json" },
-            signal: AbortSignal.timeout(10_000),
+            // The full catalog is several MB; the deadline includes the body,
+            // not just response headers. A 10s cap discarded healthy slow loads.
+            signal: AbortSignal.timeout(60_000),
           });
           if (!response.ok) throw new Error(`Model prices HTTP ${response.status}`);
-          const updated = parseModelPrices(await response.json());
+          const catalog: unknown = await response.json();
+          const updated = parseModelPrices(catalog);
           if (updated.size === 0) throw new Error("No model prices in catalog");
+          const fetchedAt = now();
           prices = updated;
-          refreshAt = now() + refreshIntervalMs;
+          refreshAt = fetchedAt + refreshIntervalMs;
+          status = { state: "ready", fetchedAt: new Date(fetchedAt).toISOString() };
+          if (cachePath && options.cacheDirectory) {
+            try {
+              await privateDirectory(options.cacheDirectory);
+              await atomicJson(cachePath, { version: 1, source: MODEL_PRICES_URL, fetchedAt, catalog }, maxCacheBytes);
+            } catch {
+              // A cache write failure must not discard usable downloaded prices.
+            }
+          }
         } catch {
-          // Keep last known prices and leave unknown costs absent, never zero.
+          // Preserve last known prices across outages AND process restarts.
+          status = { ...status, state: prices.size > 0 ? "stale" : "unavailable" };
           refreshAt = now() + retryIntervalMs;
         }
         return prices;

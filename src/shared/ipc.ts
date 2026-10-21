@@ -75,6 +75,7 @@ export const usageFilterSchema = z
   .object({
     workspace: z.string().optional(),
     days: z.number().int().positive().optional(),
+    refreshPrices: z.boolean().optional(),
   })
   .strict()
   .readonly()
@@ -151,6 +152,12 @@ export const usageRequestSchema = providerAttemptSchema.unwrap().extend({
 }).readonly();
 export type UsageRequest = z.infer<typeof usageRequestSchema>;
 
+export const usagePricingStatusSchema = z.object({
+  state: z.enum(["ready", "stale", "unavailable"]),
+  fetchedAt: z.string().datetime().optional(),
+}).strict().readonly();
+export type UsagePricingStatus = z.infer<typeof usagePricingStatusSchema>;
+
 export const usageStatsDtoSchema = z
   .object({
     totalPromptTokens: z.number().int().nonnegative(),
@@ -165,6 +172,7 @@ export const usageStatsDtoSchema = z
     topSessions: z.array(sessionUsageStatSchema).readonly(),
     routes: z.array(routeUsageStatSchema).readonly().optional(),
     requests: z.array(usageRequestSchema).readonly().optional(),
+    pricing: usagePricingStatusSchema.optional(),
   })
   .strict()
   .readonly();

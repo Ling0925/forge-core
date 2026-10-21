@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import { aggregateUsageStats, computeSessionUsage, createUsageStatsService, sessionRequestRecords } from "../src/core/usage-stats";
 import { createModelPricingService, parseModelPrices } from "../src/core/model-pricing";
 import type { SessionStore } from "../src/shared/contracts";
-import { usageStatsDtoSchema } from "../src/shared/ipc";
+import { usageFilterSchema, usageStatsDtoSchema } from "../src/shared/ipc";
 import type { ProviderAttempt } from "../src/shared/model-access";
 import { agentEventSchema, sessionIdSchema, settingsFields, type AgentEvent, type SessionSnapshot } from "../src/shared/schemas";
 
@@ -164,6 +164,23 @@ describe("individual usage request records", () => {
       attempt("started", 7, {}, 5), attempt("succeeded", 9, { usage: { ...usage, completionTokens: 0 } }, 5),
     ]));
     expect(records.map(item => item.tokensPerSecond)).toEqual([undefined, undefined, undefined, undefined, 0]);
+  });
+
+  it("exposes price download failure separately and forwards an explicit refresh through the DTO contract", async () => {
+    const current = snapshot([attempt("succeeded", 2, { usage })]);
+    const store = { list: async () => [current], get: async () => current } as unknown as SessionStore;
+    const fetcher = vi.fn<typeof fetch>().mockRejectedValueOnce(new Error("offline"))
+      .mockResolvedValueOnce(Response.json({ lab: { models: { model: { cost: { input: 3, output: 15 } } } } }));
+    const service = createUsageStatsService(store, createModelPricingService({ fetch: fetcher }));
+    const unavailable = usageStatsDtoSchema.parse(await service.getUsageStats());
+    expect(unavailable.pricing?.state).toBe("unavailable");
+    expect(unavailable.models[0]?.estimatedCostUsd).toBeUndefined();
+    const refreshed = usageStatsDtoSchema.parse(await service.getUsageStats(usageFilterSchema.parse({ refreshPrices: true })));
+    expect(refreshed.pricing?.state).toBe("ready");
+    expect(refreshed.requests?.[0]?.estimatedCostUsd).toBeCloseTo(0.0006, 10);
+    expect(refreshed.models[0]?.estimatedCostUsd).toBeCloseTo(0.0006, 10);
+    expect(refreshed.totalTokens).toBe(unavailable.totalTokens);
+    expect(fetcher).toHaveBeenCalledTimes(2);
   });
 
   it("automatically enriches filtered requests with current model prices without changing persisted usage totals", async () => {

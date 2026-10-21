@@ -544,8 +544,9 @@ export function createUsageStatsService(
       }
 
       const stats = aggregateUsageStats(computedList, filter);
-      const prices = stats.requests?.some(request => request.usage !== undefined)
-        ? await pricing.getPrices() : new Map();
+      const needsPrices = stats.requests?.some(request => request.usage !== undefined);
+      const prices = needsPrices ? await pricing.getPrices(filter?.refreshPrices) : new Map();
+      const pricingStatus = needsPrices ? pricing.getStatus?.() : undefined;
       const modelCosts = new Map<string, { estimatedCostUsd: number; pricedRequestCount: number }>();
       const requests = (stats.requests ?? []).map(request => {
         // Price lookup intentionally strips source/vendor prefixes. Accounting
@@ -561,6 +562,7 @@ export function createUsageStatsService(
       return {
         ...stats,
         requests,
+        ...(pricingStatus ? { pricing: pricingStatus } : {}),
         models: stats.models.map(model => {
           const cost = modelCosts.get(model.model);
           const pricedRequestCount = cost?.pricedRequestCount ?? 0;

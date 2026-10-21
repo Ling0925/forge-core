@@ -1,3 +1,6 @@
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import {
   MODEL_PRICES_URL,
@@ -110,6 +113,86 @@ describe("models.dev request pricing", () => {
 });
 
 describe("automatic price catalog cache", () => {
+  it("allows a slow catalog body to finish after the former ten-second deadline", async () => {
+    vi.useFakeTimers();
+    const timeout = vi.spyOn(AbortSignal, "timeout").mockImplementation(ms => {
+      const controller = new AbortController();
+      setTimeout(() => controller.abort(new DOMException("Timed out", "TimeoutError")), ms);
+      return controller.signal;
+    });
+    try {
+      const fetcher = vi.fn<typeof fetch>(async (_url, init) => new Response(new ReadableStream({
+        start(controller) {
+          const abort = () => controller.error(init?.signal?.reason);
+          init?.signal?.addEventListener("abort", abort, { once: true });
+          setTimeout(() => {
+            init?.signal?.removeEventListener("abort", abort);
+            controller.enqueue(new TextEncoder().encode(JSON.stringify(catalog)));
+            controller.close();
+          }, 11_000);
+        },
+      })));
+      const service = createModelPricingService({ fetch: fetcher });
+      const loaded = service.getPrices();
+      await vi.advanceTimersByTimeAsync(11_000);
+      expect(findModelPrice(await loaded, "model-v1")).toBeDefined();
+      expect(timeout).toHaveBeenCalledWith(60_000);
+      expect(service.getStatus?.()).toMatchObject({ state: "ready" });
+    } finally { timeout.mockRestore(); vi.useRealTimers(); }
+  });
+
+  it("lets explicit refresh retry immediately instead of returning a five-minute failed cache", async () => {
+    const fetcher = vi.fn<typeof fetch>().mockRejectedValueOnce(new Error("offline"))
+      .mockResolvedValueOnce(Response.json(catalog));
+    const service = createModelPricingService({ fetch: fetcher });
+    expect((await service.getPrices()).size).toBe(0);
+    expect(service.getStatus?.()).toEqual({ state: "unavailable" });
+    await service.getPrices();
+    expect(fetcher).toHaveBeenCalledTimes(1);
+    expect(findModelPrice(await service.getPrices(true), "model-v1")).toBeDefined();
+    expect(service.getStatus?.()).toMatchObject({ state: "ready" });
+    expect(fetcher).toHaveBeenCalledTimes(2);
+  });
+
+  it("reuses a fresh disk cache without network and preserves stale prices after an offline restart", async () => {
+    const cacheDirectory = await mkdtemp(join(tmpdir(), "forge-model-prices-"));
+    let now = Date.now();
+    try {
+      const first = createModelPricingService({ cacheDirectory, now: () => now, fetch: async () => Response.json(catalog) });
+      const original = await first.getPrices();
+      const fetchedAt = first.getStatus?.().fetchedAt;
+      const disk = JSON.parse(await readFile(join(cacheDirectory, "model-prices.json"), "utf8"));
+      expect(disk).toMatchObject({ version: 1, source: MODEL_PRICES_URL, catalog });
+      const offline = vi.fn<typeof fetch>().mockRejectedValue(new Error("offline"));
+      const fresh = createModelPricingService({ cacheDirectory, now: () => now, fetch: offline });
+      const [a, b] = await Promise.all([fresh.getPrices(), fresh.getPrices()]);
+      expect(a).toEqual(original);
+      expect(a).toBe(b);
+      expect(offline).not.toHaveBeenCalled();
+      expect(fresh.getStatus?.()).toEqual({ state: "ready", fetchedAt });
+      now += 24 * 3600000;
+      const restarted = createModelPricingService({ cacheDirectory, now: () => now, fetch: offline });
+      expect(await restarted.getPrices()).toEqual(original);
+      expect(restarted.getStatus?.()).toEqual({ state: "stale", fetchedAt });
+      expect(estimateRequestCostUsd(usage, findModelPrice(await restarted.getPrices(), "model-v1"))).toBeCloseTo(0.00492, 10);
+      expect(offline).toHaveBeenCalledTimes(1);
+      expect(JSON.parse(await readFile(join(cacheDirectory, "model-prices.json"), "utf8"))).toEqual(disk);
+    } finally { await rm(cacheDirectory, { recursive: true, force: true }); }
+  });
+
+  it("ignores corrupt caches and keeps downloaded prices even when persistence is unavailable", async () => {
+    const cacheDirectory = await mkdtemp(join(tmpdir(), "forge-model-prices-"));
+    try {
+      const path = join(cacheDirectory, "model-prices.json");
+      await writeFile(path, "not JSON", { mode: 0o600 });
+      const service = createModelPricingService({ cacheDirectory, fetch: async () => Response.json(catalog) });
+      expect(findModelPrice(await service.getPrices(), "model-v1")).toBeDefined();
+      const blocked = createModelPricingService({ cacheDirectory: path, fetch: async () => Response.json(catalog) });
+      expect(findModelPrice(await blocked.getPrices(), "model-v1")).toBeDefined();
+      expect(blocked.getStatus?.()).toMatchObject({ state: "ready" });
+    } finally { await rm(cacheDirectory, { recursive: true, force: true }); }
+  });
+
   it("fetches the public catalog lazily, coalesces concurrent reads and refreshes after a day", async () => {
     let now = 1000;
     let release!: (response: Response) => void;
