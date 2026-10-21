@@ -85,6 +85,7 @@ function fixture(options: {
     group,
     state: createRouteState(),
     ...(options.apiMode === undefined ? {} : { apiMode: options.apiMode }),
+    mayUseWebSearch: options.providers.some(provider => provider.apiMode === "responses"),
     resolve: (candidate) => {
       const index = members.findIndex(
         (member) => member.sourceId === candidate.sourceId,
@@ -97,7 +98,7 @@ function fixture(options: {
         config: providerConfigSchema.parse({
           baseUrl: "https://example.test/v1",
           apiKey: "sk-test-secret",
-          apiMode: "chat-completions",
+          apiMode: resolved.apiMode ?? options.apiMode ?? "chat-completions",
           requestTimeoutMs: 60_000,
         }),
       };
@@ -279,12 +280,52 @@ it("does not switch members when the run is cancelled during a routed attempt", 
   ).toEqual(["started", "failed"]);
 });
 
-it("does not replay a routed request after a hosted search started", async () => {
+it("automatically enables search only for Responses members of a mixed-protocol route", async () => {
+  const seen: (string | undefined)[] = [];
+  const providers: ModelProvider[] = (["chat-completions", "responses"] as const).map(apiMode => ({
+    ...providerOf(async (_messages, _tools, request) => {
+      seen.push(request.webSearch);
+      return answer("done");
+    }),
+    apiMode,
+  }));
+  const approve = vi.fn<ApprovalHandler>(async () => true);
+  const run = fixture({ providers, strategy: "rotate", approve });
+  await run.run();
+  expect(run.snapshot().status).toBe("completed");
+  await run.run();
+  expect(run.snapshot().status).toBe("completed");
+  expect(seen).toEqual(["disabled", "live"]);
+  expect(approve).toHaveBeenCalledTimes(2);
+});
+
+it("retains safe non-Responses retries in a mixed route and authorizes search on its Responses member", async () => {
+  vi.useFakeTimers();
+  const seen: (string | undefined)[] = [];
+  const providers: ModelProvider[] = (["chat-completions", "responses"] as const).map(apiMode => ({
+    ...providerOf(async (_messages, _tools, request) => {
+      seen.push(request.webSearch);
+      if (apiMode === "chat-completions") throw new ProviderError("http", "Rate limited.", true, 429);
+      return answer("done");
+    }),
+    apiMode,
+  }));
+  const run = fixture({ providers, approve: async () => true });
+  const running = run.run();
+  await vi.runAllTimersAsync();
+  await running;
+  expect(run.snapshot().status).toBe("completed");
+  expect(seen).toEqual(["disabled", "live"]);
+  expect(run.events.filter(event => event.type === "provider_retry")).toHaveLength(1);
+});
+
+it.each([true, false])("does not replay a search-enabled routed request (progress received: %s)", async progress => {
   vi.useFakeTimers();
   let secondCalls = 0;
   const first = providerOf(async (_messages, _tools, request) => {
-    request.onWebSearch?.({ id: "search-1", status: "searching" });
-    throw new ProviderError("network", "The provider connection failed.", true);
+    expect(request.webSearch).toBe("live");
+    if (progress) request.onWebSearch?.({ id: "search-1", status: "searching" });
+    throw new ProviderError("http", "Rate limited.", true, 429);
   });
   const second = providerOf(async () => {
     secondCalls += 1;
@@ -293,7 +334,6 @@ it("does not replay a routed request after a hosted search started", async () =>
   const run = fixture({
     providers: [first, second],
     apiMode: "responses",
-    settings: { ...defaultPublicSettings, webSearch: "cached" },
     approve: async () => true,
   });
 

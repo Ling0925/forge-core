@@ -33,7 +33,13 @@ const TRANSACTION_LIMIT = 16 * 1024 * 1024;
 const NEW_SOURCE_ID = "default";
 const NEW_SOURCE_LABEL = "Default";
 
-const fieldsSchema = configureInputSchema.unwrap().shape.settings.unwrap();
+// Accept and discard the retired search switch only when reading stored data.
+// Public configuration no longer exposes it, and old disabled/cached values
+// must not prevent automatic live search on Responses agent requests.
+const fieldsSchema = configureInputSchema.unwrap().shape.settings.unwrap().unwrap()
+  .extend({ webSearch: z.enum(["disabled", "cached", "live"]).optional() })
+  .transform(({ webSearch: _legacyWebSearch, ...settings }) => settings)
+  .readonly();
 const credentialValueSchema = configureInputSchema.unwrap().shape.apiKey.unwrap();
 const configSchema = z
   .object({ version: z.literal(1), settings: fieldsSchema })

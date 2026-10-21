@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, rm, stat, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, expect, it, vi } from "vitest";
@@ -30,6 +30,30 @@ let directory = "";
 afterEach(async () => {
   hooks.afterRead = async () => {};
   if (directory) await rm(directory, { recursive: true, force: true });
+});
+
+it.each(["disabled", "cached", "live"] as const)("discards retired %s search settings in legacy config and v1/v2 transactions", async webSearch => {
+  directory = await mkdtemp(join(tmpdir(), "forge-search-migration-"));
+  for (const format of ["config", "v1", "v2"] as const) {
+    const root = join(directory, format);
+    const folder = join(root, "settings");
+    await mkdir(folder, { recursive: true, mode: 0o700 });
+    const settings = { baseUrl: "https://example.invalid/v1", model: "test", apiMode: "responses", theme: "dark", webSearch };
+    const record = format === "config"
+      ? { version: 1, settings }
+      : { version: format === "v1" ? 1 : 2, settings, apiKey: "", sources: [], ...(format === "v2" ? { routeGroups: [] } : {}) };
+    await writeFile(join(folder, format === "config" ? "config.json" : "state.json"), JSON.stringify(record), { mode: 0o600 });
+    const store = await openSettingsStore(root);
+    const publicSettings = await store.getPublic();
+    expect(publicSettings).not.toHaveProperty("webSearch");
+    expect(publicSettings).toMatchObject({ theme: "dark", apiMode: "responses", model: "test" });
+    expect(await store.getProviderConfig()).not.toHaveProperty("webSearch");
+    await store.update({ settings: { theme: "light" } });
+    const saved = JSON.parse(await readFile(join(folder, "state.json"), "utf8"));
+    expect(saved.settings).not.toHaveProperty("webSearch");
+    expect(saved.settings).toMatchObject({ theme: "light", apiMode: "responses", model: "test" });
+    expect(await (await openSettingsStore(root)).getPublic()).not.toHaveProperty("webSearch");
+  }
 });
 
 it("migrates before exposing readers and keeps pairs coherent across a deterministically paused read", async () => {

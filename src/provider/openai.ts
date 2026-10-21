@@ -494,7 +494,7 @@ export function createModelProvider(config: ProviderConfig): ModelProvider {
                 )
                   throw new ProviderError(
                     "http",
-                    "The Responses request with native web_search was rejected. Check endpoint/model support or explicitly set --web-search disabled; Forge will not retry without search or fall back to Bing.",
+                    "The Responses request with native web_search was rejected. Select an endpoint/model supporting native web_search; Forge will not retry without search or fall back to Bing.",
                     false,
                     error.status,
                   );

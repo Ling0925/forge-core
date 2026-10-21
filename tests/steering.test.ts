@@ -345,7 +345,7 @@ describe("immediate runtime steering", () => {
         requests.push(users(messages));
         return { message: { role: "assistant", content: "done" } };
       },
-    }, emptyTools, { settings: { ...defaultPublicSettings, webSearch: "cached" } });
+    });
     const work = f.runtime.run({ ...input, permission: "workspace" }, () => {}, async () => {
       approving = true;
       await approval.promise;

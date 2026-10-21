@@ -5,7 +5,7 @@ import { createDiffPatch, unavailablePatch } from "./diff";
 import { imageAttachmentsSchema } from "./images";
 import { publishedFilesSchema } from "./published-files";
 import { toolHookDiagnosticSchema } from "./tool-hooks";
-import { webSearchModeSchema, webCitationSchema, webSearchRecordSchema, webSearchProgressSchema } from "./web-search";
+import { webCitationSchema, webSearchRecordSchema, webSearchProgressSchema } from "./web-search";
 
 export type JsonValue =
   | null
@@ -67,8 +67,6 @@ export const lspServersSchema = z.array(lspServerSchema).max(8).readonly().refin
 ).refine(servers => JSON.stringify(servers).length <= 24000, "LSP configuration is too large");
 export const settingsFields = {
   apiMode: providerProtocolSchema.optional(),
-  // Responses hosted search only. Absent is disabled for existing installations.
-  webSearch: webSearchModeSchema.optional(),
   maxOutputTokens: z.number().int().min(1).max(1000000).optional(),
   reasoningEffort: reasoningEffortSchema.optional(),
   baseUrl: z

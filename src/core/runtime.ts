@@ -732,15 +732,18 @@ export const createAgentRuntime = (
         activeStep = turns;
         event({ type: "step_started", turn, step: activeStep, messageIndex: snapshot.messages.length });
         await save();
-        let webSearch = effectivePermission() === "readonly" ? "disabled" as const : deps.settings.webSearch ?? "disabled";
+        // Hosted search is an ordinary Responses capability, not a user setting.
+        // Mixed routes advertise whether any candidate may use it; the router
+        // omits it for members using other protocols. Permission still applies.
+        let webSearch: "live" | "disabled" = effectivePermission() !== "readonly"
+          && (deps.provider.apiMode === "responses" || deps.provider.mayUseWebSearch === true)
+          ? "live" : "disabled";
         if (webSearch !== "disabled") {
-          if (deps.provider.apiMode !== "responses")
-            throw new ForgeError("invalid_input", "Native web search requires a Responses endpoint and a model supporting web_search. Select Responses or explicitly set --web-search disabled; no local-search fallback is used.");
           if (effectivePermission() === "workspace") {
             const request = {
               id: randomUUID(), sessionId: input.sessionId,
               toolCallId: `hosted-search:${turns}:${randomUUID()}`, toolName: "web_search",
-              description: `Allow provider-hosted ${webSearch} web search for this Responses request? The provider may send generated queries to search services${webSearch === "live" ? " and fetch external pages" : " using cached results only"}. Queries can include conversation data and may incur provider charges. Local URL/SSRF rules cannot control this service; individual queries and URLs cannot be approved before execution. No Bing fallback.`,
+              description: "Allow provider-hosted live web search if this request uses Responses? The provider may send generated queries to search services and fetch external pages. Queries can include conversation data and may incur provider charges. Local URL/SSRF rules cannot control this service; individual queries and URLs cannot be approved before execution. No Bing fallback.",
             };
             snapshot = { ...snapshot, status: "awaiting_approval" };
             event({ type: "state_changed", status: "awaiting_approval" });
@@ -760,7 +763,7 @@ export const createAgentRuntime = (
               await save();
             }
             check();
-            if (!allowed) throw new ForgeError("tool", "Provider-hosted web search was denied; no search request was sent. Explicitly disable search to continue without it.");
+            if (!allowed) throw new ForgeError("tool", "Provider-hosted web search was denied; no provider request was sent.");
           }
           // Permission can change while approval is pending; never use stale consent.
           if (effectivePermission() === "readonly") webSearch = "disabled";
@@ -882,8 +885,9 @@ export const createAgentRuntime = (
             if (
               signal.aborted ||
               // A hosted search may already have run/billed even without a final
-              // frame. Never replay an uncertain provider-owned operation.
-              webSearch !== "disabled" ||
+              // frame. A mixed route tracks the actual member's authorization
+              // below, so non-Responses members retain their safe retry policy.
+              (webSearch !== "disabled" && routing === undefined) ||
               attempt >= MAX_GENERATION_RETRIES ||
               !isRetryableProviderFailure(error) ||
               // A route group's members share this budget. Only a request that

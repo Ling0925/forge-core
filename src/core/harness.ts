@@ -824,6 +824,7 @@ export const createHarness = async (
           const provider = selectedGroup && prepared ? createRoutedProvider({
             group: selectedGroup, state: routeState,
             ...(prepared.apiMode ? { apiMode: prepared.apiMode } : {}),
+            mayUseWebSearch: prepared.mayUseWebSearch,
             contextWindow: prepared.contextWindow, quota: prepared.quota, exclude: prepared.exclude,
             resolve: (member, requestSignal) => modelAccess.resolveProvider(member.sourceId, member.credentialId, requestSignal, member.model, validateSelection),
           }) : resolved.provider;

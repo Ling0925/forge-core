@@ -1,15 +1,19 @@
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { expect, it, vi } from "vitest";
+import { createHarness } from "../../src/core/harness";
 import { createAgentRuntime } from "../../src/core/runtime";
 import { ProviderError } from "../../src/provider/openai";
 import type { ApprovalHandler, ModelProvider, SessionStore, RunControl } from "../../src/shared/contracts";
-import { defaultPublicSettings, sessionSnapshotSchema, type AgentEvent, type Permission, type PublicSettings } from "../../src/shared/schemas";
+import { defaultPublicSettings, sessionSnapshotSchema, type AgentEvent, type Permission } from "../../src/shared/schemas";
 
 const answer = { message: { role: "assistant", content: "News", citations: [{ url: "https://example.com/", title: "Source", startIndex: 0, endIndex: 4 }], webSearches: [{ id: "ws", status: "completed", action: "search", queries: ["news"] }] } } as const;
-function fixture(complete: ModelProvider["complete"], settings: Partial<PublicSettings> = {}, apiMode: NonNullable<ModelProvider["apiMode"]> = "responses") {
+function fixture(complete: ModelProvider["complete"], apiMode: NonNullable<ModelProvider["apiMode"]> = "responses") {
   let current = sessionSnapshotSchema.parse({ version: 1, id: "12345678-1234-4234-8234-123456789abc", title: "Test", workspace: "/workspace", model: "model", createdAt: "2026-01-01T00:00:00.000Z", updatedAt: "2026-01-01T00:00:00.000Z", status: "idle", messages: [], events: [], changes: [] });
   const store: SessionStore = { list: async () => [], get: async () => current, create: async () => current, save: async (s) => { current = sessionSnapshotSchema.parse(s); }, acquire: async () => async () => {} };
   const execute = vi.fn(async () => ({ content: "ok", isError: false }));
-  const runtime = createAgentRuntime({ store, provider: { apiMode, listModels: async () => [], complete }, settings: { ...defaultPublicSettings, webSearch: "live", ...settings }, tools: { definitions: [], execute, dispose: async () => {} } });
+  const runtime = createAgentRuntime({ store, provider: { apiMode, listModels: async () => [], complete }, settings: defaultPublicSettings, tools: { definitions: [], execute, dispose: async () => {} } });
   const events: AgentEvent[] = [];
   const run = (permission: Permission, approve: ApprovalHandler = async () => false, mode: "build" | "plan" = "build", control?: RunControl, signal = new AbortController().signal) => runtime.run({ sessionId: current.id, prompt: "news", permission, mode }, (e) => events.push(e), approve, signal, control);
   return { run, execute, events, current: () => current };
@@ -32,8 +36,8 @@ it("allows native search unrestricted, keeps progress ephemeral and saves citati
   expect(approve).not.toHaveBeenCalled();
 });
 
-it.each(["readonly", "plan", "disabled"] as const)("does not authorize search in %s", async (setting) => {
-  const f = fixture(async (_m, _d, options) => { expect(options.webSearch).toBe("disabled"); return { message: { role: "assistant", content: "No search" } }; }, setting === "disabled" ? { webSearch: "disabled" } : {});
+it.each(["readonly", "plan"] as const)("does not authorize search in %s", async (setting) => {
+  const f = fixture(async (_m, _d, options) => { expect(options.webSearch).toBe("disabled"); return { message: { role: "assistant", content: "No search" } }; });
   const approve = vi.fn<ApprovalHandler>(async () => true);
   const result = await f.run(setting === "readonly" ? "readonly" : "unrestricted", approve, setting === "plan" ? "plan" : "build");
   expect(result.status).toBe("completed");
@@ -73,11 +77,57 @@ it("rechecks effective permission after approval and cancels a pending approval 
   expect(complete).toHaveBeenCalledTimes(before);
 });
 
-it("fails incompatible protocols before generation, and never retries an uncertain hosted request", async () => {
+it.each(["chat-completions", "anthropic", "gemini"] as const)("keeps %s generation working without hosted search or search approval", async apiMode => {
+  const complete = vi.fn<ModelProvider["complete"]>(async (_m, _d, options) => {
+    expect(options.webSearch).toBe("disabled");
+    return { message: { role: "assistant", content: "Plain answer" } };
+  });
+  const f = fixture(complete, apiMode);
+  const approve = vi.fn<ApprovalHandler>(async () => false);
+  expect((await f.run("workspace", approve)).status).toBe("completed");
+  expect(complete).toHaveBeenCalledTimes(1);
+  expect(approve).not.toHaveBeenCalled();
+});
+
+it.each([false, true])("shares automatic search behavior through the Harness (routed: %s)", async routed => {
+  const root = await mkdtemp(join(tmpdir(), "forge-shared-search-"));
+  const seen: (string | undefined)[] = [];
+  const service = await createHarness({
+    stateDir: join(root, "home"),
+    providerFactory: config => ({
+      apiMode: config.apiMode ?? "chat-completions",
+      listModels: async () => ["model"],
+      getModelContextWindow: async () => 128000,
+      complete: async (_messages, _tools, request) => {
+        seen.push(request.webSearch);
+        return { message: { role: "assistant", content: "Done" } };
+      },
+    }),
+    toolFactory: () => ({ definitions: [], execute: async () => ({ content: "", isError: false }), dispose: async () => {} }),
+  });
+  try {
+    await service.updateSettings({
+      sources: (["responses", "chat-completions"] as const).map((apiMode, index) => ({
+        type: "save", source: { id: `source-${index}`, label: apiMode, apiMode, baseUrl: "https://example.invalid/v1", model: "model" }, apiKey: "",
+      })),
+      route: { type: "save", group: { id: "mixed", label: "Mixed", strategy: "rotate", members: [
+        { sourceId: "source-0", model: "model" }, { sourceId: "source-1", model: "model" },
+      ] } },
+    });
+    expect(await service.getSettings()).not.toHaveProperty("webSearch");
+    const session = await service.createSession({ workspace: root, title: "Search fixture", ...(routed ? { routeGroupId: "mixed" } : { providerSourceId: "source-0" }) });
+    const run = () => service.run({ sessionId: session.id, prompt: "Search the news", permission: "unrestricted" }, () => {}, async () => false, new AbortController().signal);
+    expect((await run()).status).toBe("completed");
+    if (routed) expect((await run()).status).toBe("completed");
+    expect(seen).toEqual(routed ? ["live", "disabled"] : ["live"]);
+  } finally {
+    await service.dispose();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+it("never retries an uncertain hosted request with default settings", async () => {
   const complete = vi.fn<ModelProvider["complete"]>(async () => { throw new ProviderError("network", "Connection lost", true); });
-  const f = fixture(complete, {}, "chat-completions");
-  expect((await f.run("unrestricted")).status).toBe("failed");
-  expect(complete).not.toHaveBeenCalled();
   const native = fixture(complete);
   expect((await native.run("unrestricted")).status).toBe("failed");
   expect(complete).toHaveBeenCalledTimes(1);

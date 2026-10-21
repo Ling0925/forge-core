@@ -141,8 +141,10 @@ export interface RoutedProviderOptions {
   ) => string | undefined;
   /** Real quota readings for `smart`/`pace`; never inferred or cached here. */
   readonly quota?: (member: RouteMember) => RouteQuota | undefined;
-  /** Uniform protocol of every member, when they share one (hosted search needs it). */
+  /** Uniform protocol of every member, when they share one. */
   readonly apiMode?: ModelProvider["apiMode"];
+  /** Derived from candidate protocols before request-level search approval. */
+  readonly mayUseWebSearch?: boolean;
   /** Smallest known candidate window; unknown is null, never a guessed limit. */
   readonly contextWindow?: number | null;
   readonly now?: () => number;
@@ -508,7 +510,10 @@ export function createRoutedProvider(
 
     /** Any streamed content makes the attempt's real outcome unknown. */
     let streamed = false;
-    let hostedSearch = false;
+    // Authorization alone is enough: remote search may run before any progress
+    // reaches us. Never replay a search-enabled member, even on an empty stream.
+    let hostedSearch = apiMode === "responses"
+      && completeOptions.webSearch !== undefined && completeOptions.webSearch !== "disabled";
     let response: ProviderResponse;
     try {
       response = await resolved.provider.complete(messages, toolDefinitions, {
@@ -522,7 +527,7 @@ export function createRoutedProvider(
           : { sessionId: completeOptions.sessionId }),
         ...(completeOptions.webSearch === undefined
           ? {}
-          : { webSearch: completeOptions.webSearch }),
+          : { webSearch: apiMode === "responses" ? completeOptions.webSearch : "disabled" }),
         ...(completeOptions.onWebSearch === undefined
           ? {}
           : {
@@ -608,6 +613,7 @@ export function createRoutedProvider(
 
   return {
     ...(options.apiMode === undefined ? {} : { apiMode: options.apiMode }),
+    mayUseWebSearch: options.apiMode === "responses" || options.mayUseWebSearch === true,
     ...(options.contextWindow === undefined ? {} : { getModelContextWindow: async () => options.contextWindow ?? null }),
     // Exact member model ids, in declared order: no network and no aliases.
     listModels: async () => [

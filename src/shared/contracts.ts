@@ -43,6 +43,8 @@ export interface RunControl {
 }
 export interface ModelProvider {
   readonly apiMode?: "chat-completions" | "responses" | "anthropic" | "gemini";
+  /** Host-derived metadata for mixed routes with Responses candidates, not a setting or gateway support guarantee. */
+  readonly mayUseWebSearch?: boolean;
   listModels(signal?: AbortSignal, refresh?: boolean): Promise<readonly string[]>;
   /** Complete normalized metadata from one catalog request; no guessed windows. */
   listModelCatalog?(signal?: AbortSignal, refresh?: boolean): Promise<import("./model-catalog").ModelCatalog>;

@@ -7,7 +7,8 @@ import { afterEach, expect, it, vi } from "vitest";
 import { createModelProvider } from "../../src/provider/openai";
 import { openSessionStore } from "../../src/store/sessions";
 import { openSettingsStore } from "../../src/store/settings";
-import type { Message, ProviderConfig } from "../../src/shared/schemas";
+import { configureInputSchema, defaultPublicSettings, type Message, type ProviderConfig } from "../../src/shared/schemas";
+import { createAgentRuntime } from "../../src/core/runtime";
 import type { WebSearchProgress } from "../../src/shared/web-search";
 
 const servers: ReturnType<typeof createServer>[] = [];
@@ -81,6 +82,32 @@ it.each(["live", "cached"] as const)("declares native %s search, preserves annot
   expect(progress.map((p) => p.status)).toEqual(["in_progress", "searching", "completed"]);
 });
 
+it("automatically declares live search on a normal agent request with default settings", async () => {
+  const f = await fixture(answer());
+  const root = await mkdtemp(join(tmpdir(), "forge-default-search-"));
+  try {
+    const store = await openSessionStore(root);
+    const session = await store.create({ workspace: root, model: "model", title: "Search" });
+    const runtime = createAgentRuntime({
+      store,
+      provider: f.provider,
+      settings: { ...defaultPublicSettings, modelContextWindows: { model: 100000 } },
+      tools: { definitions: [], execute: async () => { throw Error("No local search"); }, dispose: async () => {} },
+    });
+    const approve = vi.fn(async () => false);
+    const result = await runtime.run({ sessionId: session.id, prompt: "Search the news", permission: "unrestricted" }, () => {}, approve, new AbortController().signal);
+    expect(result.status).toBe("completed");
+    expect(f.bodies).toHaveLength(1);
+    expect(f.bodies[0]).toMatchObject({ tools: expect.arrayContaining([{ type: "web_search", external_web_access: true }]), include: ["reasoning.encrypted_content", "web_search_call.action.sources"] });
+    const last = result.messages.at(-1);
+    expect(last?.role).toBe("assistant");
+    if (last?.role !== "assistant") throw Error("Missing assistant message");
+    expect(last.webSearches).toHaveLength(1);
+    expect(last.citations?.[0]?.url).toBe(citation.url);
+    expect(approve).not.toHaveBeenCalled();
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
 it("replays provider-owned search and citations exactly after persistence and a new adapter instance", async () => {
   const f = await fixture(answer());
   const root = await mkdtemp(join(tmpdir(), "forge-native-search-"));
@@ -100,17 +127,18 @@ it("replays provider-owned search and citations exactly after persistence and a 
   } finally { await rm(root, { recursive: true, force: true }); }
 });
 
-it("persists search mode without enabling it for auxiliary provider requests", async () => {
+it("has no public search setting and leaves auxiliary provider configuration search-free", async () => {
   const root = await mkdtemp(join(tmpdir(), "forge-search-settings-"));
   try {
     const store = await openSettingsStore(root);
-    expect((await store.getPublic()).webSearch).toBeUndefined();
-    await store.update({ settings: { webSearch: "cached", apiMode: "responses", baseUrl: "https://example.com/v1", model: "model" } });
+    expect(await store.getPublic()).not.toHaveProperty("webSearch");
+    await store.update({ settings: { apiMode: "responses", baseUrl: "https://example.com/v1", model: "model" } });
     const reopened = await openSettingsStore(root);
-    expect((await reopened.getPublic()).webSearch).toBe("cached");
+    expect(await reopened.getPublic()).not.toHaveProperty("webSearch");
     expect(await reopened.getProviderConfig()).not.toHaveProperty("webSearch");
-    await reopened.update({ settings: { webSearch: "disabled" } });
-    expect((await store.getPublic()).webSearch).toBe("disabled");
+    for (const webSearch of ["disabled", "cached", "live"]) {
+      expect(configureInputSchema.safeParse({ settings: { webSearch } }).success).toBe(false);
+    }
   } finally { await rm(root, { recursive: true, force: true }); }
 });
 

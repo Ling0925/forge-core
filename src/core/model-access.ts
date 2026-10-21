@@ -263,6 +263,7 @@ export function createModelAccessService(options: Readonly<{
     return {
       base,
       ...(modes.every(mode => mode === modes[0]) ? { apiMode: modes[0] } : {}),
+      mayUseWebSearch: modes.includes("responses"),
       contextWindow: windows.length ? Math.min(...windows) : null,
       quota: (member: RouteMember) => quotas.get(key(member)),
       exclude: (member: RouteMember, request: RouteRequest) => {
