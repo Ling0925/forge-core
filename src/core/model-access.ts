@@ -25,17 +25,44 @@ const credentialProjection = (source: PublicProviderSource): CredentialInput[] =
 const sourceFields = ({ hasApiKey: _key, credentials: _credentials, connection: _connection, revision: _revision, ...source }: PublicProviderSource) => source;
 type SelectionValidator = (config: ProviderConfig, source: PublicProviderSource | undefined, model: string | undefined) => void;
 
-export function applyModelSelection(upstream: ModelCatalog, source?: PublicProviderSource): ModelCatalog {
+function modelMetadata(upstream: ModelCatalog, source?: PublicProviderSource): ModelCatalog {
   const selection = source?.modelSelection;
   const user = new Map((selection?.manual ?? []).map(entry => [entry.id, entry]));
   for (const [id, override] of Object.entries(selection?.overrides ?? {})) {
     const entry = { ...user.get(id), ...override, id };
     user.set(id, { ...entry, contextWindowTokens: entry.contextWindowTokens ?? null });
   }
-  const merged = mergeCatalog([], upstream, [...user.values()]);
+  return mergeCatalog([], upstream, [...user.values()]);
+}
+
+export function applyModelSelection(upstream: ModelCatalog, source?: PublicProviderSource): ModelCatalog {
+  const selection = source?.modelSelection;
+  const merged = modelMetadata(upstream, source);
   if (selection?.mode === "none") return [];
   if (selection?.mode === "selected") return merged.filter(entry => selection.models?.includes(entry.id));
   return merged;
+}
+
+function selectedMetadata(models: ModelCatalog, model: string, actualModel: string) {
+  const selected = models.find(entry => entry.id === model);
+  const actual = models.find(entry => entry.id === actualModel);
+  if (!actual || actualModel === model) return selected;
+  // An alias may override only some fields; retain the wire model's other metadata.
+  return mergeCatalog([], [...(selected ? [selected] : []), { ...actual, id: model }])[0];
+}
+
+function modelRequestConfig(config: ProviderConfig, source: PublicProviderSource | undefined, model?: string): ProviderConfig {
+  if (model === undefined) return config;
+  const overrides = source?.modelSelection?.overrides;
+  const selected = overrides?.[model];
+  const actualModel = source?.modelAliases?.[model];
+  const actual = actualModel === undefined ? undefined : overrides?.[actualModel];
+  // Only explicit request overrides apply here, not upstream capability metadata.
+  // Null/omitted limits inherit; "default" explicitly suppresses a global effort.
+  const reasoningEffort = selected?.reasoningEffort ?? actual?.reasoningEffort ?? config.reasoningEffort;
+  const maxOutputTokens = selected?.maxOutputTokens ?? actual?.maxOutputTokens ?? config.maxOutputTokens;
+  if (reasoningEffort === config.reasoningEffort && maxOutputTokens === config.maxOutputTokens) return config;
+  return providerConfigSchema.parse({ ...config, reasoningEffort, maxOutputTokens });
 }
 
 /** Host-owned setup operations. Private imports, tokens and request parameters never cross RPC. */
@@ -152,24 +179,42 @@ export function createModelAccessService(options: Readonly<{
         headers: { ...account.headers, ...config.headers }, extraBody: { ...account.extraBody, ...config.extraBody } });
     }
     checkSignal(signal);
+    config = modelRequestConfig(config, source, model);
     const cached = createCachedProviderFactory(catalogStore, current => createProvider(current, source))(config, sourceId);
     const catalog = async (requestSignal?: AbortSignal, refresh?: boolean) => applyModelSelection(cached.listModelCatalog
       ? await cached.listModelCatalog(requestSignal, refresh) : catalogFromIds(await cached.listModels(requestSignal, refresh)), source);
+    const localMetadata = modelMetadata([], source);
     const provider: ModelProvider = {
       ...cached,
       listModels: async (requestSignal, refresh) => (await catalog(requestSignal, refresh)).map(entry => entry.id),
       listModelCatalog: catalog,
-      // Preserve an injected host's independent context-window lookup.
-      getModelContextWindow: cached.listModelCatalog || source?.modelSelection ? async (id, requestSignal) => (await catalog(requestSignal)).find(entry => entry.id === id)?.contextWindowTokens ?? null
-        : async (id, requestSignal) => await cached.getModelContextWindow?.(id, requestSignal) ?? null,
+      async getModelContextWindow(id, requestSignal) {
+        if (requestSignal) checkSignal(requestSignal);
+        // Compaction may ask using the bound wire ID rather than its selected alias.
+        const requested = id === selectedModel && model !== undefined ? model : id;
+        const actual = source?.modelAliases?.[requested] ?? requested;
+        const configured = selectedMetadata(localMetadata, requested, actual)?.contextWindowTokens;
+        if (configured != null) return configured;
+        // Discovery filtering is not a capability filter for an explicit selection.
+        if (cached.listModelCatalog) {
+          const models = modelMetadata(await cached.listModelCatalog(requestSignal), source);
+          return selectedMetadata(models, requested, actual)?.contextWindowTokens ?? null;
+        }
+        // Preserve an injected host's independent context-window lookup.
+        return await cached.getModelContextWindow?.(actual, requestSignal) ?? null;
+      },
       async complete(messages, definitions, request) {
-        const model = selectedModel ?? source?.modelAliases?.[request.model] ?? request.model;
-        const selection = { sourceId: sourceId ?? "environment", model, apiMode: config.apiMode ?? "chat-completions" as const,
-          reasoningEffort: config.reasoningEffort ?? "default" as const,
-          ...(config.credentialId ? { credentialId: config.credentialId } : {}), attempt: request.attempt ?? 0, reason: "direct" };
+        const requested = model ?? request.model;
+        const actual = selectedModel ?? source?.modelAliases?.[requested] ?? requested;
+        // Unbound providers (e.g. inherited child models) resolve at request time.
+        const requestConfig = model === undefined ? modelRequestConfig(config, source, requested) : config;
+        const selection = { sourceId: sourceId ?? "environment", model: actual, apiMode: requestConfig.apiMode ?? "chat-completions" as const,
+          reasoningEffort: requestConfig.reasoningEffort ?? "default" as const,
+          ...(requestConfig.credentialId ? { credentialId: requestConfig.credentialId } : {}), attempt: request.attempt ?? 0, reason: "direct" };
         request.onAttempt?.({ ...selection, outcome: "started", timestamp: new Date().toISOString() });
         try {
-          const response = await cached.complete(messages, definitions, { ...request, model });
+          const inference = requestConfig === config ? cached : createProvider(requestConfig, source);
+          const response = await inference.complete(messages, definitions, { ...request, model: actual });
           request.onAttempt?.({ ...selection, outcome: "succeeded", timestamp: new Date().toISOString(), ...(response.usage ? { usage: response.usage } : {}) });
           return response;
         } catch (error) {
@@ -194,10 +239,9 @@ export function createModelAccessService(options: Readonly<{
         const cached = await catalogStore.inspect(modelCatalogCacheKey(current.config, member.sourceId));
         const reference = current.config.vertex ? await vertexAuth(current.config).listModelCatalog(signal) : current.source?.preset === "bedrock" ? bedrockReferenceCatalog : [];
         const source = current.source;
-        const models = applyModelSelection(cached?.models ?? reference, source ? { ...source, modelSelection: { ...source.modelSelection, mode: "all" } } : undefined);
-        const model = models.find(item => item.id === member.model) ?? models.find(item => item.id === current.actualModel);
-        const overrides = source?.modelSelection?.overrides?.[member.model] ?? (current.actualModel ? source?.modelSelection?.overrides?.[current.actualModel] : undefined);
-        if (model || overrides) metadata.set(key(member), { id: member.model, ...model, ...overrides, contextWindowTokens: overrides?.contextWindowTokens ?? model?.contextWindowTokens ?? null });
+        const models = modelMetadata(cached?.models ?? reference, source);
+        const model = selectedMetadata(models, member.model, current.actualModel ?? member.model);
+        if (model) metadata.set(key(member), model);
         if ((group.strategy === "smart" || group.strategy === "pace") && current.config.account && current.config.credentialId) {
           try {
             const quota = await accounts.readQuota(member.sourceId, current.config.credentialId, signal);
@@ -265,7 +309,12 @@ export function createModelAccessService(options: Readonly<{
           if (input.kind === "catalog") await provider.listModelCatalog!(testSignal, true);
           else {
             if (!model) throw new ForgeError("invalid_input", "请选择测试模型。");
-            const minimal = createProvider({ ...config, maxOutputTokens: 64 }, source);
+            const selected = modelRequestConfig(config, source, model);
+            const thinking = selected.apiMode === "anthropic" && selected.reasoningEffort !== undefined
+              && selected.reasoningEffort !== "default" && selected.reasoningEffort !== "none";
+            // Exercise explicit limits unchanged. A synthetic 64-token cap would
+            // make otherwise valid Anthropic thinking configurations fail locally.
+            const minimal = createProvider({ ...selected, maxOutputTokens: selected.maxOutputTokens ?? (thinking ? 8192 : 64) }, source);
             await minimal.complete([{ role: "user", content: "Reply with OK." }], [], { model: source?.modelAliases?.[model] ?? model, signal: testSignal, onText: () => {} });
           }
           checkSignal(testSignal);

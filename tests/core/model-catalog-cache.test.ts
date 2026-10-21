@@ -88,7 +88,10 @@ it.each(["chat-completions", "responses", "anthropic"] as const)("shares persist
   const text = await readFile(join(f.home, "model-catalogs", files[0]!), "utf8");
   expect(text).not.toContain("do-not-persist");
   expect(text).not.toContain("fixture-a");
-  expect(JSON.parse(text).models).toEqual([{ id: "shared", contextWindowTokens: 1048576 }, { id: "unknown", contextWindowTokens: null }]);
+  expect(JSON.parse(text).models).toEqual([
+    { id: "shared", contextWindowTokens: 1048576, provenance: { contextWindowTokens: "upstream" } },
+    { id: "unknown", contextWindowTokens: null, maxOutputTokens: 8192, provenance: { maxOutputTokens: "upstream" } },
+  ]);
 });
 
 it("isolates source IDs, endpoints, credentials and protocols even when model IDs overlap", async () => {
