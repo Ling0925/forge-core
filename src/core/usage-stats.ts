@@ -9,7 +9,7 @@ import type {
 } from "../shared/ipc";
 import type { ProviderAttempt } from "../shared/model-access";
 import type { AgentEvent, SessionSnapshot, Usage } from "../shared/schemas";
-import { createModelPricingService, estimateRequestCostUsd, findModelPrice, type ModelPricingService } from "./model-pricing";
+import { createModelPricingService, estimateAggregateCostUsd, estimateRequestCostUsd, findModelPrice, type ModelPrices, type ModelPricingService } from "./model-pricing";
 
 type TokenUsageStat = Pick<SessionUsageStat, "promptTokens" | "completionTokens" | "cachedTokens" | "totalTokens">;
 type MutableTokenUsage = { -readonly [K in keyof TokenUsageStat]: TokenUsageStat[K] };
@@ -366,6 +366,7 @@ export function aggregateRouteUsageStats(
 export function aggregateUsageStats(
   computedList: readonly ComputedSessionUsage[],
   filter?: UsageFilter,
+  prices?: ModelPrices,
 ): UsageStatsDto {
   const cutoff = filter?.days ? Date.now() - filter.days * 86_400_000 : undefined;
   const inPeriod = (timestamp: string) => cutoff === undefined || Date.parse(timestamp) >= cutoff;
@@ -382,35 +383,34 @@ export function aggregateUsageStats(
     })
     .filter(item => cutoff === undefined || item.runStats.length > 0);
 
+  const requests = filtered.flatMap(item => item.requests).filter(request =>
+    inPeriod(request.timestamp),
+  ).sort((a, b) => b.timestamp.localeCompare(a.timestamp) || a.id.localeCompare(b.id)).map(request => {
+    // Truncate IDs only for price lookup, never for accounting buckets.
+    const estimatedCostUsd = prices && estimateRequestCostUsd(request.usage, findModelPrice(prices, request.model));
+    return estimatedCostUsd === undefined ? request : { ...request, estimatedCostUsd };
+  });
+  const requestById = new Map(requests.map(request => [request.id, request]));
+
   let totalPromptTokens = 0;
   let totalCompletionTokens = 0;
   let totalCachedTokens = 0;
   let totalRuns = 0;
 
-  const modelMap = new Map<
-    string,
-    {
-      promptTokens: number;
-      completionTokens: number;
-      cachedTokens: number;
-      totalTokens: number;
-      runCount: number;
-      sessionCount: number;
-      requestCount: number;
-      costIncomplete: boolean;
-    }
-  >();
-
-  const dailyMap = new Map<
-    string,
-    {
-      promptTokens: number;
-      completionTokens: number;
-      cachedTokens: number;
-      totalTokens: number;
-      runCount: number;
-    }
-  >();
+  type CostTotals = {
+    estimatedCostUsd?: number;
+    aggregateEstimatedCostUsd?: number;
+    costIncomplete: boolean;
+  };
+  type ModelTotals = MutableTokenUsage & CostTotals & {
+    runCount: number;
+    sessionCount: number;
+    requestCount: number;
+    pricedRequestCount: number;
+  };
+  type DailyTotals = MutableTokenUsage & CostTotals & { runCount: number };
+  const modelMap = new Map<string, ModelTotals>();
+  const dailyMap = new Map<string, DailyTotals>();
 
   for (const item of filtered) {
     const { stat, runStats } = item;
@@ -424,8 +424,8 @@ export function aggregateUsageStats(
       const runModels = new Set<string>();
       const runDates = new Set<string>();
       for (const entry of run.entries) {
-        const m = modelMap.get(entry.model) ?? {
-          ...tokenUsage(), runCount: 0, sessionCount: 0, requestCount: 0, costIncomplete: false,
+        const m: ModelTotals = modelMap.get(entry.model) ?? {
+          ...tokenUsage(), runCount: 0, sessionCount: 0, requestCount: 0, pricedRequestCount: 0, costIncomplete: false,
         };
         m.promptTokens += entry.promptTokens;
         m.completionTokens += entry.completionTokens;
@@ -434,13 +434,12 @@ export function aggregateUsageStats(
         if (!runModels.has(entry.model)) m.runCount += 1;
         if (!sessionModels.has(entry.model)) m.sessionCount += 1;
         if (entry.requestId) m.requestCount += 1;
-        else if (entry.totalTokens > 0) m.costIncomplete = true;
         runModels.add(entry.model);
         sessionModels.add(entry.model);
         modelMap.set(entry.model, m);
 
         const date = entry.timestamp.slice(0, 10);
-        const d = dailyMap.get(date) ?? { ...tokenUsage(), runCount: 0 };
+        const d: DailyTotals = dailyMap.get(date) ?? { ...tokenUsage(), runCount: 0, costIncomplete: false };
         d.promptTokens += entry.promptTokens;
         d.completionTokens += entry.completionTokens;
         d.cachedTokens += entry.cachedTokens;
@@ -448,6 +447,25 @@ export function aggregateUsageStats(
         if (!runDates.has(date)) d.runCount += 1;
         runDates.add(date);
         dailyMap.set(date, d);
+
+        // Entries already exclude request-covered usage. Estimate only that
+        // historical remainder; do not duplicate requests or invent request rows.
+        const aggregate = entry.requestId === undefined;
+        const estimatedCostUsd = entry.requestId !== undefined
+          ? requestById.get(entry.requestId)?.estimatedCostUsd
+          : (prices && entry.totalTokens > 0 ? estimateAggregateCostUsd({
+            promptTokens: entry.promptTokens, completionTokens: entry.completionTokens,
+            cachedPromptTokens: entry.cachedTokens, totalTokens: entry.totalTokens,
+          }, findModelPrice(prices, entry.model)) : undefined);
+        if (!aggregate && estimatedCostUsd !== undefined) m.pricedRequestCount += 1;
+        for (const target of [m, d]) {
+          if (estimatedCostUsd !== undefined) {
+            target.estimatedCostUsd = (target.estimatedCostUsd ?? 0) + estimatedCostUsd;
+            if (aggregate) target.aggregateEstimatedCostUsd = (target.aggregateEstimatedCostUsd ?? 0) + estimatedCostUsd;
+          } else if (!aggregate || entry.totalTokens > 0) {
+            target.costIncomplete = true;
+          }
+        }
       }
     }
   }
@@ -472,9 +490,6 @@ export function aggregateUsageStats(
     .slice(0, 20);
 
   const routes = aggregateRouteUsageStats(filtered);
-  const requests = filtered.flatMap(item => item.requests).filter(request =>
-    inPeriod(request.timestamp),
-  ).sort((a, b) => b.timestamp.localeCompare(a.timestamp) || a.id.localeCompare(b.id));
   const averageCacheRate =
     totalPromptTokens > 0
       ? Math.min(1, Math.max(0, totalCachedTokens / totalPromptTokens))
@@ -544,35 +559,13 @@ export function createUsageStatsService(
       }
 
       const stats = aggregateUsageStats(computedList, filter);
-      const needsPrices = stats.requests?.some(request => request.usage !== undefined);
-      const prices = needsPrices ? await pricing.getPrices(filter?.refreshPrices) : new Map();
-      const pricingStatus = needsPrices ? pricing.getStatus?.() : undefined;
-      const modelCosts = new Map<string, { estimatedCostUsd: number; pricedRequestCount: number }>();
-      const requests = (stats.requests ?? []).map(request => {
-        // Price lookup intentionally strips source/vendor prefixes. Accounting
-        // still uses the exact recorded model, never the first short-name match.
-        const estimatedCostUsd = estimateRequestCostUsd(request.usage, findModelPrice(prices, request.model));
-        if (estimatedCostUsd === undefined) return request;
-        const cost = modelCosts.get(request.model) ?? { estimatedCostUsd: 0, pricedRequestCount: 0 };
-        cost.estimatedCostUsd += estimatedCostUsd;
-        cost.pricedRequestCount += 1;
-        modelCosts.set(request.model, cost);
-        return { ...request, estimatedCostUsd };
-      });
+      const needsPrices = stats.totalTokens > 0 || stats.requests?.some(request => request.usage !== undefined);
+      if (!needsPrices) return stats;
+      const prices = await pricing.getPrices(filter?.refreshPrices);
+      const pricingStatus = pricing.getStatus?.();
       return {
-        ...stats,
-        requests,
+        ...aggregateUsageStats(computedList, filter, prices),
         ...(pricingStatus ? { pricing: pricingStatus } : {}),
-        models: stats.models.map(model => {
-          const cost = modelCosts.get(model.model);
-          const pricedRequestCount = cost?.pricedRequestCount ?? 0;
-          return {
-            ...model,
-            ...(cost ? { estimatedCostUsd: cost.estimatedCostUsd } : {}),
-            pricedRequestCount,
-            costIncomplete: model.costIncomplete || pricedRequestCount < (model.requestCount ?? 0),
-          };
-        }),
       };
     },
   };

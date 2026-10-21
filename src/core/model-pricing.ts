@@ -98,7 +98,10 @@ export function parseModelPrices(value: unknown): ModelPrices {
 }
 
 export function findModelPrice(prices: ModelPrices, model: string): ModelPrice | undefined {
-  return prices.get(normalizePricingModelId(model));
+  const key = normalizePricingModelId(model);
+  // Historical IDs can include a 1M context-window annotation. Prefer an exact
+  // catalog entry, then its base model; do not strip actual model variants.
+  return prices.get(key) ?? (key.endsWith("[1m]") ? prices.get(key.slice(0, -4)) : undefined);
 }
 
 export function estimateRequestCostUsd(usage: Usage | undefined, price: ModelPrice | undefined): number | undefined {
@@ -118,6 +121,14 @@ export function estimateRequestCostUsd(usage: Usage | undefined, price: ModelPri
       (cached > 0 && cacheRate === undefined) || (output > 0 && rates.output === undefined)) return undefined;
   const cost = (inputTokens * (rates.input ?? 0) + cached * (cacheRate ?? 0) + output * (rates.output ?? 0)) / 1_000_000;
   return Number.isFinite(cost) ? cost : undefined;
+}
+
+/**
+ * Legacy run totals have no per-request context size. Use explicitly labelled
+ * base-rate estimates, never treat millions of accumulated tokens as one request.
+ */
+export function estimateAggregateCostUsd(usage: Usage | undefined, price: ModelPrice | undefined): number | undefined {
+  return estimateRequestCostUsd(usage, price && { ...price, contextTiers: [] });
 }
 
 /** Lazy public catalog fetch; no session/model IDs or provider credentials leave the host. */

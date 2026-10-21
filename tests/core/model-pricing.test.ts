@@ -5,6 +5,7 @@ import { describe, expect, it, vi } from "vitest";
 import {
   MODEL_PRICES_URL,
   createModelPricingService,
+  estimateAggregateCostUsd,
   estimateRequestCostUsd,
   findModelPrice,
   normalizePricingModelId,
@@ -51,6 +52,20 @@ describe("models.dev request pricing", () => {
     for (const model of ["model", "model-v1-latest", "model-v2", "", "Model Display Name"]) {
       expect(findModelPrice(prices, model)).toBeUndefined();
     }
+  });
+
+  it("matches historical [1m] context annotations without stripping real variants or overriding exact prices", () => {
+    const prices = parseModelPrices(catalog);
+    expect(findModelPrice(prices, "cx/model-v1[1m]")).toEqual(findModelPrice(prices, "model-v1"));
+    expect(findModelPrice(prices, "relay:vendor/MODEL-v1[1M]")).toEqual(findModelPrice(prices, "model-v1"));
+    for (const id of ["model-v1-high", "model-v1-free", "model-v1[unknown]"]) {
+      expect(findModelPrice(prices, id)).toBeUndefined();
+    }
+    const exact = parseModelPrices({ lab: { models: {
+      "model-v1": { cost: { input: 3, output: 15 } },
+      "model-v1[1m]": { cost: { input: 6, output: 30 } },
+    } } });
+    expect(findModelPrice(exact, "cx/model-v1[1m]")?.rates.input).toBe(6);
   });
 
   it("uses keyed IDs, keeps real zero prices and skips invalid metadata", () => {
@@ -107,6 +122,12 @@ describe("models.dev request pricing", () => {
     expect(costFor(200000)).toBeCloseTo(0.202, 10);
     expect(costFor(200001)).toBeCloseTo(0.404002, 10);
     expect(costFor(500000)).toBeCloseTo(4.016, 10);
+    // Historical totals are NOT one huge request. Base-rate estimates are
+    // labelled by the caller rather than arbitrarily applying the top tier.
+    const aggregateUsage = { promptTokens: 500000, completionTokens: 1000, cachedPromptTokens: 100000, totalTokens: 501000 };
+    expect(estimateAggregateCostUsd(aggregateUsage, price)).toBeCloseTo(0.412, 10);
+    expect(estimateAggregateCostUsd(aggregateUsage, undefined)).toBeUndefined();
+    expect(estimateAggregateCostUsd(undefined, price)).toBeUndefined();
     expect(estimateRequestCostUsd({ promptTokens: 300000, completionTokens: 1000, cachedPromptTokens: 100000, totalTokens: 301000 }, price)).toBeCloseTo(0.424, 10);
     expect(estimateRequestCostUsd({ promptTokens: 300000, completionTokens: 1000, totalTokens: 301000 }, findModelPrice(prices, "legacy"))).toBeCloseTo(0.604, 10);
   });

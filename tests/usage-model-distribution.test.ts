@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { aggregateUsageStats, computeSessionUsage, createUsageStatsService } from "../src/core/usage-stats";
-import { parseModelPrices } from "../src/core/model-pricing";
+import { createModelPricingService, parseModelPrices, type ModelPricingService } from "../src/core/model-pricing";
 import type { SessionStore } from "../src/shared/contracts";
 import { usageStatsDtoSchema } from "../src/shared/ipc";
 import type { ProviderAttempt } from "../src/shared/model-access";
@@ -30,10 +30,10 @@ const prices = parseModelPrices({ vendor: { models: {
   "model-b": { cost: { input: 1, output: 2, cache_read: 0.1 } },
   free: { cost: { input: 0, output: 0 } },
 } } });
-const serviceFor = (snapshots: readonly SessionSnapshot[]) => createUsageStatsService({
+const serviceFor = (snapshots: readonly SessionSnapshot[], pricing: ModelPricingService = { getPrices: async () => prices }) => createUsageStatsService({
   list: async () => snapshots,
   get: async (sessionId: string) => snapshots.find(s => s.id === sessionId),
-} as unknown as SessionStore, { getPrices: async () => prices });
+} as unknown as SessionStore, pricing);
 
 function expectReconciled(stats: ReturnType<typeof aggregateUsageStats>) {
   for (const [field, totalField] of [
@@ -44,6 +44,10 @@ function expectReconciled(stats: ReturnType<typeof aggregateUsageStats>) {
     expect(stats.daily.reduce((sum, day) => sum + day[field], 0)).toBe(stats[totalField]);
     expect(stats.topSessions.reduce((sum, session) => sum + session[field], 0)).toBe(stats[totalField]);
   }
+  const modelCost = stats.models.reduce((sum, model) => sum + (model.estimatedCostUsd ?? 0), 0);
+  expect(stats.daily.reduce((sum, day) => sum + (day.estimatedCostUsd ?? 0), 0)).toBeCloseTo(modelCost, 10);
+  expect((stats.requests ?? []).reduce((sum, request) => sum + (request.estimatedCostUsd ?? 0), 0) +
+    stats.models.reduce((sum, model) => sum + (model.aggregateEstimatedCostUsd ?? 0), 0)).toBeCloseTo(modelCost, 10);
   expect(usageStatsDtoSchema.safeParse(stats).success).toBe(true);
 }
 
@@ -56,10 +60,12 @@ describe("model consumption accounting", () => {
     ])]).getUsageStats();
     expect(stats.models).toEqual([
       expect.objectContaining({ model: "model-a", totalTokens: 240, runCount: 2, sessionCount: 1,
-        requestCount: 0, pricedRequestCount: 0, costIncomplete: true }),
-      expect.objectContaining({ model: "model-b", totalTokens: 120, runCount: 1, sessionCount: 1 }),
+        requestCount: 0, pricedRequestCount: 0, costIncomplete: false,
+        estimatedCostUsd: 0.001038, aggregateEstimatedCostUsd: 0.001038 }),
+      expect.objectContaining({ model: "model-b", totalTokens: 120, runCount: 1, sessionCount: 1,
+        estimatedCostUsd: 0.000113, aggregateEstimatedCostUsd: 0.000113 }),
     ]);
-    expect(stats.models.every(model => model.estimatedCostUsd === undefined)).toBe(true);
+    expect(stats.requests).toEqual([]);
     expect(stats.totalRuns).toBe(3);
     expectReconciled(stats);
   });
@@ -114,9 +120,71 @@ describe("model consumption accounting", () => {
     ])]).getUsageStats();
     expect(stats.totalTokens).toBe(240);
     expect(stats.models).toEqual([expect.objectContaining({ model: "model-a", totalTokens: 240,
-      requestCount: 2, pricedRequestCount: 1, costIncomplete: true, estimatedCostUsd: 0.000519,
+      requestCount: 2, pricedRequestCount: 1, costIncomplete: true, estimatedCostUsd: 0.001038,
+      aggregateEstimatedCostUsd: 0.000519,
       runCount: 2, sessionCount: 1 })]);
     expectReconciled(stats);
+  });
+
+  it("loads prices for legacy-only histories, handles refresh after failure and preserves unknown/zero costs", async () => {
+    const fetcher = vi.fn<typeof fetch>().mockRejectedValueOnce(new Error("offline"))
+      .mockResolvedValue(Response.json({ lab: { models: {
+        "model-a": { cost: { input: 3, output: 15, cache_read: 0.3 } },
+        free: { cost: { input: 0, output: 0 } },
+      } } }));
+    const service = serviceFor([snapshot([
+      start("cx/model-a[1m]", 1), finish(2, usage),
+      start("free", 3), finish(4, usage),
+      start("unknown", 5), finish(6, usage),
+      start("model-a", 7), finish(8),
+    ])], createModelPricingService({ fetch: fetcher }));
+    const unavailable = await service.getUsageStats();
+    expect(unavailable.pricing?.state).toBe("unavailable");
+    expect(unavailable.models.every(model => model.estimatedCostUsd === undefined)).toBe(true);
+    const stats = await service.getUsageStats({ refreshPrices: true });
+    expect(fetcher).toHaveBeenCalledTimes(2);
+    expect(stats.pricing?.state).toBe("ready");
+    expect(stats.requests).toEqual([]);
+    expect(stats.models.find(model => model.model === "cx/model-a[1m]"))
+      .toMatchObject({ estimatedCostUsd: 0.000519, aggregateEstimatedCostUsd: 0.000519, costIncomplete: false });
+    expect(stats.models.find(model => model.model === "free"))
+      .toMatchObject({ estimatedCostUsd: 0, aggregateEstimatedCostUsd: 0, costIncomplete: false });
+    for (const model of ["unknown", "model-a"]) {
+      expect(stats.models.find(item => item.model === model)?.estimatedCostUsd).toBeUndefined();
+    }
+    expect(stats.daily[0]?.costIncomplete).toBe(true);
+    expectReconciled(stats);
+  });
+
+  it("prices only the uncovered remainder at base rates while requests retain context-tier pricing", async () => {
+    const tiered = parseModelPrices({ lab: { models: { tiered: { cost: {
+      input: 1, output: 2, cache_read: 0.1,
+      context_over_200k: { input: 4, output: 8, cache_read: 0.4 },
+    } } } } });
+    const requestUsage = { promptTokens: 300000, completionTokens: 1000, cachedPromptTokens: 100000, totalTokens: 301000 };
+    const runUsage = { promptTokens: 800000, completionTokens: 2000, cachedPromptTokens: 200000, totalTokens: 802000 };
+    const stats = await serviceFor([snapshot([
+      start("source:tiered", 1), attempt("source:tiered", 2, { usage: requestUsage }), finish(3, runUsage),
+    ])], { getPrices: async () => tiered }).getUsageStats();
+    expect(stats.requests?.[0]?.estimatedCostUsd).toBeCloseTo(0.848, 10);
+    expect(stats.models[0]).toMatchObject({ model: "source:tiered", requestCount: 1, pricedRequestCount: 1, costIncomplete: false });
+    expect(stats.models[0]?.aggregateEstimatedCostUsd).toBeCloseTo(0.412, 10);
+    expect(stats.models[0]?.estimatedCostUsd).toBeCloseTo(1.26, 10);
+    expect(stats.daily[0]?.estimatedCostUsd).toBeCloseTo(1.26, 10);
+    expect(stats.daily[0]?.aggregateEstimatedCostUsd).toBeCloseTo(0.412, 10);
+    expectReconciled(stats);
+  });
+
+  it("does not fetch prices for empty or entirely filtered-out historical usage", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(timestamp(24));
+    try {
+      const getPrices = vi.fn(async () => prices);
+      const service = serviceFor([snapshot([start("model-a", -60), finish(-59, usage)])], { getPrices });
+      expect((await service.getUsageStats({ days: 1 })).models).toEqual([]);
+      expect((await serviceFor([snapshot([start("model-a", 1), finish(2)])], { getPrices }).getUsageStats()).totalTokens).toBe(0);
+      expect(getPrices).not.toHaveBeenCalled();
+    } finally { vi.useRealTimers(); }
   });
 
   it("does not lose an interrupted legacy run when a new model run starts", () => {

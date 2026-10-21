@@ -94,6 +94,8 @@ export const modelUsageStatSchema = z
     requestCount: z.number().int().nonnegative().optional(),
     pricedRequestCount: z.number().int().nonnegative().optional(),
     estimatedCostUsd: z.number().finite().nonnegative().optional(),
+    /** Included in estimatedCostUsd; historical totals at base rates, not request tiers. */
+    aggregateEstimatedCostUsd: z.number().finite().nonnegative().optional(),
     costIncomplete: z.boolean().optional(),
   })
   .strict()
@@ -108,6 +110,9 @@ export const dailyUsageStatSchema = z
     cachedTokens: z.number().int().nonnegative(),
     totalTokens: z.number().int().nonnegative(),
     runCount: z.number().int().nonnegative(),
+    estimatedCostUsd: z.number().finite().nonnegative().optional(),
+    aggregateEstimatedCostUsd: z.number().finite().nonnegative().optional(),
+    costIncomplete: z.boolean().optional(),
   })
   .strict()
   .readonly();

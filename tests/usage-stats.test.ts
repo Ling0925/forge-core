@@ -154,7 +154,7 @@ describe("usage-stats", () => {
       acquire: async () => async () => {},
     };
 
-    const service = createUsageStatsService(store);
+    const service = createUsageStatsService(store, { getPrices: async () => new Map() });
     const stats1 = await service.getUsageStats();
     expect(stats1.totalSessions).toBe(1);
     expect(stats1.totalTokens).toBe(125);
