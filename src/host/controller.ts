@@ -25,6 +25,7 @@ import {
   type RunInput,
   approvalRequestSchema,
 } from "../shared/schemas";
+import { paginateSession } from "../shared/session-page";
 
 export const safeError = {
   code: "internal",
@@ -458,6 +459,12 @@ export function createWorkerController(
           break;
         case "getSession":
           respond(request, await service.getSession(request.sessionId));
+          break;
+        case "getSessionPage":
+          respond(
+            request,
+            paginateSession(await service.getSession(request.sessionId), request.page),
+          );
           break;
         case "getPublishedFile":
           if (!service.getPublishedFile)

@@ -29,6 +29,7 @@ import {
 } from "../shared/ipc";
 import type { RuntimeHost } from "../shared/runtime-host";
 import type { SessionSnapshot } from "../shared/schemas";
+import { paginateSession } from "../shared/session-page";
 import { workspaceBrowseRequestSchema } from "../shared/workspaces";
 import { openDeviceAuthorization } from "../store/devices";
 import {
@@ -688,7 +689,14 @@ export async function createWebHost(
                 method: rpc.method,
                 result: authorizedSnapshot,
               }
-            : await runtime.request(rpc);
+            : rpc.method === "getSessionPage" && authorizedSnapshot
+              ? {
+                  id: rpc.id,
+                  ok: true,
+                  method: rpc.method,
+                  result: paginateSession(authorizedSnapshot, rpc.page),
+                }
+              : await runtime.request(rpc);
         if (result.ok && result.method === "getSession") {
           const base = request.headers["x-forge-snapshot"];
           const update = sessionDeltas.encode(

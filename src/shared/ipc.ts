@@ -59,6 +59,12 @@ import type {
   SessionSnapshot,
   SessionSummary,
 } from "./schemas";
+import {
+  type SessionPage,
+  type SessionPageRequest,
+  sessionPageRequestSchema,
+  sessionPageSchema,
+} from "./session-page";
 import type { WorkspaceDirectoryPage } from "./workspaces";
 
 export const IPC_CHANNELS = Object.freeze({
@@ -290,6 +296,14 @@ export const rpcRequestSchema = z
         ...requestBase,
         method: z.literal("getSession"),
         sessionId: sessionIdSchema,
+      })
+      .strict(),
+    z
+      .object({
+        ...requestBase,
+        method: z.literal("getSessionPage"),
+        sessionId: sessionIdSchema,
+        page: sessionPageRequestSchema.optional(),
       })
       .strict(),
     z
@@ -540,6 +554,7 @@ export const rpcResponseSchema = z.union([
   success("resumeInputs", inputQueueSnapshotSchema),
   success("createSession", sessionSnapshotSchema),
   success("getSession", sessionSnapshotSchema),
+  success("getSessionPage", sessionPageSchema),
   success("getPublishedFile", publishedFileResponseSchema),
   success("compactSession", sessionSnapshotSchema),
   success("forkSession", sessionSnapshotSchema),
@@ -600,6 +615,7 @@ export const rpcResponseSchema = z.union([
         "resumeInputs",
         "createSession",
         "getSession",
+        "getSessionPage",
         "getPublishedFile",
         "compactSession",
         "forkSession",
@@ -663,6 +679,11 @@ export interface ForgeBridge {
   listSessions(): Promise<readonly SessionSummary[]>;
   createSession(input: CreateSessionInput): Promise<SessionSnapshot>;
   getSession(sessionId: SessionId): Promise<SessionSnapshot>;
+  /** Paged Web transcript read; absent on older bridges and CLI-only services. */
+  getSessionPage?(
+    sessionId: SessionId,
+    page?: SessionPageRequest,
+  ): Promise<SessionPage>;
   getPublishedFile(
     sessionId: SessionId,
     fileId: string,

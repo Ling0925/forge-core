@@ -1,4 +1,5 @@
-import type { AgentEvent, SessionSnapshot } from "./schemas";
+import type { AgentEvent } from "./schemas";
+import type { TranscriptSnapshot as SessionSnapshot } from "./session-page";
 
 export interface ExecutionTurn {
   readonly turn: number;
@@ -19,19 +20,21 @@ export function executionTurns(snapshot: SessionSnapshot): readonly ExecutionTur
   if (cached) return cached;
   const starts = snapshot.events.flatMap((event, index) =>
     event.type === "run_started" ? [{ event, index }] : []).map((start, ordinal) => ({ ...start, ordinal }));
-  const firstAnchor = starts.find(({ event }) => event.messageIndex !== undefined)?.event.messageIndex
-    ?? snapshot.messages.length;
+  const offset = snapshot.transcript?.messageOffset ?? 0;
+  const firstTurn = snapshot.transcript?.firstTurn ?? 1;
+  const firstAnchor = (starts.find(({ event }) => event.messageIndex !== undefined)?.event.messageIndex
+    ?? (offset + snapshot.messages.length)) - offset;
   const users = snapshot.messages.flatMap((message, index) =>
     message.role === "user" && !message.origin && index < firstAnchor ? [index] : []);
   const legacyStarts = starts.filter(({ event }) => event.messageIndex === undefined);
   const aligned = users.length === legacyStarts.length;
   const boundaries = [
     ...users.map((messageStart, index) => ({
-      turn: index + 1, messageStart, start: aligned ? legacyStarts[index] : undefined,
+      turn: index + firstTurn, messageStart, start: aligned ? legacyStarts[index] : undefined,
     })),
     ...starts.flatMap(start => start.event.messageIndex === undefined ? [] : [{
-      turn: start.event.turn ?? start.ordinal + 1,
-      messageStart: start.event.messageIndex, start,
+      turn: start.event.turn ?? start.ordinal + firstTurn,
+      messageStart: start.event.messageIndex - offset, start,
     }]),
   ];
   const result = boundaries.map((boundary, index): ExecutionTurn => {
