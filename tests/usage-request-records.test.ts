@@ -43,8 +43,9 @@ describe("individual usage request records", () => {
     const stats = aggregateUsageStats([computed]);
     expect(stats.requests?.map(item => item.timestamp)).toEqual([time(8), time(4), time(1)]);
     expect(usageStatsDtoSchema.parse(stats).requests).toEqual(stats.requests);
-    // This projection does not count provider_attempt usage again in run totals.
-    expect(stats.totalTokens).toBe(0);
+    // Requests without run-level usage still count, once each.
+    expect(stats.totalTokens).toBe(360);
+    expect(stats.models).toEqual([expect.objectContaining({ model: "exact/model", totalTokens: 360, requestCount: 3 })]);
   });
 
   it("retains each retry's actual route, credential, model, error and unknown usage", () => {
@@ -154,7 +155,7 @@ describe("individual usage request records", () => {
     expect(first.requests?.[1]).toMatchObject({ model: "source:vendor/model", tokensPerSecond: 10, estimatedCostUsd: 0.000519, usage });
     expect(first.requests?.[0]?.estimatedCostUsd).toBeUndefined();
     expect(usageStatsDtoSchema.parse(first).requests).toEqual(first.requests);
-    expect(first.totalTokens).toBe(0);
+    expect(first.totalTokens).toBe(240);
     expect(first.routes?.[0]?.totalTokens).toBe(120);
     now += 24 * 3600000;
     const refreshed = await service.getUsageStats();

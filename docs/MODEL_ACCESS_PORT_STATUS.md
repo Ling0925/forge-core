@@ -35,7 +35,9 @@
 - 两侧模型 ID 都取最后一个 `/` 或 `:` 后的部分并忽略大小写，例如 `cn:vendor/gpt-5`、`vendor/gpt-5` 与 `gpt-5` 使用同一匹配键。只影响费用匹配，不改实际发送/展示的模型 ID，不做名称、日期后缀或近似型号猜测。同名条目优先 `canonical_model_id` 所属原厂，再选裸模型 ID，最后按供应商/模型 ID 稳定排序。
 - 费用为 `((输入 - 缓存命中) × 输入单价 + 缓存命中 × 缓存读单价 + 输出 × 输出单价) / 1,000,000`；无独立缓存读单价时使用输入价。按输入 Token 数应用 models.dev 的上下文阶梯价格，明确的零价仍显示零。需要的用量或单价缺失时不估成免费。
 - 这是按当前公开价格回算的参考值，不是历史账单或中转商实际扣款。现有事件未单独记录缓存写入、音频及工具计费项，无法精确核算这些附加费；缓存写入包含在普通输入估算中。不新增界面说明段落或计费设置。
-- 聚焦检查：`pnpm exec vitest run tests/core/model-pricing.test.ts tests/usage-request-records.test.ts tests/usage-stats.test.ts tests/renderer/usage-requests-mounted.test.ts`。浏览器检查用合成会话和价格响应经过生产统计服务，覆盖明暗主题、390/1440 宽度、筛选、翻页与详情；无需真实推理请求。
+- 模型消耗按实际请求中记录的完整模型 ID 归集 Token 和费用，价格查询仍使用上述截断规则；不把同一短名称下的第一条请求统计复制给其他模型。会话切换模型或路由实际选择其他模型时，不再把历史用量全部归给会话当前模型。请求级 usage、`context_usage` 和 `run_finished.usage` 去重：优先实际请求，只补充运行汇总中未覆盖的剩余用量；没有请求明细的旧运行归给当时 `run_started.model`（事件也缺失时才回退到会话模型）。不改写持久化事件，也不重复叠加父运行的子代理汇总。
+- 模型列表保留未匹配价格、失败或进行中请求的模型；未知费用显示「费用未知」，真实零价仍显示 `$0.00`。各模型金额只合计可计价的请求，缺少价格、用量或旧请求明细时标记「部分」，合计与请求费用一致；不使用整轮累计 Token 套用请求上下文阶梯价格。时间筛选对模型、总计、每日和会话 Token 使用同一批记录：请求按请求时间，旧运行的剩余用量按运行时间，避免长会话的历史 Token 混入当前费用区间。
+- 聚焦检查：`pnpm exec vitest run tests/core/model-pricing.test.ts tests/usage-request-records.test.ts tests/usage-stats.test.ts tests/usage-model-distribution.test.ts tests/renderer/usage-requests-mounted.test.ts`。浏览器检查用合成会话和价格响应经过生产统计服务，覆盖明暗主题、390/1440 宽度、筛选、翻页、详情，以及模型切换、同短名不同完整 ID、部分/未知/零费用；无需真实推理请求。
 
 ## 账号与未完成平台
 

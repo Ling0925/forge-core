@@ -84,6 +84,10 @@ export const modelUsageStatSchema = z
     totalTokens: z.number().int().nonnegative(),
     runCount: z.number().int().nonnegative(),
     sessionCount: z.number().int().nonnegative(),
+    requestCount: z.number().int().nonnegative().optional(),
+    pricedRequestCount: z.number().int().nonnegative().optional(),
+    estimatedCostUsd: z.number().finite().nonnegative().optional(),
+    costIncomplete: z.boolean().optional(),
   })
   .strict()
   .readonly();

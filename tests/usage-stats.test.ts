@@ -21,7 +21,7 @@ function createMockSnapshot(overrides: Partial<SessionSnapshot> = {}): SessionSn
       {
         sessionId: "00000000-0000-0000-0000-000000000001",
         type: "run_started",
-        model: "test-model-1",
+        model: overrides.model ?? "test-model-1",
         permission: "read_only",
         prompt: "Hello",
         timestamp: "2025-01-01T10:00:00.000Z",

@@ -8,21 +8,46 @@ import type {
   UsageStatsDto,
 } from "../shared/ipc";
 import type { ProviderAttempt } from "../shared/model-access";
-import type { AgentEvent, SessionSnapshot } from "../shared/schemas";
+import type { AgentEvent, SessionSnapshot, Usage } from "../shared/schemas";
 import { createModelPricingService, estimateRequestCostUsd, findModelPrice, type ModelPricingService } from "./model-pricing";
 
-export interface SessionRunStat {
-  readonly date: string;
-  readonly promptTokens: number;
-  readonly completionTokens: number;
-  readonly cachedTokens: number;
-  readonly totalTokens: number;
+type TokenUsageStat = Pick<SessionUsageStat, "promptTokens" | "completionTokens" | "cachedTokens" | "totalTokens">;
+type MutableTokenUsage = { -readonly [K in keyof TokenUsageStat]: TokenUsageStat[K] };
+
+interface SessionUsageEntry extends TokenUsageStat {
+  readonly model: string;
+  readonly timestamp: string;
+  /** Absent for legacy run usage not covered by individual request records. */
+  readonly requestId?: string;
 }
+
+export interface SessionRunStat extends TokenUsageStat {
+  readonly date: string;
+  readonly entries: readonly SessionUsageEntry[];
+}
+
+const tokenUsage = (usage?: Usage): MutableTokenUsage => ({
+  promptTokens: usage?.promptTokens ?? 0,
+  completionTokens: usage?.completionTokens ?? 0,
+  cachedTokens: usage?.cachedPromptTokens ?? 0,
+  totalTokens: (usage?.promptTokens ?? 0) + (usage?.completionTokens ?? 0),
+});
+
+const sumTokenUsage = (entries: readonly TokenUsageStat[]): MutableTokenUsage => {
+  const total = tokenUsage();
+  for (const entry of entries) {
+    total.promptTokens += entry.promptTokens;
+    total.completionTokens += entry.completionTokens;
+    total.cachedTokens += entry.cachedTokens;
+    total.totalTokens += entry.totalTokens;
+  }
+  return total;
+};
 
 export interface ComputedSessionUsage {
   readonly stat: SessionUsageStat;
   readonly runStats: readonly SessionRunStat[];
-  /** Provider attempts observed in this session; never folded into billed totals. */
+  /** Separate route projection; never added on top of the deduplicated usage. */
   readonly routing: readonly RouteUsageStat[];
   readonly requests: readonly UsageRequest[];
 }
@@ -222,88 +247,82 @@ const matchesUsageFilter = (
 export function computeSessionUsage(
   snapshot: SessionSnapshot,
 ): ComputedSessionUsage {
-  let promptTokens = 0;
-  let completionTokens = 0;
-  let cachedTokens = 0;
-  let runCount = 0;
-
+  const requests = sessionRequestRecords(snapshot);
+  const requestsByEvent = new Map(requests.map(request => [request.id, request]));
   const runStats: SessionRunStat[] = [];
-  let pendingPrompt = 0;
-  let pendingCompletion = 0;
-  let pendingCached = 0;
-  let pendingReports = 0;
-  let currentRunDate = snapshot.updatedAt.slice(0, 10);
+  let current: {
+    model: string;
+    timestamp: string;
+    requests: UsageRequest[];
+    context: MutableTokenUsage;
+  } | undefined;
 
-  for (const event of snapshot.events) {
+  const ensureRun = (timestamp?: string) => current ??= {
+    model: snapshot.model,
+    timestamp: timestamp ?? snapshot.updatedAt,
+    requests: [],
+    context: tokenUsage(),
+  };
+  const finishRun = (usage?: Usage, timestamp?: string) => {
+    if (!current) return;
+    const reported = usage ? tokenUsage(usage) : current.context;
+    const entries: SessionUsageEntry[] = current.requests.map(request => ({
+      model: request.model,
+      timestamp: request.timestamp,
+      requestId: request.id,
+      ...tokenUsage(request.usage),
+    }));
+    // context_usage and run_finished repeat successful request usage. Retain only
+    // their uncovered remainder; failed attempts with reported usage are separate.
+    const covered = sumTokenUsage(current.requests
+      .filter(request => request.outcome === "succeeded")
+      .map(request => tokenUsage(request.usage)));
+    const remainder = {
+      promptTokens: Math.max(0, reported.promptTokens - covered.promptTokens),
+      completionTokens: Math.max(0, reported.completionTokens - covered.completionTokens),
+      cachedTokens: Math.max(0, reported.cachedTokens - covered.cachedTokens),
+    };
+    const remainderTotal = remainder.promptTokens + remainder.completionTokens;
+    if (remainderTotal > 0 || entries.length === 0) {
+      entries.push({
+        model: current.model,
+        timestamp: timestamp ?? current.timestamp,
+        ...remainder,
+        cachedTokens: Math.min(remainder.promptTokens, remainder.cachedTokens),
+        totalTokens: remainderTotal,
+      });
+    }
+    runStats.push({
+      date: (timestamp ?? current.timestamp).slice(0, 10),
+      entries,
+      ...sumTokenUsage(entries),
+    });
+    current = undefined;
+  };
+
+  for (const [index, event] of snapshot.events.entries()) {
     if (event.type === "run_started") {
-      runCount++;
-      pendingPrompt = 0;
-      pendingCompletion = 0;
-      pendingCached = 0;
-      pendingReports = 0;
-      if (event.timestamp) {
-        currentRunDate = event.timestamp.slice(0, 10);
-      }
-    } else if (event.type === "context_usage") {
+      // An interrupted run may not have a finish event before the next starts.
+      finishRun();
+      ensureRun(event.timestamp).model = event.model;
+    }
+    const request = requestsByEvent.get(`${snapshot.id}:${index}`);
+    if (request) ensureRun(request.timestamp).requests.push(request);
+    if (event.type === "context_usage") {
       const u = event.usage;
       if (u.basis !== "projected" && u.promptTokens !== undefined) {
-        pendingPrompt += u.promptTokens;
-        pendingCompletion += u.completionTokens ?? 0;
-        if (u.cachedPromptTokens !== undefined) {
-          pendingCached += u.cachedPromptTokens;
-        }
-        pendingReports++;
+        const context = ensureRun(event.timestamp).context;
+        context.promptTokens += u.promptTokens;
+        context.completionTokens += u.completionTokens ?? 0;
+        context.cachedTokens += u.cachedPromptTokens ?? 0;
+        context.totalTokens = context.promptTokens + context.completionTokens;
       }
     } else if (event.type === "run_finished") {
-      const runDate = event.timestamp
-        ? event.timestamp.slice(0, 10)
-        : currentRunDate;
-      let runPrompt = 0;
-      let runCompletion = 0;
-      let runCached = 0;
-
-      if (event.usage) {
-        runPrompt = event.usage.promptTokens ?? 0;
-        runCompletion = event.usage.completionTokens ?? 0;
-        runCached = event.usage.cachedPromptTokens ?? 0;
-      } else if (pendingReports > 0) {
-        runPrompt = pendingPrompt;
-        runCompletion = pendingCompletion;
-        runCached = pendingCached;
-      }
-
-      promptTokens += runPrompt;
-      completionTokens += runCompletion;
-      cachedTokens += runCached;
-
-      runStats.push({
-        date: runDate,
-        promptTokens: runPrompt,
-        completionTokens: runCompletion,
-        cachedTokens: runCached,
-        totalTokens: runPrompt + runCompletion,
-      });
-
-      pendingPrompt = 0;
-      pendingCompletion = 0;
-      pendingCached = 0;
-      pendingReports = 0;
+      ensureRun(event.timestamp);
+      finishRun(event.usage, event.timestamp);
     }
   }
-
-  // If there's an ongoing run with pending reports
-  if (pendingReports > 0) {
-    promptTokens += pendingPrompt;
-    completionTokens += pendingCompletion;
-    cachedTokens += pendingCached;
-    runStats.push({
-      date: currentRunDate,
-      promptTokens: pendingPrompt,
-      completionTokens: pendingCompletion,
-      cachedTokens: pendingCached,
-      totalTokens: pendingPrompt + pendingCompletion,
-    });
-  }
+  finishRun();
 
   const stat: SessionUsageStat = {
     sessionId: snapshot.id,
@@ -311,14 +330,11 @@ export function computeSessionUsage(
     workspace: snapshot.workspace,
     model: snapshot.model,
     updatedAt: snapshot.updatedAt,
-    promptTokens,
-    completionTokens,
-    cachedTokens,
-    totalTokens: promptTokens + completionTokens,
-    runCount,
+    ...sumTokenUsage(runStats),
+    runCount: runStats.length,
   };
 
-  return { stat, runStats, routing: routeUsageStats(snapshot.events), requests: sessionRequestRecords(snapshot) };
+  return { stat, runStats, routing: routeUsageStats(snapshot.events), requests };
 }
 
 export function aggregateRouteUsageStats(
@@ -349,9 +365,20 @@ export function aggregateUsageStats(
   computedList: readonly ComputedSessionUsage[],
   filter?: UsageFilter,
 ): UsageStatsDto {
-  const filtered = computedList.filter((item) =>
-    matchesUsageFilter(item.stat, filter),
-  );
+  const cutoff = filter?.days ? Date.now() - filter.days * 86_400_000 : undefined;
+  const inPeriod = (timestamp: string) => cutoff === undefined || Date.parse(timestamp) >= cutoff;
+  const filtered = computedList
+    .filter(item => !filter?.workspace || item.stat.workspace === filter.workspace)
+    .map(item => {
+      const runStats = item.runStats.map(run => {
+        const entries = run.entries.filter(entry => inPeriod(entry.timestamp));
+        return { ...run, entries, ...sumTokenUsage(entries) };
+      }).filter(run => run.entries.length > 0);
+      return { ...item, runStats, stat: {
+        ...item.stat, ...sumTokenUsage(runStats), runCount: runStats.length,
+      } };
+    })
+    .filter(item => cutoff === undefined || item.runStats.length > 0);
 
   let totalPromptTokens = 0;
   let totalCompletionTokens = 0;
@@ -367,6 +394,8 @@ export function aggregateUsageStats(
       totalTokens: number;
       runCount: number;
       sessionCount: number;
+      requestCount: number;
+      costIncomplete: boolean;
     }
   >();
 
@@ -388,47 +417,36 @@ export function aggregateUsageStats(
     totalCachedTokens += stat.cachedTokens;
     totalRuns += stat.runCount;
 
-    // Aggregate by model
-    const m = modelMap.get(stat.model) ?? {
-      promptTokens: 0,
-      completionTokens: 0,
-      cachedTokens: 0,
-      totalTokens: 0,
-      runCount: 0,
-      sessionCount: 0,
-    };
-    m.promptTokens += stat.promptTokens;
-    m.completionTokens += stat.completionTokens;
-    m.cachedTokens += stat.cachedTokens;
-    m.totalTokens += stat.totalTokens;
-    m.runCount += stat.runCount;
-    m.sessionCount += 1;
-    modelMap.set(stat.model, m);
+    const sessionModels = new Set<string>();
+    for (const run of runStats) {
+      const runModels = new Set<string>();
+      const runDates = new Set<string>();
+      for (const entry of run.entries) {
+        const m = modelMap.get(entry.model) ?? {
+          ...tokenUsage(), runCount: 0, sessionCount: 0, requestCount: 0, costIncomplete: false,
+        };
+        m.promptTokens += entry.promptTokens;
+        m.completionTokens += entry.completionTokens;
+        m.cachedTokens += entry.cachedTokens;
+        m.totalTokens += entry.totalTokens;
+        if (!runModels.has(entry.model)) m.runCount += 1;
+        if (!sessionModels.has(entry.model)) m.sessionCount += 1;
+        if (entry.requestId) m.requestCount += 1;
+        else if (entry.totalTokens > 0) m.costIncomplete = true;
+        runModels.add(entry.model);
+        sessionModels.add(entry.model);
+        modelMap.set(entry.model, m);
 
-    // Aggregate by day
-    for (const r of runStats) {
-      if (filter?.days && filter.days > 0) {
-        const runTime = Date.parse(r.date);
-        if (
-          Number.isFinite(runTime) &&
-          runTime < Date.now() - filter.days * 86_400_000
-        ) {
-          continue;
-        }
+        const date = entry.timestamp.slice(0, 10);
+        const d = dailyMap.get(date) ?? { ...tokenUsage(), runCount: 0 };
+        d.promptTokens += entry.promptTokens;
+        d.completionTokens += entry.completionTokens;
+        d.cachedTokens += entry.cachedTokens;
+        d.totalTokens += entry.totalTokens;
+        if (!runDates.has(date)) d.runCount += 1;
+        runDates.add(date);
+        dailyMap.set(date, d);
       }
-      const d = dailyMap.get(r.date) ?? {
-        promptTokens: 0,
-        completionTokens: 0,
-        cachedTokens: 0,
-        totalTokens: 0,
-        runCount: 0,
-      };
-      d.promptTokens += r.promptTokens;
-      d.completionTokens += r.completionTokens;
-      d.cachedTokens += r.cachedTokens;
-      d.totalTokens += r.totalTokens;
-      d.runCount += 1;
-      dailyMap.set(r.date, d);
     }
   }
 
@@ -452,10 +470,8 @@ export function aggregateUsageStats(
     .slice(0, 20);
 
   const routes = aggregateRouteUsageStats(filtered);
-  const cutoff = filter?.days ? Date.now() - filter.days * 86_400_000 : undefined;
-  const requests = computedList.flatMap(item => item.requests).filter(request =>
-    (!filter?.workspace || request.workspace === filter.workspace) &&
-    (cutoff === undefined || Date.parse(request.timestamp) >= cutoff),
+  const requests = filtered.flatMap(item => item.requests).filter(request =>
+    inPeriod(request.timestamp),
   ).sort((a, b) => b.timestamp.localeCompare(a.timestamp) || a.id.localeCompare(b.id));
   const averageCacheRate =
     totalPromptTokens > 0
@@ -526,13 +542,32 @@ export function createUsageStatsService(
       }
 
       const stats = aggregateUsageStats(computedList, filter);
-      if (!stats.requests?.some(request => request.usage !== undefined)) return stats;
-      const prices = await pricing.getPrices();
+      const prices = stats.requests?.some(request => request.usage !== undefined)
+        ? await pricing.getPrices() : new Map();
+      const modelCosts = new Map<string, { estimatedCostUsd: number; pricedRequestCount: number }>();
+      const requests = (stats.requests ?? []).map(request => {
+        // Price lookup intentionally strips source/vendor prefixes. Accounting
+        // still uses the exact recorded model, never the first short-name match.
+        const estimatedCostUsd = estimateRequestCostUsd(request.usage, findModelPrice(prices, request.model));
+        if (estimatedCostUsd === undefined) return request;
+        const cost = modelCosts.get(request.model) ?? { estimatedCostUsd: 0, pricedRequestCount: 0 };
+        cost.estimatedCostUsd += estimatedCostUsd;
+        cost.pricedRequestCount += 1;
+        modelCosts.set(request.model, cost);
+        return { ...request, estimatedCostUsd };
+      });
       return {
         ...stats,
-        requests: stats.requests.map(request => {
-          const estimatedCostUsd = estimateRequestCostUsd(request.usage, findModelPrice(prices, request.model));
-          return estimatedCostUsd === undefined ? request : { ...request, estimatedCostUsd };
+        requests,
+        models: stats.models.map(model => {
+          const cost = modelCosts.get(model.model);
+          const pricedRequestCount = cost?.pricedRequestCount ?? 0;
+          return {
+            ...model,
+            ...(cost ? { estimatedCostUsd: cost.estimatedCostUsd } : {}),
+            pricedRequestCount,
+            costIncomplete: model.costIncomplete || pricedRequestCount < (model.requestCount ?? 0),
+          };
         }),
       };
     },
