@@ -4,7 +4,10 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ModelProvider, SessionStore, ToolContext } from "../../src/shared/contracts";
 import { forgeMemorySchema, searchMemorySchema, type MemoryStore } from "../../src/shared/memory";
-import type { AgentEvent, Message, SessionSnapshot } from "../../src/shared/schemas";
+import type { AgentEvent, Message, ProviderResponse, SessionSnapshot } from "../../src/shared/schemas";
+import { ForgeError } from "../../src/shared/errors";
+import { ProviderError } from "../../src/provider/errors";
+import { createMemoryToolRegistry } from "../../src/tools/memory";
 import { openSessionStore } from "../../src/store/sessions";
 import { openMemoryStore } from "../../src/store/memory";
 import { retrieveMemoryEvidence } from "../../src/core/memory-retrieval";
@@ -121,17 +124,138 @@ describe("cross-session retrieval and memory synthesis", () => {
     await expect(execute(truncated)).rejects.toThrow(/complete current memory/);
   });
 
-  it("does not commit on cancellation, timeout or a provider error and never retries", async () => {
+  it("keeps caller cancellation distinct from model failures without committing or retrying", async () => {
     const controller = new AbortController();
-    const provider = fakeProvider(messages => { controller.abort(); return { memories: [proposal([evidenceRefs(messages)[0]!.ref])] }; });
-    await expect(execute(provider, { context: { ...context, signal: controller.signal } })).rejects.toMatchObject({ code: "cancelled" });
     const onModelUsage = vi.fn();
-    const never: ModelProvider = { listModels: async () => [], complete: vi.fn<ModelProvider["complete"]>(() => new Promise(() => {})) };
-    await expect(execute(never, { timeoutMs: 10, context: { ...context, onModelUsage } })).rejects.toMatchObject({ code: "provider" });
-    expect(never.complete).toHaveBeenCalledOnce(); expect(onModelUsage).toHaveBeenCalledWith(undefined);
-    const failing: ModelProvider = { listModels: async () => [], complete: vi.fn(async () => { throw new Error("private upstream body"); }) };
-    await expect(execute(failing)).rejects.toThrow(/nothing committed/);
-    expect(failing.complete).toHaveBeenCalledOnce(); expect(await memories.get(0)).toBeUndefined();
+    const provider = fakeProvider(messages => { controller.abort(); return { memories: [proposal([evidenceRefs(messages)[0]!.ref])] }; });
+    await expect(execute(provider, { context: { ...context, signal: controller.signal, onModelUsage } })).rejects.toMatchObject({
+      code: "cancelled", retryable: false, message: expect.not.stringContaining("deadline_exceeded"),
+    });
+    expect(provider.complete).toHaveBeenCalledOnce();
+    expect(onModelUsage).toHaveBeenCalledExactlyOnceWith(undefined);
+    expect(await memories.get(0)).toBeUndefined();
+  });
+
+  it.each([false, true])("identifies the local deadline even with partial output (adapter honors abort=%s)", async honorsAbort => {
+    let finish = () => {};
+    const onModelUsage = vi.fn();
+    const provider: ModelProvider = { listModels: async () => [], complete: vi.fn<ModelProvider["complete"]>((messages, _tools, options) =>
+      new Promise((resolve, reject) => {
+        options.onText?.("partial JSON");
+        finish = () => resolve({ message: { role: "assistant", content: JSON.stringify({ memories: [proposal([evidenceRefs(messages)[0]!.ref])] }) } });
+        if (honorsAbort) options.signal?.addEventListener("abort", () => reject(new ProviderError("aborted", "fixture-private-body")), { once: true });
+      })) };
+    await expect(execute(provider, { timeoutMs: 10, context: { ...context, onModelUsage } })).rejects.toMatchObject({
+      code: "provider", retryable: false,
+      message: expect.stringMatching(/stage=model_request, classification=deadline_exceeded, timeout_ms=10, elapsed_ms=\d+/),
+    });
+    expect(provider.complete).toHaveBeenCalledOnce();
+    expect(onModelUsage).toHaveBeenCalledExactlyOnceWith(undefined);
+    finish(); // A late response from a non-cooperative adapter cannot commit anything.
+    await Promise.resolve();
+    expect(await memories.get(0)).toBeUndefined();
+  });
+
+  it.each([
+    { error: new ProviderError("http", "fixture-private-body", true, 429), fields: "classification=http, http_status=429" },
+    { error: new ProviderError("http", "fixture-private-body", false, 401), fields: "classification=http, http_status=401" },
+    { error: new ProviderError("http", "fixture-private-body", true, 503), fields: "classification=http, http_status=503" },
+    { error: new ProviderError("network", "fixture-private-body", true), fields: "classification=network" },
+    { error: new ProviderError("timeout", "fixture-private-body", true), fields: "classification=timeout" },
+    { error: new ProviderError("protocol", "fixture-private-body", false, undefined, "missing_completion"), fields: "classification=protocol, reason=missing_completion" },
+    { error: new ProviderError("upstream", "fixture-private-body", false, undefined, "insufficient_quota"), fields: "classification=upstream, reason=insufficient_quota" },
+    { error: new ProviderError("aborted", "fixture-private-body"), fields: "classification=aborted" },
+    { error: new ProviderError("observer", "fixture-private-body"), fields: "classification=observer" },
+  ])("preserves safe provider diagnostics: $fields", async ({ error, fields }) => {
+    const onModelUsage = vi.fn();
+    const provider = fakeProvider(() => { throw error; });
+    const failure = await execute(provider, { context: { ...context, onModelUsage } }).catch(caught => caught);
+    expect(failure).toMatchObject({ code: "provider", retryable: false });
+    expect(failure.message).toContain(`stage=model_request, ${fields}, elapsed_ms=`);
+    expect(failure.message).toContain("nothing committed. No automatic retry was performed.");
+    expect(failure.message).not.toMatch(/fixture-private-body|deadline_exceeded|timeout_ms=/);
+    expect(provider.complete).toHaveBeenCalledOnce();
+    expect(onModelUsage).toHaveBeenCalledExactlyOnceWith(undefined);
+    expect(await memories.get(0)).toBeUndefined();
+  });
+
+  it.each([
+    new Error("fixture-private-body"),
+    new ForgeError("provider", "fixture-private-body"),
+    { classification: "http", status: 401, message: "fixture-private-body" },
+    Object.assign(new ProviderError("http", "fixture-private-body"), { classification: "fixture-private-classification", status: 99999, reason: "fixture-private-reason" }),
+  ])("does not expose unknown exceptions or untrusted adapter metadata (%#)", async error => {
+    const provider = fakeProvider(() => { throw error; });
+    const failure = await execute(provider).catch(caught => caught);
+    expect(failure.message).toMatch(/classification=unknown, elapsed_ms=\d+/);
+    expect(failure.message).not.toMatch(/fixture-private|http_status=|reason=/);
+    expect(provider.complete).toHaveBeenCalledOnce();
+    expect(await memories.get(0)).toBeUndefined();
+  });
+
+  it("drops malformed status/reason fields without losing a valid classification", async () => {
+    const error = Object.assign(new ProviderError("http", "fixture-private-body"), { status: 401.5, reason: "fixture-private-reason" });
+    const provider = fakeProvider(() => { throw error; });
+    const failure = await execute(provider).catch(caught => caught);
+    expect(failure.message).toContain("classification=http, elapsed_ms=");
+    expect(failure.message).not.toMatch(/fixture-private|http_status=|reason=/);
+  });
+
+  it("measures synthesis elapsed time with a monotonic clock", async () => {
+    const clock = vi.spyOn(performance, "now").mockReturnValue(1000);
+    try {
+      const provider = fakeProvider(() => { clock.mockReturnValue(1125); throw new ProviderError("network", "fixture-private-body"); });
+      await expect(execute(provider)).rejects.toThrow(/elapsed_ms=125/);
+    } finally { clock.mockRestore(); }
+  });
+
+  it("distinguishes response validation failures from request failures without exposing invalid fields", async () => {
+    const onModelUsage = vi.fn();
+    const provider: ModelProvider = { listModels: async () => [], complete: vi.fn<ModelProvider["complete"]>(async () =>
+      ({ message: { role: "fixture-private-body", content: "fixture-private-content" } }) as unknown as ProviderResponse) };
+    const failure = await execute(provider, { context: { ...context, onModelUsage } }).catch(caught => caught);
+    expect(failure).toMatchObject({ code: "provider", retryable: false });
+    expect(failure.message).toContain("stage=response_validation, classification=invalid_response, elapsed_ms=");
+    expect(failure.message).not.toContain("fixture-private");
+    expect(provider.complete).toHaveBeenCalledOnce();
+    expect(onModelUsage).toHaveBeenCalledExactlyOnceWith(undefined);
+    expect(await memories.get(0)).toBeUndefined();
+  });
+
+  it("reports accounting observer failures once without mislabeling them as provider failures", async () => {
+    const provider = fakeProvider(messages => ({ memories: [proposal([evidenceRefs(messages)[0]!.ref])] }));
+    const onModelUsage = vi.fn(() => { throw new Error("fixture-private-observer"); });
+    const failure = await execute(provider, { context: { ...context, onModelUsage } }).catch(caught => caught);
+    expect(failure).toMatchObject({ code: "internal", retryable: false });
+    expect(failure.message).toContain("stage=usage_accounting, classification=observer, elapsed_ms=");
+    expect(failure.message).not.toContain("fixture-private");
+    expect(onModelUsage).toHaveBeenCalledExactlyOnceWith({ promptTokens: 10, completionTokens: 5, totalTokens: 15 });
+    expect(provider.complete).toHaveBeenCalledOnce();
+    expect(await memories.get(0)).toBeUndefined();
+  });
+
+  it("does not let a failing usage observer mask the original model failure", async () => {
+    const provider = fakeProvider(() => { throw new ProviderError("http", "fixture-private-body", true, 429); });
+    const onModelUsage = vi.fn(() => { throw new Error("fixture-private-observer"); });
+    await expect(execute(provider, { context: { ...context, onModelUsage } })).rejects.toThrow(/stage=model_request, classification=http, http_status=429/);
+    expect(onModelUsage).toHaveBeenCalledExactlyOnceWith(undefined);
+    expect(provider.complete).toHaveBeenCalledOnce();
+    expect(await memories.get(0)).toBeUndefined();
+  });
+
+  it("returns safe diagnostics through the real memory tool registry without retrying", async () => {
+    const provider = fakeProvider(() => { throw new ProviderError("http", "fixture-private-body", true, 503); });
+    const tools = createMemoryToolRegistry(memories, { forge: (args, toolContext) => forgeMemory(args, {
+      sessions, memories, provider, context: toolContext,
+    }) });
+    try {
+      const result = await tools.execute({ id: context.toolCallId, type: "function", function: { name: "forge_memory", arguments: JSON.stringify(input()) } }, context);
+      expect(result.isError).toBe(true);
+      expect(JSON.parse(result.content).error).toMatch(/stage=model_request, classification=http, http_status=503, elapsed_ms=\d+/);
+      expect(result.content).not.toContain("fixture-private");
+      expect(provider.complete).toHaveBeenCalledOnce();
+      expect(await memories.get(0)).toBeUndefined();
+    } finally { await tools.dispose(); }
   });
 });
 
