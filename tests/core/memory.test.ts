@@ -136,7 +136,55 @@ describe("cross-session retrieval and memory synthesis", () => {
     expect(await memories.get(0)).toBeUndefined();
   });
 
-  it.each([false, true])("identifies the local deadline even with partial output (adapter honors abort=%s)", async honorsAbort => {
+  it("allows synthesis to finish beyond 90 seconds without creating an independent deadline", async () => {
+    const controller = new AbortController();
+    let started = () => {};
+    const requested = new Promise<void>(resolve => { started = resolve; });
+    let finish = () => {};
+    const onModelUsage = vi.fn();
+    const provider: ModelProvider = { listModels: async () => [], complete: vi.fn<ModelProvider["complete"]>((messages, _tools, options) =>
+      new Promise(resolve => {
+        options.onText?.("partial JSON");
+        finish = () => resolve({ message: { role: "assistant", content: JSON.stringify({ memories: [proposal([evidenceRefs(messages)[0]!.ref])] }) },
+          usage: { promptTokens: 10, completionTokens: 5, totalTokens: 15 } });
+        started();
+      })) };
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    // Node's native AbortSignal.timeout does not use the fake clock. Bridge it
+    // so this regression would also fail if the old 90-second timer returned.
+    const timeout = vi.spyOn(AbortSignal, "timeout").mockImplementation(ms => {
+      const deadline = new AbortController();
+      setTimeout(() => deadline.abort(), ms);
+      return deadline.signal;
+    });
+    let settled = false;
+    const outcome = execute(provider, { context: { ...context, signal: controller.signal, onModelUsage } }).then(
+      value => { settled = true; return { value }; }, error => { settled = true; return { error }; },
+    );
+    try {
+      await requested;
+      await vi.advanceTimersByTimeAsync(180000);
+      expect(settled).toBe(false);
+      expect(timeout).not.toHaveBeenCalled();
+      expect(vi.mocked(provider.complete).mock.calls[0]![2].signal).toBe(controller.signal);
+      expect(await memories.get(0)).toBeUndefined();
+      finish();
+      await expect(outcome).resolves.toMatchObject({ value: { created: [0] } });
+      expect((await memories.get(0))?.summary).toBe("forge 本机更新");
+      expect(provider.complete).toHaveBeenCalledOnce();
+      expect(onModelUsage).toHaveBeenCalledExactlyOnceWith({ promptTokens: 10, completionTokens: 5, totalTokens: 15 });
+    } finally {
+      controller.abort();
+      await outcome;
+      timeout.mockRestore();
+      vi.useRealTimers();
+    }
+  });
+
+  it.each([false, true])("cancels in-flight synthesis after partial output (adapter honors abort=%s)", async honorsAbort => {
+    const controller = new AbortController();
+    let started = () => {};
+    const requested = new Promise<void>(resolve => { started = resolve; });
     let finish = () => {};
     const onModelUsage = vi.fn();
     const provider: ModelProvider = { listModels: async () => [], complete: vi.fn<ModelProvider["complete"]>((messages, _tools, options) =>
@@ -144,11 +192,13 @@ describe("cross-session retrieval and memory synthesis", () => {
         options.onText?.("partial JSON");
         finish = () => resolve({ message: { role: "assistant", content: JSON.stringify({ memories: [proposal([evidenceRefs(messages)[0]!.ref])] }) } });
         if (honorsAbort) options.signal?.addEventListener("abort", () => reject(new ProviderError("aborted", "fixture-private-body")), { once: true });
+        started();
       })) };
-    await expect(execute(provider, { timeoutMs: 10, context: { ...context, onModelUsage } })).rejects.toMatchObject({
-      code: "provider", retryable: false,
-      message: expect.stringMatching(/stage=model_request, classification=deadline_exceeded, timeout_ms=10, elapsed_ms=\d+/),
-    });
+    const result = execute(provider, { context: { ...context, signal: controller.signal, onModelUsage } });
+    const cancelled = expect(result).rejects.toMatchObject({ code: "cancelled", retryable: false });
+    await requested;
+    controller.abort();
+    await cancelled;
     expect(provider.complete).toHaveBeenCalledOnce();
     expect(onModelUsage).toHaveBeenCalledExactlyOnceWith(undefined);
     finish(); // A late response from a non-cooperative adapter cannot commit anything.
