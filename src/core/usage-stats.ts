@@ -183,6 +183,7 @@ export function sessionRequestRecords(snapshot: SessionSnapshot): readonly Usage
       ...(event.step === undefined ? {} : { step: event.step }),
       sourceId: selection.sourceId,
       model: selection.model,
+      ...(selection.reasoningEffort === undefined ? {} : { reasoningEffort: selection.reasoningEffort }),
       apiMode: selection.apiMode,
       ...(selection.credentialId === undefined ? {} : { credentialId: selection.credentialId }),
       ...(selection.groupId === undefined ? {} : { groupId: selection.groupId }),
@@ -207,6 +208,7 @@ export function sessionRequestRecords(snapshot: SessionSnapshot): readonly Usage
     // streaming-only rate (historical events do not record first-token time).
     const tokensPerSecond = (selection.usage?.completionTokens ?? Number.NaN) / (durationMs / 1000);
     const completed: UsageRequest = {
+      ...(started?.reasoningEffort === undefined ? {} : { reasoningEffort: started.reasoningEffort }),
       ...record,
       ...(started ? { id: started.id, timestamp: started.timestamp, startedAt: started.startedAt } : {}),
       finishedAt: selection.timestamp,

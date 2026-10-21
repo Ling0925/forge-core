@@ -5,6 +5,7 @@ import { modelCatalogSchema, modelCatalogEntrySchema } from "./model-catalog";
 // Source provenance and MIT license: THIRD_PARTY_NOTICES.md.
 export const providerProtocolSchema = z.enum(["chat-completions", "responses", "anthropic", "gemini"]);
 export type ProviderProtocol = z.infer<typeof providerProtocolSchema>;
+export const reasoningEffortSchema = z.enum(["default", "none", "minimal", "low", "medium", "high", "xhigh", "max"]);
 export const accessIdSchema = z.string().min(1);
 export const providerEndpointSchema = z.string().url().refine(value => {
   const url = new URL(value);
@@ -115,6 +116,9 @@ export const providerAttemptSchema = z.object({
   sourceId: z.string(), model: z.string(), credentialId: z.string().optional(),
   apiMode: z.string(), groupId: z.string().optional(), attempt: z.number().int().nonnegative(),
   reason: z.string(), outcome: z.enum(["started", "succeeded", "failed"]), timestamp: z.string(),
+  // Requested configuration at attempt time, not a provider-confirmed effort.
+  // Missing on historical records; do not default those to the current setting.
+  reasoningEffort: reasoningEffortSchema.optional(),
   usage: z.object({ promptTokens: z.number(), completionTokens: z.number(), totalTokens: z.number(), cachedPromptTokens: z.number().optional() }).strict().optional(),
   errorCode: z.string().optional(),
 }).strict().readonly();

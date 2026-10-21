@@ -1,6 +1,6 @@
 import { rootBudgetSnapshotSchema, rootTimeoutSchema, rootToolLimitSchema } from "./run-budget";
 import { z } from "zod";
-import { sourceAccessFields, providerProtocolSchema, credentialInputSchema, publicCredentialSchema, connectionInputSchema, publicConnectionSchema, routeGroupSchema, routeOperationSchema, accountTokensSchema, providerAttemptSchema } from "./model-access";
+import { sourceAccessFields, providerProtocolSchema, credentialInputSchema, publicCredentialSchema, connectionInputSchema, publicConnectionSchema, routeGroupSchema, routeOperationSchema, accountTokensSchema, providerAttemptSchema, reasoningEffortSchema } from "./model-access";
 import { createDiffPatch, unavailablePatch } from "./diff";
 import { imageAttachmentsSchema } from "./images";
 import { publishedFilesSchema } from "./published-files";
@@ -70,9 +70,7 @@ export const settingsFields = {
   // Responses hosted search only. Absent is disabled for existing installations.
   webSearch: webSearchModeSchema.optional(),
   maxOutputTokens: z.number().int().min(1).max(1000000).optional(),
-  reasoningEffort: z
-    .enum(["default", "none", "minimal", "low", "medium", "high", "xhigh", "max"])
-    .optional(),
+  reasoningEffort: reasoningEffortSchema.optional(),
   baseUrl: z
     .string()
     .url()

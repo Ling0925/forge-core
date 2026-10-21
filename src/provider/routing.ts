@@ -490,6 +490,7 @@ export function createRoutedProvider(
     ): ProviderAttempt => ({
       sourceId: member.sourceId,
       model: resolved.actualModel ?? member.model,
+      ...(resolved.config ? { reasoningEffort: resolved.config.reasoningEffort ?? "default" } : {}),
       ...((resolved.config?.credentialId ?? member.credentialId) === undefined
         ? {}
         : { credentialId: resolved.config?.credentialId ?? member.credentialId }),

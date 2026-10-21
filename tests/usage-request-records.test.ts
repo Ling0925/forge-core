@@ -4,7 +4,7 @@ import { createModelPricingService, parseModelPrices } from "../src/core/model-p
 import type { SessionStore } from "../src/shared/contracts";
 import { usageStatsDtoSchema } from "../src/shared/ipc";
 import type { ProviderAttempt } from "../src/shared/model-access";
-import { sessionIdSchema, type AgentEvent, type SessionSnapshot } from "../src/shared/schemas";
+import { agentEventSchema, sessionIdSchema, settingsFields, type AgentEvent, type SessionSnapshot } from "../src/shared/schemas";
 
 const sessionId = sessionIdSchema.parse("00000000-0000-0000-0000-000000000001");
 const time = (second: number) => new Date(Date.UTC(2026, 9, 20, 10, 0, second)).toISOString();
@@ -46,6 +46,36 @@ describe("individual usage request records", () => {
     // Requests without run-level usage still count, once each.
     expect(stats.totalTokens).toBe(360);
     expect(stats.models).toEqual([expect.objectContaining({ model: "exact/model", totalTokens: 360, requestCount: 3 })]);
+  });
+
+  it("preserves recorded reasoning effort when pairing results and leaves historical effort unknown", () => {
+    const events = [
+      attempt("started", 0, { reasoningEffort: "high" }), attempt("succeeded", 1, { usage }),
+      attempt("started", 2, { reasoningEffort: "none", attempt: 2 }),
+      attempt("failed", 3, { reasoningEffort: "none", attempt: 2, errorCode: "cancelled" }),
+      attempt("succeeded", 4, {}, 2),
+      attempt("started", 5, { reasoningEffort: "xhigh" }, 3),
+    ].map(event => agentEventSchema.parse(event));
+    const stats = usageStatsDtoSchema.parse(aggregateUsageStats([
+      computeSessionUsage(snapshot(events, { status: "running" })),
+    ]));
+    expect(stats.requests?.map(request => request.reasoningEffort)).toEqual(["xhigh", undefined, "none", "high"]);
+    expect(stats.requests?.[0]?.outcome).toBe("started");
+    expect(stats.requests?.[1]).not.toHaveProperty("reasoningEffort");
+    expect(stats.requests?.[2]?.outcome).toBe("failed");
+  });
+
+  it("validates the same reasoning levels in settings, persisted events and usage DTOs", () => {
+    const efforts = settingsFields.reasoningEffort.unwrap().options;
+    const events = efforts.map((reasoningEffort, index) =>
+      agentEventSchema.parse(attempt("succeeded", index, { reasoningEffort })));
+    const records = sessionRequestRecords(snapshot(events));
+    expect(records.map(request => request.reasoningEffort)).toEqual(efforts);
+    const stats = usageStatsDtoSchema.parse(aggregateUsageStats([computeSessionUsage(snapshot(events))]));
+    expect(stats.requests).toHaveLength(efforts.length);
+    expect(agentEventSchema.safeParse({ ...events[0], selection: {
+      ...attempt("succeeded", 0).selection, reasoningEffort: "invented",
+    } }).success).toBe(false);
   });
 
   it("retains each retry's actual route, credential, model, error and unknown usage", () => {

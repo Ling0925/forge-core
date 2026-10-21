@@ -165,6 +165,7 @@ export function createModelAccessService(options: Readonly<{
       async complete(messages, definitions, request) {
         const model = selectedModel ?? source?.modelAliases?.[request.model] ?? request.model;
         const selection = { sourceId: sourceId ?? "environment", model, apiMode: config.apiMode ?? "chat-completions" as const,
+          reasoningEffort: config.reasoningEffort ?? "default" as const,
           ...(config.credentialId ? { credentialId: config.credentialId } : {}), attempt: request.attempt ?? 0, reason: "direct" };
         request.onAttempt?.({ ...selection, outcome: "started", timestamp: new Date().toISOString() });
         try {

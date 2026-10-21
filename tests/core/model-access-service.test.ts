@@ -152,6 +152,39 @@ it("records the real aliased wire model and selected default credential", async 
   const usage = await service.getUsageStats!();
   expect(usage.routes).toMatchObject([{ model: "org/wire/model", credentialId: "key-one", attempts: 1, succeeded: 1, unknownUsage: 1 }]);
 });
+it.each([false, true])("persists attempt-time reasoning effort across setting changes (routed=%s)", async routed => {
+  let fail = false;
+  const configured: (string | undefined)[] = [];
+  const { service, root } = await fixture(config => provider(async () => {
+    configured.push(config.reasoningEffort);
+    if (fail) throw new ProviderError("http", "fixture rejected", false, 400);
+    return response;
+  }));
+  if (routed) await service.updateSettings({ route: { type: "save", group: {
+    id: "effort-pool", label: "Effort", strategy: "order", members: [{ sourceId: "local", model: "org/model/v1" }],
+  } } });
+  const session = await service.createSession({ workspace: root, title: "Effort fixture",
+    ...(routed ? { routeGroupId: "effort-pool" } : { providerSourceId: "local" }),
+  });
+  for (const effort of [undefined, "xhigh", "none"] as const) {
+    if (effort !== undefined) await service.updateSettings({ settings: { reasoningEffort: effort } });
+    fail = effort === "none";
+    const result = await service.run({ sessionId: session.id, prompt: "go", permission: "readonly" },
+      () => {}, async () => false, new AbortController().signal);
+    expect(result.status).toBe(fail ? "failed" : "completed");
+    const attempts = result.events.filter(event => event.type === "provider_attempt");
+    expect(attempts.slice(-2).map(event => event.selection.reasoningEffort)).toEqual([effort ?? "default", effort ?? "default"]);
+  }
+  expect(configured).toEqual([undefined, "xhigh", "none"]);
+  const store = await openSessionStore(join(root, "home"));
+  const persisted = await store.get(session.id);
+  expect(persisted.events.filter(event => event.type === "provider_attempt").map(event => event.selection.reasoningEffort))
+    .toEqual(["default", "default", "xhigh", "xhigh", "none", "none"]);
+  const stats = await service.getUsageStats!();
+  expect(stats.requests).toHaveLength(3);
+  expect(stats.requests?.map(request => request.reasoningEffort).sort()).toEqual(["default", "none", "xhigh"]);
+});
+
 it("keeps Vertex discovery offline and mints a cached bearer token only for explicit inference", async () => {
   const tokenFetch = vi.fn<typeof fetch>(async () => Response.json({ access_token: "fixture-cloud-token", expires_in: 3600 }));
   vi.stubGlobal("fetch", tokenFetch);
