@@ -1,10 +1,10 @@
+import type { ProviderProtocol } from "../shared/model-access";
 import {
-  modelCatalogEntrySchema,
-  modelCatalogSchema,
   type ModelCatalog,
   type ModelCatalogEntry,
+  modelCatalogEntrySchema,
+  modelCatalogSchema,
 } from "../shared/model-catalog";
-import type { ProviderProtocol } from "../shared/model-access";
 import { readModelContextWindow } from "./context-window";
 
 type RecordValue = Readonly<Record<string, unknown>>;
@@ -57,9 +57,7 @@ function nonNegative(value: unknown): number | undefined {
     typeof value === "string" && /^\d+(?:\.\d+)?$/.test(value.trim())
       ? Number(value.trim())
       : value;
-  return typeof number === "number" &&
-    Number.isFinite(number) &&
-    number >= 0
+  return typeof number === "number" && Number.isFinite(number) && number >= 0
     ? number
     : undefined;
 }
@@ -78,7 +76,10 @@ function nested(raw: RecordValue, ...path: readonly string[]): unknown {
   return current;
 }
 
-function firstString(raw: RecordValue, names: readonly string[]): string | undefined {
+function firstString(
+  raw: RecordValue,
+  names: readonly string[],
+): string | undefined {
   for (const name of names) {
     const value = raw[name];
     if (typeof value === "string" && value.trim()) return value.trim();
@@ -86,7 +87,10 @@ function firstString(raw: RecordValue, names: readonly string[]): string | undef
   return undefined;
 }
 
-function firstToken(raw: RecordValue, names: readonly string[]): number | undefined {
+function firstToken(
+  raw: RecordValue,
+  names: readonly string[],
+): number | undefined {
   for (const name of names) {
     const parsed = positiveToken(nested(raw, ...name.split(".")));
     if (parsed !== undefined) return parsed;
@@ -94,25 +98,29 @@ function firstToken(raw: RecordValue, names: readonly string[]): number | undefi
   return undefined;
 }
 
-function modalities(raw: RecordValue, direction: "input" | "output"): {
+function modalities(
+  raw: RecordValue,
+  direction: "input" | "output",
+): {
   value: string[] | undefined;
   present: boolean;
 } {
-  const candidates = direction === "input"
-    ? [
-        raw.inputModalities,
-        raw.input_modalities,
-        nested(raw, "architecture", "input_modalities"),
-        nested(raw, "modalities", "input"),
-        nested(raw, "capabilities", "input_modalities"),
-      ]
-    : [
-        raw.outputModalities,
-        raw.output_modalities,
-        nested(raw, "architecture", "output_modalities"),
-        nested(raw, "modalities", "output"),
-        nested(raw, "capabilities", "output_modalities"),
-      ];
+  const candidates =
+    direction === "input"
+      ? [
+          raw.inputModalities,
+          raw.input_modalities,
+          nested(raw, "architecture", "input_modalities"),
+          nested(raw, "modalities", "input"),
+          nested(raw, "capabilities", "input_modalities"),
+        ]
+      : [
+          raw.outputModalities,
+          raw.output_modalities,
+          nested(raw, "architecture", "output_modalities"),
+          nested(raw, "modalities", "output"),
+          nested(raw, "capabilities", "output_modalities"),
+        ];
   for (const candidate of candidates) {
     if (Array.isArray(candidate)) {
       return { value: strings(candidate) ?? [], present: true };
@@ -132,10 +140,12 @@ function reasoningEfforts(raw: RecordValue): string[] | undefined {
     if (!Array.isArray(candidate)) continue;
     const efforts: string[] = [];
     for (const item of candidate) {
-      const value = typeof item === "string"
-        ? item
-        : record(item)?.effort;
-      if (typeof value === "string" && value.trim() && !efforts.includes(value.trim()))
+      const value = typeof item === "string" ? item : record(item)?.effort;
+      if (
+        typeof value === "string" &&
+        value.trim() &&
+        !efforts.includes(value.trim())
+      )
         efforts.push(value.trim());
     }
     if (efforts.length) return efforts;
@@ -149,13 +159,21 @@ function protocol(value: string): ProviderProtocol | undefined {
     .toLowerCase()
     .replace(/^https?:\/\/[^/]+/, "")
     .replace(/\/+$/, "");
-  if (normalized === "chat" || normalized === "chat-completions" || normalized.endsWith("/chat/completions"))
+  if (
+    normalized === "chat" ||
+    normalized === "chat-completions" ||
+    normalized.endsWith("/chat/completions")
+  )
     return "chat-completions";
   if (normalized === "responses" || normalized.endsWith("/responses"))
     return "responses";
   if (normalized === "anthropic" || normalized.endsWith("/messages"))
     return "anthropic";
-  if (normalized === "gemini" || normalized.includes("/v1beta/models") || normalized.endsWith("generatecontent"))
+  if (
+    normalized === "gemini" ||
+    normalized.includes("/v1beta/models") ||
+    normalized.endsWith("generatecontent")
+  )
     return "gemini";
   if (protocolNames.has(normalized as ProviderProtocol))
     return normalized as ProviderProtocol;
@@ -179,7 +197,8 @@ function protocols(raw: RecordValue): ProviderProtocol[] | undefined {
       }
     if (out.length) return out;
   }
-  const target = typeof raw.type_target === "string" ? raw.type_target : undefined;
+  const target =
+    typeof raw.type_target === "string" ? raw.type_target : undefined;
   if (target === "openai") return ["chat-completions", "responses"];
   if (target === "anthropic") return ["anthropic"];
   if (target === "gemini") return ["gemini"];
@@ -207,7 +226,12 @@ function pricing(
     return undefined;
   };
   const input = take("input", "prompt", "input_per_million", "inputPerMillion");
-  const output = take("output", "completion", "output_per_million", "outputPerMillion");
+  const output = take(
+    "output",
+    "completion",
+    "output_per_million",
+    "outputPerMillion",
+  );
   const cacheRead = take(
     "cacheRead",
     "cache_read",
@@ -221,8 +245,12 @@ function pricing(
     ...(input === undefined ? {} : { input }),
     ...(output === undefined ? {} : { output }),
     ...(cacheRead === undefined ? {} : { cacheRead }),
-    ...(firstString(source, ["currency"]) ? { currency: firstString(source, ["currency"]) } : {}),
-    ...(firstString(source, ["source"]) ? { source: firstString(source, ["source"]) } : {}),
+    ...(firstString(source, ["currency"])
+      ? { currency: firstString(source, ["currency"]) }
+      : {}),
+    ...(firstString(source, ["source"])
+      ? { source: firstString(source, ["source"]) }
+      : {}),
     ...(firstString(source, ["updatedAt", "updated_at"])
       ? { updatedAt: firstString(source, ["updatedAt", "updated_at"]) }
       : {}),
@@ -253,7 +281,9 @@ export function normalizeModelMetadata(
     "name",
   ]);
   const displayName =
-    displayNameValue && displayNameValue !== id && displayNameValue !== `models/${id}`
+    displayNameValue &&
+    displayNameValue !== id &&
+    displayNameValue !== `models/${id}`
       ? displayNameValue
       : undefined;
   const contextWindowTokens =
@@ -279,8 +309,11 @@ export function normalizeModelMetadata(
     booleanAt(fields.supports_vision) ??
     booleanAt(nested(fields, "capabilities", "vision")) ??
     booleanAt(nested(fields, "capabilities", "image_input"));
-  const vision = explicitVision ??
-    (input.present ? input.value?.some((value) => value.toLowerCase() === "image") : undefined);
+  const vision =
+    explicitVision ??
+    (input.present
+      ? input.value?.some((value) => value.toLowerCase() === "image")
+      : undefined);
   const supportedParameters = strings(fields.supported_parameters) ?? [];
   const tools =
     booleanAt(fields.tools) ??
@@ -288,7 +321,9 @@ export function normalizeModelMetadata(
     booleanAt(nested(fields, "capabilities", "tools")) ??
     booleanAt(nested(fields, "capabilities", "function_calling")) ??
     (supportedParameters.some((value) =>
-      ["tools", "tool_choice", "function_calling"].includes(value.toLowerCase()),
+      ["tools", "tool_choice", "function_calling"].includes(
+        value.toLowerCase(),
+      ),
     )
       ? true
       : undefined);
@@ -318,7 +353,9 @@ export function normalizeModelMetadata(
     ...(efforts === undefined ? {} : { reasoningEfforts: efforts }),
     ...(tools === undefined ? {} : { tools }),
     ...(vision === undefined ? {} : { vision }),
-    ...(supportedProtocols === undefined ? {} : { protocols: supportedProtocols }),
+    ...(supportedProtocols === undefined
+      ? {}
+      : { protocols: supportedProtocols }),
     ...(price === undefined ? {} : { pricing: price }),
     ...(Object.keys(provenance).length ? { provenance } : {}),
   });
@@ -345,18 +382,25 @@ export function catalogFromIds(ids: readonly string[]): ModelCatalog {
 }
 
 function pickFirst<T>(
-  entries: readonly Readonly<{ source: CatalogSource; value: ModelCatalogEntry }>[],
+  entries: readonly Readonly<{
+    source: CatalogSource;
+    value: ModelCatalogEntry;
+  }>[],
   value: (entry: ModelCatalogEntry) => T | undefined,
 ): Readonly<{ source: CatalogSource; value: T }> | undefined {
   for (const entry of entries) {
     const selected = value(entry.value);
-    if (selected !== undefined) return { source: entry.source, value: selected };
+    if (selected !== undefined)
+      return { source: entry.source, value: selected };
   }
   return undefined;
 }
 
 function firstNonEmpty(
-  entries: readonly Readonly<{ source: CatalogSource; value: ModelCatalogEntry }>[],
+  entries: readonly Readonly<{
+    source: CatalogSource;
+    value: ModelCatalogEntry;
+  }>[],
   value: (entry: ModelCatalogEntry) => readonly string[] | undefined,
   allowEmpty = false,
 ): Readonly<{ source: CatalogSource; value: readonly string[] }> | undefined {
@@ -405,15 +449,22 @@ export function mergeCatalog(
   for (const id of order) {
     const entries = byId.get(id) ?? [];
     const provenance: Record<string, CatalogSource> = {};
-    const identity = entries.find(entry => entry.value.provenance?.id);
-    if (identity) provenance.id = identity.source === "user" ? "user" : identity.value.provenance!.id!;
+    const identity = entries.find((entry) => entry.value.provenance?.id);
+    if (identity)
+      provenance.id =
+        identity.source === "user" ? "user" : identity.value.provenance!.id!;
     const pick = <T>(
       key: string,
       selected: Readonly<{ source: CatalogSource; value: T }> | undefined,
     ): T | undefined => {
       if (!selected) return undefined;
-      const original = entries.find(entry => entry.source === selected.source && (entry.value as Record<string, unknown>)[key] === selected.value)?.value.provenance?.[key];
-      provenance[key] = selected.source === "user" ? "user" : original ?? selected.source;
+      const original = entries.find(
+        (entry) =>
+          entry.source === selected.source &&
+          (entry.value as Record<string, unknown>)[key] === selected.value,
+      )?.value.provenance?.[key];
+      provenance[key] =
+        selected.source === "user" ? "user" : (original ?? selected.source);
       return selected.value;
     };
     const displayName = pick(
@@ -436,12 +487,22 @@ export function mergeCatalog(
       "outputModalities",
       firstNonEmpty(entries, (entry) => entry.outputModalities, true),
     );
+    const reasoningEffort = pick(
+      "reasoningEffort",
+      pickFirst(entries, (entry) => entry.reasoningEffort),
+    );
     const reasoningEfforts = pick(
       "reasoningEfforts",
       firstNonEmpty(entries, (entry) => entry.reasoningEfforts),
     );
-    const tools = pick("tools", pickFirst(entries, (entry) => entry.tools));
-    const vision = pick("vision", pickFirst(entries, (entry) => entry.vision));
+    const tools = pick(
+      "tools",
+      pickFirst(entries, (entry) => entry.tools),
+    );
+    const vision = pick(
+      "vision",
+      pickFirst(entries, (entry) => entry.vision),
+    );
     const protocols = pick(
       "protocols",
       firstNonEmpty(entries, (entry) => entry.protocols),
@@ -454,13 +515,20 @@ export function mergeCatalog(
     const price = prices.length
       ? (Object.assign(
           {},
-          ...prices.slice().reverse().map((entry) => entry.value),
+          ...prices
+            .slice()
+            .reverse()
+            .map((entry) => entry.value),
         ) as NonNullable<ModelCatalogEntry["pricing"]>)
       : undefined;
     if (prices[0]) {
       const first = prices[0];
-      const original = entries.find(entry => entry.source === first.source && entry.value.pricing === first.value)?.value.provenance?.pricing;
-      provenance.pricing = first.source === "user" ? "user" : original ?? first.source;
+      const original = entries.find(
+        (entry) =>
+          entry.source === first.source && entry.value.pricing === first.value,
+      )?.value.provenance?.pricing;
+      provenance.pricing =
+        first.source === "user" ? "user" : (original ?? first.source);
     }
 
     merged.push(
@@ -471,6 +539,7 @@ export function mergeCatalog(
         ...(maxOutputTokens === undefined ? {} : { maxOutputTokens }),
         ...(inputModalities === undefined ? {} : { inputModalities }),
         ...(outputModalities === undefined ? {} : { outputModalities }),
+        ...(reasoningEffort === undefined ? {} : { reasoningEffort }),
         ...(reasoningEfforts === undefined ? {} : { reasoningEfforts }),
         ...(tools === undefined ? {} : { tools }),
         ...(vision === undefined ? {} : { vision }),
