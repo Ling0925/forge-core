@@ -7,6 +7,7 @@ import type {
   AgentRuntime,
   AgentRuntimeDependencies,
   RunControl,
+  SteeringInput,
 } from "../shared/contracts";
 import { ForgeError, isRetryableProviderFailure, providerRetryReason, toErrorInfo } from "../shared/errors";
 import { recordPlan } from "../shared/plans";
@@ -382,60 +383,104 @@ export const createAgentRuntime = (
     };
     let writes: Promise<void> = Promise.resolve();
     let acceptingTitle = true;
-    const save = (): Promise<void> => {
-      // Title inference can finish while a provider/tool checkpoint is saving.
-      // Serialize writes and always save the latest in-memory snapshot.
-      const work = writes.then(async () => {
-        if (!snapshot)
-          throw new ForgeError("internal", "Session has not loaded.");
-        snapshot = { ...snapshot, updatedAt: now() };
-        try {
-          await writer.save(snapshot);
-        } catch {
-          throw new ForgeError("storage", "Could not checkpoint session.", true);
-        }
-      });
+    let acceptingSteering = false;
+    // Saved immediately, but kept after the in-flight assistant/tool exchange.
+    // The provider only sees these messages once that exchange is complete.
+    let pendingSteering: { message: Message; bytes: number }[] = [];
+    let steeringCount = 0;
+    let steeringBytes = 0;
+    const enqueueWrite = (write: () => Promise<void>): Promise<void> => {
+      const work = writes.then(write);
       writes = work.catch(() => undefined);
       return work;
+    };
+    const checkpoint = async (extra: readonly Message[] = []): Promise<void> => {
+      if (!snapshot) throw new ForgeError("internal", "Session has not loaded.");
+      snapshot = { ...snapshot, updatedAt: now() };
+      const messages = [...pendingSteering.map(entry => entry.message), ...extra];
+      try {
+        // The journal forbids a user record inside an unresolved tool exchange.
+        // Keep accepted messages durable in the session inbox until promotion.
+        await writer.save(messages.length ? { ...snapshot, pendingSteering: messages } : snapshot);
+      } catch {
+        throw new ForgeError("storage", "Could not checkpoint session.", true);
+      }
+    };
+    // All title, steering and model/tool writes share the same owner and CAS.
+    const save = (): Promise<void> => enqueueWrite(() => checkpoint());
+    const settleWrites = async (): Promise<void> => {
+      let pending: Promise<void>;
+      do { pending = writes; await pending; } while (pending !== writes);
     };
     const check = (): void => {
       rootBudget.check();
       if (signal.aborted) throw new ForgeError("cancelled", "Run cancelled.");
     };
+    const steeringMessage = (entry: SteeringInput): Message => {
+      const steering = typeof entry === "string" ? { prompt: entry } : entry;
+      const parsed = runInputSchema.safeParse({ ...input, images: undefined, ...steering });
+      if (!parsed.success) throw new ForgeError("invalid_input", "Steering prompt failed validation.");
+      return { role: "user", content: parsed.data.prompt,
+        ...(parsed.data.images?.length ? { images: parsed.data.images } : {}) };
+    };
+    const acceptSteering = async (input: SteeringInput): Promise<void> => {
+      check();
+      if (!acceptingSteering) throw new ForgeError("not_found", "当前运行正在收尾，草稿已保留。请手动发送下一轮。");
+      const message = steeringMessage(input);
+      const bytes = Buffer.byteLength(JSON.stringify(message));
+      if (steeringCount >= 1000 || steeringBytes + bytes > 16 * 1024 * 1024)
+        throw new ForgeError("invalid_input", "插话队列已满，草稿已保留。");
+      steeringCount++;
+      steeringBytes += bytes;
+      try {
+        await enqueueWrite(async () => {
+          // Do not expose an uncommitted input to a model, or retain it after a
+          // failed write. Later checkpoints cannot overwrite an accepted input.
+          await checkpoint([message]);
+          pendingSteering.push({ message, bytes });
+        });
+      } catch (error) {
+        steeringCount--;
+        steeringBytes -= bytes;
+        throw error;
+      }
+    };
+    const includeSteering = (): boolean => {
+      if (!snapshot || !pendingSteering.length) return false;
+      snapshot = { ...snapshot, messages: [...snapshot.messages, ...pendingSteering.map(entry => entry.message)] };
+      steeringCount -= pendingSteering.length;
+      steeringBytes -= pendingSteering.reduce((sum, entry) => sum + entry.bytes, 0);
+      pendingSteering = [];
+      return true;
+    };
+    const closeSteering = (): void => {
+      acceptingSteering = false;
+      control?.setSteeringHandler?.(undefined);
+    };
     const drainSteering = async (final = false): Promise<boolean> => {
       check();
-      if (!control) return false;
-      const drained = control.drainSteering(final);
+      await settleWrites();
       check();
-      if (drained.length === 0) return false;
-      const messages: Message[] = [];
-      for (const entry of drained) {
-        const steering = typeof entry === "string" ? { prompt: entry, images: undefined } : entry;
-        const parsed = runInputSchema.safeParse({ ...input, images: undefined, ...steering });
-        if (!parsed.success)
-          throw new ForgeError(
-            "invalid_input",
-            "Steering prompt failed validation.",
-          );
-        messages.push({ role: "user", content: parsed.data.prompt,
-          ...(parsed.data.images?.length ? { images: parsed.data.images } : {}) });
+      const received = includeSteering();
+      // Pull-only CLI/child controls retain their existing acknowledgement path.
+      const drained = control?.drainSteering(final && !received) ?? [];
+      check();
+      if (drained.length) {
+        const messages = drained.map(steeringMessage);
+        if (!snapshot) throw new ForgeError("internal", "Session has not loaded.");
+        snapshot = { ...snapshot, messages: [...snapshot.messages, ...messages] };
+        await save();
+        control?.onSteeringApplied?.();
       }
-      if (!snapshot)
-        throw new ForgeError("internal", "Session has not loaded.");
-      snapshot = {
-        ...snapshot,
-        messages: [
-          ...snapshot.messages,
-          ...messages,
-        ],
-      };
-      await save();
-      control.onSteeringApplied?.();
-      return true;
+      if (received && !drained.length) await save();
+      if (final && !received && !drained.length) closeSteering();
+      return received || drained.length > 0;
     };
     const finish = async (
       requestedStatus: "completed" | "cancelled" | "failed",
     ): Promise<SessionSnapshot> => {
+      closeSteering();
+      await settleWrites();
       let status = requestedStatus;
       if (!snapshot)
         throw new ForgeError("internal", "Session has not loaded.");
@@ -467,6 +512,9 @@ export const createAgentRuntime = (
       if (rootBudget.stopReason === "deadline") status = "failed";
       else if (signal.aborted) status = "cancelled";
       closeStep(status);
+      // Cancellation/failure must not erase messages already acknowledged to the
+      // sender. Keep them in history, without starting another run implicitly.
+      includeSteering();
       const addUsage = (a: Usage, b: Usage): Usage => ({
         promptTokens: a.promptTokens + b.promptTokens,
         completionTokens: a.completionTokens + b.completionTokens,
@@ -512,7 +560,11 @@ export const createAgentRuntime = (
       return snapshot;
     };
     try {
-      snapshot = await writer.read();
+      const { pendingSteering: recoveredSteering, ...loaded } = await writer.read();
+      snapshot = loaded;
+      pendingSteering = (recoveredSteering ?? []).map(message => ({ message, bytes: Buffer.byteLength(JSON.stringify(message)) }));
+      steeringCount = pendingSteering.length;
+      steeringBytes = pendingSteering.reduce((sum, entry) => sum + entry.bytes, 0);
       rootBudget.enter(input.sessionId);
       if (deps.runMemory) snapshot = await deps.runMemory.restore(snapshot, now());
       if (
@@ -548,6 +600,7 @@ export const createAgentRuntime = (
           "prior execution was interrupted; inspect effects before retry",
         ),
       };
+      includeSteering(); // Recover accepted inputs after closing any interrupted tool calls.
       const definitions = [...deps.tools.definitions, ...nativeDefinitions];
       const toolNames = definitions.map(definition => definition.function.name);
       let currentInstructions = buildSystemInstructions({
@@ -588,6 +641,8 @@ export const createAgentRuntime = (
         model: snapshot.model, permission, title: snapshot.title });
       snapshot = { ...snapshot, events: [...snapshot.events, started] };
       await save();
+      acceptingSteering = true;
+      control?.setSteeringHandler?.(acceptSteering);
       notify(started);
       check();
       rootBudget.checkAdmission();
@@ -662,7 +717,7 @@ export const createAgentRuntime = (
               beforeChars: JSON.stringify(before).length, afterChars: JSON.stringify(project(snapshot)).length });
           }
         }
-        const context = compactContext(project(snapshot), rawLimit, contextSize);
+        let context = compactContext(project(snapshot), rawLimit, contextSize);
         if (context.removedMessages > 0)
           event({
             type: "context_compacted",
@@ -670,7 +725,7 @@ export const createAgentRuntime = (
             beforeChars: context.beforeChars,
             afterChars: context.afterChars,
           });
-        const projectedUsage = { ...measureContext(context.messages, windowTokens, definitions), ...budgetUsage(budget) };
+        let projectedUsage = { ...measureContext(context.messages, windowTokens, definitions), ...budgetUsage(budget) };
         event({ type: "context_usage", usage: projectedUsage });
         phase = "provider";
         turns += 1;
@@ -758,6 +813,13 @@ export const createAgentRuntime = (
             }
           };
           try {
+            // Inputs can arrive during compaction, approval or retry backoff.
+            // Re-project at the actual request boundary, never mutate an in-flight payload.
+            if (await drainSteering()) {
+              context = compactContext(project(snapshot), rawLimit, contextSize);
+              projectedUsage = { ...measureContext(context.messages, windowTokens, definitions), ...budgetUsage(budget) };
+              event({ type: "context_usage", usage: projectedUsage });
+            }
             response = await withCancellation(
               deps.provider.complete(
                 context.messages,
@@ -1098,6 +1160,7 @@ export const createAgentRuntime = (
       event({ type: "error", error: toErrorInfo(safe) });
       return await finish(safe.code === "cancelled" ? "cancelled" : "failed");
     } finally {
+      closeSteering();
       acceptingTitle = false;
       // Cleanup still joins children if terminal persistence or a hook throws.
       try { await supervisor.settle(true); }

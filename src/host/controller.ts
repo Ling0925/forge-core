@@ -3,7 +3,7 @@ import {
   listWorkspaceDirectory,
   readWorkspaceFilePreview,
 } from "../core/workspace-files";
-import type { HarnessService } from "../shared/contracts";
+import type { HarnessService, SteeringHandler } from "../shared/contracts";
 import { ForgeError, toErrorInfo } from "../shared/errors";
 import { HOST_PROTOCOL_VERSION, type HostState } from "../shared/host";
 import { QueueAdmissionError } from "../shared/input-queue";
@@ -57,6 +57,7 @@ export function createWorkerController(
       steering: Extract<RpcRequest, { method: "steerRun" }>[];
       applyingSteering: Extract<RpcRequest, { method: "steerRun" }>[];
       acceptingSteering: boolean;
+      acceptSteering: SteeringHandler | undefined;
       terminal?: Extract<AgentEvent, { type: "run_finished" }>;
       completion?: Promise<unknown>;
     }
@@ -285,6 +286,7 @@ export function createWorkerController(
       steering: [],
       applyingSteering: [],
       acceptingSteering: true,
+      acceptSteering: undefined,
     };
     runs.set(runId, run);
     // The response is posted before even synchronous service callbacks execute.
@@ -345,6 +347,16 @@ export function createWorkerController(
             onSteeringApplied: () => {
               for (const request of run.applyingSteering.splice(0))
                 respond(request, null);
+            },
+            setSteeringHandler: (handler) => {
+              run.acceptSteering = handler;
+              if (!handler) { run.acceptingSteering = false; return; }
+              // Requests received during startup join the runtime's sole writer
+              // as soon as it is ready, not at the next provider boundary.
+              for (const request of run.steering.splice(0)) {
+                void handler({ prompt: request.prompt, ...(request.images?.length ? { images: request.images } : {}) })
+                  .then(() => respond(request, null), error => respond(request, null, toErrorInfo(error)));
+              }
             },
             getPermission: () => run.permission,
             ...(providerBinding ? { providerBinding } : {}),
@@ -620,6 +632,11 @@ export function createWorkerController(
               "not_found",
               "当前运行已结束或正在收尾，草稿已保留。请手动发送下一轮。",
             );
+          if (run.acceptSteering) {
+            await run.acceptSteering({ prompt: request.prompt, ...(request.images?.length ? { images: request.images } : {}) });
+            respond(request, null);
+            break;
+          }
           const queued = [...run.steering, ...run.applyingSteering];
           if (
             queued.length >= 1000 ||

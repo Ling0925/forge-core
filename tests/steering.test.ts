@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { createHarness } from "../src/core/harness";
 import { createAgentRuntime } from "../src/core/runtime";
 import type {
@@ -11,6 +11,7 @@ import type {
   ModelProvider,
   RunControl,
   SessionStore,
+  SteeringHandler,
 } from "../src/shared/contracts";
 import { ForgeError } from "../src/shared/errors";
 import {
@@ -142,6 +143,225 @@ const fixture = (
     },
   };
 };
+
+function liveControl() {
+  let handler: SteeringHandler | undefined;
+  const control: RunControl = {
+    drainSteering: () => [],
+    setSteeringHandler: value => { handler = value; },
+  };
+  return {
+    control,
+    send: (value: Parameters<SteeringHandler>[0]) => {
+      if (!handler) throw new Error("Steering is not open");
+      return handler(value);
+    },
+    isOpen: () => !!handler,
+  };
+}
+
+const gate = () => {
+  let release = () => {};
+  const promise = new Promise<void>(resolve => { release = resolve; });
+  return { promise, release };
+};
+
+describe("immediate runtime steering", () => {
+  it("recovers the durable inbox after an interrupted tool exchange without replaying the tool", async () => {
+    const requests: (readonly Message[])[] = [];
+    const f = fixture({ listModels: async () => [], complete: async messages => {
+      requests.push(messages); return { message: { role: "assistant", content: "done" } };
+    } }, emptyTools, { state: { ...initial(), status: "running",
+      messages: [{ role: "user", content: "old task" }, { role: "assistant", content: null, tool_calls: [call("old")] }],
+      pendingSteering: [{ role: "user", content: "already accepted" }],
+    } });
+    const result = await f.runtime.run(input, () => {}, async () => true, signal());
+    expect(result.status).toBe("completed");
+    expect(users(requests[0] ?? [])).toEqual(["old task", "already accepted", "work"]);
+    expect(requests[0]?.filter(message => message.role === "tool")).toHaveLength(1);
+    expect(result.pendingSteering).toBeUndefined();
+    expect(users(result.messages).filter(text => text === "already accepted")).toHaveLength(1);
+  });
+  it.each([false, true])("saves during model/tool flight, keeps tool exchanges intact and retains messages on cancel=%s", async (cancel) => {
+    const model = gate();
+    const tool = gate();
+    const abort = new AbortController();
+    const live = liveControl();
+    const requests: (readonly Message[])[] = [];
+    let executions = 0;
+    const f = fixture({
+      listModels: async () => [],
+      complete: async messages => {
+        requests.push([...messages]);
+        if (requests.length === 1) {
+          await model.promise;
+          return { message: { role: "assistant", content: null, tool_calls: [call("once")] } };
+        }
+        return { message: { role: "assistant", content: "done" } };
+      },
+    }, {
+      ...emptyTools,
+      execute: async () => { executions++; await tool.promise; return { content: "ok", isError: false }; },
+    });
+    const work = f.runtime.run(input, () => {}, async () => true, abort.signal, live.control);
+    try {
+      await vi.waitFor(() => expect(requests).toHaveLength(1));
+      await live.send("during provider");
+      expect(users([...f.current().messages, ...(f.current().pendingSteering ?? [])])).toEqual(["work", "during provider"]);
+      expect(users(requests[0] ?? [])).toEqual(["work"]);
+      model.release();
+      await vi.waitFor(() => expect(executions).toBe(1));
+      await Promise.all([live.send("during tool"), live.send("last constraint")]);
+      expect(users([...f.current().messages, ...(f.current().pendingSteering ?? [])])).toEqual(["work", "during provider", "during tool", "last constraint"]);
+      expect(requests).toHaveLength(1);
+      if (cancel) abort.abort();
+      tool.release();
+      const result = await work;
+      expect(result.status).toBe(cancel ? "cancelled" : "completed");
+      expect(executions).toBe(1);
+      expect(requests).toHaveLength(cancel ? 1 : 2);
+      const transcript = cancel ? result.messages : requests[1] ?? [];
+      const toolIndex = transcript.findIndex(message => message.role === "assistant" && message.tool_calls?.length);
+      expect(transcript.slice(toolIndex, toolIndex + 5).map(message => message.role)).toEqual([
+        "assistant", "tool", "user", "user", "user",
+      ]);
+      expect(users(result.messages)).toEqual(["work", "during provider", "during tool", "last constraint"]);
+      expect(f.current().messages).toEqual(result.messages);
+      expect(live.isOpen()).toBe(false);
+    } finally { model.release(); tool.release(); abort.abort(); await work; }
+  });
+
+  it("does not acknowledge a failed write or leak its input through a later checkpoint", async () => {
+    const model = gate();
+    const live = liveControl();
+    let entered = false;
+    const requests: string[][] = [];
+    const f = fixture({
+      listModels: async () => [],
+      complete: async messages => {
+        entered = true;
+        requests.push(users(messages));
+        await model.promise;
+        return { message: { role: "assistant", content: "done" } };
+      },
+    });
+    const store: SessionStore = {
+      ...f.deps.store,
+      save: async snapshot => {
+        if (users(snapshot.pendingSteering ?? []).includes("rejected input")) throw new Error("disk full");
+        await f.deps.store.save(snapshot);
+      },
+    };
+    const runtime = createAgentRuntime({ ...f.deps, store });
+    const work = runtime.run(input, () => {}, async () => true, signal(), live.control);
+    try {
+      await vi.waitFor(() => expect(entered).toBe(true));
+      await live.send("accepted first");
+      await expect(live.send("rejected input")).rejects.toThrow("checkpoint");
+      await live.send("accepted last");
+      expect(users([...f.current().messages, ...(f.current().pendingSteering ?? [])])).toEqual(["work", "accepted first", "accepted last"]);
+      model.release();
+      const result = await work;
+      expect(users(result.messages)).toEqual(["work", "accepted first", "accepted last"]);
+      expect(requests).toEqual([["work"], ["work", "accepted first", "accepted last"]]);
+    } finally { model.release(); await work; }
+  });
+
+  it("acknowledges only after the write completes and joins it when cancellation races the save", async () => {
+    const model = gate();
+    const commit = gate();
+    const live = liveControl();
+    const abort = new AbortController();
+    let entered = false;
+    let saving = false;
+    let acknowledged = false;
+    const f = fixture({
+      listModels: async () => [],
+      complete: async () => {
+        entered = true;
+        await model.promise;
+        return { message: { role: "assistant", content: "done" } };
+      },
+    });
+    const runtime = createAgentRuntime({ ...f.deps, store: {
+      ...f.deps.store,
+      save: async snapshot => {
+        if (!saving && users(snapshot.pendingSteering ?? []).includes("save before stopping")) {
+          saving = true;
+          await commit.promise;
+        }
+        await f.deps.store.save(snapshot);
+      },
+    } });
+    const work = runtime.run(input, () => {}, async () => true, abort.signal, live.control);
+    try {
+      await vi.waitFor(() => expect(entered).toBe(true));
+      const sent = live.send("save before stopping").then(() => { acknowledged = true; });
+      await vi.waitFor(() => expect(saving).toBe(true));
+      expect(acknowledged).toBe(false);
+      expect(users([...f.current().messages, ...(f.current().pendingSteering ?? [])])).toEqual(["work"]);
+      abort.abort();
+      commit.release();
+      await sent;
+      expect(acknowledged).toBe(true);
+      const result = await work;
+      expect(result.status).toBe("cancelled");
+      expect(users(result.messages)).toEqual(["work", "save before stopping"]);
+      expect(f.current().messages).toEqual(result.messages);
+    } finally { commit.release(); model.release(); abort.abort(); await work; }
+  });
+
+  it("includes durable steering in a retry request without duplicating it after the response", async () => {
+    const live = liveControl();
+    let retrying = false;
+    const requests: string[][] = [];
+    const f = fixture({
+      listModels: async () => [],
+      complete: async messages => {
+        requests.push(users(messages));
+        if (requests.length === 1)
+          throw Object.assign(new ForgeError("provider", "temporary network error", true), { classification: "network" });
+        return { message: { role: "assistant", content: "done" } };
+      },
+    });
+    const work = f.runtime.run(input, event => { if (event.type === "provider_retry") retrying = true; },
+      async () => true, signal(), live.control);
+    await vi.waitFor(() => expect(retrying).toBe(true));
+    await live.send("new constraint before retry");
+    expect((await work).status).toBe("completed");
+    expect(requests).toEqual([["work"], ["work", "new constraint before retry"]]);
+    expect(users([...f.current().messages, ...(f.current().pendingSteering ?? [])])).toEqual(["work", "new constraint before retry"]);
+  });
+
+  it("includes steering received during hosted-search approval in the very next request", async () => {
+    const approval = gate();
+    const live = liveControl();
+    let approving = false;
+    const requests: string[][] = [];
+    const f = fixture({
+      apiMode: "responses",
+      listModels: async () => [],
+      complete: async messages => {
+        requests.push(users(messages));
+        return { message: { role: "assistant", content: "done" } };
+      },
+    }, emptyTools, { settings: { ...defaultPublicSettings, webSearch: "cached" } });
+    const work = f.runtime.run({ ...input, permission: "workspace" }, () => {}, async () => {
+      approving = true;
+      await approval.promise;
+      return true;
+    }, signal(), live.control);
+    try {
+      await vi.waitFor(() => expect(approving).toBe(true));
+      await live.send("only use official sources");
+      expect(requests).toHaveLength(0);
+      expect(users([...f.current().messages, ...(f.current().pendingSteering ?? [])])).toEqual(["work", "only use official sources"]);
+      approval.release();
+      expect((await work).status).toBe("completed");
+      expect(requests).toEqual([["work", "only use official sources"]]);
+    } finally { approval.release(); await work; }
+  });
+});
 
 describe("runtime steering", () => {
   it("injects drained steering FIFO before the next provider request and persists it", async () => {
@@ -484,7 +704,7 @@ describe("harness steering", () => {
           model: "fixture-model",
         },
       });
-      const session = await service.createSession({ workspace });
+      const session = await service.createSession({ workspace, title: "manual" });
 
       const result = await service.run(
         { sessionId: session.id, prompt: "work" },

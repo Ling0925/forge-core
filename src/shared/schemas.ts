@@ -792,6 +792,9 @@ export const sessionSnapshotSchema = z
   .object({
     ...summaryFields,
     messages: z.array(messageSchema).max(100000).readonly(),
+    // Durable user input waiting for the active native tool exchange to close.
+    pendingSteering: z.array(messageSchema.refine(message => message.role === "user" && !message.origin))
+      .max(1000).readonly().optional(),
     events: z.array(agentEventSchema).max(1000000).readonly(),
     changes: z.array(fileChangeSchema).max(100000).readonly(),
     titleSource: z.enum(["default", "user", "auto"]).optional(),

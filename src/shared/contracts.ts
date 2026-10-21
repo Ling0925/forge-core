@@ -24,6 +24,9 @@ export type ApprovalHandler = (
   request: ApprovalRequest,
   signal: AbortSignal,
 ) => Promise<boolean>;
+export type SteeringInput = string | Pick<RunInput, "prompt" | "images">;
+/** Resolves after the message is saved, independently of model/tool progress. */
+export type SteeringHandler = (input: SteeringInput) => Promise<void>;
 export interface RunControl {
   /** Trusted queue binding; never accepted directly from public RunInput. */
   readonly providerBinding?: string;
@@ -33,8 +36,10 @@ export interface RunControl {
   /** final=true atomically closes an empty child queue before terminal cleanup. */
   readonly drainSteering: (
     final?: boolean,
-  ) => readonly (string | Pick<RunInput, "prompt" | "images">)[];
+  ) => readonly SteeringInput[];
   readonly onSteeringApplied?: () => void;
+  /** Bind the run's sole writer after startup; unbind before terminal cleanup. */
+  readonly setSteeringHandler?: (handler: SteeringHandler | undefined) => void;
 }
 export interface ModelProvider {
   readonly apiMode?: "chat-completions" | "responses" | "anthropic" | "gemini";
