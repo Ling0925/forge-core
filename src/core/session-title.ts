@@ -65,7 +65,7 @@ export async function autoTitle(options: {
   let observed = false;
   let observation: ((usage: Usage | undefined) => void) | undefined;
   try {
-    const deadline = AbortSignal.any([signal, AbortSignal.timeout(2000)]);
+    const deadline = AbortSignal.any([signal, AbortSignal.timeout(30_000)]);
     observation = options.beginUsage?.();
     const result = await withCancellation(
       provider.complete(

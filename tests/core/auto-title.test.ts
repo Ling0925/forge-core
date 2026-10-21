@@ -112,16 +112,41 @@ describe("automatic title metadata", () => {
     expect(f.get().title).toBe("修复登录问题");
     expect(f.provider.complete).toHaveBeenCalledTimes(1);
   });
-  it("bounds a provider ignoring cancellation", async () => {
+  it.each([
+    { name: "accepts a title response just before the 30-second deadline", responds: true },
+    { name: "falls back after 30 seconds even if the provider ignores cancellation", responds: false },
+  ])("$name", async ({ responds }) => {
     vi.useFakeTimers();
+    // Node's native AbortSignal.timeout does not use Vitest's fake timers.
+    const timeout = vi.spyOn(AbortSignal, "timeout").mockImplementation(ms => {
+      const controller = new AbortController();
+      setTimeout(() => controller.abort(new DOMException("Timed out", "TimeoutError")), ms);
+      return controller.signal;
+    });
     try {
       const f = fixture();
-      f.provider.complete = () => new Promise(() => {});
-      const done = f.run();
-      await vi.advanceTimersByTimeAsync(2100);
-      await done;
+      let resolve!: (value: Awaited<ReturnType<ModelProvider["complete"]>>) => void;
+      let requestSignal: AbortSignal | undefined;
+      f.provider.complete = vi.fn<ModelProvider["complete"]>((_messages, _tools, options) => {
+        requestSignal = options.signal;
+        return new Promise(done => { resolve = done; });
+      });
+      let settled = false;
+      const done = f.run().then(() => { settled = true; });
+      await vi.advanceTimersByTimeAsync(29_999);
+      expect(timeout).toHaveBeenCalledWith(30_000);
+      expect(requestSignal?.aborted).toBe(false);
+      expect(settled).toBe(false);
       expect(f.get().title).toBe("修复登录问题");
+      if (responds) resolve({ message: { role: "assistant", content: "登录修复" } });
+      else await vi.advanceTimersByTimeAsync(1);
+      await done;
+      expect(requestSignal?.aborted).toBe(!responds);
+      expect(f.get().title).toBe(responds ? "登录修复" : "修复登录问题");
+      expect(f.provider.complete).toHaveBeenCalledTimes(1);
     } finally {
+      timeout.mockRestore();
+      vi.clearAllTimers();
       vi.useRealTimers();
     }
   });
