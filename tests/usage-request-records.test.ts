@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { aggregateUsageStats, computeSessionUsage, createUsageStatsService, sessionRequestRecords } from "../src/core/usage-stats";
+import { createModelPricingService, parseModelPrices } from "../src/core/model-pricing";
 import type { SessionStore } from "../src/shared/contracts";
 import { usageStatsDtoSchema } from "../src/shared/ipc";
 import type { ProviderAttempt } from "../src/shared/model-access";
@@ -36,6 +37,7 @@ describe("individual usage request records", () => {
       outcome: "succeeded", timestamp: time(1), startedAt: time(1), finishedAt: time(3), durationMs: 2000, usage,
     });
     expect(computed.requests.map(item => item.durationMs)).toEqual([2000, 1000, 2000]);
+    expect(computed.requests.map(item => item.tokensPerSecond)).toEqual([10, 20, 10]);
     expect(new Set(computed.requests.map(item => item.id)).size).toBe(3);
     expect(computed.routing[0]?.attempts).toBe(3);
     const stats = aggregateUsageStats([computed]);
@@ -108,16 +110,70 @@ describe("individual usage request records", () => {
     let current = snapshot([attempt("started", 0)], { status: "running" });
     const get = vi.fn(async () => current);
     const store = { list: async () => [current], get } as unknown as SessionStore;
-    const service = createUsageStatsService(store);
+    const pricing = { getPrices: vi.fn(async () => parseModelPrices({})) };
+    const service = createUsageStatsService(store, pricing);
     expect((await service.getUsageStats()).requests?.[0]?.outcome).toBe("started");
+    expect(pricing.getPrices).not.toHaveBeenCalled();
     await service.getUsageStats();
     expect(get).toHaveBeenCalledTimes(1);
     current = snapshot([attempt("started", 0), attempt("succeeded", 2, { usage })], { updatedAt: time(61) });
     expect((await service.getUsageStats()).requests?.[0]?.outcome).toBe("succeeded");
     expect(get).toHaveBeenCalledTimes(2);
     // A freshly opened service rebuilds the same rows from persisted events.
-    expect((await createUsageStatsService(store).getUsageStats()).requests).toEqual((await service.getUsageStats()).requests);
+    expect((await createUsageStatsService(store, pricing).getUsageStats()).requests).toEqual((await service.getUsageStats()).requests);
     expect(aggregateUsageStats([computeSessionUsage(snapshot([]))]).requests).toEqual([]);
+  });
+
+  it("does not invent speeds for zero/missing/negative durations or missing usage", () => {
+    const records = sessionRequestRecords(snapshot([
+      attempt("started", 1, {}, 1), attempt("succeeded", 1, { usage }, 1),
+      attempt("succeeded", 2, { usage }, 2),
+      attempt("started", 3, {}, 3), attempt("failed", 4, {}, 3),
+      attempt("started", 6, {}, 4), attempt("succeeded", 5, { usage }, 4),
+      attempt("started", 7, {}, 5), attempt("succeeded", 9, { usage: { ...usage, completionTokens: 0 } }, 5),
+    ]));
+    expect(records.map(item => item.tokensPerSecond)).toEqual([undefined, undefined, undefined, undefined, 0]);
+  });
+
+  it("automatically enriches filtered requests with current model prices without changing persisted usage totals", async () => {
+    const current = snapshot([
+      attempt("started", 1, { model: "source:vendor/model" }),
+      attempt("succeeded", 3, { model: "source:vendor/model", usage }),
+      attempt("started", 4, { model: "source:unknown" }, 2),
+      attempt("succeeded", 5, { model: "source:unknown", usage }, 2),
+    ]);
+    const get = vi.fn(async () => current);
+    const store = { list: async () => [current], get } as unknown as SessionStore;
+    let now = 1000;
+    const fetcher = vi.fn<typeof fetch>()
+      .mockResolvedValueOnce(Response.json({ vendor: { models: { model: { cost: { input: 3, output: 15, cache_read: 0.3 } } } } }))
+      .mockResolvedValueOnce(Response.json({ vendor: { models: { model: { cost: { input: 6, output: 30, cache_read: 0.6 } } } } }));
+    const pricing = createModelPricingService({ fetch: fetcher, now: () => now });
+    const service = createUsageStatsService(store, pricing);
+    const first = await service.getUsageStats();
+    expect(first.requests?.[1]).toMatchObject({ model: "source:vendor/model", tokensPerSecond: 10, estimatedCostUsd: 0.000519, usage });
+    expect(first.requests?.[0]?.estimatedCostUsd).toBeUndefined();
+    expect(usageStatsDtoSchema.parse(first).requests).toEqual(first.requests);
+    expect(first.totalTokens).toBe(0);
+    expect(first.routes?.[0]?.totalTokens).toBe(120);
+    now += 24 * 3600000;
+    const refreshed = await service.getUsageStats();
+    expect(refreshed.requests?.[1]?.estimatedCostUsd).toBeCloseTo(0.001038, 10);
+    expect(get).toHaveBeenCalledTimes(1);
+    expect(fetcher).toHaveBeenCalledTimes(2);
+    expect((await service.getUsageStats({ workspace: "/other" })).requests).toEqual([]);
+    expect(fetcher).toHaveBeenCalledTimes(2);
+    expect(sessionRequestRecords(current)[0]).not.toHaveProperty("estimatedCostUsd");
+  });
+
+  it("still returns request usage and speed when prices cannot be fetched", async () => {
+    const current = snapshot([attempt("started", 1), attempt("succeeded", 3, { usage })]);
+    const store = { list: async () => [current], get: async () => current } as unknown as SessionStore;
+    const fetcher = vi.fn<typeof fetch>().mockRejectedValue(new Error("offline"));
+    const service = createUsageStatsService(store, createModelPricingService({ fetch: fetcher }));
+    const stats = await service.getUsageStats();
+    expect(stats.requests?.[0]).toMatchObject({ usage, tokensPerSecond: 10 });
+    expect(stats.requests?.[0]).not.toHaveProperty("estimatedCostUsd");
   });
 
   it("projects metadata only, omitting conversation and arbitrary upstream material", () => {

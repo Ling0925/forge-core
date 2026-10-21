@@ -9,6 +9,7 @@ import type {
 } from "../shared/ipc";
 import type { ProviderAttempt } from "../shared/model-access";
 import type { AgentEvent, SessionSnapshot } from "../shared/schemas";
+import { createModelPricingService, estimateRequestCostUsd, findModelPrice, type ModelPricingService } from "./model-pricing";
 
 export interface SessionRunStat {
   readonly date: string;
@@ -177,11 +178,15 @@ export function sessionRequestRecords(snapshot: SessionSnapshot): readonly Usage
     const durationMs = started?.startedAt === undefined
       ? Number.NaN
       : Date.parse(selection.timestamp) - Date.parse(started.startedAt);
+    // End-to-end output throughput: includes request latency, not a fabricated
+    // streaming-only rate (historical events do not record first-token time).
+    const tokensPerSecond = (selection.usage?.completionTokens ?? Number.NaN) / (durationMs / 1000);
     const completed: UsageRequest = {
       ...record,
       ...(started ? { id: started.id, timestamp: started.timestamp, startedAt: started.startedAt } : {}),
       finishedAt: selection.timestamp,
       ...(Number.isFinite(durationMs) && durationMs >= 0 ? { durationMs } : {}),
+      ...(durationMs > 0 && Number.isFinite(tokensPerSecond) && tokensPerSecond >= 0 ? { tokensPerSecond } : {}),
     };
     if (pendingIndex === undefined) records.push(completed);
     else records[pendingIndex] = completed;
@@ -473,7 +478,10 @@ export function aggregateUsageStats(
   };
 }
 
-export function createUsageStatsService(store: SessionStore) {
+export function createUsageStatsService(
+  store: SessionStore,
+  pricing: ModelPricingService = createModelPricingService(),
+) {
   const cache = new Map<
     string,
     { updatedAt: string; computed: ComputedSessionUsage }
@@ -517,7 +525,16 @@ export function createUsageStatsService(store: SessionStore) {
         }
       }
 
-      return aggregateUsageStats(computedList, filter);
+      const stats = aggregateUsageStats(computedList, filter);
+      if (!stats.requests?.some(request => request.usage !== undefined)) return stats;
+      const prices = await pricing.getPrices();
+      return {
+        ...stats,
+        requests: stats.requests.map(request => {
+          const estimatedCostUsd = estimateRequestCostUsd(request.usage, findModelPrice(prices, request.model));
+          return estimatedCostUsd === undefined ? request : { ...request, estimatedCostUsd };
+        }),
+      };
     },
   };
 }

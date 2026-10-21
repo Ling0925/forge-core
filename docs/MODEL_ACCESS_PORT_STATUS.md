@@ -22,11 +22,20 @@
 | 路由 | 显式组及同来源多凭据的 `order`/`rotate`/`usage`/`smart`/`pace`、冷却、粘性；已知协议/工具/视觉不兼容候选在发送前排除；上下文使用已知候选的保守窗口，未知能力不伪造 |
 | 重试 | runtime 是唯一尝试预算；每次 complete 最多一条上游推理。明确 429 拒绝可换候选；超时、断连、5xx、缺失 finish 不能证明未执行，不自动重放。已流出文本、工具预览或 hosted search 同样不重放 |
 | 状态隔离 | Responses、Anthropic、Gemini 的不透明状态绑定 endpoint/model/protocol/source/credential 和鉴权摘要。更换 key 不复用旧账号状态；同账号短期 token 刷新保留稳定身份；旧无身份摘要状态降级为通用消息和完整工具结果 |
-| 观测 | 用量看板分为「用量统计」「请求记录」；请求记录由持久化 `provider_attempt` 起止事件配对，逐条展示实际来源、精确模型、凭据、结果、tokens 与耗时，详情含组、原因、尝试序号及会话跳转，支持时间/工作区筛选、刷新和翻页。聊天输入框不再显示调用诊断行；缺失结果或 usage 保持未知，不推断为成功或零成本。旧会话若没有 attempt 事件，不补造请求；不采集请求正文或凭据值，也不承诺所有厂商余额查询或完整货币账单 |
+| 观测 | 用量看板分为「用量统计」「请求记录」；请求记录由持久化 `provider_attempt` 起止事件配对，逐条展示实际来源、精确模型、凭据、结果、tokens、耗时、Token 速度与预估费用（USD），详情含组、原因、尝试序号及会话跳转，支持时间/工作区筛选、刷新和翻页。聊天输入框不再显示调用诊断行；缺失结果或 usage 保持未知，不推断为成功或零成本。旧会话若没有 attempt 事件，不补造请求；不采集请求正文或凭据值，也不承诺所有厂商余额查询或完整货币账单 |
 | Gemini | 原生 SSE/JSON、目录分页、图片、完整 functionCall/functionResponse、thoughtSignature、推理、取消/错误处理；工具结果后的用户文本独立成轮；不将 hosted search 替换为本地工具 |
 | Vertex | 仅显式 JSON：service_account JWT、authorized_user 刷新、impersonated_service_account 及显式服务账号模拟；不支持 external_account/WIF；惰性铸造、缓存、刷新、取消。静态参考目录不触发 token 网络请求；不自动读 ADC、环境、gcloud 文件或 metadata 服务 |
 | Azure | 对照 `azure.go` 的 `/openai/v1`、`api-key`、精确部署名称。用户填写资源地址；不声称 classic `api-version` 或 Entra 自动发现/登录 |
 | Bedrock | 对照固定预设的 API-key bearer 与 Chat/Responses/Anthropic 兼容端点、区域和静态参考模型；**不是 IAM SigV4 凭据链**。模型目录不证明该区域/账号有资格使用 |
+
+## 请求速度与费用估算
+
+- Token 速度为 `completionTokens / (durationMs / 1000)`，单位 `tok/s`，包含请求等待时间，不是扣除首 Token 延迟后的纯生成速度。缺失用量、起止事件或有效正耗时时显示 `—`；不补造旧会话事件。
+- 价格由共享宿主按需自动获取 [models.dev/api.json](https://models.dev/api.json)，单位是美元 / 百万 Token（[上游格式](https://github.com/sst/models.dev#api)）。只请求公开目录，不发送模型配置、会话内容或凭据。进程内缓存 24 小时；下一次统计读取时刷新，失败保留上次价格，5 分钟后允许再次获取。没有可用价格则显示 `—`，不影响查看请求记录。
+- 两侧模型 ID 都取最后一个 `/` 或 `:` 后的部分并忽略大小写，例如 `cn:vendor/gpt-5`、`vendor/gpt-5` 与 `gpt-5` 使用同一匹配键。只影响费用匹配，不改实际发送/展示的模型 ID，不做名称、日期后缀或近似型号猜测。同名条目优先 `canonical_model_id` 所属原厂，再选裸模型 ID，最后按供应商/模型 ID 稳定排序。
+- 费用为 `((输入 - 缓存命中) × 输入单价 + 缓存命中 × 缓存读单价 + 输出 × 输出单价) / 1,000,000`；无独立缓存读单价时使用输入价。按输入 Token 数应用 models.dev 的上下文阶梯价格，明确的零价仍显示零。需要的用量或单价缺失时不估成免费。
+- 这是按当前公开价格回算的参考值，不是历史账单或中转商实际扣款。现有事件未单独记录缓存写入、音频及工具计费项，无法精确核算这些附加费；缓存写入包含在普通输入估算中。不新增界面说明段落或计费设置。
+- 聚焦检查：`pnpm exec vitest run tests/core/model-pricing.test.ts tests/usage-request-records.test.ts tests/usage-stats.test.ts tests/renderer/usage-requests-mounted.test.ts`。浏览器检查用合成会话和价格响应经过生产统计服务，覆盖明暗主题、390/1440 宽度、筛选、翻页与详情；无需真实推理请求。
 
 ## 账号与未完成平台
 

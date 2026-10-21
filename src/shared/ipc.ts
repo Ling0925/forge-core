@@ -136,6 +136,8 @@ export const usageRequestSchema = providerAttemptSchema.unwrap().extend({
   startedAt: z.string().optional(),
   finishedAt: z.string().optional(),
   durationMs: z.number().nonnegative().optional(),
+  tokensPerSecond: z.number().finite().nonnegative().optional(),
+  estimatedCostUsd: z.number().finite().nonnegative().optional(),
 }).readonly();
 export type UsageRequest = z.infer<typeof usageRequestSchema>;
 
