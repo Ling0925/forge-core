@@ -88,7 +88,7 @@ function writeJson(
 }
 
 interface WebHostOptions {
-  /** Explicit compatibility mode for a fully trusted network; never client-selectable. */
+  /** Personal LAN access is direct by default. false is reserved for custom authenticated hosts. */
   trustedLan?: boolean;
   authorization?: DeviceAuthorization;
   stateDir?: string;
@@ -120,7 +120,7 @@ export async function createWebHost(
       | { runtime: RuntimeHost; service?: undefined }
     ),
 ) {
-  const trustedLan = options.trustedLan === true;
+  const trustedLan = options.trustedLan !== false;
   const restrictWorkspace = options.restrictWorkspace !== false;
   const requested = resolve(options.workspace);
   // The restricted mode keeps the original strict realpath contract; the

@@ -14,7 +14,7 @@ function argument(name: string, fallback?: string): string | undefined {
   return value;
 }
 if (args.includes("--help")) {
-  console.log("Forge Web: --host <IPv4> --port <1024..65535> --workspace <directory> [--socket <private Unix socket>] [--trusted-lan]\nDefaults: host 127.0.0.1, port 5173. Device pairing required by default; --trusted-lan disables it explicitly. HTTP has no transport secrecy.");
+  console.log("Forge Web: --host <IPv4> --port <1024..65535> --workspace <directory> [--socket <private Unix socket>]\nDefaults: host 127.0.0.1, port 5173. Personal LAN direct access; no device pairing required. HTTP has no transport secrecy.");
 } else {
   const host = argument("--host", "127.0.0.1")!;
   const port = Number(argument("--port", "5173"));
@@ -27,7 +27,7 @@ if (args.includes("--help")) {
   let local: Awaited<ReturnType<typeof createLocalHost>> | undefined;
   let web!: Awaited<ReturnType<typeof createWebHost>>;
   try {
-    web = await createWebHost({ runtime, workspace, host, port, rendererRoot, trustedLan: args.includes("--trusted-lan") });
+    web = await createWebHost({ runtime, workspace, host, port, rendererRoot });
     const socketPath = argument("--socket");
     if (socketPath) local = await createLocalHost({ runtime, socketPath });
   } catch (error) {
@@ -62,7 +62,7 @@ if (args.includes("--help")) {
   }
   console.log(`Forge Web: ${web.origin}`);
   console.log(`Workspace: ${web.workspace}`);
-  console.log(args.includes("--trusted-lan") ? "Trusted-LAN compatibility mode: anyone who can reach this address can use the workbench. HTTP is not confidential." : "Device authorization required. Use forge devices pair NAME and POST /api/pair; see docs/LAN_AUTHORIZATION.md. HTTP is not confidential.");
+  console.log("Personal LAN direct access: anyone who can reach this address can use the workbench. No device pairing required. HTTP is not confidential.");
   let stopping = false;
   for (const signal of ["SIGINT", "SIGTERM"] as const) process.on(signal, () => {
     if (stopping) return;
