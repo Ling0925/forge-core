@@ -51,6 +51,7 @@ async function fixture(options: { owned?: boolean } = {}) {
   const runtime = options.owned ? undefined : createRuntimeHub(service);
   if (runtime) cleanup.push(() => runtime.dispose());
   const web = await createWebHost({
+    trustedLan: false, // Explicit custom-host mode, never the normal LAN default.
     ...(runtime ? { runtime } : { service }),
     authorization,
     workspace: directory,
