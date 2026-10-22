@@ -17,11 +17,17 @@ export const endpointMapSchema = z.object({
   anthropic: providerEndpointSchema.optional(),
   gemini: providerEndpointSchema.optional(),
 }).strict().readonly();
+// Per-model request routing may select a protocol for this source. It is a
+// request parameter, not upstream catalog capability metadata, so the catalog
+// entry schema above stays free of apiMode.
+const modelOverrideSchema = modelCatalogEntrySchema.unwrap().omit({ id: true }).partial().extend({
+  apiMode: providerProtocolSchema.optional(),
+});
 export const modelSelectionSchema = z.object({
   mode: z.enum(["all", "selected", "none"]),
   models: z.array(z.string().min(1)).readonly().optional(),
   manual: modelCatalogSchema.optional(),
-  overrides: z.record(modelCatalogEntrySchema.unwrap().omit({ id: true }).partial()).readonly().optional(),
+  overrides: z.record(modelOverrideSchema).readonly().optional(),
 }).strict().readonly();
 export const routingStrategySchema = z.enum(["order", "rotate", "usage", "smart", "pace"]);
 export const sourceAccessFields = {
@@ -126,7 +132,7 @@ export type ProviderAttempt = z.infer<typeof providerAttemptSchema>;
 
 export const modelAccessRequestSchema = z.discriminatedUnion("type", [
   z.object({ type: z.literal("presets") }).strict(),
-  z.object({ type: z.literal("catalog"), sourceId: z.string(), refresh: z.boolean().optional(), credentialId: z.string().optional() }).strict(),
+  z.object({ type: z.literal("catalog"), sourceId: z.string(), refresh: z.boolean().optional(), credentialId: z.string().optional(), includeUnselected: z.boolean().optional() }).strict(),
   z.object({ type: z.literal("test"), sourceId: z.string(), credentialId: z.string().optional(), model: z.string().optional(), kind: z.enum(["catalog", "inference"]), requestId: z.string().optional() }).strict(),
   z.object({ type: z.literal("cancel"), requestId: z.string() }).strict(),
   z.object({ type: z.literal("import-preview"), text: z.string() }).strict(),

@@ -18,6 +18,7 @@ import type {
 } from "../shared/contracts";
 import { budgetUsage, measureContext, resolveContextBudget, resolveContextWindow } from "../shared/context-usage";
 import { ForgeError } from "../shared/errors";
+import { modelProtocol, modelProtocolEndpoint, modelProtocolOverride } from "../shared/model-protocol";
 import {
   configureInputSchema,
   createSessionInputSchema,
@@ -346,12 +347,13 @@ export const createHarness = async (
       const members = group.members.map(member => {
         const source = settings.providerSources?.find(item => item.id === member.sourceId);
         return [member.sourceId, member.credentialId ?? null, member.enabled ?? true,
-          source?.endpoints?.[source.apiMode ?? "chat-completions"] ?? source?.baseUrl ?? null,
-          source?.apiMode ?? null, source?.modelAliases?.[member.model] ?? member.model];
+          modelProtocolEndpoint(source, modelProtocol(source, member.model)) ?? null,
+          modelProtocolOverride(source, member.model) ?? source?.apiMode ?? null,
+          source?.modelAliases?.[member.model] ?? member.model];
       });
       return createHash("sha256").update(JSON.stringify([group.id, group.strategy, group.sticky ?? false, members])).digest("hex");
     }
-    const config = await settingsStore.getProviderConfig(sourceId);
+    const config = await settingsStore.getProviderConfig(sourceId, undefined, model);
     endpoint(config.baseUrl);
     const source = settings.providerSources?.find(item => item.id === sourceId);
     return inputProviderBinding(config, source?.modelAliases?.[model] ?? model, sourceId);
@@ -805,8 +807,8 @@ export const createHarness = async (
               const acceptedSource = settings.providerSources?.find(item => item.id === config.sourceId);
               if (!acceptedSource) throw new ForgeError("invalid_input", "The queued route source is no longer available.");
               expected = inputProviderBinding({ ...config,
-                baseUrl: acceptedSource.endpoints?.[acceptedSource.apiMode ?? "chat-completions"] ?? acceptedSource.baseUrl,
-                apiMode: acceptedSource.apiMode,
+                baseUrl: modelProtocolEndpoint(acceptedSource, modelProtocol(acceptedSource, selectedModel)) ?? acceptedSource.baseUrl,
+                apiMode: modelProtocolOverride(acceptedSource, selectedModel) ?? acceptedSource.apiMode,
               }, acceptedSource.modelAliases?.[selectedModel] ?? selectedModel, acceptedSource.id);
             }
             if (actual !== expected) throw new ForgeError("invalid_input", "The queued provider selection changed before execution. Nothing was replayed.");

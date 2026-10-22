@@ -12,6 +12,7 @@ import type { RouteGroup, RouteMember } from "../shared/model-access";
 import type { RouteQuota, RouteRequest } from "../provider/routing";
 import { ForgeError } from "../shared/errors";
 import { modelAccessRequestSchema, modelAccessResultSchema, type CredentialInput, type ModelAccessRequest, type ModelAccessResult } from "../shared/model-access";
+import { accountProtocolCompatible, modelProtocol, modelProtocolOverride } from "../shared/model-protocol";
 import { modelCatalogSchema, type ModelCatalog } from "../shared/model-catalog";
 import { providerConfigSchema, type ProviderConfig, type PublicProviderSource } from "../shared/schemas";
 import { modelCatalogCacheKey, type ModelCatalogStore } from "../store/model-catalog";
@@ -29,7 +30,9 @@ function modelMetadata(upstream: ModelCatalog, source?: PublicProviderSource): M
   const selection = source?.modelSelection;
   const user = new Map((selection?.manual ?? []).map(entry => [entry.id, entry]));
   for (const [id, override] of Object.entries(selection?.overrides ?? {})) {
-    const entry = { ...user.get(id), ...override, id };
+    // apiMode routes requests; it is not a catalog capability or persisted entry field.
+    const { apiMode: _apiMode, ...metadata } = override;
+    const entry = { ...user.get(id), ...metadata, id };
     user.set(id, { ...entry, contextWindowTokens: entry.contextWindowTokens ?? null });
   }
   return mergeCatalog([], upstream, [...user.values()]);
@@ -139,18 +142,18 @@ export function createModelAccessService(options: Readonly<{
     if (!source) throw new ForgeError("not_found", "未找到该模型来源。");
     return source;
   }
-  const snapshot = async (sourceId?: string, credentialId?: string) => settingsStore.getProviderSnapshot
-    ? settingsStore.getProviderSnapshot(sourceId, credentialId)
-    : { config: await settingsStore.getProviderConfig(sourceId, credentialId), ...(sourceId ? { source: await findSource(sourceId) } : {}) };
+  const snapshot = async (sourceId?: string, credentialId?: string, model?: string) => settingsStore.getProviderSnapshot
+    ? settingsStore.getProviderSnapshot(sourceId, credentialId, model)
+    : { config: await settingsStore.getProviderConfig(sourceId, credentialId, model), ...(sourceId ? { source: await findSource(sourceId) } : {}) };
   async function loadSnapshot(sourceId: string | undefined, credentialId: string | undefined, signal: AbortSignal,
-    validate?: (config: ProviderConfig, source: PublicProviderSource | undefined) => void) {
+    model?: string, validate?: (config: ProviderConfig, source: PublicProviderSource | undefined) => void) {
     checkSignal(signal);
-    let current = await snapshot(sourceId, credentialId);
+    let current = await snapshot(sourceId, credentialId, model);
     validate?.(current.config, current.source);
     const config = current.config;
     if (config.account && config.sourceId && config.credentialId && settingsStore.refreshAccount) {
-      await settingsStore.refreshAccount(config.sourceId, config.credentialId, tokens => accounts.refresh(tokens, signal));
-      current = await snapshot(config.sourceId, config.credentialId);
+      await settingsStore.refreshAccount(config.sourceId, config.credentialId, tokens => accounts.refresh(tokens, signal), model);
+      current = await snapshot(config.sourceId, config.credentialId, model);
       validate?.(current.config, current.source);
     }
     checkSignal(signal);
@@ -160,12 +163,15 @@ export function createModelAccessService(options: Readonly<{
     return (await loadSnapshot(sourceId, credentialId, signal)).config;
   }
   async function resolveProvider(sourceId?: string, credentialId?: string, signal = options.signal, model?: string, validate?: SelectionValidator) {
-    const current = await loadSnapshot(sourceId, credentialId, signal, validate ? (config, source) => validate(config, source, model) : undefined);
+    const current = await loadSnapshot(sourceId, credentialId, signal, model, validate ? (config, source) => validate(config, source, model) : undefined);
     let { config } = current;
     const { source } = current;
     const selectedModel = model === undefined ? undefined : source?.modelAliases?.[model] ?? model;
+    const requestedProtocol = modelProtocolOverride(source, model);
     sourceId = source?.id ?? sourceId;
     if (config.vertex) {
+      if (requestedProtocol !== undefined && requestedProtocol !== "gemini")
+        throw new ForgeError("invalid_input", `Vertex 来源固定使用 gemini 协议，不能${model === undefined ? "" : `为模型 ${model} `}覆盖为 ${requestedProtocol}。`);
       config = providerConfigSchema.parse({ ...config, baseUrl: vertexAuth(config).baseUrl, apiMode: "gemini", auth: { type: "bearer" } });
     } else if (source?.preset === "azure") {
       config = providerConfigSchema.parse({ ...config, baseUrl: normalizeAzureBase(config.baseUrl) ?? config.baseUrl,
@@ -175,14 +181,24 @@ export function createModelAccessService(options: Readonly<{
     }
     if (config.account && !config.vertex) {
       const account = await accounts.providerConfig(config.account, selectedModel, signal);
+      // Account platforms own the per-model adapter choice. Compare the selected
+      // adapter and, when the account advertises this model's protocols, require
+      // the override to be one of them; equality of the default mode alone is
+      // not enough for Copilot models with different adapters.
+      if (!accountProtocolCompatible(requestedProtocol, account))
+        throw new ForgeError("invalid_input", `${account.platform === "codex" ? "Codex 账号" : "账号"}为${model === undefined ? "此模型" : `模型 ${model}`}选择 ${account.apiMode} 协议，不能覆盖为 ${requestedProtocol}。`);
       config = providerConfigSchema.parse({ ...config, baseUrl: account.baseUrl, apiKey: account.apiKey, apiMode: account.apiMode,
         headers: { ...account.headers, ...config.headers }, extraBody: { ...account.extraBody, ...config.extraBody } });
     }
     checkSignal(signal);
     config = modelRequestConfig(config, source, model);
     const cached = createCachedProviderFactory(catalogStore, current => createProvider(current, source))(config, sourceId);
-    const catalog = async (requestSignal?: AbortSignal, refresh?: boolean) => applyModelSelection(cached.listModelCatalog
-      ? await cached.listModelCatalog(requestSignal, refresh) : catalogFromIds(await cached.listModels(requestSignal, refresh)), source);
+    const upstreamCatalog = async (requestSignal?: AbortSignal, refresh?: boolean): Promise<ModelCatalog> => cached.listModelCatalog
+      ? await cached.listModelCatalog(requestSignal, refresh) : catalogFromIds(await cached.listModels(requestSignal, refresh));
+    const catalog = async (requestSignal?: AbortSignal, refresh?: boolean) => applyModelSelection(await upstreamCatalog(requestSignal, refresh), source);
+    // Settings discovery needs every catalog model even when selection hides
+    // some from the composer; local metadata still merges, visibility does not.
+    const catalogUnfiltered = async (requestSignal?: AbortSignal, refresh?: boolean) => modelMetadata(await upstreamCatalog(requestSignal, refresh), source);
     const localMetadata = modelMetadata([], source);
     const provider: ModelProvider = {
       ...cached,
@@ -205,6 +221,14 @@ export function createModelAccessService(options: Readonly<{
       },
       async complete(messages, definitions, request) {
         const requested = model ?? request.model;
+        // An unbound provider learned no model at resolution time. Resolve a
+        // different protocol together with its endpoint/credential. Account and
+        // Vertex adapters also need their per-model compatibility checks even
+        // when the requested override equals the source's default protocol.
+        if (model === undefined && source && (config.account || config.vertex || modelProtocol(source, requested) !== (config.apiMode ?? "chat-completions"))) {
+          const bound = await resolveProvider(sourceId, credentialId, AbortSignal.any([request.signal, options.signal]), requested, validate);
+          return bound.provider.complete(messages, definitions, request);
+        }
         const actual = selectedModel ?? source?.modelAliases?.[requested] ?? requested;
         // Unbound providers (e.g. inherited child models) resolve at request time.
         const requestConfig = model === undefined ? modelRequestConfig(config, source, requested) : config;
@@ -223,7 +247,7 @@ export function createModelAccessService(options: Readonly<{
         }
       },
     };
-    return { config, provider, source, ...(selectedModel ? { actualModel: selectedModel } : {}) };
+    return { config, provider, source, catalogUnfiltered, ...(selectedModel ? { actualModel: selectedModel } : {}) };
   }
   async function prepareRoute(group: RouteGroup, signal: AbortSignal, validate?: SelectionValidator) {
     const key = (member: RouteMember) => JSON.stringify([member.sourceId, member.model, member.credentialId]);
@@ -284,17 +308,19 @@ export function createModelAccessService(options: Readonly<{
     switch (input.type) {
       case "presets": return { type: input.type, presets: providerPresets };
       case "catalog": {
-        const { config, provider, source } = await resolveProvider(input.sourceId, input.credentialId, signal);
+        const { config, provider, source, catalogUnfiltered } = await resolveProvider(input.sourceId, input.credentialId, signal);
         const key = modelCatalogCacheKey(config, input.sourceId);
         try {
-          const models = await provider.listModelCatalog!(signal, input.refresh);
+          const models = input.includeUnselected ? await catalogUnfiltered(signal, input.refresh)
+            : await provider.listModelCatalog!(signal, input.refresh);
           const snapshot = await catalogStore.inspect(key);
           return { type: input.type, sourceId: input.sourceId, models, stale: false, ...(snapshot ? { fetchedAt: snapshot.fetchedAt } : {}) };
         } catch (error) {
           checkSignal(signal);
           const previous = await catalogStore.inspect(key);
           if (!previous) throw error;
-          return { type: input.type, sourceId: input.sourceId, models: applyModelSelection(previous.models, source), stale: true, fetchedAt: previous.fetchedAt, error: publicFailure(error) };
+          const models = input.includeUnselected ? modelMetadata(previous.models, source) : applyModelSelection(previous.models, source);
+          return { type: input.type, sourceId: input.sourceId, models, stale: true, fetchedAt: previous.fetchedAt, error: publicFailure(error) };
         }
       }
       case "test": {
@@ -305,8 +331,13 @@ export function createModelAccessService(options: Readonly<{
         const testSignal = AbortSignal.any([signal, controller.signal]);
         const started = Date.now();
         try {
-          const { config, provider, source } = await resolveProvider(input.sourceId, input.credentialId, testSignal, input.model);
-          const model = input.model ?? source?.model;
+          // Catalog checks always use the source protocol. Inference uses the
+          // same effective model/protocol the composer would use, including a
+          // source-default model override.
+          const configured = await findSource(input.sourceId);
+          const testModel = input.kind === "catalog" ? undefined : input.model ?? (configured.model || undefined);
+          const { config, provider, source } = await resolveProvider(input.sourceId, input.credentialId, testSignal, testModel);
+          const model = input.kind === "inference" ? testModel : input.model ?? source?.model;
           if (input.kind === "catalog") await provider.listModelCatalog!(testSignal, true);
           else {
             if (!model) throw new ForgeError("invalid_input", "请选择测试模型。");

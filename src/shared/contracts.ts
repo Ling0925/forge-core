@@ -123,11 +123,11 @@ export interface SessionStore {
 export interface SettingsStore {
   getPublic(): Promise<PublicSettings>;
   /** Without an id: the active source (legacy top-level settings when none). */
-  getProviderConfig(sourceId?: string, credentialId?: string): Promise<ProviderConfig>;
+  getProviderConfig(sourceId?: string, credentialId?: string, model?: string): Promise<ProviderConfig>;
   /** Endpoint, credential and source metadata from the same immutable read. */
-  getProviderSnapshot?(sourceId?: string, credentialId?: string): Promise<{ config: ProviderConfig; source?: import("./schemas").PublicProviderSource }>;
+  getProviderSnapshot?(sourceId?: string, credentialId?: string, model?: string): Promise<{ config: ProviderConfig; source?: import("./schemas").PublicProviderSource }>;
 
-  refreshAccount?(sourceId: string, credentialId: string, refresh: (tokens: import("./model-access").AccountTokens) => Promise<import("./model-access").AccountTokens>): Promise<ProviderConfig>;
+  refreshAccount?(sourceId: string, credentialId: string, refresh: (tokens: import("./model-access").AccountTokens) => Promise<import("./model-access").AccountTokens>, model?: string): Promise<ProviderConfig>;
   update(input: ConfigureInput): Promise<PublicSettings>;
 }
 export interface HarnessService {

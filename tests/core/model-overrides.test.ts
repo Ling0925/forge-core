@@ -270,21 +270,30 @@ for (const apiMode of ["chat-completions", "responses", "anthropic", "gemini"] a
     });
     const address = server.address();
     if (!address || typeof address === "string") throw new Error("Missing fixture port");
-    const { settingsStore, access } = await fixture(createModelProvider);
+    const endpoint = (mode: NonNullable<ProviderConfig["apiMode"]>) => `http://127.0.0.1:${address.port}/${mode}/v1`;
+    const configs: ProviderConfig[] = [];
+    const { settingsStore, access } = await fixture(config => { configs.push(config); return createModelProvider(config); });
     await settingsStore.update({ settings: { reasoningEffort: "high", maxOutputTokens: 32768 } });
     await settingsStore.update({ source: { type: "save", source: {
-      ...source(), apiMode, baseUrl: `http://127.0.0.1:${address.port}/v1`, model: "alias", modelAliases: { alias: model },
-      modelSelection: { mode: "none", overrides: { [model]: { reasoningEffort, reasoningEfforts: ["low", "high"], maxOutputTokens: 16384, contextWindowTokens: 256000 } } },
+      ...source(), apiMode: "chat-completions", baseUrl: endpoint("chat-completions"),
+      endpoints: {
+        "chat-completions": endpoint("chat-completions"), responses: endpoint("responses"),
+        anthropic: endpoint("anthropic"), gemini: endpoint("gemini"),
+      },
+      model: "alias", modelAliases: { alias: model },
+      modelSelection: { mode: "none", overrides: { [model]: { apiMode, reasoningEffort, reasoningEfforts: ["low", "high"], maxOutputTokens: 16384, contextWindowTokens: 256000 } } },
     } } });
     const { provider } = await access.resolveProvider("local", undefined, signal(), "alias");
+    expect(configs[0]).toMatchObject({ apiMode, baseUrl: endpoint(apiMode) });
     expect(await provider.getModelContextWindow!("alias")).toBe(256000);
     expect((await complete(provider, "alias")).message.content).toBe("OK");
     expect(bodies).toHaveLength(1);
+    expect(paths[0]!.startsWith(`/${apiMode}/v1`)).toBe(true);
     const body = bodies[0]!;
     expect(body).not.toHaveProperty("contextWindowTokens");
     expect(body).not.toHaveProperty("reasoningEfforts");
     if (apiMode === "gemini") {
-      expect(paths[0]).toBe(`/v1/models/${model}:streamGenerateContent?alt=sse`);
+      expect(paths[0]).toBe(`/${apiMode}/v1/models/${model}:streamGenerateContent?alt=sse`);
       expect(body.generationConfig).toEqual({ maxOutputTokens: 16384, ...(reasoningEffort === "default" ? {} : { thinkingConfig: { thinkingLevel: "low", includeThoughts: true } }) });
     } else {
       expect(body.model).toBe(model);

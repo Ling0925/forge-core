@@ -14,7 +14,8 @@ import {
 import type { ProviderSourceOperation, PublicSettings } from "../shared/schemas";
 import { atomicJson, privateDirectory, readJson, storageError } from "./io";
 import { fileLock } from "./lock";
-import { accountTokensSchema, credentialInputSchema, connectionInputSchema, routeGroupSchema, sourceAccessFields, type CredentialInput, type RouteGroup } from "../shared/model-access";
+import { accountTokensSchema, credentialInputSchema, connectionInputSchema, routeGroupSchema, sourceAccessFields, type CredentialInput, type ProviderProtocol, type RouteGroup } from "../shared/model-access";
+import { exclusiveModelProtocol, modelProtocol, modelProtocolEndpoint, modelProtocolOverride } from "../shared/model-protocol";
 
 async function settingsLock(path: string): Promise<() => Promise<void>> {
   for (let attempt = 0; attempt < 1000; attempt += 1) {
@@ -154,14 +155,14 @@ function projectActive(state: StoredState, source: StoredSource): StoredState {
 function sourceCredentials(source: StoredSource): readonly CredentialInput[] {
   return source.credentials ?? [{ id: "default", label: "Default", type: "api-key", enabled: true, apiKey: source.apiKey }];
 }
-function selectedCredential(source: StoredSource, id?: string): CredentialInput {
+function selectedCredential(source: StoredSource, id?: string, protocol: ProviderProtocol = source.apiMode ?? "chat-completions"): CredentialInput {
   const credentials = sourceCredentials(source);
   const requested = id ?? source.activeCredentialId;
   const credential = requested === undefined
-    ? credentials.find(item => item.enabled && (!item.protocol || item.protocol === (source.apiMode ?? "chat-completions")))
+    ? credentials.find(item => item.enabled && (!item.protocol || item.protocol === protocol))
     : credentials.find(item => item.id === requested);
   if (!credential || !credential.enabled) throw invalid("此来源没有可用的凭据。");
-  if (credential.protocol && credential.protocol !== (source.apiMode ?? "chat-completions")) throw invalid("凭据与所选协议不匹配。");
+  if (credential.protocol && credential.protocol !== protocol) throw invalid("凭据与所选协议不匹配。");
   return credential;
 }
 function publicSource(source: StoredSource) {
@@ -374,23 +375,39 @@ export async function openSettingsStore(
       }),
     };
   };
-  const providerSnapshot = async (sourceId?: string, credentialId?: string) => {
+  const providerSnapshot = async (sourceId?: string, credentialId?: string, model?: string) => {
     const state = await effective();
     if (sourceId === undefined && !state.environmentOverride) sourceId = state.stored.activeSourceId;
     if (sourceId !== undefined) {
       const source = state.stored.sources.find(candidate => candidate.id === sourceId);
       if (!source) throw unknownSource();
-      const credential = selectedCredential(source, credentialId);
+      // Resolve request routing before choosing a credential: a protocol-bound
+      // credential must be selected for the model's effective protocol, and an
+      // explicit/active credential that disagrees still fails instead of being
+      // silently replaced.
+      const protocol = modelProtocol(source, model);
+      const override = modelProtocolOverride(source, model);
+      // Preserve the legacy private shape when neither the source nor the model
+      // names a protocol: routing still defaults to chat-completions, but
+      // apiMode stays omitted rather than being materialized as a setting.
+      const explicitProtocol = override ?? source.apiMode;
+      if (override !== undefined && source.connection?.vertex && override !== "gemini")
+        throw invalid(`Vertex 来源固定使用 gemini 协议，不能${model === undefined ? "" : `为模型 ${model} `}覆盖为 ${override}。`);
+      const credential = selectedCredential(source, credentialId, protocol);
       if (credential.type === "account" && !credential.account) throw invalid("账号已退出，请重新登录。");
+      const exclusive = exclusiveModelProtocol(undefined, credential.account?.platform);
+      if (override !== undefined && exclusive !== undefined && override !== exclusive)
+        throw invalid(`${credential.account?.platform === "codex" ? "Codex 账号" : "账号"}固定使用 ${exclusive} 协议，不能${model === undefined ? "" : `为模型 ${model} `}覆盖为 ${override}。`);
       return {
         source: state.public.providerSources!.find(candidate => candidate.id === source.id)!,
         config: providerConfigSchema.parse({
           ...source.connection,
-          baseUrl: source.endpoints?.[source.apiMode ?? "chat-completions"] ?? source.baseUrl,
+          baseUrl: modelProtocolEndpoint(source, protocol) ?? source.baseUrl,
           apiKey: credential.apiKey ?? credential.account?.accessToken ?? "",
           credentialId: credential.id, sourceId: source.id, sourceRevision: source.revision,
           ...(credential.account ? { account: credential.account } : {}),
-          requestTimeoutMs: state.public.requestTimeoutMs, apiMode: source.apiMode,
+          requestTimeoutMs: state.public.requestTimeoutMs,
+          ...(explicitProtocol === undefined ? {} : { apiMode: explicitProtocol }),
           reasoningEffort: state.public.reasoningEffort, maxOutputTokens: state.public.maxOutputTokens,
         }),
       };
@@ -409,8 +426,8 @@ export async function openSettingsStore(
       return (await effective()).public;
     },
     getProviderSnapshot: providerSnapshot,
-    async getProviderConfig(sourceId, credentialId) {
-      const snapshot = await providerSnapshot(sourceId, credentialId);
+    async getProviderConfig(sourceId, credentialId, model) {
+      const snapshot = await providerSnapshot(sourceId, credentialId, model);
       if (snapshot.source && !snapshot.source.credentials) {
         // Preserve the legacy private-config shape for older injected hosts.
         const { sourceId: _id, sourceRevision: _revision, credentialId: _credential, ...legacy } = snapshot.config;
@@ -418,12 +435,12 @@ export async function openSettingsStore(
       }
       return snapshot.config;
     },
-    async refreshAccount(sourceId, credentialId, refresh) {
+    async refreshAccount(sourceId, credentialId, refresh, model) {
       await locked(async () => {
         const state = await load();
         const source = state.sources.find(item => item.id === sourceId);
         if (!source) throw unknownSource();
-        const credential = selectedCredential(source, credentialId);
+        const credential = selectedCredential(source, credentialId, modelProtocol(source, model));
         if (!credential.account) throw invalid("未找到订阅账号。");
         if (credential.account.expiresAt === undefined || credential.account.expiresAt > Date.now() + 30_000) return;
         // The same cross-process lock spans token rotation and commit. Another
@@ -433,7 +450,7 @@ export async function openSettingsStore(
           item.id === credentialId ? { ...item, account } : item) };
         await commitAll({ ...state, version: 2, sources: state.sources.map(item => item.id === sourceId ? saved : item) });
       });
-      return (await providerSnapshot(sourceId, credentialId)).config;
+      return (await providerSnapshot(sourceId, credentialId, model)).config;
     },
     update(input) {
       const operation = tail.then(() =>
