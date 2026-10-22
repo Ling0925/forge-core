@@ -59,6 +59,16 @@ export function toolActivity(call: ToolCall): { name: string; target: string } {
                   : action;
         const shortId = id ? `#${id.slice(0, 8)}` : "";
         target = [actionText, shortId].filter(Boolean).join(" · ");
+      } else if (call.function.name === "web_search") {
+        if (typeof args.query === "string" && args.query) {
+          target = args.query;
+        } else if (Array.isArray(args.queries) && args.queries.length) {
+          target = args.queries.filter((q): q is string => typeof q === "string").join("; ");
+        } else if (typeof args.url === "string" && args.url) {
+          target = args.url;
+        } else if (typeof args.pattern === "string" && args.pattern) {
+          target = args.pattern;
+        }
       } else {
         for (const key of targetKeys) {
           const field = args[key];

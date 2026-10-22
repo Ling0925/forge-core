@@ -28,7 +28,7 @@ it("allows native search unrestricted, keeps progress ephemeral and saves citati
   const approve = vi.fn(async () => false);
   const result = await f.run("unrestricted", approve);
   expect(result.status).toBe("completed");
-  expect(result.messages.at(-1)).toEqual(answer.message);
+  expect(result.messages.at(-1)).toMatchObject(answer.message);
   expect(f.events).toContainEqual(expect.objectContaining({ type: "web_search", search: { id: "ws", status: "searching" } }));
   expect(result.events.some((e) => e.type === "web_search" || e.type === "web_search_result")).toBe(false);
   expect(f.events).toContainEqual(expect.objectContaining({ type: "web_search_result", citations: answer.message.citations }));

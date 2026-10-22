@@ -9,6 +9,7 @@ import { initialWorkbenchState, workbenchReducer } from "../../src/renderer/stat
 import { shouldRefreshTranscript } from "../../src/renderer/state/refresh-events";
 import { Markdown } from "../../src/renderer/components/workbench/Markdown";
 import { StoredTranscript } from "../../src/renderer/components/workbench/Transcript";
+import { ToolDisclosure } from "../../src/renderer/components/primitives/ToolDisclosure";
 import { runIdSchema } from "../../src/shared/ipc";
 import { agentEventSchema, sessionSnapshotSchema, type AgentEvent } from "../../src/shared/schemas";
 
@@ -31,16 +32,24 @@ it("renders persisted and live CLI sources without rewriting message text", () =
   expect(JSON.stringify(session)).toBe(before);
 });
 
-it("keeps renderer prose separate and makes safe source links clickable", () => {
-  const item = reduceTimeline(session)[0];
-  expect(item).toMatchObject({ kind: "message", content: "News" });
-  if (item?.kind !== "message") throw Error("message");
-  const markup = renderToStaticMarkup(createElement(Markdown, { source: item.webSearchDetails ?? "" }));
-  expect(markup).toContain(`href="${citation.url}"`);
-  expect(markup).toContain("检索来源");
+it("renders web search as tool cards and keeps renderer prose separate and safe", () => {
+  const items = reduceTimeline(session);
+  expect(items[0]).toMatchObject({ kind: "tool", call: { function: { name: "web_search" } } });
+  expect(items[1]).toMatchObject({ kind: "message", content: "News" });
   const stored = renderToStaticMarkup(createElement(StoredTranscript, { snapshot: session }));
-  expect(stored).toContain(`href="${citation.url}"`);
-  expect(stored).toContain("引用来源");
+  expect(stored).toContain("网页搜索");
+  expect(stored).toContain("news");
+  expect(stored).toContain('data-tool="web_search"');
+  if (items[0]?.kind !== "tool") throw Error("tool");
+  const expanded = renderToStaticMarkup(createElement(ToolDisclosure, {
+    toolName: items[0].call.function.name,
+    status: items[0].status,
+    parameters: items[0].call.function.arguments,
+    output: items[0].output,
+    defaultExpanded: true,
+  }));
+  expect(expanded).toContain(`href="${citation.url}"`);
+  expect(expanded).toContain("检索来源");
   expect(shouldRefreshTranscript("web_search_result")).toBe(true);
   expect(shouldRefreshTranscript("web_search")).toBe(false);
 });
