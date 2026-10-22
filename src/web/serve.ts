@@ -1,4 +1,5 @@
-import { fileURLToPath } from "node:url";
+#!/usr/bin/env node
+import { resolve } from "node:path";
 import { createHarness } from "../core/harness";
 import { createRuntimeHub } from "../host/runtime";
 import { createLocalHost } from "../host/local-server";
@@ -14,7 +15,7 @@ function argument(name: string, fallback?: string): string | undefined {
   return value;
 }
 if (args.includes("--help")) {
-  console.log("Forge Web: --host <IPv4> --port <1024..65535> --workspace <directory> [--socket <private Unix socket>]\nDefaults: host 127.0.0.1, port 5173. Personal LAN direct access; no device pairing required. HTTP has no transport secrecy.");
+  console.log("Forge Core: --host <IPv4> --port <1024..65535> --workspace <directory> [--socket <private Unix socket>] [--renderer <built Web UI directory>]\nDefaults: host 127.0.0.1, port 5173. API-only unless --renderer is supplied. Personal LAN direct access; no device pairing required. HTTP has no transport secrecy.");
 } else {
   const host = argument("--host", "127.0.0.1")!;
   const port = Number(argument("--port", "5173"));
@@ -22,12 +23,13 @@ if (args.includes("--help")) {
   if (!workspace) throw new Error("Missing --workspace.");
   if (!validLanEndpoint(host, port))
     throw new Error("Use a specific IPv4 address (not 0.0.0.0) and a port between 1024 and 65535.");
-  const rendererRoot = fileURLToPath(new URL("../renderer", import.meta.url));
+  const renderer = argument("--renderer");
+  const rendererRoot = renderer === undefined ? undefined : resolve(renderer);
   const runtime = createRuntimeHub(await createHarness());
   let local: Awaited<ReturnType<typeof createLocalHost>> | undefined;
   let web!: Awaited<ReturnType<typeof createWebHost>>;
   try {
-    web = await createWebHost({ runtime, workspace, host, port, rendererRoot });
+    web = await createWebHost({ runtime, workspace, host, port, ...(rendererRoot === undefined ? {} : { rendererRoot }) });
     const socketPath = argument("--socket");
     if (socketPath) local = await createLocalHost({ runtime, socketPath });
   } catch (error) {

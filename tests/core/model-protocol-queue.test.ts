@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { expect, it, vi } from "vitest";
 import { createHarness } from "../../src/core/harness";
-import { createRuntimeHub } from "../../src/desktop/runtime";
+import { createRuntimeHub } from "../../src/host/runtime";
 import { rpcRequestSchema } from "../../src/shared/ipc";
 import type { ProviderConfig, ProviderSource } from "../../src/shared/schemas";
 

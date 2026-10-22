@@ -5,7 +5,6 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, expect, it } from "vitest";
 import { createHarness } from "../../src/core/harness";
-import { runCliWithIO, type CliIO } from "../../src/cli/cli";
 import { createModelProvider } from "../../src/provider/openai";
 import type { HarnessService } from "../../src/shared/contracts";
 
@@ -110,29 +109,23 @@ it("isolates source IDs, endpoints, credentials and protocols even when model ID
   expect(f.requests).toHaveLength(5);
 });
 
-it("CLI --refresh updates disk for the selected source and failed refresh leaves it reusable", async () => {
+it("refreshes only the selected source and keeps its last good catalog after a failed refresh", async () => {
   const f = await fixture("chat-completions");
   const service = await f.open();
   await f.save(service, "a");
   await f.save(service, "b");
   await service.listModels(undefined, "a");
   await service.listModels(undefined, "b");
-  const output: string[] = [];
-  const errors: string[] = [];
-  const io: CliIO = { stdout: text => output.push(text), stderr: text => errors.push(text),
-    readStdin: async () => "", question: async () => "", isTTY: false, onInterrupt: () => () => {} };
   f.setData([{ id: "fresh", context_window: 524288 }]);
-  expect(await runCliWithIO(["models", "--source", "b", "--json"], service, io)).toBe(0);
-  expect(f.requests).toHaveLength(2);
-  output.length = 0;
-  expect(await runCliWithIO(["models", "--source", "b", "--refresh", "--json"], service, io)).toBe(0);
-  expect(output.join("")).toBe('["fresh"]\n');
+  expect(await service.listModels(undefined, "b", true)).toEqual(["fresh"]);
   expect(f.requests).toHaveLength(3);
+  expect(f.requests.at(-1)!.url).toMatch(/^\/b\/v1\/models/);
   expect(await service.getModelContextWindow!("fresh", undefined, "b")).toBe(524288);
   expect(await service.listModels(undefined, "a")).toEqual(["shared", "unknown"]);
   f.setFail(true);
-  expect(await runCliWithIO(["models", "--source", "b", "--refresh"], service, io)).toBe(1);
+  await expect(service.listModels(undefined, "b", true)).rejects.toThrow();
   expect(f.requests).toHaveLength(4);
   expect(await service.listModels(undefined, "b")).toEqual(["fresh"]);
-  expect(errors.join("")).not.toContain("fixture-b");
+  expect(await service.getModelContextWindow!("fresh", undefined, "b")).toBe(524288);
+  expect(await service.listModels(undefined, "a")).toEqual(["shared", "unknown"]);
 });

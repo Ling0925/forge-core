@@ -114,19 +114,20 @@ describe("neutral contract ownership", () => {
     ).toEqual([]);
   });
 
-  it("keeps host ownership independent of desktop adapters", async () => {
-    for (const folder of ["host", "web", "cli"])
+  it("keeps the core independent of all application adapters", async () => {
+    for (const folder of ["core", "host", "web", "provider", "store", "tools", "context", "mcp"])
       for (const file of await sources(resolve(root, "src", folder))) {
         expect(
           imports(await readFile(file, "utf8")).filter((path) =>
-            /(?:^|\/)desktop(?:\/|$)/.test(path),
+            /(?:^|\/)(?:desktop|renderer|cli)(?:\/|$)/.test(path),
           ),
           file,
         ).toEqual([]);
       }
+    const entries = await readdir(resolve(root, "src"));
+    expect(entries.filter(name => ["cli", "renderer", "desktop"].includes(name))).toEqual([]);
     const neutral = await import("../../src/host/runtime");
-    const desktop = await import("../../src/desktop/runtime");
-    expect(desktop.createRuntimeHub).toBe(neutral.createRuntimeHub);
+    expect(neutral.createRuntimeHub).toBeTypeOf("function");
   });
 
   it("reexports the same validation objects instead of copying DTO schemas", () => {

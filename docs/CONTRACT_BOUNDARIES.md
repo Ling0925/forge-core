@@ -1,8 +1,8 @@
 # Shared contract ownership
 
 Public contracts are browser-safe and independent of concrete service factories.
-The single package keeps domain-sized modules instead of a second copy of every
-implementation type:
+The independent `@forge/core` package keeps domain-sized modules instead of a
+second copy of every implementation type in each client repository:
 
 - `shared/project-context.ts`: sanitized catalog DTO/schema, internal catalog
   with instruction bodies, fingerprints and the project-context service port.

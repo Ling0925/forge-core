@@ -4,7 +4,6 @@
     "lib": ["ES2023", "DOM", "DOM.Iterable"],
     "module": "ESNext",
     "moduleResolution": "Bundler",
-    "jsx": "react-jsx",
     "strict": true,
     "noUncheckedIndexedAccess": true,
     "exactOptionalPropertyTypes": true,
@@ -18,13 +17,11 @@
     "esModuleInterop": true,
     "skipLibCheck": true,
     "noEmit": true,
-    "types": ["node", "vite/client"]
+    "types": ["node"]
   },
   "include": [
     "src/**/*.ts",
-    "src/**/*.tsx",
     "tests/**/*.ts",
-    "vite.config.ts",
     "vitest.config.ts"
   ],
   "exclude": ["dist", "release", "node_modules"]

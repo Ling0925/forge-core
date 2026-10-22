@@ -1,5 +1,10 @@
 # Forge architecture and implementation contract
 
+> Repository split note (2026-10-22): this document records the original integrated
+> application. This repository now owns only Core and its shared contracts/host
+> transports; CLI, renderer, desktop and Android paths below refer to legacy
+> integration points. See `../README.md` for current package/build boundaries.
+
 Forge is an original single-package Electron + React + TypeScript desktop application and Node 22 CLI. Provenance and authorship boundaries are recorded in [AUTHORSHIP.md](AUTHORSHIP.md).
 
 ## Shared boundaries

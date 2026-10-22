@@ -7,8 +7,8 @@ import { projectSummary } from "../../src/core/context";
 import { measureContext } from "../../src/shared/context-usage";
 import type { ModelProvider } from "../../src/shared/contracts";
 import { sessionSnapshotSchema, type Message } from "../../src/shared/schemas";
+import { sessionUsage } from "../../src/shared/session-usage";
 import { openSessionStore } from "../../src/store/sessions";
-import { createPersistentUsageCache } from "../../src/renderer/state/persistent-usage-cache";
 
 it.each([false, true])("manual compaction refreshes persisted context usage without resetting totals (fallback=%s)", async fallback => {
   const directory = await mkdtemp(join(tmpdir(), "forge-manual-compact-"));
@@ -35,14 +35,12 @@ it.each([false, true])("manual compaction refreshes persisted context usage with
     ] });
     const store = await openSessionStore(join(directory, "state"));
     await store.save(before);
-    let cacheValue: string | null = null;
-    const cache = createPersistentUsageCache(() => ({ getItem: () => cacheValue, setItem: (_key, value) => { cacheValue = value; } }));
-    const oldUsage = cache.snapshot(before).usage;
+    const oldUsage = sessionUsage(before.events);
     const result = await service.compactSession(session.id);
     expect(result.contextSummary?.fallback).toBe(fallback);
     expect(result.messages).toEqual(messages);
     expect(result.events.slice(-2).map(event => event.type)).toEqual(["context_compacted", "context_usage"]);
-    const usage = cache.snapshot(result).usage;
+    const usage = sessionUsage(result.events);
     expect(usage.context?.usedTokens).toBeLessThan(oldUsage.context!.usedTokens / 2);
     expect(usage.context).toMatchObject({ basis: "projected", estimated: true, windowTokens: 100000, budgetTokens: 80000 });
     expect(usage.context?.parts.tools).toBe(1000);
@@ -50,7 +48,7 @@ it.each([false, true])("manual compaction refreshes persisted context usage with
     expect(usage.total).toEqual(oldUsage.total);
     expect(usage.latestCache).toBe(oldUsage.latestCache);
     const reopened = await service.getSession(session.id);
-    expect(cache.snapshot(reopened).usage).toEqual(usage);
+    expect(sessionUsage(reopened.events)).toEqual(usage);
     // No new history: do not issue another summary request or duplicate events.
     const again = await service.compactSession(session.id);
     expect(complete).toHaveBeenCalledTimes(1);
@@ -58,7 +56,7 @@ it.each([false, true])("manual compaction refreshes persisted context usage with
     // An older build saved the summary but left the old request meter behind.
     await store.save({ ...result, events: before.events });
     const repaired = await service.compactSession(session.id);
-    expect(cache.snapshot(repaired).usage.context).toEqual(usage.context);
+    expect(sessionUsage(repaired.events).context).toEqual(usage.context);
     expect(complete).toHaveBeenCalledTimes(1);
   } finally {
     await service.dispose();

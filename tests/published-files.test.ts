@@ -7,9 +7,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { createHarness } from "../src/core/harness";
-import { createWorkerController } from "../src/desktop/controller";
-import { runCliWithIO, type CliIO } from "../src/cli/cli";
-import { toolPresentation } from "../src/cli/render/tool-presentation";
+import { createWorkerController } from "../src/host/controller";
 import type { ModelProvider, ToolContext } from "../src/shared/contracts";
 import { createTransportBridge } from "../src/shared/bridge";
 import { collectPublishedFiles, PUBLISHED_FILE_MAX_BYTES } from "../src/shared/published-files";
@@ -53,7 +51,6 @@ describe("published file tool and immutable storage", () => {
     const response = await (await openPublishedFileStore(f.state)).get(file.id);
     expect(Buffer.from(response.base64, "base64").toString()).toBe("# Original\n");
     expect(response.file).toEqual(file);
-    expect(toolPresentation("publish_file", result).detail).toContain("forge files save");
   });
 
   it("accepts binary files but only previews signature-checked raster images and UTF-8 text", async () => {
@@ -119,7 +116,7 @@ describe("published file tool and immutable storage", () => {
   });
 });
 
-it("wires real runtime publication, authenticated RPC, forks, reopen and CLI save without overwrite", async () => {
+it("wires real runtime publication, authenticated RPC, forks and reopen", async () => {
   const root = await temporary();
   const workspace = join(root, "workspace");
   await mkdir(workspace);
@@ -161,7 +158,7 @@ it("wires real runtime publication, authenticated RPC, forks, reopen and CLI sav
   const authorization = await openDeviceAuthorization({ directory: stateDir });
   cleanups.push(() => authorization.close());
   const device = await authorization.exchange((await authorization.createPairing("isolated attachment fixture")).token);
-  const web = await createWebHost({ authorization, service, workspace, host: "127.0.0.1", port: 5173 });
+  const web = await createWebHost({ authorization, service, workspace, host: "127.0.0.1", port: 5173, trustedLan: false });
   web.server.on("request", (req, res) => { void web.handle(req, res, () => res.end()); });
   await new Promise<void>(done => web.server.listen(0, "127.0.0.1", done));
   const address = web.server.address() as { port: number };
@@ -194,14 +191,6 @@ it("wires real runtime publication, authenticated RPC, forks, reopen and CLI sav
   const reopened = await createHarness({ stateDir });
   cleanups.push(() => reopened.dispose());
   expect(Buffer.from((await reopened.getPublishedFile!(session.id, file.id)).base64, "base64").toString()).toBe("# delivered\n");
-  let output = "";
-  const io: CliIO = { isTTY: false, stdout: text => { output += text; }, stderr: text => { output += text; }, readStdin: async () => "", question: async () => "", onInterrupt: () => () => {} };
-  expect(await runCliWithIO(["files", "list", session.id, "--json"], reopened, io)).toBe(0);
-  expect(output).toContain(file.id);
-  const destination = join(root, "saved.md");
-  expect(await runCliWithIO(["files", "save", session.id, file.id, "--output", destination], reopened, io)).toBe(0);
-  expect(await readFile(destination, "utf8")).toBe("# delivered\n");
-  expect(await runCliWithIO(["files", "save", session.id, file.id, "--output", destination], reopened, io)).toBe(1);
 });
 
 it("never collects failed or non-publisher tool payloads as attachments", async () => {

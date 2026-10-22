@@ -6,7 +6,6 @@ import { createAgentRuntime } from "../src/core/runtime";
 import { measureContext } from "../src/shared/context-usage";
 import { MAX_IMAGE_BYTES, imageAttachmentSchema } from "../src/shared/images";
 import { defaultPublicSettings, messageSchema, parseSessionId, runInputSchema, type Message } from "../src/shared/schemas";
-import { RunInputQueue } from "../src/renderer/state/run-input-queue";
 import { openSessionStore } from "../src/store/sessions";
 
 import { image } from "./fixtures/image";
@@ -19,19 +18,6 @@ it("accepts image-only inputs and old text messages, rejecting empty or unsafe a
     expect(runInputSchema.safeParse(input).success).toBe(false);
   for (const dataUrl of ["https://example.test/image.png", "data:image/svg+xml;base64,PHN2Zz48L3N2Zz4=", image.dataUrl.replace("/png", "/jpeg"), `${image.dataUrl}=`, "data:image/png;base64,!!!!", `data:image/png;base64,${Buffer.alloc(MAX_IMAGE_BYTES + 1).toString("base64")}`])
     expect(imageAttachmentSchema.safeParse({ ...image, dataUrl }).success).toBe(false);
-});
-
-it("retains image bytes through queue serialization, pause, resume and failed persistence rollback", () => {
-  const queue = new RunInputQueue();
-  queue.add({ sessionId, prompt: "first", images: [image] });
-  const restored = RunInputQueue.restore(JSON.parse(JSON.stringify(queue.snapshot())));
-  expect(restored.peek(sessionId)).toBeUndefined();
-  restored.resume(sessionId);
-  expect(restored.peek(sessionId)?.images).toEqual([image]);
-  const rejected = restored.add({ sessionId, prompt: "", images: [image] });
-  restored.remove(rejected);
-  expect(restored.items(sessionId)).toHaveLength(1);
-  expect(restored.peek(sessionId)?.prompt).toBe("first");
 });
 
 it("estimates vision context without counting base64 characters as text tokens", () => {

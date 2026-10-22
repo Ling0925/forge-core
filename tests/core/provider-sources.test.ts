@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { expect, it } from "vitest";
 import { createHarness } from "../../src/core/harness";
-import { createWorkerController } from "../../src/desktop/controller";
+import { createWorkerController } from "../../src/host/controller";
 import { createTransportBridge } from "../../src/shared/bridge";
 
 it("fetches each source's OpenAI /models with its own key without activating it", async () => {
@@ -37,7 +37,7 @@ it("fetches each source's OpenAI /models with its own key without activating it"
     expect(requests.at(-1)).toEqual({ url: "/bad/models", auth: "Bearer fixture-bad" });
     expect(requests.length).toBe(3); // active/explicit source share cache; no cross-source fallback
     expect(JSON.stringify(await service.getSettings())).not.toContain("fixture-b");
-    // Exercise the exact renderer -> schema/bridge -> worker -> harness route.
+    // Exercise the schema/bridge -> worker -> harness route used by clients.
     let response: (value: unknown) => void = () => {};
     const controller = createWorkerController(service, message => {
       if (message.kind === 'response') response(message.response);

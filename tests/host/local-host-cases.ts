@@ -4,8 +4,6 @@ import { createConnection } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, expect, it, vi } from "vitest";
-import { runAttach } from "../../src/cli/attach";
-import { createRuntimeHub } from "../../src/desktop/runtime";
 import { readFrames, sendFrame } from "../../src/host/frames";
 import {
   type LocalHostClient,
@@ -13,6 +11,7 @@ import {
 } from "../../src/host/local-client";
 import { createLocalHost } from "../../src/host/local-server";
 import { localMessageSchema } from "../../src/host/protocol";
+import { createRuntimeHub } from "../../src/host/runtime";
 import type {
   EventSink,
   HarnessService,
@@ -24,7 +23,7 @@ import {
   defaultPublicSettings,
   parseSessionId,
 } from "../../src/shared/schemas";
-import { extendedService } from "../cli/service-fixture";
+import { extendedService } from "./service-fixture";
 
 const sessionId = parseSessionId(randomUUID());
 const timestamp = new Date().toISOString();
@@ -99,7 +98,7 @@ const aborted = (signal: AbortSignal) =>
 export function registerLocalHostTests() {
   for (const command of ["steer", "cancel"] as const) {
     it.each(["count", "bytes"] as const)(
-      `${command} retains one delayed RPC acknowledgment beyond the %s event bound`,
+      `${command} control response survives the %s unrelated event bound`,
       async (bound) => {
         const otherId = parseSessionId(randomUUID());
         let emitOther: EventSink = () => {};
@@ -137,22 +136,24 @@ export function registerLocalHostTests() {
             requests++;
           return original(rpc);
         });
-        const lines: string[] = [];
-        const args = [
-          "--socket",
-          f.socketPath,
-          command,
-          target.result.runId,
-          ...(command === "steer" ? ["continue"] : []),
-        ];
-        const done = runAttach(args, {
-          stdout: (text) => lines.push(text),
-          stderr: () => {},
-          onInterrupt: () => () => {},
-        }).then(
-          (code) => ({ code }),
-          (error) => ({ error }),
-        );
+        const controlClient = await f.connect({ onEvent: () => {} });
+        let answered = false;
+        const done = controlClient
+          .request(
+            rpcRequestSchema.parse({
+              id: randomUUID(),
+              method: command === "steer" ? "steerRun" : "cancelRun",
+              runId: target.result.runId,
+              ...(command === "steer" ? { prompt: "continue" } : { wait: true }),
+            }),
+          )
+          .then(
+            (response) => ({ response }),
+            (error) => ({ error }),
+          )
+          .finally(() => {
+            answered = true;
+          });
         try {
           await vi.waitFor(() => expect(requests).toBe(1));
           const count = bound === "count" ? 2100 : 34;
@@ -169,17 +170,12 @@ export function registerLocalHostTests() {
               await new Promise<void>((resolve) => setImmediate(resolve));
           }
           await new Promise<void>((resolve) => setImmediate(resolve));
-          expect(lines).toHaveLength(0);
+          expect(answered).toBe(false);
           if (command === "steer") {
             expect(control?.drainSteering()).toEqual(["continue"]);
             control?.onSteeringApplied?.();
           } else release();
-          expect(await done).toEqual({ code: 0 });
-          expect(lines).toHaveLength(1);
-          expect(JSON.parse(lines[0] ?? "")).toMatchObject({
-            kind: "response",
-            response: { ok: true },
-          });
+          expect(await done).toMatchObject({ response: { ok: true } });
           expect(requests).toBe(1);
           expect(
             f.runtime
@@ -217,7 +213,7 @@ export function registerLocalHostTests() {
     expect(f.runtime.hostState().runs).toHaveLength(1);
   });
 
-  it("starts through CLI attach without owning the run, reconnects missed events and waits for explicit cancellation cleanup", async () => {
+  it("starts through the public host client without owning the run, reconnects missed events and waits for explicit cancellation cleanup", async () => {
     let emit: EventSink = () => {};
     let release = () => {};
     const cleanupGate = new Promise<void>((done) => {
@@ -240,18 +236,18 @@ export function registerLocalHostTests() {
         return { ...snapshot, status: "cancelled" };
       },
     });
-    const lines: string[] = [];
-    expect(
-      await runAttach(["--socket", f.socketPath, "run", sessionId, "work"], {
-        stdout: (text) => lines.push(text),
-        stderr: () => {},
-        onInterrupt: () => () => {},
-      }),
-    ).toBe(0);
-    const runId = JSON.parse(lines[0] ?? "").response.result.runId;
+    const submitter = await f.connect();
+    const started = await request(submitter, {
+      method: "startRun",
+      input: { sessionId, prompt: "work" },
+    });
+    if (!started.ok || started.method !== "startRun")
+      throw new Error("Missing run");
+    const runId = started.result.runId;
+    await submitter.close();
     const a = await f.connect();
     expect(a.state.runs).toMatchObject([{ runId, sessionId }]);
-    expect(abortSeen).toBe(false); // The submitting CLI connection already closed.
+    expect(abortSeen).toBe(false); // The submitting connection closed; the host retains the run.
     const cursor = a.cursor;
     const hostId = a.state.hostId;
     await a.close();
@@ -473,36 +469,5 @@ export function registerLocalHostTests() {
           item.event.type === "text_delta" && item.event.text.length === 2100,
       ),
     ).toBe(true);
-  });
-
-  it("Ctrl+C on watch closes only the observer", async () => {
-    let abortedRun = false;
-    const f = await fixture({
-      run: async (_input, _sink, _approve, signal) => {
-        await aborted(signal);
-        abortedRun = true;
-        return snapshot;
-      },
-    });
-    const a = await f.connect();
-    await request(a, {
-      method: "startRun",
-      input: { sessionId, prompt: "work" },
-    });
-    let interrupt = () => {};
-    const lines: string[] = [];
-    const watching = runAttach(["--socket", f.socketPath, "watch"], {
-      stdout: (text) => lines.push(text),
-      stderr: () => {},
-      onInterrupt: (callback) => {
-        interrupt = callback;
-        return () => {};
-      },
-    });
-    await vi.waitFor(() => expect(lines.length).toBeGreaterThan(0));
-    interrupt();
-    expect(await watching).toBe(130);
-    expect(abortedRun).toBe(false);
-    expect(f.runtime.hostState().runs).toHaveLength(1);
   });
 }

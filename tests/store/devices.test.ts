@@ -3,7 +3,6 @@ import { mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, expect, it } from "vitest";
-import { runDevices } from "../../src/cli/devices";
 import type { DeviceAuthorization } from "../../src/shared/device-authorization";
 import {
   MAX_AUTHORIZED_DEVICES,
@@ -125,29 +124,6 @@ it("fails closed on corrupt or missing authoritative state without restoring old
   ).rejects.toThrow();
   await rm(f.path);
   expect(await f.store.verify(result.credential)).toBeUndefined();
-});
-
-it("manages fixture pairing locally without constructing a harness or model provider", async () => {
-  const f = await fixture();
-  const output: string[] = [];
-  expect(
-    await runDevices(
-      ["pair", "CLI fixture"],
-      (text) => output.push(text),
-      f.directory,
-    ),
-  ).toBe(0);
-  const invitation = JSON.parse(output.pop() ?? "{}");
-  const paired = await f.store.exchange(invitation.token);
-  await runDevices(["list"], (text) => output.push(text), f.directory);
-  expect(JSON.parse(output.pop() ?? "[]")).toEqual([paired.device]);
-  await runDevices(
-    ["revoke", paired.device.id],
-    (text) => output.push(text),
-    f.directory,
-  );
-  expect(await f.store.verify(paired.credential)).toBeUndefined();
-  expect(output.join("")).not.toContain(paired.credential);
 });
 
 it("bounds retained devices including revoked records and refuses catalog overflow", async () => {
