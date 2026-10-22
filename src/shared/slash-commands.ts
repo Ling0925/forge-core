@@ -20,6 +20,7 @@ export const SLASH_COMMANDS: readonly SlashCommand[] = [
   { name: "/permission", args: "[readonly|workspace|unrestricted]", description: "查看或更改权限", category: "config", onboarding: true },
   { name: "/mode", args: "[plan|build]", description: "切换计划或执行模式", category: "workflow", onboarding: true },
   { name: "/plan", description: "查看本会话的各份计划与历史进度", category: "workflow" },
+  { name: "/review", args: "[审查重点]", description: "使用当前模型只读审查本会话变更（含已提交改动）", category: "workflow" },
   { name: "/sessions", description: "历史会话", category: "session", onboarding: true },
   { name: "/resume", args: "[uuid]", description: "选择会话恢复，也可指定完整 ID", category: "session" },
   { name: "/new", description: "创建新会话", category: "session" },
