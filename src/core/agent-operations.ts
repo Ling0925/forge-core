@@ -5,7 +5,8 @@ import { ForgeError } from "../shared/errors";
 import { sessionIdSchema, settingsFields, type Permission, type RunInput, type SessionSnapshot, type ToolResult, type Usage } from "../shared/schemas";
 
 export const MAX_ACTIVE_AGENTS = 4;
-export const MAX_AGENTS_PER_RUN = 32;
+// A report page bound, not a lifetime limit on child creation.
+export const MAX_AGENT_REPORTS = 32;
 const RESULT_BYTES = 65536;
 export const isAgentTerminal = (status: string): boolean =>
   ["completed", "failed", "cancelled", "interrupted"].includes(status);
@@ -33,7 +34,7 @@ export interface AgentEnvironment {
   permission: Permission;
   signal: AbortSignal;
   children: Map<string, ChildOperation>;
-  runChild: (input: RunInput, approve: ApprovalHandler, signal: AbortSignal, control?: RunControl, maxToolCalls?: number) => Promise<SessionSnapshot>;
+  runChild: (input: RunInput, approve: ApprovalHandler, signal: AbortSignal, control?: RunControl) => Promise<SessionSnapshot>;
   approveChild: (id: SessionSnapshot["id"]) => ApprovalHandler;
   saveResolution?: (id: string, childUpdatedAt: string, resolution: string) => Promise<void>;
   onSettled?: (id: SessionSnapshot["id"], child: ChildOperation) => void;
@@ -48,7 +49,6 @@ const spawnArgs = z.object({
   ownership: z.string().trim().min(1).max(4096).optional(),
   model: settingsFields.model.optional(),
   writePaths: z.array(pathSchema).max(32).optional(),
-  maxToolCalls: z.number().int().min(1).max(10000).optional(),
   isolation: z.enum(["shared", "worktree"]).default("shared").describe("shared keeps the parent workspace; worktree uses a separate detached checkout of committed HEAD and retains its changes for inspection/merge."),
 }).strict();
 const listArgs = z.object({
@@ -57,7 +57,7 @@ const listArgs = z.object({
   currentRun: z.boolean().default(false),
 }).strict();
 const waitArgs = z.object({
-  ids: z.array(sessionIdSchema).max(MAX_AGENTS_PER_RUN).optional(),
+  ids: z.array(sessionIdSchema).max(MAX_AGENT_REPORTS).optional(),
   mode: z.enum(["all", "any"]).default("all"),
   timeout_ms: z.number().int().min(0).max(1800000).default(600000),
 }).strict();
@@ -109,6 +109,19 @@ export function boundedReports<T>(items: readonly T[], report: (item: T, limit: 
     const content = JSON.stringify(items.map(item => report(item, limit)));
     if (Buffer.byteLength(content, "utf8") <= RESULT_BYTES) return content;
     if (!limit) throw new ForgeError("budget", "Agent metadata exceeds the result budget; request fewer IDs.");
+  }
+}
+/** Automatic delivery may shrink a page, but never marks undisplayed IDs delivered. */
+export function boundedReportPage<T>(items: readonly T[], report: (item: T, limit: number) => unknown) {
+  let page = items.slice(0, MAX_AGENT_REPORTS);
+  for (;;) {
+    try {
+      return { items: page, content: boundedReports(page, report) };
+    } catch (error) {
+      if (!(error instanceof ForgeError) || error.code !== "budget" || page.length <= 1) throw error;
+      // Only pure serialization is retried, never child work or tool effects.
+      page = page.slice(0, Math.ceil(page.length / 2));
+    }
   }
 }
 function output(value: unknown): ToolResult {
@@ -165,10 +178,6 @@ export async function executeAgentOperation(name: string, args: Record<string, u
       if (snapshot.parentSessionId) throw new ForgeError("invalid_input", "Child agents cannot spawn further agents.");
       if ([...children.values()].filter(child => child.active).length >= MAX_ACTIVE_AGENTS)
         throw new ForgeError("busy", "Four child agents are active; wait for a slot before spawning.");
-      if (children.size >= MAX_AGENTS_PER_RUN)
-        throw new ForgeError("budget", "The separate 32-child total budget for this run is exhausted.");
-      if (parsed.maxToolCalls !== undefined && parsed.maxToolCalls > deps.settings.maxToolCalls)
-        throw new ForgeError("invalid_input", "Child tool budget cannot exceed the parent per-run ceiling.");
       const writePaths = [...new Set(parsed.writePaths ?? [])];
       if (parsed.isolation === "worktree" && env.permission === "readonly")
         throw new ForgeError("tool", "Readonly mode cannot create a worktree.");
@@ -215,7 +224,7 @@ export async function executeAgentOperation(name: string, args: Record<string, u
           if (final && operation.messages.length === 0) operation.acceptingMessages = false;
           return operation.messages.splice(0);
         },
-      }, parsed.maxToolCalls)).then(result => {
+      })).then(result => {
         operation.result = result;
         return result;
       }, async error => {
@@ -268,7 +277,10 @@ export async function executeAgentOperation(name: string, args: Record<string, u
     }
     case "wait_agents": {
       const parsed = waitArgs.parse(args);
-      const ids = [...new Set(parsed.ids ?? [...children.keys()])];
+      const ids = [...new Set(parsed.ids ?? [...children.entries()]
+        .filter(([, child]) => !child.delivered)
+        .slice(0, MAX_AGENT_REPORTS)
+        .map(([id]) => id))];
       const history = new Map<string, SessionSnapshot>();
       const errors = new Map<string, string>();
       for (const id of ids) if (!children.has(id)) {
@@ -283,16 +295,18 @@ export async function executeAgentOperation(name: string, args: Record<string, u
       if (pending.length && !(parsed.mode === "any" && ids.some(ready)))
         await pauseUntil(parsed.mode === "any" ? Promise.race(pending) : Promise.all(pending), env.signal, parsed.timeout_ms);
       check(env.signal);
-      const content = boundedReports(ids, (id, limit) => {
+      const report = (id: string, limit: number) => {
         const child = children.get(id);
         if (child) return childReport(id, child, limit);
         const stored = history.get(id);
         if (stored) return { ...agentSummary(stored, limit), currentRun: false, active: false, controllable: false, handled: handled(env, stored),
           ...(!isAgentTerminal(stored.status) ? { warning: "Not owned by this run; persisted status may be stale. No execution was resumed." } : {}) };
         return { id, error: errors.get(id) };
-      });
-      for (const id of ids) { const child = children.get(id); if (child && !child.active) child.delivered = true; }
-      return { content, isError: false };
+      };
+      const page = parsed.ids === undefined ? boundedReportPage(ids, report)
+        : { items: ids, content: boundedReports(ids, report) };
+      for (const id of page.items) { const child = children.get(id); if (child && !child.active) child.delivered = true; }
+      return { content: page.content, isError: false };
     }
     case "get_agent_result": {
       const { id, offset, limit } = resultArgs.parse(args);

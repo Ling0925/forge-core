@@ -1,12 +1,9 @@
 import { randomUUID } from "node:crypto";
 import { ForgeError } from "../shared/errors";
 import {
-  DEFAULT_ROOT_TIMEOUT_MS,
   type RootBudgetSnapshot,
   type RootRunBudget,
   rootBudgetSnapshotSchema,
-  rootTimeoutSchema,
-  rootToolLimitSchema,
 } from "../shared/run-budget";
 import type { Usage } from "../shared/schemas";
 
@@ -34,82 +31,34 @@ function observe(target: Observation, usage: Usage | undefined): void {
   target.totalTokens += usage.totalTokens;
   target.cachedPromptTokens += usage.cachedPromptTokens ?? 0;
 }
-/** Synchronous admission is atomic across all children in this root runtime. */
+/** Shared observations only: tool attempts, elapsed time and child totals never stop a run. */
 export function createRootRunBudget(options: {
   rootSessionId: string;
-  maxToolCalls: number;
-  timeoutMs?: number;
-  /** Monotonic clock injection for deterministic boundary tests. */
-  clock?: () => number;
 }): RootRunBudget {
-  const maxToolCalls = rootToolLimitSchema.parse(options.maxToolCalls);
-  const timeoutMs = rootTimeoutSchema.parse(
-    options.timeoutMs ?? DEFAULT_ROOT_TIMEOUT_MS,
-  );
-  const clock = options.clock ?? (() => performance.now());
-  const start = clock();
-  const startedAt = new Date();
+  const startedAt = new Date().toISOString();
   const rootRunId = randomUUID();
-  const controller = new AbortController();
   const sessions = new Map<string, Session>();
   const usage = emptyUsage();
   let consumed = 0;
   let reserved = 0;
   let closed = false;
-  let stopReason: "tools" | "deadline" | null = null;
-  const expire = () => {
-    if (closed) return;
-    stopReason = "deadline";
-    controller.abort();
-  };
-  const timer = setTimeout(expire, timeoutMs);
-  timer.unref();
-  const refresh = () => {
-    if (!closed && clock() - start >= timeoutMs) expire();
-  };
   const check = () => {
-    refresh();
     if (closed)
       throw new ForgeError(
         "budget",
-        "This root run has ended; its budget cannot be resumed.",
+        "This root run has ended; its ledger cannot be resumed.",
       );
-    if (stopReason === "deadline")
-      throw new ForgeError("budget", "Root run deadline exhausted.");
-  };
-  const checkAdmission = () => {
-    check();
-    if (consumed + reserved >= maxToolCalls) {
-      stopReason = "tools";
-      throw new ForgeError(
-        "budget",
-        "Root shared tool attempt budget exhausted.",
-      );
-    }
   };
   const session = (id: string) => {
     const item = sessions.get(id);
     if (!item)
       throw new ForgeError(
         "internal",
-        "Session has not entered the root budget.",
+        "Session has not entered the root ledger.",
       );
     return item;
   };
   return {
-    signal: controller.signal,
-    maxToolCalls,
-    timeoutMs,
-    get remainingTimeMs() {
-      return Math.max(0, timeoutMs - (clock() - start));
-    },
-    get remaining() {
-      return maxToolCalls - consumed - reserved;
-    },
-    get stopReason() {
-      refresh();
-      return stopReason;
-    },
     enter(id) {
       check();
       if (sessions.has(id))
@@ -117,8 +66,6 @@ export function createRootRunBudget(options: {
           "budget",
           "A session cannot restart inside the same root run.",
         );
-      if (sessions.size >= 33)
-        throw new ForgeError("budget", "Root run session bound exhausted.");
       sessions.set(id, {
         sessionId: id,
         consumed: 0,
@@ -129,18 +76,11 @@ export function createRootRunBudget(options: {
       });
     },
     check,
-    checkAdmission,
+    checkAdmission: check,
     reserve(id, count) {
-      checkAdmission();
+      check();
       if (!Number.isSafeInteger(count) || count < 1)
         throw new ForgeError("internal", "Invalid tool reservation.");
-      if (count > maxToolCalls - consumed - reserved) {
-        stopReason = "tools";
-        throw new ForgeError(
-          "budget",
-          "Root shared tool attempt budget cannot admit this batch.",
-        );
-      }
       const item = session(id);
       reserved += count;
       item.reserved += count;
@@ -189,32 +129,32 @@ export function createRootRunBudget(options: {
       observe(session(id).usage, incoming);
     },
     finishSession(id, status, reason) {
+      if (closed) return;
       const item = sessions.get(id);
       if (item) {
         item.status = status;
         item.reason = reason;
       }
     },
-    snapshot() {
-      refresh();
+    snapshot(sessionId) {
       return rootBudgetSnapshotSchema.parse({
         rootRunId,
         rootSessionId: options.rootSessionId,
-        maxToolCalls,
-        timeoutMs,
-        startedAt: startedAt.toISOString(),
-        deadlineAt: new Date(startedAt.getTime() + timeoutMs).toISOString(),
+        maxToolCalls: null,
+        timeoutMs: null,
+        startedAt,
+        deadlineAt: null,
         consumed,
         reserved,
-        remaining: maxToolCalls - consumed - reserved,
-        stopReason,
+        remaining: null,
+        stopReason: null,
         usage,
-        sessions: [...sessions.values()],
+        // Child events do not duplicate the ever-growing whole-tree ledger.
+        sessions: sessionId === undefined ? [...sessions.values()] : [session(sessionId)],
       });
     },
     close() {
       closed = true;
-      clearTimeout(timer);
     },
   };
 }

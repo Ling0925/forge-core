@@ -13,7 +13,8 @@ import { toolActivity } from "../shared/tool-activity";
 import {
   type AgentEnvironment,
   type ChildOperation,
-  boundedReports,
+  MAX_AGENT_REPORTS,
+  boundedReportPage,
   childReport,
 } from "./agent-operations";
 import type { ApprovalQueue } from "./approval-queue";
@@ -51,7 +52,6 @@ export function createAgentSupervisor(options: SupervisorOptions) {
     approve,
     childSignal,
     control,
-    maxToolCalls,
   ) => {
     let tools: typeof deps.tools | undefined;
     const childProgress = createAgentProgress(input.sessionId, body => options.emitProgress?.(body));
@@ -75,10 +75,6 @@ export function createAgentSupervisor(options: SupervisorOptions) {
           tools,
           ...(context ? { projectInstructions: context.instructions } : {}),
           ...(context?.provider ? { provider: context.provider } : {}),
-          settings: {
-            ...deps.settings,
-            maxToolCalls: maxToolCalls ?? deps.settings.maxToolCalls,
-          },
         })
         .run(
           { ...input, ...(context?.providerSourceId ? { providerSourceId: context.providerSourceId } : {}) },
@@ -189,16 +185,15 @@ export function createAgentSupervisor(options: SupervisorOptions) {
     > {
       const pending = [...children.entries()].filter(
         ([, child]) => !child.delivered,
-      );
+      ).slice(0, MAX_AGENT_REPORTS);
       if (!pending.length) return undefined;
       await Promise.allSettled(pending.map(([, child]) => child.work));
+      const page = boundedReportPage(pending, ([id, child], limit) => childReport(id, child, limit));
       return {
-        reports: boundedReports(pending, ([id, child], limit) =>
-          childReport(id, child, limit),
-        ),
+        reports: page.content,
         // Caller invokes only after its durable report commit succeeds.
         commitDelivery() {
-          for (const [, child] of pending) child.delivered = true;
+          for (const [, child] of page.items) child.delivered = true;
         },
       };
     },

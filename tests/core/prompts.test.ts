@@ -13,6 +13,15 @@ const base: PromptContext = {
 };
 
 describe("system instructions", () => {
+  it("does not advertise legacy budgets even when old caller settings provide them", () => {
+    const prompt = buildSystemInstructions({ ...base, rootBudget: { maxToolCalls: 2000, timeoutMs: 7200000 } });
+    expect(prompt).toContain("No cumulative tool-call, child-agent count or root elapsed-time budget.");
+    expect(prompt).not.toContain("bounded to");
+    expect(prompt).not.toContain("Root task shared ceiling");
+    expect(prompt).not.toContain("7200000");
+    expect(prompt).toContain("Permission checks, concurrency limits and individual operation timeouts still apply.");
+  });
+
   it("preserves project input and produces a deterministic cache prefix", () => {
     const context = {
       ...base,

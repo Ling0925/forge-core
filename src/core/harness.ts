@@ -773,10 +773,7 @@ export const createHarness = async (
             if (predecessor.unsafe && control.acknowledgedPredecessor !== predecessor.token)
               throw new QueueAdmissionError();
           }
-          rootBudget = createRootRunBudget({ rootSessionId: input.sessionId,
-            maxToolCalls: settings.maxRootToolCalls ?? settings.maxToolCalls,
-            ...(settings.rootTimeoutMs === undefined ? {} : { timeoutMs: settings.rootTimeoutMs }) });
-          signal = AbortSignal.any([signal, rootBudget.signal]);
+          rootBudget = createRootRunBudget({ rootSessionId: input.sessionId });
           // An explicit selection (the picked model's source) wins; a session
           // keeps the source it was created with; only when neither exists does
           // the model, and finally the remembered fallback, decide.
@@ -849,7 +846,7 @@ export const createHarness = async (
               secrets: [config.apiKey, config.baseUrl],
               start: (claimed, apply) => {
                 const titleController = new AbortController();
-                const titleSignal = AbortSignal.any([signal, titleController.signal, AbortSignal.timeout(Math.max(1, Math.ceil(budget.remainingTimeMs)))]);
+                const titleSignal = AbortSignal.any([signal, titleController.signal]);
                 const naming = autoTitle({ snapshot: claimed, provider: resolved.provider, signal: titleSignal, secrets: [config.apiKey, config.baseUrl], beginUsage: () => budget.beginUsage(input.sessionId) })
                   .then(async title => {
                     if (!title || titleSignal.aborted || await apply(title)) return;

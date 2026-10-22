@@ -572,17 +572,18 @@ describe("original runtime", () => {
     await release();
   });
 
-  it("counts denied attempts and fails the tool budget with complete protocol", async () => {
+  it("counts denied attempts without enforcing a legacy tool budget", async () => {
+    let requests = 0;
     const f = fixture(
       {
         ...finalProvider,
-        complete: async () => ({
+        complete: async () => ++requests === 1 ? ({
           message: {
             role: "assistant",
             content: null,
             tool_calls: [call("a"), call("b")],
           },
-        }),
+        }) : ({ message: { role: "assistant", content: "done" } }),
       },
       {
         ...emptyTools,
@@ -599,16 +600,15 @@ describe("original runtime", () => {
       async () => false,
       signal(),
     );
-    expect(result.status).toBe("failed");
-    expect(result.events.find((event) => event.type === "error")).toMatchObject(
-      { error: { code: "budget" } },
-    );
+    expect(result.status).toBe("completed");
+    expect(result.events.find((event) => event.type === "error")).toBeUndefined();
     expect(
       result.messages.filter((message) => message.role === "tool"),
     ).toHaveLength(2);
     expect(result.events.at(-1)).toMatchObject({
       type: "run_finished",
-      toolCalls: 1,
+      toolCalls: 2,
+      budget: { consumed: 2, remaining: null },
     });
   });
 

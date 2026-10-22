@@ -9,7 +9,7 @@ import {
 } from "../../src/shared/schemas";
 import { openSettingsStore } from "../../src/store/settings";
 
-it("keeps old settings readable and persists explicit root limits independently of local limits", async () => {
+it("keeps deprecated budget settings readable and writable without requiring a migration", async () => {
   expect(publicSettingsSchema.parse(defaultPublicSettings)).not.toHaveProperty(
     "maxRootToolCalls",
   );

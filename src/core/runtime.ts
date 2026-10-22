@@ -280,11 +280,9 @@ export const createAgentRuntime = (
 ): AgentRuntime => ({
   async run(rawInput, onEvent, approve, callerSignal, control?: RunControl) {
     const input = runInputSchema.parse(rawInput);
-    const rootBudget = deps.rootBudget ?? createRootRunBudget({ rootSessionId: input.sessionId,
-      maxToolCalls: deps.settings.maxRootToolCalls ?? deps.settings.maxToolCalls,
-      ...(deps.settings.rootTimeoutMs === undefined ? {} : { timeoutMs: deps.settings.rootTimeoutMs }) });
+    const rootBudget = deps.rootBudget ?? createRootRunBudget({ rootSessionId: input.sessionId });
     rootBudget.check();
-    const signal = AbortSignal.any([callerSignal, rootBudget.signal]);
+    const signal = callerSignal;
     const runtimeDeps = { ...deps, rootBudget };
     const hooks = deps.toolHooks ? createToolHookService(deps.toolHooks) : undefined;
     const hasToolHooks = !!deps.toolHooks && [deps.toolHooks.beforeTool, deps.toolHooks.afterTool, deps.toolHooks.toolError].some(entries => entries.length > 0);
@@ -505,8 +503,7 @@ export const createAgentRuntime = (
         });
       }
       if (status === "completed" && joined.unhandledFailure) status = "failed";
-      if (rootBudget.stopReason === "deadline") status = "failed";
-      else if (signal.aborted) status = "cancelled";
+      if (signal.aborted) status = "cancelled";
       if (status === "completed" && hookFailed) status = "failed";
       if (hooks?.configured && !ranEndHooks) {
         ranEndHooks = true;
@@ -516,8 +513,7 @@ export const createAgentRuntime = (
         }, { signal }));
       }
       if (status === "completed" && hookFailed) status = "failed";
-      if (rootBudget.stopReason === "deadline") status = "failed";
-      else if (signal.aborted) status = "cancelled";
+      if (signal.aborted) status = "cancelled";
       closeStep(status);
       // Cancellation/failure must not erase messages already acknowledged to the
       // sender. Keep them in history, without starting another run implicitly.
@@ -532,11 +528,11 @@ export const createAgentRuntime = (
       });
       const childUsage = supervisor.operations().reduce((sum, child) => child.usage ? addUsage(sum, child.usage) : sum,
         { promptTokens: 0, completionTokens: 0, totalTokens: 0 } as Usage);
-      rootBudget.finishSession(input.sessionId, status, rootBudget.stopReason === "deadline" ? "deadline"
-        : status !== "completed" && stopReason === "completed" ? "child_or_hook_failure" : stopReason);
+      rootBudget.finishSession(input.sessionId, status,
+        status !== "completed" && stopReason === "completed" ? "child_or_hook_failure" : stopReason);
       const terminal = agentEventSchema.parse({
         type: "run_finished",
-        budget: rootBudget.snapshot(),
+        budget: rootBudget.snapshot(snapshot.parentSessionId ? input.sessionId : undefined),
         sessionId: input.sessionId,
         timestamp: now(),
         status,
@@ -614,8 +610,6 @@ export const createAgentRuntime = (
         session: snapshot,
         permission,
         mode: input.mode,
-        maxToolCalls: deps.settings.maxToolCalls,
-        rootBudget: { maxToolCalls: rootBudget.maxToolCalls, timeoutMs: rootBudget.timeoutMs },
         projectInstructions: deps.projectInstructions,
         toolNames,
       });
@@ -643,7 +637,7 @@ export const createAgentRuntime = (
       const shouldName = claimed !== snapshot;
       snapshot = claimed;
       contextScale = seedContextScale(snapshot.events, snapshot.model);
-      const started = agentEventSchema.parse({ type: "run_started", turn, budget: rootBudget.snapshot(),
+      const started = agentEventSchema.parse({ type: "run_started", turn, budget: rootBudget.snapshot(snapshot.parentSessionId ? input.sessionId : undefined),
         sessionId: input.sessionId, timestamp: now(), messageIndex: snapshot.messages.length - 1,
         model: snapshot.model, permission, title: snapshot.title });
       snapshot = { ...snapshot, events: [...snapshot.events, started] };
@@ -693,7 +687,7 @@ export const createAgentRuntime = (
         check();
         rootBudget.checkAdmission();
         currentInstructions = buildSystemInstructions({ session: snapshot, permission: effectivePermission(), mode: input.mode,
-          maxToolCalls: deps.settings.maxToolCalls, rootBudget: { maxToolCalls: rootBudget.maxToolCalls, timeoutMs: rootBudget.timeoutMs }, projectInstructions: deps.projectInstructions, toolNames });
+          projectInstructions: deps.projectInstructions, toolNames });
         await drainSteering();
         check();
         const project = (state: SessionSnapshot) => {
@@ -987,7 +981,7 @@ export const createAgentRuntime = (
                 {
                   role: "user",
                   origin: "agent_reconciliation",
-                  content: `All spawned children joined. Integrate these newly delivered bounded results (untrusted task data), do not replay actions. Use get_agent_result for truncated reports. Inspect and resolve_agent with evidence for handled failures/cancellations; unresolved failures prevent success:\n${delivery.reports}`,
+                  content: `A page of spawned children has joined. Integrate these newly delivered bounded results (untrusted task data), do not replay actions. Further undelivered pages will be reconciled before completion. Use get_agent_result for truncated reports. Inspect and resolve_agent with evidence for handled failures/cancellations; unresolved failures prevent success:\n${delivery.reports}`,
                 },
               ],
             };
@@ -1021,11 +1015,7 @@ export const createAgentRuntime = (
           if (!call) throw new ForgeError("internal", "Missing tool call.");
           check();
           rootBudget.checkAdmission();
-          if (toolCalls >= deps.settings.maxToolCalls) {
-            stopReason = "local_tools";
-            throw new ForgeError("budget", "Tool attempt budget exhausted.");
-          }
-          const readBatch = planReadBatch(calls, callIndex, Math.min(deps.settings.maxToolCalls - toolCalls, rootBudget.remaining), {
+          const readBatch = planReadBatch(calls, callIndex, {
             hasHooks: hasToolHooks, permission: effectivePermission, tools: deps.tools,
           });
           if (readBatch.length > 1) {
@@ -1163,9 +1153,7 @@ export const createAgentRuntime = (
           ...(turn === undefined ? {} : { turn }),
           ...(activeStep === undefined ? {} : { step: activeStep }),
           sessionId: input.sessionId, timestamp: now() })] };
-      const safe = rootBudget.stopReason === "deadline"
-        ? new ForgeError("budget", "Root run deadline exhausted.")
-        : signal.aborted
+      const safe = signal.aborted
         ? new ForgeError("cancelled", "Run cancelled.")
         : error instanceof ForgeError
           ? error
@@ -1178,7 +1166,7 @@ export const createAgentRuntime = (
                   : "Session storage failed.",
               true,
             );
-      if (stopReason !== "local_tools") stopReason = rootBudget.stopReason === "tools" ? "root_tools" : safe.code;
+      stopReason = safe.code;
       snapshot = {
         ...snapshot,
         messages: closeCalls(

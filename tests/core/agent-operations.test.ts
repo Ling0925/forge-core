@@ -72,10 +72,36 @@ it("enforces four active slots but releases completed slots without deleting his
   expect((await f.value("list_agents", { currentRun: true })).total).toBe(5);
 });
 
-it("has a separate total limit and denies nested delegation", async () => {
+it("allows more than 32 sequential children and pages undelivered results without dropping any", async () => {
   const f = await fixture();
-  for (let i = 0; i < 32; i++) await f.settle(await f.spawn());
-  await expect(f.spawn()).rejects.toMatchObject({ code: "budget" });
+  const ids: string[] = [];
+  for (let i = 0; i < 65; i++) {
+    const id = await f.spawn();
+    ids.push(id);
+    await f.settle(id);
+  }
+  expect(f.env.children.size).toBe(65);
+  const pages = [await f.value("wait_agents"), await f.value("wait_agents"), await f.value("wait_agents")];
+  expect(pages.map(page => page.length)).toEqual([32, 32, 1]);
+  expect(pages.flat().map(item => item.id)).toEqual(ids);
+  expect(await f.value("wait_agents")).toEqual([]);
+  expect((await f.value("wait_agents", { ids: [ids[0]] }))[0].id).toBe(ids[0]);
+  // Long metadata must shrink automatic pages rather than fail the whole run.
+  for (const child of f.env.children.values()) {
+    child.delivered = false;
+    child.result = { ...child.result!, workspace: `/${"界".repeat(4000)}` };
+  }
+  const delivered: string[] = [];
+  while (delivered.length < ids.length) {
+    const page = await f.invoke("wait_agents");
+    expect(Buffer.byteLength(page.content)).toBeLessThanOrEqual(65536);
+    const reports = JSON.parse(page.content) as { id: string }[];
+    expect(reports.length).toBeGreaterThan(0);
+    expect(reports.length).toBeLessThan(32);
+    delivered.push(...reports.map(item => item.id));
+  }
+  expect(delivered).toEqual(ids);
+  expect(await f.value("wait_agents")).toEqual([]);
   f.env.snapshot = { ...f.root, parentSessionId: f.root.id };
   await expect(f.spawn()).rejects.toMatchObject({ code: "invalid_input" });
 });

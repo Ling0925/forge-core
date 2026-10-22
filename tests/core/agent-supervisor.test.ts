@@ -82,6 +82,32 @@ describe("child supervision boundaries", () => {
     expect(await supervisor.joinPending()).toBeUndefined();
   });
 
+  it("shrinks metadata-heavy pages and commits delivery only for the IDs actually returned", async () => {
+    const supervisor = fixture();
+    for (let i = 0; i < 65; i++) {
+      const operation = child();
+      operation.result = { ...snapshot, workspace: `/${"界".repeat(4000)}`, model: `fixture-${i}` };
+      supervisor.native.children.set(`child-${i}`, operation);
+    }
+    const delivered = new Set<string>();
+    while (true) {
+      const page = await supervisor.joinPending();
+      if (!page) break;
+      expect(Buffer.byteLength(page.reports)).toBeLessThanOrEqual(65536);
+      const reports = JSON.parse(page.reports) as { model: string }[];
+      expect(reports.length).toBeGreaterThan(0);
+      expect(reports.length).toBeLessThanOrEqual(32);
+      expect(delivered.size + reports.length).toBeLessThanOrEqual(65);
+      for (const report of reports) {
+        expect(delivered.has(report.model)).toBe(false);
+        delivered.add(report.model);
+      }
+      page.commitDelivery();
+      expect(supervisor.operations().filter(item => item.delivered)).toHaveLength(delivered.size);
+    }
+    expect(delivered.size).toBe(65);
+  });
+
   it("aborts owned children but joins their cleanup before parent settlement", async () => {
     const supervisor = fixture();
     let release = () => {};

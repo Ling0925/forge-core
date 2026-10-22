@@ -89,6 +89,8 @@ export const settingsFields = {
   model: z.string().trim().min(1).max(256),
   theme: z.enum(["system", "light", "dark"]),
   defaultPermission: permissionSchema,
+  // Deprecated execution budgets: retained only for saved-settings/API compatibility.
+  // Neither these fields nor maxRootToolCalls/rootTimeoutMs limit new runs.
   maxTurns: z.number().int().min(1).max(1000),
   maxToolCalls: z.number().int().min(1).max(10000),
   maxRootToolCalls: rootToolLimitSchema.optional(),

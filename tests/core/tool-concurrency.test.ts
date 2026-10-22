@@ -73,15 +73,15 @@ describe("bounded read-only concurrency", () => {
     expect(peak).toBe(1);
   });
 
-  it("does not exceed the attempt budget when a read batch is larger", async () => {
+  it("finishes a read batch beyond the legacy attempt budget", async () => {
     const executed: string[] = [];
     const result = await fixture([call("1"), call("2"), call("3")], {
       definitions: [], dispose: async () => {}, isConcurrencySafe: () => true,
       execute: async item => { executed.push(item.id); return ok; },
     }, 2).run();
-    expect(executed).toEqual(["1", "2"]);
-    expect(result.status).toBe("failed");
-    expect(result.events.findLast(event => event.type === "run_finished")).toMatchObject({ toolCalls: 2 });
+    expect(executed).toEqual(["1", "2", "3"]);
+    expect(result.status).toBe("completed");
+    expect(result.events.findLast(event => event.type === "run_finished")).toMatchObject({ toolCalls: 3 });
     expect(result.messages.filter(message => message.role === "tool")).toHaveLength(3);
   });
 

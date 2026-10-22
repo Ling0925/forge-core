@@ -113,23 +113,29 @@ it("delivers bounded guidance at the child's next model boundary without sharing
   finally { releaseChild(); await f.cleanup(); }
 });
 
-it("enforces a lowered child tool budget and preserves safe native error categories", async () => {
+it("rejects removed child budget arguments but lets a child finish beyond the old default", async () => {
   let parentTurns = 0;
   let childTurns = 0;
   let executions = 0;
   const provider: ModelProvider = { listModels: async () => [], complete: async (messages, _tools, options) => {
-    if (options.model === "child") return calls(call(`read-${++childTurns}`, "read_file", { path: "a.ts" }));
+    if (options.model === "child") {
+      if (++childTurns > 1) return answer("child done");
+      return calls(...Array.from({ length: 101 }, (_, i) => call(`read-${i}`, "read_file", { path: "a.ts" })));
+    }
     parentTurns++;
-    if (parentTurns === 1) return calls(call("invalid", "spawn_agent", { task: "bad", maxToolCalls: 1000 }));
-    if (parentTurns === 2) { expect(lastResult(messages).code).toBe("invalid_input"); return calls(call("spawn", "spawn_agent", { task: "bounded", model: "child", maxToolCalls: 1 })); }
+    if (parentTurns === 1) return calls(call("invalid", "spawn_agent", { task: "bad", maxToolCalls: 1 }));
+    if (parentTurns === 2) { expect(lastResult(messages).code).toBe("invalid_input"); return calls(call("spawn", "spawn_agent", { task: "unlimited", model: "child" })); }
     return answer("parent done");
   } };
   const f = await setup(provider, { ...empty, execute: async () => { executions++; return { content: "read", isError: false }; } });
   try {
     const result = await f.run();
-    expect(result.status).toBe("failed");
-    expect(executions).toBe(1);
-    expect(JSON.stringify(result)).toContain("Tool attempt budget exhausted");
+    expect(result.status).toBe("completed");
+    expect(executions).toBe(101);
+    expect(JSON.stringify(result)).not.toContain("Tool attempt budget exhausted");
+    const child = (await f.store.list()).find(item => item.parentSessionId === f.root.id)!;
+    const terminal = (await f.store.get(child.id)).events.findLast(event => event.type === "run_finished");
+    expect(terminal).toMatchObject({ budget: { maxToolCalls: null, timeoutMs: null, sessions: [{ consumed: 101 }] } });
   } finally { await f.cleanup(); }
 });
 

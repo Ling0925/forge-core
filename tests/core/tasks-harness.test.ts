@@ -8,10 +8,11 @@ const barrier = () => { let release = () => {}; const promise = new Promise<void
 it("shows and stops an owned child but external hosts only observe, without extra model calls", async () => {
   const dir = await mkdtemp(join(tmpdir(), "forge-tasks-host-"));
   const workspace = join(dir, "workspace"); await mkdir(workspace);
-  const started = barrier(); let turns = 0;
+  const started = barrier(); const parentReady = barrier(); let turns = 0;
   const provider: ModelProvider = { listModels: async () => [], complete: async (_m, _t, options) => {
     if (options.model === "child") { started.release(); return new Promise(() => {}); }
     if (++turns === 1) return { message: { role: "assistant", content: null, tool_calls: [{ id: "spawn", type: "function", function: { name: "spawn_agent", arguments: JSON.stringify({ task: "inspect", model: "child" }) } }] } };
+    parentReady.release();
     return { message: { role: "assistant", content: "result" } };
   } };
   const h = await createHarness({ stateDir: join(dir, "state"), providerFactory: () => provider });
@@ -21,6 +22,9 @@ it("shows and stops an owned child but external hosts only observe, without extr
     const root = await h.createSession({ workspace, title: "explicit" });
     const work = h.run({ sessionId: root.id, prompt: "delegate" }, () => {}, async () => false, new AbortController().signal);
     await started.promise;
+    // Let the parent's normal post-spawn request reach its join boundary before
+    // measuring whether task inspection itself causes any model requests.
+    await parentReady.promise;
     const before = turns;
     const page = await h.tasks!.listTasks(root.id);
     const child = page.tasks.find(task => task.kind === "agent")!;

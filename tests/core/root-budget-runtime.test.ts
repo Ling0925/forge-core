@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { agentSummary, boundedReports } from "../../src/core/agent-operations";
 import { createRootRunBudget } from "../../src/core/run-budget";
 import { createAgentRuntime } from "../../src/core/runtime";
@@ -140,25 +140,53 @@ function terminal(snapshot: SessionSnapshot) {
   if (!event || event.type !== "run_finished") throw Error("missing terminal");
   return event;
 }
-function timed(root: string) {
-  let clock = 0;
-  const budget = createRootRunBudget({
-    rootSessionId: root,
-    maxToolCalls: 20,
-    timeoutMs: 1000,
-    clock: () => clock,
-  });
+function cancellable(root: string) {
+  const controller = new AbortController();
   return {
-    budget,
-    expire() {
-      clock = 1000;
-      expect(() => budget.check()).toThrow("deadline");
-    },
+    budget: createRootRunBudget({ rootSessionId: root }),
+    signal: controller.signal,
+    cancel: () => controller.abort(),
   };
 }
 
-describe("shared root budget integration", () => {
-  it("bounds four competing children plus parent attempts, preserving each child local limit", async () => {
+describe("unlimited root ledger integration", () => {
+  it("does not interrupt an in-flight tool after the old root deadline or a full day", async () => {
+    vi.useFakeTimers();
+    const entered = latch();
+    const release = latch();
+    let requests = 0;
+    let toolSignal: AbortSignal | undefined;
+    let settled = false;
+    const f = fixture({
+      listModels: async () => [],
+      complete: async () => ++requests === 1 ? calls(call("long-tool")) : answer(),
+    }, {
+      ...tools,
+      execute: async (_call, context) => {
+        toolSignal = context.signal;
+        entered.release();
+        await release.work;
+        return { content: "finished", isError: false };
+      },
+    }, { maxToolCalls: 1, maxRootToolCalls: 1, rootTimeoutMs: 1000 });
+    const work = f.run().finally(() => { settled = true; });
+    try {
+      await entered.work;
+      await vi.advanceTimersByTimeAsync(48 * 60 * 60 * 1000);
+      expect(settled).toBe(false);
+      expect(toolSignal?.aborted).toBe(false);
+      release.release();
+      const result = await work;
+      expect(result.status).toBe("completed");
+      expect(terminal(result).budget).toMatchObject({ timeoutMs: null, deadlineAt: null, consumed: 1 });
+    } finally {
+      release.release();
+      await work;
+      vi.useRealTimers();
+    }
+  });
+
+  it("lets four children and their parent finish beyond legacy local and shared limits", async () => {
     const ready = latch();
     let parentRequests = 0;
     let childRequests = 0;
@@ -169,6 +197,7 @@ describe("shared root budget integration", () => {
         complete: async (_messages, _definitions, options) => {
           if (options.model === "child") {
             childRequests++;
+            if (_messages.some(message => message.role === "tool")) return answer();
             if (childRequests === 4) ready.release();
             await ready.work;
             return calls(
@@ -183,7 +212,6 @@ describe("shared root budget integration", () => {
                 call(`spawn-${i}`, "spawn_agent", {
                   task: "child",
                   model: "child",
-                  maxToolCalls: 2,
                 }),
               ),
             );
@@ -198,43 +226,72 @@ describe("shared root budget integration", () => {
           return { content: "read", isError: false };
         },
       },
-      { maxToolCalls: 20, maxRootToolCalls: 9 },
+      { maxToolCalls: 2, maxRootToolCalls: 9, rootTimeoutMs: 1000 },
     );
     const result = await f.run();
     const budget = terminal(result).budget;
-    expect(childRequests).toBe(4);
-    expect(executions).toBe(5);
+    expect(childRequests).toBe(8);
+    expect(executions).toBe(16);
     expect(budget).toMatchObject({
-      consumed: 9,
+      consumed: 20,
       reserved: 0,
-      remaining: 0,
-      stopReason: "tools",
+      remaining: null,
+      maxToolCalls: null,
+      timeoutMs: null,
+      stopReason: null,
     });
     expect(budget?.sessions).toHaveLength(5);
     expect(
       budget?.sessions
         .filter((item) => item.sessionId !== f.root.id)
-        .every((item) => item.consumed <= 2),
+        .every((item) => item.consumed === 4),
     ).toBe(true);
     expect(
       [...f.records.values()].reduce(
         (sum, item) => sum + terminal(item).toolCalls,
         0,
       ),
-    ).toBe(9);
-    expect(result.status).toBe("failed");
+    ).toBe(20);
+    expect(result.status).toBe("completed");
     expect(f.locked.size).toBe(0);
   });
 
-  it("does not start a child or another model request when spawn consumes the last slot", async () => {
+  it("automatically reconciles more than 32 undelivered children in bounded pages", async () => {
+    let ready = latch();
+    let spawned = 0;
+    const f = fixture({
+      listModels: async () => [],
+      complete: async (_messages, _defs, options) => {
+        if (options.model === "child") return answer();
+        if (spawned) await ready.work;
+        if (spawned === 65) return answer();
+        ready = latch();
+        return calls(call(`spawn-${++spawned}`, "spawn_agent", { task: "child", model: "child" }));
+      },
+    });
+    const result = await f.run({ childToolFactory: async () => ({
+      ...tools, dispose: async () => { ready.release(); },
+    }) });
+    expect(result.status).toBe("completed");
+    expect(f.records.size).toBe(66);
+    expect(terminal(result).budget?.sessions).toHaveLength(66);
+    const pages = result.messages.filter(message => message.role === "user" && message.origin === "agent_reconciliation")
+      .map(message => JSON.parse(message.content!.slice(message.content!.indexOf("\n") + 1)) as { id: string }[]);
+    expect(pages.map(page => page.length)).toEqual([32, 32, 1]);
+    expect(new Set(pages.flat().map(item => item.id)).size).toBe(65);
+    expect(f.locked.size).toBe(0);
+  });
+
+  it("starts and joins a child even when spawn would have consumed the legacy last slot", async () => {
     let requests = 0;
     let constructions = 0;
     const f = fixture(
       {
         listModels: async () => [],
         complete: async () => {
-          requests++;
-          return calls(call("spawn", "spawn_agent", { task: "child" }));
+          return ++requests === 1
+            ? calls(call("spawn", "spawn_agent", { task: "child" }))
+            : answer();
         },
       },
       tools,
@@ -246,12 +303,13 @@ describe("shared root budget integration", () => {
         return tools;
       },
     });
-    expect(requests).toBe(1);
-    expect(constructions).toBe(0);
-    expect(f.records.size).toBe(1);
+    expect(requests).toBeGreaterThanOrEqual(3);
+    expect(constructions).toBe(1);
+    expect(f.records.size).toBe(2);
+    expect(result.status).toBe("completed");
     expect(terminal(result).budget).toMatchObject({
       consumed: 1,
-      remaining: 0,
+      remaining: null,
     });
   });
 
@@ -290,17 +348,19 @@ describe("shared root budget integration", () => {
       expect(terminal(result)).toMatchObject({
         status: "failed",
         toolCalls: 0,
-        budget: { consumed: 0, reserved: 0, remaining: 100 },
+        budget: { consumed: 0, reserved: 0, remaining: null },
       });
     });
 
   it("counts denied and failed tools as scheduled attempts, never refunds them", async () => {
     let executions = 0;
+    let requests = 0;
     const f = fixture(
       {
         listModels: async () => [],
-        complete: async () =>
-          calls(call("denied", "run_command"), call("error", "read_file")),
+        complete: async () => ++requests === 1
+          ? calls(call("denied", "run_command"), call("error", "read_file"))
+          : answer(),
       },
       {
         ...tools,
@@ -327,7 +387,7 @@ describe("shared root budget integration", () => {
     ).toHaveLength(2);
   });
 
-  it("expires approval waiting and holds the lock until the started tool cleanup joins", async () => {
+  it("cancels approval waiting and holds the lock until the started tool cleanup joins", async () => {
     const entered = latch();
     const cleanup = latch();
     let executions = 0;
@@ -362,19 +422,19 @@ describe("shared root budget integration", () => {
         },
       },
     );
-    const t = timed(f.root.id);
+    const t = cancellable(f.root.id);
     let settled = false;
     try {
       const work = f
         .run({ rootBudget: t.budget }, async () => {
           entered.release();
           return new Promise<boolean>(() => {});
-        })
+        }, t.signal)
         .finally(() => {
           settled = true;
         });
       await entered.work;
-      t.expire();
+      t.cancel();
       await Promise.resolve();
       expect(settled).toBe(false);
       expect(f.locked.has(f.root.id)).toBe(true);
@@ -384,8 +444,8 @@ describe("shared root budget integration", () => {
       expect(requests).toBe(1);
       expect(f.locked.size).toBe(0);
       expect(terminal(result)).toMatchObject({
-        status: "failed",
-        budget: { stopReason: "deadline", consumed: 1, reserved: 0 },
+        status: "cancelled",
+        budget: { stopReason: null, consumed: 1, reserved: 0 },
       });
     } finally {
       cleanup.release();
@@ -393,7 +453,7 @@ describe("shared root budget integration", () => {
     }
   });
 
-  it("cancels and joins every started read before reporting root timeout", async () => {
+  it("cancels and joins every started read before reporting manual cancellation", async () => {
     const entered = latch();
     const cleanup = latch();
     let active = 0;
@@ -415,11 +475,11 @@ describe("shared root budget integration", () => {
         },
       },
     );
-    const t = timed(f.root.id);
+    const t = cancellable(f.root.id);
     try {
-      const work = f.run({ rootBudget: t.budget });
+      const work = f.run({ rootBudget: t.budget }, undefined, t.signal);
       await entered.work;
-      t.expire();
+      t.cancel();
       expect(active).toBe(4);
       expect(f.locked.size).toBe(1);
       cleanup.release();
@@ -427,8 +487,8 @@ describe("shared root budget integration", () => {
       expect(active).toBe(0);
       expect(f.locked.size).toBe(0);
       expect(terminal(result)).toMatchObject({
-        status: "failed",
-        budget: { consumed: 4, stopReason: "deadline" },
+        status: "cancelled",
+        budget: { consumed: 4, stopReason: null },
       });
     } finally {
       cleanup.release();
@@ -436,7 +496,7 @@ describe("shared root budget integration", () => {
     }
   });
 
-  it("joins child construction after timeout and does not start its provider", async () => {
+  it("joins child construction after cancellation and does not start its provider", async () => {
     const entered = latch();
     const release = latch();
     let disposed = 0;
@@ -456,7 +516,7 @@ describe("shared root budget integration", () => {
           : answer();
       },
     });
-    const t = timed(f.root.id);
+    const t = cancellable(f.root.id);
     let settled = false;
     try {
       const work = f
@@ -472,12 +532,12 @@ describe("shared root budget integration", () => {
               },
             };
           },
-        })
+        }, undefined, t.signal)
         .finally(() => {
           settled = true;
         });
       await entered.work;
-      t.expire();
+      t.cancel();
       await Promise.resolve();
       expect(settled).toBe(false);
       release.release();
@@ -485,14 +545,15 @@ describe("shared root budget integration", () => {
       expect(disposed).toBe(1);
       expect(childRequests).toBe(0);
       expect(f.locked.size).toBe(0);
-      expect(terminal(result).budget?.stopReason).toBe("deadline");
+      expect(result.status).toBe("cancelled");
+      expect(terminal(result).budget?.stopReason).toBeNull();
     } finally {
       release.release();
       t.budget.close();
     }
   });
 
-  it("includes retries in the deadline and records missing usage without retrying effects", async () => {
+  it("cancels retry backoff and records missing usage without retrying effects", async () => {
     let requests = 0;
     const f = fixture({
       listModels: async () => [],
@@ -501,19 +562,19 @@ describe("shared root budget integration", () => {
         throw new ProviderError("timeout", "transient");
       },
     });
-    const t = timed(f.root.id);
+    const t = cancellable(f.root.id);
     try {
       const result = await f.run(
         { rootBudget: t.budget },
         undefined,
-        undefined,
+        t.signal,
         (event) => {
-          if (event.type === "provider_retry") t.expire();
+          if (event.type === "provider_retry") t.cancel();
         },
       );
       expect(requests).toBe(1);
       expect(terminal(result).budget).toMatchObject({
-        stopReason: "deadline",
+        stopReason: null,
         consumed: 0,
         usage: { missingRequests: 1, reportedRequests: 0, complete: false },
       });
@@ -530,7 +591,7 @@ describe("shared root budget integration", () => {
         listModels: async () => [],
         complete: async () => {
           requests++;
-          return calls(call(`read-${requests}`));
+          return requests % 2 === 1 ? calls(call(`read-${requests}`)) : answer();
         },
       },
       {
@@ -545,7 +606,7 @@ describe("shared root budget integration", () => {
     const first = await f.run();
     const second = await f.run();
     expect(executions).toBe(2);
-    expect(requests).toBe(2);
+    expect(requests).toBe(4);
     expect(terminal(first).budget?.rootRunId).not.toBe(
       terminal(second).budget?.rootRunId,
     );
@@ -553,7 +614,6 @@ describe("shared root budget integration", () => {
     expect(terminal(second).budget?.consumed).toBe(1);
     const budget = createRootRunBudget({
       rootSessionId: f.root.id,
-      maxToolCalls: 1,
     });
     budget.close();
     await expect(f.run({ rootBudget: budget })).rejects.toThrow(
@@ -643,7 +703,6 @@ describe("shared root budget integration", () => {
     );
     const budget: RootRunBudget = createRootRunBudget({
       rootSessionId: f.root.id,
-      maxToolCalls: 100,
     });
     try {
       budget.enter(f.root.id);

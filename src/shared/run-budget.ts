@@ -1,7 +1,6 @@
 import { z } from "zod";
 import type { Usage } from "./schemas";
 
-export const DEFAULT_ROOT_TIMEOUT_MS = 30 * 60 * 1000;
 export const rootToolLimitSchema = z.number().int().min(1).max(1_000_000);
 export const rootTimeoutSchema = z
   .number()
@@ -26,13 +25,14 @@ export const rootBudgetSnapshotSchema = z
   .object({
     rootRunId: z.string().uuid(),
     rootSessionId: z.string().uuid(),
-    maxToolCalls: rootToolLimitSchema,
-    timeoutMs: rootTimeoutSchema,
+    // Null means unlimited for new runs; numeric limits remain readable in history.
+    maxToolCalls: rootToolLimitSchema.nullable(),
+    timeoutMs: rootTimeoutSchema.nullable(),
     startedAt: z.string().datetime(),
-    deadlineAt: z.string().datetime(),
+    deadlineAt: z.string().datetime().nullable(),
     consumed: count,
     reserved: count,
-    remaining: count,
+    remaining: count.nullable(),
     stopReason: z.enum(["tools", "deadline"]).nullable(),
     usage: observedUsageSchema,
     sessions: z
@@ -47,8 +47,7 @@ export const rootBudgetSnapshotSchema = z
             usage: observedUsageSchema,
           })
           .strict(),
-      )
-      .max(33),
+      ),
   })
   .strict()
   .readonly();
@@ -60,12 +59,7 @@ export interface ToolReservation {
   release(): void;
 }
 export interface RootRunBudget {
-  readonly signal: AbortSignal;
-  readonly maxToolCalls: number;
-  readonly timeoutMs: number;
-  readonly remaining: number;
-  readonly remainingTimeMs: number;
-  readonly stopReason: "tools" | "deadline" | null;
+  /** Observation ledger only; no cumulative execution budget or deadline. */
   enter(sessionId: string): void;
   check(): void;
   checkAdmission(): void;
@@ -78,7 +72,8 @@ export interface RootRunBudget {
     status: "completed" | "failed" | "cancelled",
     reason: string,
   ): void;
-  snapshot(): RootBudgetSnapshot;
+  /** Child events carry only their own session row; root events retain the whole tree. */
+  snapshot(sessionId?: string): RootBudgetSnapshot;
   /** Owner closes only after all owned work has settled. A closed ledger cannot resume. */
   close(): void;
 }

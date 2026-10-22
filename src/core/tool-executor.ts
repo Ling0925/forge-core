@@ -33,7 +33,6 @@ const readonlyToolNames = new Set([
 export function planReadBatch(
   calls: readonly ToolCall[],
   index: number,
-  remaining: number,
   options: {
     hasHooks: boolean;
     permission(): Permission;
@@ -41,7 +40,7 @@ export function planReadBatch(
   },
 ): ToolCall[] {
   const batch: ToolCall[] = [];
-  for (const candidate of calls.slice(index, index + Math.min(4, remaining))) {
+  for (const candidate of calls.slice(index, index + 4)) {
     if (
       options.hasHooks ||
       nativeDefinitions.some(

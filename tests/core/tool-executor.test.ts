@@ -167,7 +167,7 @@ it("preserves readonly memory-read admission and usage observers in concurrent b
       return { content: "memory", isError: false };
     },
   };
-  const planned = planReadBatch(calls, 0, 2, {
+  const planned = planReadBatch(calls, 0, {
     hasHooks: false,
     permission: () => "readonly",
     tools,
