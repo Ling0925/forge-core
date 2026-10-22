@@ -325,6 +325,7 @@ export const createAgentRuntime = (
     const checkToolFailure = createToolFailureGuard();
     let phase: "storage" | "provider" | "tool" = "storage";
     let incompleteText = "";
+    let generation: { id: string; step: number | undefined; finished: boolean } | undefined;
     /** Learned estimate->real-input scale for this run; see CONTEXT_SCALE_FLOOR. */
     let contextScale = CONTEXT_SCALE_FLOOR;
     const approvalQueue = createApprovalQueue();
@@ -348,6 +349,12 @@ export const createAgentRuntime = (
       });
       snapshot = { ...snapshot, events: [...snapshot.events, event] };
       notify(event);
+    };
+    const finishGeneration = (status: "completed" | "failed" | "cancelled" | "superseded"): void => {
+      if (!generation || generation.finished) return;
+      generation.finished = true;
+      event({ type: "generation_finished", generationId: generation.id,
+        ...(generation.step === undefined ? {} : { step: generation.step }), status });
     };
     const supervisor = createAgentSupervisor({
       deps: runtimeDeps, parentSessionId: input.sessionId, signal, approvalQueue, approve,
@@ -777,9 +784,10 @@ export const createAgentRuntime = (
         let response: ProviderResponse;
         let previews: ReturnType<typeof createToolPreviewStream>;
         for (;;) {
+          const generationId = randomUUID();
           previews = createToolPreviewStream(`${turns}:${attempt}`, (previewId, preview) => {
             ephemeral({
-              type: "tool_call_preview",
+              type: "tool_call_preview", generationId,
               previewId,
               name: preview.name,
               argumentsChars: preview.argumentsChars,
@@ -801,7 +809,7 @@ export const createAgentRuntime = (
             clearTimeout(reasoningTimer);
             reasoningTimer = undefined;
             if (reasoningPartial !== "") {
-              ephemeral({ type: "reasoning_delta", text: reasoningPartial });
+              ephemeral({ type: "reasoning_delta", generationId, text: reasoningPartial });
               reasoningChars += reasoningPartial.length;
               reasoningPartial = "";
             }
@@ -810,7 +818,7 @@ export const createAgentRuntime = (
             clearTimeout(flushTimer);
             flushTimer = undefined;
             if (partial !== "") {
-              ephemeral({ type: "text_delta", text: partial });
+              ephemeral({ type: "text_delta", generationId, text: partial });
               emittedChars += partial.length;
               partial = "";
             }
@@ -823,6 +831,8 @@ export const createAgentRuntime = (
               projectedUsage = { ...measureContext(context.messages, windowTokens, definitions), ...budgetUsage(budget) };
               event({ type: "context_usage", usage: projectedUsage });
             }
+            generation = { id: generationId, step: activeStep, finished: false };
+            event({ type: "generation_started", generationId, messageIndex: snapshot.messages.length });
             response = await withCancellation(
               deps.provider.complete(
                 context.messages,
@@ -845,6 +855,7 @@ export const createAgentRuntime = (
                       0,
                       Math.max(0, 131072 - emittedChars - partial.length),
                     );
+                    if (accepted) flushReasoning();
                     partial += accepted;
                     incompleteText += accepted;
                     if (partial.length >= 8192) flush();
@@ -852,7 +863,11 @@ export const createAgentRuntime = (
                       flushTimer = setTimeout(flush, 80);
                   },
                   onToolCall: (preview) => {
-                    if (streaming) previews.push(preview);
+                    if (streaming) {
+                      flushReasoning();
+                      flush();
+                      previews.push(preview);
+                    }
                   },
                   onReasoning: (text) => {
                     if (!streaming || typeof text !== "string") return;
@@ -872,13 +887,21 @@ export const createAgentRuntime = (
               .then(providerResponseSchema.parse)
               .finally(() => {
                 streaming = false;
-                flush();
                 flushReasoning();
+                flush();
                 previews.close();
               });
+            // The provider cannot choose the local identity of its saved output.
+            response = { ...response, message: { ...response.message, generationId } };
             rootBudget.observeUsage(input.sessionId, response.usage);
             break;
           } catch (error) {
+            // Also cover providers that throw synchronously before a promise
+            // exists: no timer or late callback may outlive this attempt.
+            streaming = false;
+            flushReasoning();
+            flush();
+            previews.close();
             rootBudget.observeUsage(input.sessionId, undefined);
             // Never retry cancellation, observer failures, auth rejection or
             // non-provider errors; only bounded transient provider failures.
@@ -903,7 +926,8 @@ export const createAgentRuntime = (
             // Discard only this attempt's partial draft; prior messages and
             // already-persisted tool evidence stay untouched.
             incompleteText = incompleteText.slice(0, attemptStart);
-            ephemeral({ type: "retry_reset" });
+            finishGeneration("superseded");
+            ephemeral({ type: "retry_reset", generationId });
             event({
               type: "provider_retry",
               attempt,
@@ -948,10 +972,11 @@ export const createAgentRuntime = (
         const calls = response.message.tool_calls ?? [];
         if (calls.length === 0) closeStep("completed");
         await save();
+        finishGeneration("completed");
         if (response.message.citations?.length || response.message.webSearches?.length)
           ephemeral({ type: "web_search_result", citations: response.message.citations ?? [], webSearches: response.message.webSearches ?? [] });
         if (calls.length === 0) {
-          if (previews.size) ephemeral({ type: "tool_preview_reset" });
+          if (previews.size) ephemeral({ type: "tool_preview_reset", generationId: response.message.generationId });
           const delivery = await supervisor.joinPending();
           check();
           if (delivery) {
@@ -990,7 +1015,7 @@ export const createAgentRuntime = (
           );
         // All parameters are now complete and validated; queued calls are no
         // longer generating while an earlier call executes or waits for approval.
-        if (previews.size) ephemeral({ type: "tool_preview_reset" });
+        if (previews.size) ephemeral({ type: "tool_preview_reset", generationId: response.message.generationId });
         for (let callIndex = 0; callIndex < calls.length; callIndex += 1) {
           const call = calls[callIndex];
           if (!call) throw new ForgeError("internal", "Missing tool call.");
@@ -1009,7 +1034,7 @@ export const createAgentRuntime = (
             try {
               for (const [offset, read] of readBatch.entries()) {
                 const previewId = previews.id(callIndex + offset);
-                event({ type: "tool_started", call: read, ...(previewId ? { previewId } : {}) });
+                event({ type: "tool_started", call: read, generationId: response.message.generationId, callIndex: callIndex + offset, ...(previewId ? { previewId } : {}) });
               }
               await save();
               check();
@@ -1032,7 +1057,7 @@ export const createAgentRuntime = (
               snapshot = { ...snapshot, messages: [...snapshot.messages, {
                 role: "tool", tool_call_id: read.id, content: JSON.stringify(result),
               }] };
-              event({ type: "tool_finished", toolCallId: read.id, result });
+              event({ type: "tool_finished", toolCallId: read.id, generationId: response.message.generationId, callIndex: callIndex + offset, result });
             }
             await save();
             const failed = outcomes.find(outcome => outcome.status === "rejected");
@@ -1053,7 +1078,7 @@ export const createAgentRuntime = (
             toolCalls += 1;
           } finally { reservation.release(); }
           const previewId = previews.id(callIndex);
-          event({ type: "tool_started", call, ...(previewId ? { previewId } : {}) });
+          event({ type: "tool_started", call, generationId: response.message.generationId, callIndex, ...(previewId ? { previewId } : {}) });
           phase = "tool";
           const toolSnapshot = snapshot;
           const executed = await executeToolCall({
@@ -1118,7 +1143,7 @@ export const createAgentRuntime = (
             ],
             changes: [...snapshot.changes, ...(result.changes ?? [])],
           };
-          event({ type: "tool_finished", toolCallId: call.id, result });
+          event({ type: "tool_finished", toolCallId: call.id, generationId: response.message.generationId, callIndex, result });
           await save();
           if (executed.afterCommit) {
             await executed.afterCommit();
@@ -1131,8 +1156,10 @@ export const createAgentRuntime = (
       }
     } catch (error) {
       if (!snapshot) throw error;
+      finishGeneration(signal.aborted ? "cancelled" : "failed");
       if (incompleteText) snapshot = { ...snapshot, events: [...snapshot.events,
         agentEventSchema.parse({ type: "text_delta", text: incompleteText,
+          ...(generation ? { generationId: generation.id } : {}),
           ...(turn === undefined ? {} : { turn }),
           ...(activeStep === undefined ? {} : { step: activeStep }),
           sessionId: input.sessionId, timestamp: now() })] };

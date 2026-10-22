@@ -9,6 +9,8 @@ import { ProviderError, httpError, protocol } from "./errors";
 type Request = {
   readonly signal: AbortSignal;
   readonly fetch: typeof globalThis.fetch;
+  /** Let SDK adapters preserve transport/byte/UTF-8 failures during assembly. */
+  readonly hasBodyFailure: () => boolean;
 };
 
 // SDKs own HTTP and SSE decoding. This wrapper only enforces Forge's byte,
@@ -96,7 +98,7 @@ export async function withSdkRequest<T>(
   };
   try {
     controller.signal.throwIfAborted();
-    const result = await operation({ signal: controller.signal, fetch });
+    const result = await operation({ signal: controller.signal, fetch, hasBodyFailure: () => bodyFailure !== undefined });
     controller.signal.throwIfAborted();
     return result;
   } catch (caught) {

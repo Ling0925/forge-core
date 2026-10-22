@@ -5,6 +5,7 @@ import { afterEach, expect, it, vi } from "vitest";
 import { createModelProvider } from "../../src/provider/openai";
 import type { ProviderConfig, ToolCallPreview } from "../../src/shared/schemas";
 import { image } from "../fixtures/image";
+import { isRetryableProviderFailure } from "../../src/shared/errors";
 
 const cleanups: (() => Promise<void>)[] = [];
 afterEach(async () => {
@@ -507,4 +508,96 @@ it("estimates write_file lines from cumulative input_json_delta fragments", asyn
   expect(result.message.tool_calls?.[0]?.function.arguments).toBe(
     '{"path":"a.ts","content":"one\\ntwo\\nthree"}',
   );
+});
+
+it.each([
+  { missing: false, tool: false }, { missing: true, tool: false },
+  { missing: false, tool: true }, { missing: true, tool: true },
+])("accepts unsigned compatibility thinking without replaying it ($missing, $tool)", async ({ missing, tool }) => {
+  const requests: unknown[] = [];
+  let unsigned = wire({ thinking: true, tool }).replace(sse({
+    type: "content_block_delta", index: 0, delta: { type: "signature_delta", signature: "opaque-signature" },
+  }), "");
+  if (missing) unsigned = unsigned.replace(',"signature":""', "");
+  const provider = await fixture(async (req, res) => {
+    requests.push(await body(req));
+    reply(res, requests.length === 1 ? unsigned : wire());
+  });
+  const thoughts: string[] = [];
+  const first = await provider.complete([{ role: "user", content: "read" }], [], { ...options(), onReasoning: text => thoughts.push(text) });
+  expect(thoughts.join("")).toBe("consider");
+  expect(first.message.reasoning).toBe("consider");
+  expect(first.message.providerState).toBeUndefined();
+  const generationId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+  await provider.complete([{ role: "user", content: "read" }, { ...first.message, generationId },
+    ...(tool ? [{ role: "tool" as const, tool_call_id: "tool_1", content: "result" }] : [])], [], options());
+  const request = JSON.stringify(requests[1]);
+  expect(request).not.toContain("thinking");
+  expect(request).not.toContain("signature");
+  expect(request).not.toContain("consider");
+  expect(request).not.toContain(generationId);
+  expect(request).toContain(tool ? "tool_use" : "hello");
+});
+
+it("accepts empty tool argument deltas but keeps the initial input object authoritative", async () => {
+  const provider = await fixture((_req, res) => reply(res, wire({ tool: true, args: "" })));
+  const result = await provider.complete([{ role: "user", content: "no arguments" }], [], options());
+  expect(result.message.tool_calls?.[0]?.function.arguments).toBe("{}");
+});
+
+it("shows initial thinking/text blocks and preserves signed context", async () => {
+  const content = wire({ thinking: true })
+    .replace('"thinking":"","signature":""', '"thinking":"initial ","signature":""')
+    .replace('"type":"text","text":""', '"type":"text","text":"prefix "');
+  const provider = await fixture((_req, res) => reply(res, content));
+  const thoughts: string[] = []; const text: string[] = [];
+  const result = await provider.complete([{ role: "user", content: "go" }], [], {
+    ...options(), onReasoning: value => thoughts.push(value), onText: value => text.push(value),
+  });
+  expect(thoughts.join("")).toBe("initial consider");
+  expect(text.join("")).toBe("prefix hello");
+  expect(result.message).toMatchObject({ reasoning: "initial consider", content: "prefix hello" });
+  expect(result.message.providerState?.output[0]).toMatchObject({ signature: "opaque-signature", thinking: "initial consider" });
+});
+
+it.each([
+  { body: wire({ tool: true, args: '{"private-sentinel":"unfinished' }), reason: "invalid_tool_call", stage: "tool_input" },
+  { body: wire({ tool: true, args: '[]' }), reason: "invalid_chunk", stage: "content" },
+  { body: wire({ terminal: false }), reason: "invalid_finish", stage: "stream" },
+  { body: wire().replace(sse({ type: "content_block_stop", index: 0 }), ""), reason: "invalid_finish", stage: "stream" },
+  { body: wire().replace('"input_tokens":10', '"input_tokens":"private-sentinel"'), reason: "invalid_chunk", stage: "usage" },
+  { body: wire().replace('"type":"text","text":""', '"type":"private-sentinel","text":""'), reason: "invalid_chunk", stage: "stream" },
+])("rejects unsafe/incomplete output with static safe diagnostics ($stage/$reason)", async ({ body: response, reason, stage }) => {
+  const provider = await fixture((_req, res) => reply(res, response));
+  const work = provider.complete([{ role: "user", content: "go" }], [], options());
+  await expect(work).rejects.toMatchObject({ classification: "protocol", reason, retryable: false });
+  await expect(work).rejects.toThrow(`Anthropic ${stage} validation failed`);
+  await expect(work).rejects.not.toThrow("private-sentinel");
+  expect(await work.catch(isRetryableProviderFailure)).toBe(false);
+});
+
+it("does not let SDK diagnostics hide a transport framing failure", async () => {
+  const provider = await fixture((_req, res) => reply(res, wire().slice(0, -1)));
+  await expect(provider.complete([{ role: "user", content: "go" }], [], options()))
+    .rejects.toMatchObject({ classification: "protocol", reason: "unterminated_event" });
+});
+
+it("retains signed and redacted context while excluding only unsigned display thoughts", async () => {
+  const requests: unknown[] = [];
+  const additions = [
+    { type: "content_block_start", index: 1, content_block: { type: "thinking", thinking: "unsigned-only", signature: "" } },
+    { type: "content_block_stop", index: 1 },
+    { type: "content_block_start", index: 2, content_block: { type: "redacted_thinking", data: "opaque-redaction" } },
+    { type: "content_block_stop", index: 2 },
+  ].map(sse).join("");
+  const signed = wire({ thinking: true, tool: true }).replaceAll('"index":1', '"index":3');
+  const mixed = signed.replace(sse({ type: "content_block_stop", index: 0 }), sse({ type: "content_block_stop", index: 0 }) + additions);
+  const provider = await fixture(async (req, res) => { requests.push(await body(req)); reply(res, requests.length === 1 ? mixed : wire()); });
+  const first = await provider.complete([{ role: "user", content: "go" }], [], options());
+  expect(first.message.reasoning).toBe("considerunsigned-only");
+  expect(first.message.providerState?.output.map(block => block.type)).toEqual(["thinking", "redacted_thinking", "tool_use"]);
+  await provider.complete([{ role: "user", content: "go" }, first.message, { role: "tool", tool_call_id: "tool_1", content: "ok" }], [], options());
+  const request = JSON.stringify(requests[1]);
+  expect(request).toContain("opaque-signature"); expect(request).toContain("opaque-redaction");
+  expect(request).not.toContain("unsigned-only");
 });

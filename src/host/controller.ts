@@ -158,6 +158,15 @@ export function createWorkerController(
     }
     if (value.type === "agent_update" && !["running", "awaiting_approval"].includes(value.status))
       run.recovery.delete(`agent-progress:${value.childSessionId}`);
+    if (value.type === "generation_started") {
+      // Replay only the current attempt, in lifecycle order. Never concatenate
+      // a new generation with the previous generation's bounded preview.
+      for (const key of run.recovery.keys())
+        if (["generation_started", "generation_finished", "text_delta", "reasoning_delta"].includes(key) || key.startsWith("tool-preview:"))
+          run.recovery.delete(key);
+      run.recovery.set(value.type, value);
+    }
+    if (value.type === "generation_finished") run.recovery.set(value.type, value);
     if (value.type === "tool_call_preview") {
       const key = `tool-preview:${value.previewId}`;
       if (run.recovery.has(key) || run.recovery.size < 264)
@@ -185,7 +194,7 @@ export function createWorkerController(
     if (value.type === "text_delta" || value.type === "reasoning_delta") {
       const previous = run.recovery.get(value.type);
       const text =
-        previous &&
+        previous && previous.generationId === value.generationId &&
         (previous.type === "text_delta" || previous.type === "reasoning_delta")
           ? previous.text
           : "";
@@ -791,6 +800,8 @@ export function createWorkerController(
           status: "running",
         },
       });
+      const generationStarted = run.recovery.get("generation_started");
+      if (generationStarted) result.push({ runId, event: generationStarted });
       for (const type of ["reasoning_delta", "text_delta"] as const) {
         const event = run.recovery.get(type);
         if (
@@ -811,6 +822,8 @@ export function createWorkerController(
       }
       for (const [key, event] of run.recovery)
         if (key.startsWith("tool-preview:") || key.startsWith("agent-progress:")) result.push({ runId, event });
+      const generationFinished = run.recovery.get("generation_finished");
+      if (generationFinished) result.push({ runId, event: generationFinished });
       for (const approval of run.approvals.values()) {
         if (!approval.consumed)
           result.push({

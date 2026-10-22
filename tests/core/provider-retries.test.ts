@@ -54,6 +54,12 @@ it("allows exactly five additional attempts, discards failed drafts and keeps th
   });
   const running = f.run(); await vi.runAllTimersAsync(); await running;
   expect(calls).toBe(6);
+  const generations = f.events.filter(event => event.type === "generation_started");
+  const terminals = f.events.filter(event => event.type === "generation_finished");
+  expect(new Set(generations.map(event => event.generationId)).size).toBe(6);
+  expect(terminals.map(event => event.generationId)).toEqual(generations.map(event => event.generationId));
+  expect(terminals.map(event => event.status)).toEqual(["superseded", "superseded", "superseded", "superseded", "superseded", "completed"]);
+  expect(f.snapshot().messages.at(-1)).toMatchObject({ generationId: generations.at(-1)?.generationId });
   expect(starts.slice(1).map((value, i) => value - (starts[i] ?? value))).toEqual(RETRY_DELAYS_MS);
   expect(requests.every(messages => messages === requests[0])).toBe(true);
   expect(f.snapshot().status).toBe("completed");

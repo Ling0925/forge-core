@@ -321,6 +321,8 @@ export const assistantMessageSchema = z
     // Display-only reasoning persisted so a resumed session can show it again.
     // Bounded, never sent back to the provider, and not part of assistant content.
     reasoning: z.string().max(131072).optional(),
+    // Local attempt identity, never serialized into provider requests.
+    generationId: z.string().uuid().optional(),
     providerState: providerStateSchema.optional(),
     citations: z.array(webCitationSchema).max(256).readonly().optional(),
     webSearches: z.array(webSearchRecordSchema).max(128).readonly().optional(),
@@ -556,9 +558,18 @@ const eventBase = {
   timestamp: timestampSchema,
   turn: z.number().int().positive().optional(),
   step: z.number().int().positive().optional(),
+  generationId: z.string().uuid().optional(),
 };
 export const agentEventSchema = z
   .discriminatedUnion("type", [
+    // Only identity/lifecycle is durable; live reasoning still stays ephemeral.
+    z.object({ ...eventBase, type: z.literal("generation_started"),
+      generationId: z.string().uuid(), messageIndex: z.number().int().nonnegative(),
+    }).strict(),
+    z.object({ ...eventBase, type: z.literal("generation_finished"),
+      generationId: z.string().uuid(),
+      status: z.enum(["completed", "failed", "cancelled", "superseded"]),
+    }).strict(),
     // Provider-owned search progress, not an executable local function call.
     z.object({ ...eventBase, type: z.literal("web_search"), search: webSearchProgressSchema }).strict(),
     z.object({ ...eventBase, type: z.literal("web_search_result"), citations: z.array(webCitationSchema).max(256).readonly(), webSearches: z.array(webSearchRecordSchema).max(128).readonly() }).strict(),
@@ -654,6 +665,7 @@ export const agentEventSchema = z
       .object({
         ...eventBase,
         type: z.literal("tool_started"),
+        callIndex: z.number().int().min(0).max(255).optional(),
         call: toolCallSchema,
         previewId: z.string().min(1).max(128).optional(),
       })
@@ -662,6 +674,7 @@ export const agentEventSchema = z
       .object({
         ...eventBase,
         type: z.literal("tool_finished"),
+        callIndex: z.number().int().min(0).max(255).optional(),
         toolCallId: toolCallSchema.unwrap().shape.id,
         result: toolResultSchema,
       })
@@ -767,6 +780,9 @@ export const agentEventSchema = z
       })
       .strict(),
   ])
+  .refine(event => (event.type !== "tool_started" && event.type !== "tool_finished") ||
+    (event.generationId === undefined) === (event.callIndex === undefined),
+  "Tool generation identity and call index must be supplied together")
   .readonly();
 export type AgentEvent = z.infer<typeof agentEventSchema>;
 export const sessionTitleSchema = z.string().trim().min(1).max(256);

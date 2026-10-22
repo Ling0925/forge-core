@@ -82,3 +82,13 @@ it("projects append diffs without altering persisted results", () => {
   expect(JSON.stringify(projected)).not.toContain("b".repeat(8000));
   expect(JSON.stringify(messages)).toBe(original);
 });
+
+it("removes local generation identity independently of reasoning without changing stored history", () => {
+  const messages: Message[] = [
+    { role: "assistant", content: "answer", generationId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa" },
+    { role: "assistant", content: "next", generationId: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb", reasoning: "display only" },
+  ];
+  expect(projectToolContext(messages)).toEqual([{ role: "assistant", content: "answer" }, { role: "assistant", content: "next" }]);
+  expect(messages[0]).toHaveProperty("generationId");
+  expect(messages[1]).toHaveProperty("reasoning", "display only");
+});

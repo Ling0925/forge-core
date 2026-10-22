@@ -6,7 +6,7 @@ import type {
 import { z } from "zod";
 import type { ModelProvider } from "../shared/contracts";
 import { scopeProviderState } from "./state-scope";
-import { ForgeError } from "../shared/errors";
+import { ForgeError, type ProtocolReason } from "../shared/errors";
 import {
   jsonObjectSchema,
   messageSchema,
@@ -30,7 +30,9 @@ const contentSchema = z
       z.object({
         type: z.literal("thinking"),
         thinking: z.string().max(2000000),
-        signature: z.string().min(1),
+        // Compatible gateways may expose unsigned thoughts. Display them, but
+        // never forge a signature or replay them as native thinking context.
+        signature: z.string().max(2000000).optional().default(""),
       }),
       z.object({
         type: z.literal("redacted_thinking"),
@@ -46,6 +48,27 @@ const contentSchema = z
   )
   .max(256);
 type Content = z.infer<typeof contentSchema>;
+// Static stage + allowlisted reason only: never log Zod issues or SDK messages.
+const invalid = (stage: "history" | "stream" | "content" | "tool_input" | "usage" | "result", reason: ProtocolReason) =>
+  new ProviderError("protocol", `Anthropic ${stage} validation failed.`, false, undefined, reason);
+function parseContent(value: unknown, stage: "history" | "content"): Content {
+  const parsed = contentSchema.safeParse(value);
+  if (!parsed.success) throw invalid(stage, "invalid_chunk");
+  return parsed.data;
+}
+const replayContent = (content: Content): Content => content.filter(block => block.type !== "thinking" || Boolean(block.signature));
+function parseToolInput(text: string, stage: "history" | "tool_input") {
+  try {
+    return jsonObjectSchema.parse(JSON.parse(text));
+  } catch {
+    throw invalid(stage, "invalid_tool_call");
+  }
+}
+const tokenCount = z.number().int().nonnegative();
+const anthropicUsageSchema = z.object({
+  input_tokens: tokenCount, output_tokens: tokenCount,
+  cache_creation_input_tokens: tokenCount.nullish(), cache_read_input_tokens: tokenCount.nullish(),
+});
 const summarize = (content: Content) => ({
   text: content
     .filter((block) => block.type === "text")
@@ -127,7 +150,7 @@ function history(
         ? state.credentialId === undefined
         : state.credentialId === credentialId)
     ) {
-      const content = contentSchema.parse(state.output);
+      const content = replayContent(parseContent(state.output, "history"));
       const normalized = summarize(content);
       if (
         normalized.text !== (message.content ?? "") ||
@@ -145,7 +168,7 @@ function history(
           type: "tool_use",
           id: call.id,
           name: call.function.name,
-          input: jsonObjectSchema.parse(JSON.parse(call.function.arguments)),
+          input: parseToolInput(call.function.arguments, "history"),
         });
       result.push({
         role: "assistant",
@@ -229,7 +252,7 @@ export function createAnthropicProvider(
       return withSdkRequest(
         settings,
         { signal: options.signal, idle: true, fetch: requestOptions.fetch },
-        async ({ signal, fetch }) => {
+        async ({ signal, fetch, hasBodyFailure }) => {
           const maxTokens = settings.maxOutputTokens ?? 8192;
           const effort = settings.reasoningEffort ?? "default";
           const budget = {
@@ -296,6 +319,14 @@ export function createAnthropicProvider(
           });
           let observerFailure: ProviderError | undefined;
           const argumentsByIndex = new Map<number, string>();
+          const openBlocks = new Set<number>();
+          const seenBlocks = new Set<number>();
+          let messageStarted = false;
+          let messageStopped = false;
+          const failStream = (reason: ProtocolReason) => {
+            observerFailure ??= invalid("stream", reason);
+            stream.abort();
+          };
           const notify = (callback: () => void) => {
             if (observerFailure) return;
             try {
@@ -325,12 +356,62 @@ export function createAnthropicProvider(
               });
           });
           stream.on("streamEvent", (event, snapshot) => {
+            if (observerFailure) return;
+            if (messageStopped) return failStream("unexpected_frame");
+            if (event.type === "message_start") {
+              if (messageStarted || !Array.isArray(event.message.content) || event.message.content.length)
+                return failStream("unexpected_frame");
+              messageStarted = true;
+              return;
+            }
+            if (!messageStarted) return failStream("unexpected_frame");
+            if (event.type === "message_stop") {
+              if (openBlocks.size) return failStream("invalid_finish");
+              messageStopped = true;
+              return;
+            }
+            if (event.type === "content_block_stop") {
+              if (!openBlocks.delete(event.index)) return failStream("unexpected_frame");
+              return;
+            }
+            if (event.type === "message_delta") {
+              if (openBlocks.size) return failStream("invalid_finish");
+              return;
+            }
+            if (event.type === "content_block_start") {
+              if (!Number.isInteger(event.index) || event.index < 0 || event.index >= 256 ||
+                  event.index !== seenBlocks.size || openBlocks.size || seenBlocks.has(event.index))
+                return failStream("unexpected_frame");
+              if (!contentSchema.element.safeParse(event.content_block).success) return failStream("invalid_chunk");
+              seenBlocks.add(event.index);
+              openBlocks.add(event.index);
+              const initial = event.content_block;
+              if (initial.type === "thinking" && initial.thinking) {
+                const delta = initial.thinking.slice(0, Math.max(0, 131072 - reasoning.length));
+                reasoning += delta;
+                if (delta) notify(() => options.onReasoning?.(delta));
+              } else if (initial.type === "text" && initial.text) {
+                notify(() => {
+                  for (let i = 0; i < initial.text.length; i += 65536) options.onText(initial.text.slice(i, i + 65536));
+                });
+              }
+            }
+            if (event.type === "content_block_delta" && !openBlocks.has(event.index)) return failStream("unexpected_frame");
             if (
               event.type !== "content_block_start" &&
               event.type !== "content_block_delta"
             )
               return;
             const block = snapshot.content[event.index];
+            if (event.type === "content_block_delta") {
+              const delta = event.delta;
+              const valid = delta.type === "input_json_delta" ? block?.type === "tool_use" && typeof delta.partial_json === "string"
+                : delta.type === "text_delta" ? block?.type === "text" && typeof delta.text === "string"
+                : delta.type === "thinking_delta" ? block?.type === "thinking" && typeof delta.thinking === "string"
+                : delta.type === "signature_delta" ? block?.type === "thinking" && typeof delta.signature === "string"
+                : delta.type === "citations_delta" && block?.type === "text";
+              if (!valid) return failStream("invalid_chunk");
+            }
             if (
               event.type === "content_block_delta" &&
               event.delta.type === "input_json_delta"
@@ -366,15 +447,25 @@ export function createAnthropicProvider(
           try {
             result = await stream.finalMessage();
           } catch (error) {
-            throw observerFailure ?? error;
+            if (observerFailure) throw observerFailure;
+            // Leave HTTP/network/cancellation mapping to the transport. SDK
+            // assembly errors have no safe upstream text worth surfacing.
+            if (error instanceof Anthropic.APIError || signal?.aborted || hasBodyFailure()) throw error;
+            if (error instanceof SyntaxError) throw invalid("stream", "invalid_json");
+            if (error instanceof TypeError || error instanceof Anthropic.AnthropicError)
+              throw invalid("stream", messageStarted && !messageStopped ? "invalid_finish" : "invalid_chunk");
+            throw error;
           }
           if (observerFailure) throw observerFailure;
-          if (stream.receivedMessages.length !== 1)
-            throw protocol("unexpected_frame");
-          const content = contentSchema.parse(result.content);
+          if (!messageStopped || openBlocks.size) throw invalid("stream", "invalid_finish");
+          if (stream.receivedMessages.length !== 1) throw invalid("stream", "unexpected_frame");
+          const content = parseContent(result.content, "content");
           for (const [index, argumentsText] of argumentsByIndex) {
+            // Empty deltas contain no JSON to assemble. The validated initial
+            // input object remains authoritative for a no-argument tool.
+            if (argumentsText === "") continue;
             const block = content[index];
-            const input = jsonObjectSchema.parse(JSON.parse(argumentsText));
+            const input = parseToolInput(argumentsText, "tool_input");
             if (
               block?.type !== "tool_use" ||
               JSON.stringify(input) !== JSON.stringify(block.input)
@@ -397,17 +488,21 @@ export function createAnthropicProvider(
             throw protocol("invalid_finish");
           if (new Set(calls.map((call) => call.id)).size !== calls.length)
             throw protocol("invalid_tool_call");
-          const input =
-            result.usage.input_tokens +
-            (result.usage.cache_creation_input_tokens ?? 0) +
-            (result.usage.cache_read_input_tokens ?? 0);
-          return providerResponseSchema.parse({
+          const parsedUsage = anthropicUsageSchema.safeParse(result.usage);
+          if (!parsedUsage.success) throw invalid("usage", "invalid_chunk");
+          const usage = parsedUsage.data;
+          const input = usage.input_tokens + (usage.cache_creation_input_tokens ?? 0) + (usage.cache_read_input_tokens ?? 0);
+          const replay = replayContent(content);
+          // Include initial, non-delta thinking too. Final validated content is
+          // authoritative; the live buffer is only a bounded preview.
+          reasoning = content.filter(block => block.type === "thinking").map(block => block.thinking).join("").slice(0, 131072);
+          const parsedResponse = providerResponseSchema.safeParse({
             message: {
               role: "assistant",
               content: text || null,
               ...(reasoning ? { reasoning } : {}),
               ...(calls.length ? { tool_calls: calls } : {}),
-              ...(content.some(
+              ...(replay.some(
                 (block) =>
                   block.type === "thinking" ||
                   block.type === "redacted_thinking",
@@ -421,20 +516,22 @@ export function createAnthropicProvider(
                       ...(settings.credentialId
                         ? { credentialId: settings.credentialId }
                         : {}),
-                      output: content,
+                      output: replay,
                     },
                   }
                 : {}),
             },
             usage: {
               promptTokens: input,
-              completionTokens: result.usage.output_tokens,
-              totalTokens: input + result.usage.output_tokens,
-              ...(result.usage.cache_read_input_tokens != null
-                ? { cachedPromptTokens: result.usage.cache_read_input_tokens }
+              completionTokens: usage.output_tokens,
+              totalTokens: input + usage.output_tokens,
+              ...(usage.cache_read_input_tokens != null
+                ? { cachedPromptTokens: usage.cache_read_input_tokens }
                 : {}),
             },
           });
+          if (!parsedResponse.success) throw invalid("result", "invalid_response");
+          return parsedResponse.data;
         },
       );
     },

@@ -328,6 +328,7 @@ describe("original runtime", () => {
     expect(result.messages.at(-1)).toEqual({
       role: "assistant",
       content: "final",
+      generationId: expect.stringMatching(/^[a-f0-9-]{36}$/),
     });
     expect(
       events.filter((event) => event.type === "run_finished"),
@@ -396,6 +397,7 @@ describe("original runtime", () => {
       expect(result.messages.at(-1)).toEqual({
         role: "assistant",
         content: "done",
+        generationId: expect.stringMatching(/^[a-f0-9-]{36}$/),
       });
       expect(result.events.filter((event) => event.type === "error")).toEqual([]);
       expect(result.events.at(-1)).toMatchObject({

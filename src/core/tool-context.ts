@@ -8,9 +8,10 @@ export function projectToolContext(messages: readonly Message[]): readonly Messa
   return messages.map((message): Message => {
     if (message.role === "assistant") {
       for (const call of message.tool_calls ?? []) names.set(call.id, call.function.name);
-      // Persisted display-only reasoning is never sent to the provider.
-      if (message.reasoning === undefined) return message;
-      const { reasoning: _reasoning, ...rest } = message;
+      // Persisted display-only fields and local generation identity never leave
+      // the runtime, including auxiliary model/context-summary requests.
+      if (message.reasoning === undefined && message.generationId === undefined) return message;
+      const { reasoning: _reasoning, generationId: _generationId, ...rest } = message;
       return rest;
     }
     if (message.role !== "tool") return message;

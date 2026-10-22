@@ -33,11 +33,12 @@ for (const fails of [false, true])
         provider: {
           listModels: async () => [],
           complete: async (_messages, _tools, options) => {
+            options.onReasoning?.("display-only thought");
             options.onText(text.slice(0, 9000));
             options.onText(text.slice(9000));
             if (fails)
               throw new ForgeError("provider", "Fixture interrupted stream");
-            return { message: { role: "assistant", content: text } };
+            return { message: { role: "assistant", content: text, reasoning: "display-only thought" } };
           },
         },
       });
@@ -57,6 +58,13 @@ for (const fails of [false, true])
         session.id,
       );
       expect(reopened).toEqual(result);
+      const generationId = events.find(event => event.type === "generation_started")?.generationId;
+      expect(generationId).toMatch(/^[\da-f-]{36}$/);
+      expect(reopened.events.filter(event => event.type === "generation_finished")).toEqual([
+        expect.objectContaining({ generationId, status: fails ? "failed" : "completed" }),
+      ]);
+      expect(reopened.events.some(event => event.type === "reasoning_delta")).toBe(false);
+      if (!fails) expect(reopened.messages.at(-1)).toMatchObject({ generationId, reasoning: "display-only thought" });
       expect(
         reopened.events.filter((event) => event.type === "text_delta"),
       ).toHaveLength(fails ? 1 : 0);
