@@ -1,12 +1,11 @@
 import { createHash } from "node:crypto";
 import { join } from "node:path";
 import { z } from "zod";
-import { measureContext } from "../shared/context-usage";
 import type { AgentRuntimeDependencies } from "../shared/contracts";
 import { ForgeError } from "../shared/errors";
 import { sessionIdSchema, type SessionSnapshot } from "../shared/schemas";
 import { atomicJson, privateDirectory, readJson } from "../store/io";
-import { assertBoundary, projectSummary } from "./context";
+import { assertBoundary } from "./context";
 import { historyText } from "./history";
 
 export const COLD_RESUME_IDLE_MS = 60 * 60 * 1000;
@@ -62,11 +61,13 @@ export async function openRunMemory(directory: string): Promise<NonNullable<Agen
       const record = buildRunMemory(snapshot);
       if (record) await atomicJson(pathFor(snapshot.id), record);
     },
-    async restore(snapshot, at) {
+    async restore(snapshot, at, measureTokens) {
       const end = snapshot.events.findLast(event => event.type === "run_finished");
+      // The runtime supplies the same request projection and input calibration
+      // used by its context budget, including current instructions/tools/input.
       if (!end || !["completed", "failed", "cancelled"].includes(snapshot.status) ||
         Date.parse(at) - Date.parse(end.timestamp) < COLD_RESUME_IDLE_MS ||
-        measureContext(projectSummary(snapshot), null).usedTokens <= COLD_RESUME_TOKENS) return snapshot;
+        measureTokens(snapshot) <= COLD_RESUME_TOKENS) return snapshot;
       let record: z.infer<typeof recordSchema> | null = null;
       try {
         const parsed = recordSchema.safeParse(await readJson(pathFor(snapshot.id), 65536));
@@ -80,7 +81,7 @@ export async function openRunMemory(directory: string): Promise<NonNullable<Agen
       const humans = snapshot.messages.flatMap((message, index) => message.role === "user" && message.origin !== "agent_reconciliation" ? [index] : []);
       let boundary = humans.at(-2) ?? record.boundary;
       const project = () => ({ ...snapshot, contextSummary: { content, boundary, fallback: true } });
-      if (boundary <= (snapshot.contextSummary?.boundary ?? 0) || measureContext(projectSummary(project()), null).usedTokens > 12000) boundary = record.boundary;
+      if (boundary <= (snapshot.contextSummary?.boundary ?? 0) || measureTokens(project()) > 12000) boundary = record.boundary;
       assertBoundary(snapshot.messages, boundary);
       return project();
     },

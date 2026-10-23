@@ -608,7 +608,29 @@ export const createAgentRuntime = (
       steeringCount = pendingSteering.length;
       steeringBytes = pendingSteering.reduce((sum, entry) => sum + entry.bytes, 0);
       rootBudget.enter(input.sessionId);
-      if (deps.runMemory) snapshot = await deps.runMemory.restore(snapshot, now());
+      const definitions = [...deps.tools.definitions, ...nativeDefinitions];
+      const toolNames = definitions.map(definition => definition.function.name);
+      let currentInstructions = buildSystemInstructions({ session: snapshot, permission: effectivePermission(), mode: input.mode,
+        projectInstructions: deps.projectInstructions, toolNames });
+      const project = (state: SessionSnapshot) => {
+        const projected = projectSummary(state).map((message, index) =>
+          index === 0 && message.role === "system"
+            ? { role: "system" as const, content: currentInstructions } : message);
+        const messages = projected[0]?.role === "system" ? projected : [{ role: "system" as const, content: currentInstructions }, ...projected];
+        const guidance = adaptation?.status === "adopted" ? harnessStrategyMessage(adaptation.strategy) : undefined;
+        // A lower-trust reference before the actual user turns, included in
+        // context accounting but never installed as system policy or history.
+        if (guidance) messages.splice(1, 0, guidance);
+        return messages;
+      };
+      const prompt: Message = { role: "user", content: input.prompt, ...(input.images?.length ? { images: input.images } : {}) };
+      contextScale = seedContextScale(snapshot.events, input.model ?? snapshot.model);
+      if (deps.runMemory) snapshot = await deps.runMemory.restore(snapshot, now(), state => {
+        // Count the upcoming request without appending new inputs to the old
+        // checkpoint: its hash and summary boundary must remain about past work.
+        const upcoming = { ...state, messages: [...state.messages, ...pendingSteering.map(entry => entry.message), prompt] };
+        return measureContext(project(upcoming), null, definitions).usedTokens * contextScale;
+      });
       if (
         snapshot.status === "running" ||
         snapshot.status === "awaiting_approval"
@@ -643,9 +665,7 @@ export const createAgentRuntime = (
         ),
       };
       includeSteering(); // Recover accepted inputs after closing any interrupted tool calls.
-      const definitions = [...deps.tools.definitions, ...nativeDefinitions];
-      const toolNames = definitions.map(definition => definition.function.name);
-      let currentInstructions = buildSystemInstructions({
+      currentInstructions = buildSystemInstructions({
         session: snapshot,
         permission,
         mode: input.mode,
@@ -669,13 +689,12 @@ export const createAgentRuntime = (
         status: "running",
         messages: [
           ...snapshot.messages,
-          { role: "user", content: input.prompt, ...(input.images?.length ? { images: input.images } : {}) },
+          prompt,
         ],
       };
       const claimed = claimAutoTitle(snapshot, deps.autoTitle?.secrets ?? []);
       const shouldName = claimed !== snapshot;
       snapshot = claimed;
-      contextScale = seedContextScale(snapshot.events, snapshot.model);
       const started = agentEventSchema.parse({ type: "run_started", turn, budget: rootBudget.snapshot(snapshot.parentSessionId ? input.sessionId : undefined),
         sessionId: input.sessionId, timestamp: now(), messageIndex: snapshot.messages.length - 1,
         model: snapshot.model, permission, title: snapshot.title });
@@ -753,17 +772,6 @@ export const createAgentRuntime = (
           projectInstructions: deps.projectInstructions, toolNames });
         await drainSteering();
         check();
-        const project = (state: SessionSnapshot) => {
-          const projected = projectSummary(state).map((message, index) =>
-          index === 0 && message.role === "system"
-            ? { role: "system" as const, content: currentInstructions } : message);
-          const messages = projected[0]?.role === "system" ? projected : [{ role: "system" as const, content: currentInstructions }, ...projected];
-          const guidance = adaptation?.status === "adopted" ? harnessStrategyMessage(adaptation.strategy) : undefined;
-          // A lower-trust reference before the actual user turns, included in
-          // context accounting but never installed as system policy or history.
-          if (guidance) messages.splice(1, 0, guidance);
-          return messages;
-        };
         const before = project(snapshot);
         if (calibratedSize(before) > budget.limit) {
           // Search for a boundary in raw-estimate units: that is what the

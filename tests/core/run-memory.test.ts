@@ -10,6 +10,8 @@ import type { ModelProvider, SessionStore } from "../../src/shared/contracts";
 import { ForgeError } from "../../src/shared/errors";
 import { defaultPublicSettings, sessionSnapshotSchema, type SessionSnapshot } from "../../src/shared/schemas";
 
+const measureTokens = (snapshot: SessionSnapshot) => measureContext(projectSummary(snapshot), null).usedTokens;
+
 const original = sessionSnapshotSchema.parse({
   version: 1, id: "11111111-1111-4111-8111-111111111111", workspace: "/tmp", title: "test", model: "fixture", status: "completed",
   createdAt: "2026-01-01T00:00:00.000Z", updatedAt: "2026-01-01T00:00:00.000Z",
@@ -29,14 +31,14 @@ it("persists a local checkpoint without changing warm context and restores long 
     expect(saved.content).toContain("test failure remains");
     expect(saved.content).toContain("preserve user files");
     expect(saved.content.length).toBeLessThanOrEqual(8192);
-    expect(await memory.restore(original, "2026-01-01T00:30:00.000Z")).toBe(original);
+    expect(await memory.restore(original, "2026-01-01T00:30:00.000Z", measureTokens)).toBe(original);
     const reopened = await openRunMemory(directory);
-    const restored = await reopened.restore(original, "2026-01-02T00:00:00.000Z");
+    const restored = await reopened.restore(original, "2026-01-02T00:00:00.000Z", measureTokens);
     expect(restored.messages).toBe(original.messages);
     expect(restored.contextSummary?.content).toBe(saved.content);
     expect(measureContext(projectSummary(restored), null).usedTokens).toBeLessThan(12000);
     const changed = { ...original, messages: [...original.messages, { role: "assistant" as const, content: "newer actual report" }] };
-    expect((await reopened.restore(changed, "2026-01-02T00:00:00.000Z")).contextSummary?.content).toContain("newer actual report");
+    expect((await reopened.restore(changed, "2026-01-02T00:00:00.000Z", measureTokens)).contextSummary?.content).toContain("newer actual report");
   } finally { await rm(directory, { recursive: true, force: true }); }
 });
 

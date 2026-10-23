@@ -228,6 +228,8 @@ export interface AgentRuntimeDependencies {
     readonly restore: (
       snapshot: SessionSnapshot,
       at: string,
+      /** Calibrated tokens of the upcoming request with this history/summary. */
+      measureTokens: (snapshot: SessionSnapshot) => number,
     ) => Promise<SessionSnapshot>;
   };
   readonly store: SessionStore;
