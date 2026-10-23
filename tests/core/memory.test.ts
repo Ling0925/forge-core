@@ -119,7 +119,8 @@ describe("cross-session retrieval and memory synthesis", () => {
     await expect(execute(provider)).rejects.toThrow(/conflict/);
     expect((await memories.search(searchMemorySchema.parse({}))).total).toBe(1);
     expect((await memories.get(0))?.details).toBe("concurrent update");
-    await memories.update({ id: 0, details: "forge ".repeat(2000) });
+    // Escaped text cannot fit the expanded input budget, so it remains read-only.
+    await memories.update({ id: 0, details: "forge " + "\n".repeat(30000) + "tail" });
     const truncated = fakeProvider(messages => ({ memories: [proposal(evidenceRefs(messages).map(item => item.ref), { id: 0 })] }));
     await expect(execute(truncated)).rejects.toThrow(/complete current memory/);
   });

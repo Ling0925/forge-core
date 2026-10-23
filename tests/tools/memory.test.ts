@@ -35,6 +35,18 @@ describe("memory tools", () => {
     expect(tools.isConcurrencySafe?.(call("forge_memory", { query: "forge" }))).toBe(false);
   });
 
+  it("publishes and applies the bounded synthesis count without extra model calls", async () => {
+    expect(tools.definitions[4]?.function.parameters.properties).toHaveProperty("max_memories",
+      expect.objectContaining({ minimum: 1, maximum: 12, default: 4 }));
+    expect((await execute("forge_memory", { query: "forge" })).isError).toBe(false);
+    expect(forge).toHaveBeenLastCalledWith(expect.objectContaining({ max_memories: 4 }), expect.anything());
+    expect((await execute("forge_memory", { query: "forge", max_memories: 1 })).isError).toBe(false);
+    expect(forge).toHaveBeenLastCalledWith(expect.objectContaining({ max_memories: 1 }), expect.anything());
+    for (const max_memories of [0, 13, 1.5, "2"])
+      expect((await execute("forge_memory", { query: "forge", max_memories })).isError).toBe(true);
+    expect(forge).toHaveBeenCalledTimes(2);
+  });
+
   it("creates and patches ID 0, lists, paginates details and deletes", async () => {
     const created = await execute("update_memory", { summary: "中文", details: "abcdefgh", tags: ["one", "two"] });
     expect(created.isError).toBe(false);

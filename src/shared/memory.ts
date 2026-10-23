@@ -53,6 +53,7 @@ export const forgeMemorySchema = z.object({
   keywords: z.array(z.string().trim().min(1).max(256)).max(16).default([]),
   tags: memoryTagsSchema.default([]),
   scope: z.enum(["all", "workspace", "session"]).default("all"),
+  max_memories: z.number().int().min(1).max(12).default(4),
   dry_run: z.boolean().default(false),
 }).strict();
 export type ForgeMemoryInput = z.infer<typeof forgeMemorySchema>;

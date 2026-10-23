@@ -167,6 +167,7 @@ src/shared/     公共类型、schema 与客户端契约
 - [契约归属与浏览器边界](docs/CONTRACT_BOUNDARIES.md)
 - [运行生命周期与取消](docs/RUNTIME_LIFECYCLE.md)
 - [会话存储](docs/SESSION_STORAGE.md) · [持久输入队列](docs/INPUT_QUEUE.md)
+- [长期记忆与聚焦整理](docs/MEMORY.md)
 - [测试归属](docs/TEST_OWNERSHIP.md)
 - [作者说明](docs/AUTHORSHIP.md) · [第三方声明](THIRD_PARTY_NOTICES.md)
 

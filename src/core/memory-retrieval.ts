@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import type { SessionStore } from "../shared/contracts";
 import { ForgeError } from "../shared/errors";
 import { searchMemorySchema, type ForgeMemoryInput, type MemoryRecord, type MemorySource, type MemoryStore } from "../shared/memory";
@@ -22,7 +23,9 @@ export interface MemoryEvidence {
 }
 export const memoryRetrievalLimits = {
   sessions: 500, records: 50000, scanChars: 32_000_000,
-  candidates: 60, inputChars: 48000, excerptChars: 1800, memoryChars: 6000,
+  // Keep ordinary synthesis small. Only completing selected long memories may
+  // consume the old 48k budget; it is not extra room for unrelated excerpts.
+  candidates: 60, inputChars: 24000, expandedInputChars: 48000, excerptChars: 1200, memoryChars: 6000,
 } as const;
 export async function retrieveMemoryEvidence(options: {
   readonly input: ForgeMemoryInput;
@@ -44,7 +47,8 @@ export async function retrieveMemoryEvidence(options: {
     return terms.reduce((sum, term) => sum + Number(lower.includes(term)), 0);
   };
   const coverage = { eligibleSessions: 0, scannedSessions: 0, unreadableSessions: 0, scannedRecords: 0,
-    scannedChars: 0, matchedRecords: 0, matchedMemories: 0, scan_truncated: false, selection_truncated: false, excerpt_truncated: false };
+    scannedChars: 0, matchedRecords: 0, matchedMemories: 0, duplicateRecords: 0, expandedMemories: 0,
+    selectedEvidence: 0, evidenceChars: 0, scan_truncated: false, selection_truncated: false, excerpt_truncated: false };
   check();
   const listed = input.scope === "session" ? [current] : await sessions.list();
   const eligible = listed.filter(session => input.scope !== "workspace" || session.workspace === current.workspace);
@@ -62,6 +66,10 @@ export async function retrieveMemoryEvidence(options: {
     try { snapshot = summary.id === current.id ? current : await sessions.get(summary.id); }
     catch { check(); coverage.unreadableSessions++; continue; }
     coverage.scannedSessions++;
+    // Only exact, complete records within this session are duplicates. Keep the
+    // newest source; do not conflate different roles, origins or workspaces.
+    const seen = new Set<string>();
+    const workspace = clean(snapshot.workspace);
     for (let index = snapshot.messages.length - 1; index >= 0; index--) {
       check();
       if (coverage.scannedRecords >= limits.records || coverage.scannedChars >= limits.scanChars) {
@@ -78,19 +86,25 @@ export async function retrieveMemoryEvidence(options: {
       if (raw.length > remaining) coverage.scan_truncated = true;
       const text = clean(raw).slice(0, remaining);
       coverage.scannedChars += Math.min(raw.length, remaining);
-      const relevance = score(text);
-      if (!relevance) continue;
+      const lower = text.toLowerCase();
+      const positions = terms.map(term => lower.indexOf(term)).filter(position => position >= 0);
+      if (!positions.length) continue;
       coverage.matchedRecords++;
-      const positions = terms.map(term => text.toLowerCase().indexOf(term)).filter(position => position >= 0);
+      if (raw.length <= remaining) {
+        const key = createHash("sha256").update(JSON.stringify([message.role === "user" ? message.origin : null, text])).digest("hex");
+        if (seen.has(key)) { coverage.duplicateRecords++; continue; }
+        seen.add(key);
+      }
       const start = Math.max(0, Math.min(...positions) - 180);
       const excerpt = text.slice(start, start + limits.excerptChars);
-      candidates.push({ ref: `s:${snapshot.id}:m${index + 1}`,
-        source: { kind: "session", sessionId: snapshot.id, recordId: `m${index + 1}` },
+      const candidate = { ref: `s:${snapshot.id}:m${index + 1}`,
+        source: { kind: "session" as const, sessionId: snapshot.id, recordId: `m${index + 1}` },
         text: excerpt, truncated: start > 0 || start + excerpt.length < text.length || raw.length > remaining,
-        context: { role: message.role, workspace: clean(snapshot.workspace), sessionUpdatedAt: snapshot.updatedAt,
+        context: { role: message.role, workspace, sessionUpdatedAt: snapshot.updatedAt,
           ...(message.role === "user" && message.origin ? { origin: message.origin } : {}) },
-        score: relevance * 10 + (message.role === "user" && !message.origin ? 2 : 0) });
-      candidates.sort((a, b) => b.score - a.score);
+        score: positions.length * 10 + (message.role === "user" && !message.origin ? 2 : 0) };
+      const insertAt = candidates.findIndex(item => item.score < candidate.score);
+      if (insertAt === -1) candidates.push(candidate); else candidates.splice(insertAt, 0, candidate);
       if (candidates.length > limits.candidates) { candidates.pop(); coverage.selection_truncated = true; }
     }
   }
@@ -108,31 +122,49 @@ export async function retrieveMemoryEvidence(options: {
     }
   }
   coverage.matchedMemories = related.size;
+  const completeMemories = new Map<string, MemoryEvidence>();
   const memoryCandidates = [...related.values()]
-    .sort((a, b) => score(`${b.tags.join(" ")} ${b.summary} ${b.details}`) - score(`${a.tags.join(" ")} ${a.summary} ${a.details}`))
-    .map(record => {
+    .map(record => ({ record, score: score(`${record.tags.join(" ")} ${record.summary} ${record.details}`) }))
+    .sort((a, b) => b.score - a.score)
+    .map(({ record }) => {
       const text = clean(JSON.stringify({ tags: record.tags, summary: record.summary, updated_at: record.updated_at, details: record.details }));
-      return { ref: `memory:${record.id}:v${record.version}`, source: { kind: "memory" as const, id: record.id, version: record.version },
-        text: text.slice(0, limits.memoryChars), truncated: text.length > limits.memoryChars };
+      const item = { ref: `memory:${record.id}:v${record.version}`, source: { kind: "memory" as const, id: record.id, version: record.version },
+        text, truncated: false };
+      completeMemories.set(item.ref, item);
+      return { ...item, text: text.slice(0, limits.memoryChars), truncated: text.length > limits.memoryChars };
     });
   const evidence: MemoryEvidence[] = [];
   const selectedMemories = new Map<number, MemoryRecord>();
-  let chars = 0;
+  const inputBudget = Math.min(limits.inputChars, limits.expandedInputChars);
+  let chars = 2; // Array delimiters; per-item sizes conservatively include a comma.
   // Reserve half the input for each source type; unused space is shared below.
   const deferred: MemoryEvidence[] = [];
   for (const group of [memoryCandidates, candidates.map(({ score: _score, ...item }) => item)]) {
     let groupChars = 0;
     for (const item of group) {
       const size = JSON.stringify(item).length + 1;
-      if (groupChars + size > limits.inputChars / 2) { deferred.push(item); continue; }
+      if (groupChars + size > (inputBudget - 2) / 2) { deferred.push(item); continue; }
       evidence.push(item); groupChars += size; chars += size;
     }
   }
   for (const item of deferred) {
     const size = JSON.stringify(item).length + 1;
-    if (chars + size > limits.inputChars) { coverage.selection_truncated = true; continue; }
+    if (chars + size > inputBudget) { coverage.selection_truncated = true; continue; }
     evidence.push(item); chars += size;
   }
+  // Complete selected old memories when they fit, instead of permanently
+  // making every >6k memory uneditable. Never pass off a partial read as complete.
+  for (const [index, item] of evidence.entries()) {
+    if (item.source.kind !== "memory" || !item.truncated) continue;
+    const complete = completeMemories.get(item.ref)!;
+    const extra = JSON.stringify(complete).length - JSON.stringify(item).length;
+    if (chars + extra > limits.expandedInputChars) continue;
+    evidence[index] = complete;
+    chars += extra;
+    coverage.expandedMemories++;
+  }
+  coverage.selectedEvidence = evidence.length;
+  coverage.evidenceChars = JSON.stringify(evidence).length;
   for (const item of evidence) {
     if (item.truncated) coverage.excerpt_truncated = true;
     if (item.source.kind === "memory") {
