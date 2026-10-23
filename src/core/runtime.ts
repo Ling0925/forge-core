@@ -33,6 +33,8 @@ import { summarizeWorkingState } from "./working-memory";
 import { buildSystemInstructions } from "./prompts";
 import { createToolPreviewStream } from "./tool-preview";
 import { createToolFailureGuard } from "./tool-failure-guard";
+import { adaptHarness, HARNESS_PROBE_TOOLS, harnessStrategyMessage } from "./harness-adaptation";
+import { BASELINE_HARNESS_STRATEGY, HARNESS_ADAPTATION_DEFAULTS, type HarnessAdaptationReport } from "../shared/harness-adaptation";
 import { createToolHookService } from "./tool-hooks";
 import type { ToolHookDiagnostic } from "../shared/tool-hooks";
 import { claimAutoTitle } from "./session-title";
@@ -280,6 +282,10 @@ export const createAgentRuntime = (
 ): AgentRuntime => ({
   async run(rawInput, onEvent, approve, callerSignal, control?: RunControl) {
     const input = runInputSchema.parse(rawInput);
+    if (input.harness && !deps.harnessAdaptation)
+      throw new ForgeError("invalid_input", "This runtime host does not support Harness adaptation.");
+    if (input.harness?.experience === "read-write" && !deps.harnessAdaptation?.experiences)
+      throw new ForgeError("invalid_input", "This runtime host does not support Harness experience persistence.");
     const rootBudget = deps.rootBudget ?? createRootRunBudget({ rootSessionId: input.sessionId });
     rootBudget.check();
     const signal = callerSignal;
@@ -309,6 +315,7 @@ export const createAgentRuntime = (
     let usage: Usage = { promptTokens: 0, completionTokens: 0, totalTokens: 0 };
     let reportedUsageTurns = 0;
     let auxiliaryUsageComplete = true;
+    let adaptation: HarnessAdaptationReport | undefined;
     const onModelUsage = (incoming: Usage | undefined) => {
       rootBudget.observeUsage(input.sessionId, incoming);
       if (!incoming) { auxiliaryUsageComplete = false; return; }
@@ -477,7 +484,15 @@ export const createAgentRuntime = (
         await save();
         control?.onSteeringApplied?.();
       }
-      if (received && !drained.length) await save();
+      if (received || drained.length) {
+        if (adaptation?.status === "adopted") {
+          // A changed task invalidates the comparison; never replay the preflight.
+          adaptation = { ...adaptation, status: "baseline", strategy: BASELINE_HARNESS_STRATEGY,
+            rationale: "Task changed by steering after preflight; retaining baseline without replay.", evidenceIds: [] };
+          event({ type: "harness_adaptation", progress: { phase: "completed", report: adaptation } });
+          await save();
+        } else if (received && !drained.length) await save();
+      }
       if (final && !received && !drained.length) closeSteering();
       return received || drained.length > 0;
     };
@@ -553,6 +568,30 @@ export const createAgentRuntime = (
         events: [...snapshot.events, terminal],
       };
       await save();
+      // Library promotion happens only after the formal task's successful
+      // terminal state is durable. Plan/readonly and failed runs cannot promote.
+      if (status === "completed" && !signal.aborted && effectivePermission() !== "readonly"
+        && input.harness?.experience === "read-write" && adaptation?.status === "adopted"
+        && deps.harnessAdaptation?.experiences) {
+        try {
+          const verified = adaptation.probes.find(probe => probe.id === "composed");
+          const experience = await deps.harnessAdaptation.experiences.save({
+            scope: { workspace: snapshot.workspace, model: snapshot.model,
+              domain: input.harness.domain ?? HARNESS_ADAPTATION_DEFAULTS.domain },
+            sessionId: input.sessionId, reportId: adaptation.id, strategy: adaptation.strategy,
+            lesson: adaptation.rationale,
+            evidence: (verified?.evidence ?? []).filter(item => !item.isError && adaptation?.evidenceIds.includes(item.id))
+              .slice(0, 4).map(item => `${item.tool}: ${item.observation}`.slice(0, 2048)),
+          });
+          event({ type: "harness_adaptation", progress: { phase: "experience", experienceId: experience.id } });
+          await save();
+        } catch {
+          // Completed user effects are not replayed because optional learning
+          // failed. Surface the storage failure without disguising task success.
+          notify(agentEventSchema.parse({ type: "error", sessionId: snapshot.id, timestamp: now(),
+            error: { code: "storage", message: "Harness experience could not be recorded; the completed task was not replayed.", retryable: false } }));
+        }
+      }
       try {
         await deps.runMemory?.record(snapshot);
       } catch {
@@ -660,6 +699,30 @@ export const createAgentRuntime = (
       }
       check();
       rootBudget.checkAdmission();
+      if (input.harness) {
+        const host = deps.harnessAdaptation;
+        if (!host) throw new ForgeError("invalid_input", "This runtime host does not support Harness adaptation.");
+        if (snapshot.routeGroupId) throw new ForgeError("invalid_input", "Harness adaptation requires a direct model selection, not a route group.");
+        if (input.harness.experience === "read-write" && !host.experiences)
+          throw new ForgeError("invalid_input", "This runtime host does not support Harness experience persistence.");
+        phase = "provider";
+        adaptation = await adaptHarness({
+          input: input.harness, host, provider: deps.provider,
+          sessionId: input.sessionId, workspace: snapshot.workspace, model: snapshot.model,
+          messages: projectSummary(snapshot), signal,
+          systemInstructions: buildSystemInstructions({ session: snapshot, permission: "readonly", mode: "plan",
+            projectInstructions: deps.projectInstructions,
+            toolNames: HARNESS_PROBE_TOOLS }),
+          onUsage: onModelUsage,
+          onToolCall: () => {
+            check();
+            const reservation = rootBudget.reserve(input.sessionId, 1);
+            try { reservation.dispatch(); } finally { reservation.release(); }
+          },
+          onProgress: async progress => { check(); event({ type: "harness_adaptation", progress }); await save(); },
+        });
+        check();
+      }
       let reportedWindow: number | null = null;
       if (!deps.settings.modelContextWindows?.[snapshot.model]) {
         const metadataSignal = AbortSignal.any([signal, AbortSignal.timeout(2000)]);
@@ -694,7 +757,12 @@ export const createAgentRuntime = (
           const projected = projectSummary(state).map((message, index) =>
           index === 0 && message.role === "system"
             ? { role: "system" as const, content: currentInstructions } : message);
-          return projected[0]?.role === "system" ? projected : [{ role: "system" as const, content: currentInstructions }, ...projected];
+          const messages = projected[0]?.role === "system" ? projected : [{ role: "system" as const, content: currentInstructions }, ...projected];
+          const guidance = adaptation?.status === "adopted" ? harnessStrategyMessage(adaptation.strategy) : undefined;
+          // A lower-trust reference before the actual user turns, included in
+          // context accounting but never installed as system policy or history.
+          if (guidance) messages.splice(1, 0, guidance);
+          return messages;
         };
         const before = project(snapshot);
         if (calibratedSize(before) > budget.limit) {

@@ -5,6 +5,7 @@ import { createDiffPatch, unavailablePatch } from "./diff";
 import { imageAttachmentsSchema } from "./images";
 import { publishedFilesSchema } from "./published-files";
 import { toolHookDiagnosticSchema } from "./tool-hooks";
+import { harnessAdaptationOptionsSchema, harnessAdaptationProgressSchema } from "./harness-adaptation";
 import { webCitationSchema, webSearchRecordSchema, webSearchProgressSchema } from "./web-search";
 
 export type JsonValue =
@@ -576,6 +577,7 @@ export const agentEventSchema = z
     z.object({ ...eventBase, type: z.literal("web_search"), search: webSearchProgressSchema }).strict(),
     z.object({ ...eventBase, type: z.literal("web_search_result"), citations: z.array(webCitationSchema).max(256).readonly(), webSearches: z.array(webSearchRecordSchema).max(128).readonly() }).strict(),
     z.object({ ...eventBase, type: z.literal("permission_changed"), permission: permissionSchema }).strict(),
+    z.object({ ...eventBase, type: z.literal("harness_adaptation"), progress: harnessAdaptationProgressSchema }).strict(),
     z.object({
       ...eventBase,
       type: z.literal("context_usage"),
@@ -858,6 +860,7 @@ export const runInputSchema = z
     sessionId: sessionIdSchema,
     prompt: z.string().trim().max(1000000),
     images: imageAttachmentsSchema.optional(),
+    harness: harnessAdaptationOptionsSchema.optional(),
     mode: z.enum(["build", "plan"]).optional(),
     permission: permissionSchema.optional(),
     model: settingsFields.model.optional(),

@@ -42,6 +42,8 @@ import { createMemoryToolRegistry } from "../tools/memory";
 import { forgeMemory } from "./forge-memory";
 import { openSettingsStore } from "../store/settings";
 import { openToolHooksStore } from "../store/tool-hooks";
+import { openHarnessExperienceStore } from "../store/harness-experiences";
+import { redactMemoryText } from "./memory-retrieval";
 import { createAgentWorktreeService } from "./agent-worktrees";
 import { createCombinedToolRegistry } from "../tools/combined";
 import { createLocalToolRegistry } from "../tools/local";
@@ -153,6 +155,8 @@ export const createHarness = async (
   const runMemory = await openRunMemory(directory);
   const memories = await openMemoryStore(directory);
   const toolHooksStore = await openToolHooksStore(directory);
+  // Lazy: ordinary runs neither read nor create the adaptation library.
+  let harnessExperiences: ReturnType<typeof openHarnessExperienceStore> | undefined;
   const agentWorktrees = createAgentWorktreeService(directory);
   const publishedFiles = await openPublishedFileStore(directory);
   const usageStatsService = createUsageStatsService(store, createModelPricingService({
@@ -249,6 +253,28 @@ export const createHarness = async (
         service?.dispose(),
       ]);
       if (service) liveMcp.delete(service);
+      throw error;
+    }
+  };
+  // No checkpoints, command tasks, network, MCP, hooks or other native tools.
+  // Each probe owns independent read authority; it cannot authorize later edits.
+  const buildProbeTools = async (workspace: string, apiKey: string): Promise<LocalToolRegistry> => {
+    let local: LocalToolRegistry | undefined;
+    let context: Awaited<ReturnType<typeof createProjectContext>> | undefined;
+    try {
+      local = options.toolFactory ? await options.toolFactory(workspace)
+        : await createLocalToolRegistry(workspace, { protectedRoots: [directory], redactValues: [apiKey] });
+      context = await createProjectContext(workspace, { protectedRoots: [directory] });
+      await context.refresh();
+      const combined = createCombinedToolRegistry(local, createSkillTool(context));
+      const ownedContext = context;
+      return { definitions: combined.definitions, execute: combined.execute,
+        async dispose() {
+          try { await combined.dispose(); } finally { await ownedContext.dispose(); }
+        },
+      };
+    } catch (error) {
+      await Promise.allSettled([local?.dispose(), context?.dispose()]);
       throw error;
     }
   };
@@ -785,6 +811,7 @@ export const createHarness = async (
           const routeGroupId = input.routeGroupId ?? (input.model !== undefined || input.providerSourceId !== undefined ? undefined : snapshot.routeGroupId);
           const group = routeGroupId ? settings.routeGroups?.find(item => item.id === routeGroupId) : undefined;
           if (routeGroupId && !group) throw new ForgeError("not_found", "会话的路由组已不可用，请重新选择。");
+          if (input.harness && routeGroupId) throw new ForgeError("invalid_input", "Harness adaptation requires a direct model selection, not a route group.");
           const requestedModel = settingsFields.model.parse(input.model ?? snapshot.model);
           const directSource = settings.providerSources?.find(source => source.id === providerSourceId);
           const credentials = directSource?.credentials?.filter(item => item.enabled);
@@ -876,6 +903,14 @@ export const createHarness = async (
             provider,
             tools,
             projectInstructions: built.instructions,
+            ...(input.harness ? { harnessAdaptation: {
+              createProbeTools: () => buildProbeTools(snapshot.workspace, config.apiKey),
+              redact: (text: string) => redactMemoryText(text, [config.apiKey, config.baseUrl]),
+              experiences: {
+                list: async scope => (await (harnessExperiences ??= openHarnessExperienceStore(directory))).list(scope),
+                save: async experience => (await (harnessExperiences ??= openHarnessExperienceStore(directory))).save(experience),
+              },
+            } } : {}),
             onChildOperation: track,
             childContextFactory: async (workspace, childInput, childSignal) => {
               // Delegated model IDs remain exact, even when the parent chose a group.

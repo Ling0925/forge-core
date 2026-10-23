@@ -246,6 +246,8 @@ export interface AgentRuntimeDependencies {
     work: Promise<SessionSnapshot>,
   ) => void;
   readonly projectInstructions?: string;
+  /** Trusted host support for explicitly requested Harness² preflight runs. */
+  readonly harnessAdaptation?: import("./harness-adaptation").HarnessAdaptationHost;
   readonly now?: () => string;
 }
 export interface AgentRuntime {

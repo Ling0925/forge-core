@@ -26,7 +26,7 @@ test("Core declares no application dependency and builds only its own sources", 
 
 test("built shared subpaths bundle for browsers without the runtime", async () => {
   const result = await build({
-    stdin: { contents: 'export * from "@forge/core/shared/ipc"; export * from "@forge/core/shared/bridge";', resolveDir: root },
+    stdin: { contents: 'export * from "@forge/core/shared/ipc"; export * from "@forge/core/shared/bridge"; export * from "@forge/core/shared/harness-adaptation";', resolveDir: root },
     bundle: true, platform: "browser", format: "esm", write: false, metafile: true, logLevel: "silent",
   });
   const text = result.outputFiles.map(file => file.text).join("\n");

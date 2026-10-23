@@ -123,6 +123,22 @@ try {
 
 运行时使用构建后的 `dist`，类型来自 `src`。客户端只通过公开包路径导入，不跨仓引用源码；浏览器使用 `@forge/core/shared/*` 契约，不能导入 Node 运行时根入口。HTTP/RPC 契约仍随项目演进，升级客户端与 Core 时应一起验证。
 
+## Harness² 策略预检（可选）
+
+在 `service.run` / RPC `startRun` 的输入中显式传入 `harness: {}`，可在正式执行前运行有界的 **基线 → 提案 → 只读试跑 → 组合 → 复测 → 选择**。获选内容只作为本轮规划、工具指导与验证策略的参考；不会改写权限、工具实现或全局 system prompt。
+
+```ts
+// 其余参数沿用原有 onEvent、approve、signal。
+const input = {
+  sessionId,
+  prompt: "修复问题并验证",
+  permission: "workspace" as const,
+  harness: { domain: "coding", candidates: 2, experience: "read-write" as const },
+};
+```
+
+默认不启用。启用会增加模型调用及费用；预检不执行写文件、命令或网络操作，正式任务只走一次原有执行流程。只有明确允许、正式任务成功且非 readonly/plan 时才记录经验，按工作区、模型、领域隔离。完整用法、限制与证据说明见 [Harness² 策略预检](docs/HARNESS_ADAPTATION.md)。
+
 ## 开发与检查
 
 ```sh
