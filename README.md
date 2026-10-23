@@ -1,152 +1,157 @@
 # Forge Core
 
-独立 Git 仓库与 Node 包 `@forge/core`。从原 `desktop-harness` 的已提交基线
-`e089acbcf1c3fe10a71a9ce0fce5f9309305db3b` 提取相关路径历史，保留作者与提交记录；
-路径过滤会产生新的提交 ID，原仓历史没有重写。
+Forge 的任务运行时。负责模型调用、工具执行、权限审批、会话存储和实时事件，为终端、浏览器与 Android 客户端提供同一套执行能力。
 
-公开仓库为 `Ling0925/forge-core`，`origin` 指向该仓库。既可单独克隆，也作为主仓
-`Ling0925/forge` 的 `repos/forge-core` 子模块使用；子模块关联不合并各仓历史。
-同步主仓版本时，先提交并推送本仓，再由主仓维护者提交子模块指针。
+Core 可以作为独立 HTTP/WebSocket 服务运行，也可以作为 TypeScript/Node 包嵌入应用。运行任务不需要 Web UI；客户端断开连接也不等于取消任务。
 
-## 边界
+[Forge 主仓](https://github.com/Ling0925/forge) · [CLI](https://github.com/Ling0925/forge-cli) · [Web](https://github.com/Ling0925/forge-web-ui) · [Android](https://github.com/Ling0925/forge-android)
 
-本仓拥有 `src/core`、`provider`、`store`、`tools`、`context`、`mcp`、`host`、
-`shared` 及服务端 `web`。不包含 CLI、React renderer、Electron 或 Android 应用。
-HTTP/WebSocket 由 Core 提供；Web UI 是独立构建的静态资源，不是构建前提。
+## Core 提供什么
 
-**仍是 TypeScript/Node 核心**，没有实现 Rust 移植、Android 本地核心或跨设备同步。
-Web 生产入口现在通过独立网关连接本进程，重启 Web 不会停止 Core 中的任务。
-这不是全局单实例 daemon：CLI 或其他入口仍须显式连接同一个 host 才能共享运行状态，
-不能仅靠共享数据目录，也不要同时启动多个持有同一数据目录的 Core。
+- **任务执行**：流式输出、工具调用、子代理、排队与插话、取消和审批。
+- **模型接入**：OpenAI Chat Completions / Responses、Anthropic Messages、Gemini，以及来源、凭据与路由管理。
+- **本地工作区**：文件搜索与编辑、命令执行、检查点和改动记录；浏览器、LSP 与 MCP 按配置启用。
+- **持久化上下文**：会话历史、分页读取、上下文压缩、工作记忆与长期记忆。
+- **客户端连接**：HTTP RPC、WebSocket 事件与恢复游标，以及 Linux 本地 Unix socket。
 
-## 安装、构建与验证
+本仓是 TypeScript/Node 实现，不包含 CLI、React 界面、Electron 或 Android 应用。
 
-使用 `package.json` 中指定的 Node 22 与 pnpm 版本：
+## 快速开始
+
+需要 **Node.js `>=22.23.1 <23`** 和 **pnpm `11.18.0`**，版本约束见 [package.json](package.json)。
 
 ```sh
+git clone https://github.com/Ling0925/forge-core.git
+cd forge-core
 pnpm install --frozen-lockfile
 pnpm build
-pnpm test:package
-pnpm exec vitest run tests/shared/contract-boundaries.test.ts tests/core/integration.test.ts tests/web-host.test.ts tests/web-static.test.ts
 ```
 
-构建生成独立 ESM 模块与共享 chunks，保留 schema 对象身份。编译产物不提交。
-`test:package` 验证浏览器契约、离线模型回合及无 UI 的 HTTP/RPC 启动，测试使用
-临时状态目录并清理；不读取真实模型配置。其余历史测试的归属见
-`docs/TEST_OWNERSHIP.md`。全量测试/类型检查不是本次拆分已完成的验收声明。
-
-## Provider 协议兼容
-
-协议由来源或逐模型配置显式选择，不会在失败后偷偷切换为 Chat。非 Chat 适配器的
-兼容边界包括：
-
-- SSE 忽略没有 `data` 的普通控制帧，允许尾部注释；显式失败事件、UTF-8 分片、
-  空闲超时、响应大小和未闭合数据帧检查仍保留。
-- Responses 接受完整 `response.completed` 快照（可省略冗余中间完成帧），也可读取
-  同一次请求返回的完整 JSON 响应。已收到的正文、工具参数、调用身份和完成快照必须一致；
-  快照补全不能倒序插入或改写已经流出的正文。
-- Anthropic 的工具参数只在内容块结束后完整校验，空参数增量不覆盖已有的 input 对象；
-  缺失用量不再中断已完成的回答，未上报完整计数时用量保持未知，不冒充零消耗。
-- Gemini 可读取完整 JSON 数组形式的流结果；切换模型/协议后重建工具历史时保留调用 ID 配对。
-
-这些兼容不等于把失败当成功：缺少原生完成信号、截断/非法 JSON、冲突工具调用仍失败，
-兼容处理本身不补写工具参数，也不重发生成请求。回归使用 `tests/provider` 中的模拟 HTTP/SSE 响应，
-不需要真实 Provider 或密钥。
-
-## MCP 工具
-
-Core 支持 stdio、Streamable HTTP 和 Legacy SSE。注册不启动进程或连接远端，
-服务器启用后才允许发现与调用；“测试连接”会完成握手并发送 ping 检查当前响应能力。
-
-Exa 远程服务使用 Streamable HTTP，地址为 `https://mcp.exa.ai/mcp`，
-在私密请求头 `x-api-key` 中填写 API key；也可使用 `Authorization: Bearer …`。
-不要把密钥写入公开显示的 URL 或启动参数。认证方式见 [Exa 官方说明](https://github.com/exa-labs/exa-mcp-server#authentication)。
-本地 stdio 服务可通过注册接口的可选 `env` 传入显式私密值，例如 `EXA_API_KEY`；
-公共注册接口不允许通过 `envNames` 读取宿主环境变量。
-凭据保存在 `FORGE_HOME/mcp/servers.json` 的私有权限文件中，列表只返回是否配置凭据；
-远程响应与错误中的凭据会脱敏，包括 Authorization 中不带 Bearer 前缀的 token。
-
-模型按下面的顺序使用 MCP：
-
-1. `mcp_list_servers` 查询当前服务器 ID、名称、传输方式和启用状态，不连接服务器。
-2. `mcp_list_tools` 按服务器 ID 查询工具，保留输入/输出 schema、标题和 annotations。
-   大目录分页返回，出现 `nextOffset` 时以该值作为下一次请求的 `offset`；每页保留完整 schema。
-3. `mcp_call_tool` 使用发现结果中的工具名调用，以 `arguments_json` 传递 JSON 对象。
-   每次新任务重新发现工具，含特殊字符或长名称的别名映射不跨任务保留。
-
-运行中的工具注册表会重新读取服务器配置。只读模式允许查询服务器目录，但不允许
-连接或调用；workspace 模式每次发现工具或调用都单独审批。服务器 annotations
-只作为提示，不授予权限；审批期间可见配置变化会中止当前操作，需重新发现和审批。
-
-调用结果保留兼容的 `text`、`isError`、`truncated`，并支持 `structuredContent`、
-图片、音频、资源链接和嵌入资源。非文本内容保留为类型化数据块，模型侧仍接收 JSON
-工具结果。结果递归脱敏，调用结果封装上限为 64 KiB；超限或含私密数据的二进制块整块
-省略并标记截断，不截取 Base64。工具目录单页上限为 128 KiB。
-
-一次发现期间收到工具列表变化通知时，会拒绝返回跨版本混合的分页目录；重新查询可获取当前工具。
-取消、超时、禁用和删除保留连接清理行为，不自动重发工具调用。
-`examples/mcp/echo-server.mjs` 提供无需外部服务或密钥的本地示例。
-
-## 服务入口
+将下面的工作区替换成实际存在的绝对路径，再启动 API 服务：
 
 ```sh
-node dist/web/serve.js --help
-FORGE_HOME=/path/to/isolated-state node dist/web/serve.js --workspace /absolute/project --port 5173
+node dist/web/serve.js \
+  --host 127.0.0.1 \
+  --port 5175 \
+  --workspace /absolute/path/to/project
 ```
 
-默认只提供 API，不需要 renderer 文件。需要同时提供 Web UI 时，明确传入独立
-Web UI 仓构建后的目录：
+此时 `http://127.0.0.1:5175` 是 **API 地址**，根路径没有工作台页面。需要界面时连接 [Forge Web](https://github.com/Ling0925/forge-web-ui#readme)；需要手机原生客户端时连接 [Forge Android](https://github.com/Ling0925/forge-android#readme)。首次运行还需通过客户端配置模型来源和凭据，启动服务本身不会完成模型配置。
+
+### 启动选项
+
+- `--workspace PATH`：必填，默认把客户端限制在该工作区。
+- `--multi-workspace`：允许个人工作台切换工作区。
+- `--host IPv4` / `--port PORT`：默认 `127.0.0.1:5173`；只接受具体 IPv4 和 `1024–65535` 端口，不接受 `0.0.0.0`。
+- `--socket PATH`：给同一个运行时增加本地 attach 入口；使用当前用户拥有的私有目录和绝对 socket 路径。
+- `--renderer PATH`：可选，同时提供已构建的 Web UI；省略时只提供 API。
+
+完整帮助：`node dist/web/serve.js --help`。
+
+## 与 Web 独立运行
+
+推荐让 Core 持有任务，Web 只提供页面与同源转发。两个仓库放在同一级，并先按各自说明完成构建：
 
 ```sh
-FORGE_HOME=/path/to/isolated-state node dist/web/serve.js --workspace /absolute/project --renderer /absolute/forge-web-ui/dist/renderer
+# 终端 A，在 forge-core 中运行
+node dist/web/serve.js --host 127.0.0.1 --port 5175 \
+  --workspace /absolute/path/to/project --multi-workspace
 ```
-
-可传 `--socket /private/directory/core.sock` 复用现有本地 attach 传输。
-默认限制为启动工作区；`--multi-workspace` 保留个人 Web 工作台跨工作区的行为。
-默认仅监听回环地址；显式 LAN 地址仍沿用可信网络直连行为，HTTP 无加密，
-不要直接暴露到不可信网络。**停止 Core 仍会停止它持有的任务**；日常更新 UI 只重启 Web。
-
-### 独立 Core + Web
 
 ```sh
-# 终端/服务 A：Core 仅监听本机，独立持有任务、审批、会话和事件补发记录
-node dist/web/serve.js --host 127.0.0.1 --port 5175 --workspace /absolute/project --multi-workspace
-# 终端/服务 B：Web UI 仓，先构建其 renderer
-node ../forge-web-ui/scripts/serve.mjs --core-url http://127.0.0.1:5175 --host 127.0.0.1 --port 5173
+# 终端 B，在 forge-web-ui 中运行
+pnpm serve -- --host 127.0.0.1 --port 5173 \
+  --core-url http://127.0.0.1:5175
 ```
 
-`@forge/core/web/gateway` 只提供静态 UI 与流式 HTTP/WebSocket 转发，不创建 Harness、
-读写会话或重试任务请求；停止网关只关闭连接。浏览器重连到原 Core，按原 cursor
-补发事件；超出事件保留窗口时重新读取持久化状态。网关只允许明确的本机 IPv4 Core，
-先验证外部 Host/Origin，再改写内部地址；不开放通用代理或跨站 API。
-首次从旧单进程切换时无法搬迁内存中的运行态，必须先等旧任务结束再停止旧服务。
-两个服务不得配置会在 Web 重启时联动停止 Core 的 `PartOf`/`BindsTo` 关系。
+浏览器打开 `http://127.0.0.1:5173`。Web 重启期间，Core 中已接受的任务继续执行；页面重连后补发保留窗口内的事件，必要时重新读取持久化状态。**停止 Core 会停止它持有的任务**，因此只更新界面时不要联动停止 Core。
 
-发送附件单文件上限为 **50 MiB（52,428,800 字节）**；每会话仍为 128 个、合计 64 MiB。
-此上限不改变文本编辑工具和图片输入各自的限制。
+这不是全局单实例服务：普通 CLI 会创建自己的运行时。要控制同一批活动任务，需显式连接同一个 host，例如在 Core 启动时传入 `--socket`，再使用 CLI 的 `attach`。共享数据目录不能替代连接，也不要启动多个服务同时持有同一份状态。
 
-## 客户端包依赖
+## 数据、权限与网络
 
-本地开发把三个独立仓库放在同一级：
+默认数据目录是 `~/.local/share/forge`，可用 `FORGE_HOME` 指定另一份独立状态：
+
+```sh
+FORGE_HOME=/absolute/path/to/private-state \
+  node dist/web/serve.js --workspace /absolute/path/to/project --port 5175
+```
+
+模型凭据、会话与配置由 Core 管理。测试和实验使用临时状态目录，不复用日常会话。
+
+- `readonly`、`workspace`、`unrestricted` 与 plan/build 模式共同约束工具能力；审批策略不提升权限。命令和外部工具不是操作系统沙箱。
+- 当前命令行 HTTP 入口采用可信局域网直连：**能够访问监听地址的人就能使用工作台能力，不需要配对**。默认回环监听；HTTP 没有加密，不应无保护地暴露到公网。
+- 服务校验 Host / Origin；客户端应使用实际监听地址。反向代理需要正确处理这些头与 WebSocket，而不是绕过校验。
+- 发布附件单文件上限为 **50 MiB（52,428,800 字节）**，每会话最多 **128 个、合计 64 MiB**。文本编辑和图片输入使用各自的限制。
+
+## 模型与 MCP
+
+模型协议由来源或逐模型配置明确选择，不会在协议失败后自动切换到 Chat Completions。适配器支持各协议的流式结果和受支持的完整响应形式；截断响应、冲突工具调用和缺少完成信号仍作为错误处理。用量缺失时保留未知状态，不记成零消耗。兼容性回归位于 [tests/provider](tests/provider)。
+
+MCP 支持 **stdio、Streamable HTTP、Legacy SSE**。注册不会连接；启用后才允许发现和调用，连接测试会握手并发送 ping。模型通过 `mcp_list_servers` → `mcp_list_tools` → `mcp_call_tool` 发现并使用工具，大目录按 `nextOffset` 分页。
+
+私密环境变量和请求头由注册接口显式传入，保存在 `FORGE_HOME/mcp/servers.json` 的私有权限文件中；公共列表不返回凭据，也不允许用 `envNames` 任意读取宿主环境。API key 应放入私密请求头或环境变量，不放在 URL、命令参数或仓库文件里。
+
+只读模式可查询服务器目录，但不能连接或调用；workspace 模式每次发现与调用均需审批。服务器 annotations 不授予权限。调用支持文本、结构化结果、图片、音频与资源块；结果递归脱敏且有大小限制，不自动重发工具调用。
+
+无需外部服务的示例：[examples/mcp/echo-server.mjs](examples/mcp/echo-server.mjs)。
+
+## 作为包使用
+
+包名为 `@forge/core`，当前标记为 `private`，本地客户端通过 `file:../forge-core` 依赖它：
 
 ```text
-forge-core/
-forge-cli/
-forge-web-ui/
+workspace/
+├── forge-core/
+├── forge-cli/
+└── forge-web-ui/
 ```
 
-先构建 Core，再在 CLI/Web 仓安装它们声明的 `file:../forge-core` 包依赖。客户端
-只通过 `@forge/core/...` 子路径引用，不访问原库或兄弟仓的 `src`。Core 改动后要
-重新构建，并在消费者仓重新执行 `pnpm install --no-frozen-lockfile` 更新本地文件包。
-共享契约使用 `@forge/core/shared/*`，浏览器不得导入 Node 核心根入口。
+先构建 Core，再安装消费者依赖。Core 重新构建后，在消费者仓执行 `pnpm install --no-frozen-lockfile` 刷新文件包；由 Forge 主仓装配时使用主仓提供的构建与链接脚本。
 
-目前公开的模块子路径保留原结构，便于渐进迁移；这不是未来 Rust RPC 协议已经
-冻结的承诺。后续可改为内部 registry 版本或 `pnpm pack` 的 tarball 依赖，不要求
-三个仓库合并成 pnpm workspace。源码 TS 类型随包提供，运行入口是构建后的 JS。
+```ts
+import { createHarness } from "@forge/core";
 
-## 原库与本机入口
+const service = await createHarness({ stateDir: "/absolute/path/to/private-state" });
+try {
+  const sessions = await service.listSessions();
+  console.log(sessions);
+} finally {
+  await service.dispose();
+}
+```
 
-原库仍保留完整历史、桌面/Android 工程和未提交的 UI 改动。已有本机 `forge`
-启动器仍指向原库，本次没有改动或重装它。要使用本仓必须明确运行本仓产物。
-`docs/ARCHITECTURE.md` 等保留为迁移前设计记录，其中其他应用路径属于原库历史。
-作者与第三方许可说明见 `docs/AUTHORSHIP.md` 和 `THIRD_PARTY_NOTICES.md`。
+运行时使用构建后的 `dist`，类型来自 `src`。客户端只通过公开包路径导入，不跨仓引用源码；浏览器使用 `@forge/core/shared/*` 契约，不能导入 Node 运行时根入口。HTTP/RPC 契约仍随项目演进，升级客户端与 Core 时应一起验证。
+
+## 开发与检查
+
+```sh
+pnpm build
+pnpm test:package
+pnpm exec vitest run tests/shared/contract-boundaries.test.ts \
+  tests/core/integration.test.ts tests/web-host.test.ts tests/web-static.test.ts
+```
+
+包测试覆盖浏览器安全导出、离线模型回合、持久化和 API-only HTTP/RPC 启动，使用临时状态，不需要真实 Provider 密钥。修改特定模块时追加对应测试；`pnpm test`、`pnpm typecheck`、`pnpm lint` 是更大范围的检查入口。
+
+```text
+src/core/       运行协调、子代理、输入队列与记忆
+src/provider/   模型协议、来源与路由
+src/store/      配置、会话和持久化
+src/tools/      工作区与外部工具
+src/context/    项目指令与技能
+src/mcp/        MCP 连接与调用
+src/host/       共享 controller、运行时与本地传输
+src/web/        HTTP/WebSocket host、静态资源与网关
+src/shared/     公共类型、schema 与客户端契约
+```
+
+## 深入阅读
+
+- [契约归属与浏览器边界](docs/CONTRACT_BOUNDARIES.md)
+- [运行生命周期与取消](docs/RUNTIME_LIFECYCLE.md)
+- [会话存储](docs/SESSION_STORAGE.md) · [持久输入队列](docs/INPUT_QUEUE.md)
+- [测试归属](docs/TEST_OWNERSHIP.md)
+- [作者说明](docs/AUTHORSHIP.md) · [第三方声明](THIRD_PARTY_NOTICES.md)
+
+本仓保留从原 `desktop-harness` 提取的路径历史，在 Forge 主仓中位于 `repos/forge-core` 子模块。代码在本仓独立提交，主仓单独记录所使用的提交版本。
