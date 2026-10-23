@@ -428,7 +428,14 @@ function normalizeRegistration(input: McpRegisterAnyInput): McpServerConfig {
 
 /** Private values that must never surface in remote errors or results. */
 function secretValues(config: McpServerConfig): string[] {
-  if (isRemote(config)) return Object.values(config.headers);
+  if (isRemote(config)) {
+    return Object.entries(config.headers).flatMap(([name, value]) => {
+      const token = name.toLowerCase() === "authorization"
+        ? /^(?:Bearer|Basic)\s+(.+)$/i.exec(value)?.[1]
+        : undefined;
+      return token ? [value, token] : [value];
+    });
+  }
   return [
     ...Object.values(config.env),
     ...Object.values(config.envNames).map((name) => process.env[name] ?? ""),

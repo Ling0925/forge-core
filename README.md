@@ -58,6 +58,14 @@ pnpm exec vitest run tests/shared/contract-boundaries.test.ts tests/core/integra
 Core 支持 stdio、Streamable HTTP 和 Legacy SSE。注册不启动进程或连接远端，
 服务器启用后才允许发现与调用；“测试连接”会完成握手并发送 ping 检查当前响应能力。
 
+Exa 远程服务使用 Streamable HTTP，地址为 `https://mcp.exa.ai/mcp`，
+在私密请求头 `x-api-key` 中填写 API key；也可使用 `Authorization: Bearer …`。
+不要把密钥写入公开显示的 URL 或启动参数。认证方式见 [Exa 官方说明](https://github.com/exa-labs/exa-mcp-server#authentication)。
+本地 stdio 服务可通过注册接口的可选 `env` 传入显式私密值，例如 `EXA_API_KEY`；
+公共注册接口不允许通过 `envNames` 读取宿主环境变量。
+凭据保存在 `FORGE_HOME/mcp/servers.json` 的私有权限文件中，列表只返回是否配置凭据；
+远程响应与错误中的凭据会脱敏，包括 Authorization 中不带 Bearer 前缀的 token。
+
 模型按下面的顺序使用 MCP：
 
 1. `mcp_list_servers` 查询当前服务器 ID、名称、传输方式和启用状态，不连接服务器。

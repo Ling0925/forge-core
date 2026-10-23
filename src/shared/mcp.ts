@@ -334,6 +334,8 @@ export const mcpStdioRegisterDtoSchema = z
     label: z.string().min(1).max(64),
     command: z.string().min(1).max(4096),
     args: z.array(z.string().max(8192)).max(64),
+    env: mcpEnvValueSchema.optional(),
+    transport: z.literal("stdio").optional(),
     enabled: z.boolean().optional(),
     requestTimeoutMs: z.number().int().min(1000).max(60000).optional(),
   })
