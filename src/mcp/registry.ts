@@ -355,6 +355,7 @@ export async function createMcpService(options: {
       }
       try {
         const open = await connection(config);
+        await open.ping();
         return {
           id,
           enabled: true,

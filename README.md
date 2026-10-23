@@ -53,6 +53,32 @@ pnpm exec vitest run tests/shared/contract-boundaries.test.ts tests/core/integra
 兼容处理本身不补写工具参数，也不重发生成请求。回归使用 `tests/provider` 中的模拟 HTTP/SSE 响应，
 不需要真实 Provider 或密钥。
 
+## MCP 工具
+
+Core 支持 stdio、Streamable HTTP 和 Legacy SSE。注册不启动进程或连接远端，
+服务器启用后才允许发现与调用；“测试连接”会完成握手并发送 ping 检查当前响应能力。
+
+模型按下面的顺序使用 MCP：
+
+1. `mcp_list_servers` 查询当前服务器 ID、名称、传输方式和启用状态，不连接服务器。
+2. `mcp_list_tools` 按服务器 ID 查询工具，保留输入/输出 schema、标题和 annotations。
+   大目录分页返回，出现 `nextOffset` 时以该值作为下一次请求的 `offset`；每页保留完整 schema。
+3. `mcp_call_tool` 使用发现结果中的工具名调用，以 `arguments_json` 传递 JSON 对象。
+   每次新任务重新发现工具，含特殊字符或长名称的别名映射不跨任务保留。
+
+运行中的工具注册表会重新读取服务器配置。只读模式允许查询服务器目录，但不允许
+连接或调用；workspace 模式每次发现工具或调用都单独审批。服务器 annotations
+只作为提示，不授予权限；审批期间可见配置变化会中止当前操作，需重新发现和审批。
+
+调用结果保留兼容的 `text`、`isError`、`truncated`，并支持 `structuredContent`、
+图片、音频、资源链接和嵌入资源。非文本内容保留为类型化数据块，模型侧仍接收 JSON
+工具结果。结果递归脱敏，调用结果封装上限为 64 KiB；超限或含私密数据的二进制块整块
+省略并标记截断，不截取 Base64。工具目录单页上限为 128 KiB。
+
+一次发现期间收到工具列表变化通知时，会拒绝返回跨版本混合的分页目录；重新查询可获取当前工具。
+取消、超时、禁用和删除保留连接清理行为，不自动重发工具调用。
+`examples/mcp/echo-server.mjs` 提供无需外部服务或密钥的本地示例。
+
 ## 服务入口
 
 ```sh

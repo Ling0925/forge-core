@@ -47,7 +47,7 @@ const execute = (name: string, args: object) => {
 };
 
 it.each(["command_task", "lsp", "browser_navigate", "browser_read", "browser_click", "browser_fill", "browser_screenshot", "browser_close",
-  "mcp_list_tools", "mcp_call_tool", "project_context", "load_skill", "publish_file", "web_fetch"])("returns a classified input error from %s", async name => {
+  "mcp_list_servers", "mcp_list_tools", "mcp_call_tool", "project_context", "load_skill", "publish_file", "web_fetch"])("returns a classified input error from %s", async name => {
   const result = await execute(name, { __unexpected: "private-input-marker" });
   expect(result.isError).toBe(true);
   expect(JSON.parse(result.content)).toMatchObject({ code: "invalid_input", error: expect.any(String) });

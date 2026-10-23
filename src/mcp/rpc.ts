@@ -1,5 +1,8 @@
 import { ForgeError } from "../shared/errors";
-import { boundedText, checkDiscovery } from "./bounds";
+import { checkDiscovery } from "./bounds";
+import { toolOutcome } from "./content";
+import type { McpToolOutcome } from "../shared/mcp";
+export type { McpToolOutcome } from "../shared/mcp";
 import {
   MCP_DISCOVERY_LIMIT,
   MCP_MAX_MESSAGE_BYTES,
@@ -14,12 +17,6 @@ import {
 
 export type Json = Record<string, unknown>;
 
-export interface McpToolOutcome {
-  readonly text: string;
-  readonly isError: boolean;
-  readonly truncated: boolean;
-}
-
 /**
  * The transport-independent surface the registry uses. Stdio, Streamable HTTP
  * and legacy SSE all satisfy this interface, so service behavior, discovery
@@ -29,6 +26,7 @@ export interface McpConnection {
   readonly negotiatedProtocolVersion: string | undefined;
   readonly isClosed: boolean;
   connect(signal?: AbortSignal): Promise<void>;
+  ping(signal?: AbortSignal): Promise<void>;
   listTools(signal?: AbortSignal): Promise<readonly McpToolInfo[]>;
   callTool(
     name: string,
@@ -68,6 +66,7 @@ interface Pending {
 export abstract class JsonRpcConnection implements McpConnection {
   protected readonly pending = new Map<number, Pending>();
   private nextId = 1;
+  private toolsRevision = 0;
   protected closed = false;
   protected failure: string | undefined;
   private connectPromise: Promise<void> | undefined;
@@ -167,7 +166,11 @@ export abstract class JsonRpcConnection implements McpConnection {
         fail();
         return;
       }
-      if (!("id" in message)) return;
+      if (!("id" in message)) {
+        if (message.method === "notifications/tools/list_changed")
+          this.toolsRevision++;
+        return;
+      }
       if (
         !(
           typeof message.id === "string" ||
@@ -177,16 +180,16 @@ export abstract class JsonRpcConnection implements McpConnection {
         fail();
         return;
       }
-      // Server-triggered requests are never executed locally (no sampling,
-      // elicitation, roots or local commands). Reply method-not-found.
       try {
         void Promise.resolve(
           this.send({
             jsonrpc: "2.0",
             id: message.id,
-            error: { code: -32601, message: "Method not supported" },
+            ...(message.method === "ping"
+              ? { result: {} }
+              : { error: { code: -32601, message: "Method not supported" } }),
           }),
-        ).catch(() => undefined);
+        ).catch(() => this.shutdown(invalid("MCP reply failed.")));
       } catch {
         this.shutdown(invalid("MCP reply failed."));
       }
@@ -290,6 +293,11 @@ export abstract class JsonRpcConnection implements McpConnection {
 
   async connect(signal?: AbortSignal): Promise<void> {
     if (signal?.aborted) throw cancelled();
+    if (this.closed)
+      throw new ForgeError(
+        "tool",
+        this.failure ?? "MCP server connection is closed.",
+      );
     this.connectPromise ??= (async () => {
       if (this.closed)
         throw new ForgeError(
@@ -359,6 +367,7 @@ export abstract class JsonRpcConnection implements McpConnection {
   }
 
   async listTools(signal?: AbortSignal): Promise<readonly McpToolInfo[]> {
+    const revision = this.toolsRevision;
     const tools: McpToolInfo[] = [];
     const seen = new Set<string>();
     let cursor: string | undefined;
@@ -406,7 +415,17 @@ export abstract class JsonRpcConnection implements McpConnection {
     }
     if (!exhausted)
       throw invalid("MCP tools/list pagination exceeded its bounds.");
+    if (revision !== this.toolsRevision)
+      throw invalid("MCP tools changed during discovery; list tools again.");
     return tools;
+  }
+
+  async ping(signal?: AbortSignal): Promise<void> {
+    await this.request(
+      "ping",
+      {},
+      signal === undefined ? undefined : { signal },
+    );
   }
 
   async callTool(
@@ -420,28 +439,7 @@ export abstract class JsonRpcConnection implements McpConnection {
       { name, arguments: { ...args } },
       signal === undefined ? undefined : { signal },
     );
-    const content = result.content;
-    if (!Array.isArray(content))
-      throw invalid("MCP tools/call response is missing content.");
-    if (content.length > 256) throw invalid("MCP tool result is too large.");
-    const parts: string[] = [];
-    for (const item of content) {
-      if (typeof item !== "object" || item === null || Array.isArray(item))
-        throw invalid("MCP tool result content item is malformed.");
-      const entry = item as Json;
-      const text = entry.text;
-      if (entry.type !== "text" || typeof text !== "string")
-        throw invalid("Only text MCP tool result content is supported.");
-      parts.push(text);
-    }
-    let merged = parts.join("\n");
-    for (const value of [...this.secrets, ...redactValues])
-      if (value) merged = merged.split(value).join("[REDACTED]");
-    const bounded = boundedText(merged);
-    return {
-      ...bounded,
-      isError: result.isError === true || bounded.truncated,
-    };
+    return toolOutcome(result, [...this.secrets, ...redactValues]);
   }
 
   async close(): Promise<void> {

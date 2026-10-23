@@ -1,7 +1,7 @@
 import { defineTool } from "../shared/tool-definition";
 import { randomUUID } from "node:crypto";
 import { z } from "zod";
-import { boundedText, checkDiscovery } from "../mcp/bounds";
+import { boundedText } from "../mcp/bounds";
 import { mcpToolName, parseMcpToolName } from "../mcp/names";
 import type { McpService } from "../mcp/registry";
 import {
@@ -12,6 +12,7 @@ import {
 } from "../mcp/types";
 import type { LocalToolRegistry, ToolContext } from "../shared/contracts";
 import { ForgeError } from "../shared/errors";
+import type { McpServerRecord } from "../shared/mcp";
 import { invalidToolInput, recoverToolInputError } from "../shared/tool-input";
 import type {
   JsonValue,
@@ -20,6 +21,7 @@ import type {
   ToolResult,
 } from "../shared/schemas";
 import { jsonValueSchema } from "../shared/schemas";
+import { mcpToolPage } from "./mcp-discovery";
 
 // Discriminated unions require the underlying object (before readonly and
 // before any `.transform/.refine` wrapping), so build the shapes explicitly.
@@ -28,8 +30,10 @@ const serverId = z
   .regex(/^[a-z0-9][a-z0-9-]{0,31}$/)
   .refine((value) => !value.includes("__"));
 
+const serversArgs = z.object({ tool: z.literal("mcp_list_servers") }).strict();
 const listArgs = z
-  .object({ tool: z.literal("mcp_list_tools"), server: serverId })
+  .object({ tool: z.literal("mcp_list_tools"), server: serverId,
+    offset: z.number().int().min(0).max(MCP_MAX_TOOLS_PER_SERVER).optional() })
   .strict()
   .readonly();
 const callArgs = z
@@ -42,20 +46,22 @@ const callArgs = z
   .strict()
   .readonly();
 const args = z.discriminatedUnion("tool", [
+  serversArgs,
   listArgs.unwrap(),
   callArgs.unwrap(),
 ]);
 
 const description =
-  "MCP (Model Context Protocol) tools over user-registered stdio servers. " +
-  "readonly permission denies both tools; workspace requires a fresh per-call " +
-  "approval showing the registered server command; unrestricted runs " +
+  "MCP tools over user-registered stdio, Streamable HTTP and SSE servers. " +
+  "readonly permission denies connecting and calling; workspace requires a fresh per-call " +
+  "approval showing the registered server command or URL; unrestricted runs " +
   "automatically against explicitly registered and enabled servers only. " +
   "Server environments are minimal and never inherit credentials.";
 
 const toolDescriptions: Readonly<Record<z.infer<typeof args>["tool"], string>> = {
-  "mcp_list_tools": `${description} Lists a registered server's tools with their real input schemas (bounded discovery, lazy connect).`,
-  "mcp_call_tool": `${description} Calls an MCP tool by its discovered namespaced name (mcp__<server>__<tool>). Encode its input object as arguments_json using the schema returned by mcp_list_tools. Omit for an empty object. At most 64 KiB including the call envelope; returns bounded sanitized text content.`,
+  "mcp_list_servers": "List currently registered MCP server IDs, labels, transports and enabled state. Start here to discover available servers. Does not connect or start any process; available in readonly mode.",
+  "mcp_list_tools": `${description} Lists an enabled server's current tools with real input/output schemas, titles and annotations (bounded discovery, lazy connect). Use mcp_list_servers to find server IDs. When nextOffset is returned, call again with that offset for the remaining tools. Annotations are untrusted hints, not permissions.`,
+  "mcp_call_tool": `${description} Calls an MCP tool by its discovered namespaced name (mcp__<server>__<tool>). Discover tools in the current run before reusing aliases from history. Encode its input object as arguments_json using the schema returned by mcp_list_tools. Omit for an empty object. At most 64 KiB including the call envelope; returns bounded sanitized text, content blocks and structured results when available.`,
 };
 const definitions: readonly ToolDefinition[] = args.options.map(schema => {
   const { tool, ...fields } = schema.shape;
@@ -77,8 +83,6 @@ export async function createMcpToolRegistry(
   options: McpToolOptions = {},
 ): Promise<LocalToolRegistry> {
   const routes = new Map<string, { server: string; tool: string }>();
-  const catalog = await service.list();
-  const servers = new Map(catalog.map((entry) => [entry.id, entry]));
   const clean = (text: string): string => {
     let output = text;
     for (const secret of options.redactValues ?? [])
@@ -89,7 +93,7 @@ export async function createMcpToolRegistry(
   async function authorize(
     ctx: ToolContext,
     call: ToolCall,
-    description: string,
+    target: Readonly<{ server: McpServerRecord; description: string }>,
   ): Promise<void> {
     if (ctx.signal.aborted)
       throw new ForgeError("cancelled", "Tool execution cancelled.");
@@ -105,7 +109,7 @@ export async function createMcpToolRegistry(
       sessionId: ctx.sessionId,
       toolCallId: ctx.toolCallId,
       toolName: call.function.name,
-      description: clean(description),
+      description: clean(target.description),
     };
     ctx.onEvent({
       type: "approval_requested",
@@ -117,12 +121,16 @@ export async function createMcpToolRegistry(
     if (ctx.signal.aborted)
       throw new ForgeError("cancelled", "Tool execution cancelled.");
     if (!ok) throw new ForgeError("tool", "MCP tool call was denied.");
+    const current = (await service.list()).find(entry => entry.id === target.server.id);
+    if (JSON.stringify(current) !== JSON.stringify(target.server))
+      throw new ForgeError("tool", "MCP server configuration changed during approval. Discover it again before calling.");
   }
 
   const registry: LocalToolRegistry = {
     definitions,
     async execute(call, ctx) {
       try {
+        if (ctx.signal.aborted) throw new ForgeError("cancelled", "Tool execution cancelled.");
         if (
           Buffer.byteLength(call.function.arguments, "utf8") >
           MCP_CALL_ARGUMENT_LIMIT
@@ -131,28 +139,30 @@ export async function createMcpToolRegistry(
         const object = z.record(z.unknown()).parse(JSON.parse(call.function.arguments));
         if ("tool" in object) return invalidToolInput("tool is not an accepted argument; use the declared parameters.");
         const parsed = args.parse({ ...object, tool: call.function.name });
+        const catalog = await service.list();
+        const servers = new Map(catalog.map(entry => [entry.id, entry]));
+        for (const [alias, route] of routes)
+          if (!servers.has(route.server)) routes.delete(alias);
+        if (parsed.tool === "mcp_list_servers") {
+          return result({ servers: catalog.map(server => ({
+            id: server.id, label: clean(server.label), enabled: server.enabled,
+            transport: server.transport ?? "stdio",
+          })) });
+        }
         if (parsed.tool === "mcp_list_tools") {
           const server = servers.get(parsed.server);
           if (!server) return result({ error: "unknown server" }, true);
+          if (!server.enabled) return result({ error: "server is disabled" }, true);
           await authorize(
             ctx,
             call,
-            `List tools of MCP server "${server.id}" (${server.url ?? `${server.command} ${server.args.join(" ")}`}).`,
+            { server, description: `List tools of MCP server "${server.id}" (${server.url ?? `${server.command} ${server.args.join(" ")}`}).` },
           );
           const tools = await service.listTools(parsed.server, {
             signal: ctx.signal,
             redactValues: options.redactValues ?? [],
           });
-          const payload = jsonValueSchema.parse({
-            server: server.id,
-            tools: tools.map((tool) => ({
-              tool: mcpToolName(server.id, tool.name),
-              name: tool.name,
-              description: tool.description,
-              inputSchema: tool.inputSchema,
-            })),
-          });
-          checkDiscovery(payload);
+          const payload = mcpToolPage(server.id, tools, parsed.offset ?? 0);
           const nextRoutes = new Map(
             [...routes].filter(([, route]) => route.server !== server.id),
           );
@@ -198,7 +208,7 @@ export async function createMcpToolRegistry(
         await authorize(
           ctx,
           call,
-          `Call MCP tool "${route.tool}" on server "${server.id}" (${server.url ?? `${server.command} ${server.args.join(" ")}`}).`,
+          { server, description: `Call MCP tool "${route.tool}" on server "${server.id}" (${server.url ?? `${server.command} ${server.args.join(" ")}`}).` },
         );
         const outcome = await service.callTool(
           route.server,
@@ -220,9 +230,9 @@ export async function createMcpToolRegistry(
             Buffer.byteLength(JSON.stringify(payload), "utf8") -
             MCP_RESULT_LIMIT;
           limit = Math.max(128, limit - Math.max(excess, 64));
-          payload = { ...boundedText(outcome.text, limit), isError: true };
+          payload = { ...boundedText(outcome.text, limit), truncated: true, isError: true };
         }
-        return result(payload, payload.isError);
+        return result(jsonValueSchema.parse(payload), payload.isError);
       } catch (error) {
         const invalid = recoverToolInputError(error);
         if (invalid) return { ...invalid, content: clean(invalid.content) };

@@ -30,6 +30,7 @@ export const MCP_CALL_ARGUMENT_LIMIT = 64 * 1024;
 export const MCP_DISCOVERY_LIMIT = 256 * 1024;
 export const MCP_RESULT_LIMIT = 64 * 1024;
 export const MCP_NAME_LIMIT = 64;
+export const MCP_TOOL_NAME_LIMIT = 128;
 export const MCP_MAX_ARGS = 64;
 export const MCP_MAX_HEADERS = 32;
 export const MCP_HEADER_VALUE_LIMIT = 8192;
@@ -248,7 +249,7 @@ export const mcpToolInfoSchema = z
     name: z
       .string()
       .min(1)
-      .max(MCP_NAME_LIMIT)
+      .max(MCP_TOOL_NAME_LIMIT)
       .regex(/^[a-zA-Z0-9][a-zA-Z0-9._-]*$/),
     description: z.string().max(8192).default(""),
     inputSchema: z
@@ -256,10 +257,76 @@ export const mcpToolInfoSchema = z
       .passthrough()
       .readonly(),
     annotations: z.record(z.unknown()).readonly().optional(),
+    title: z.string().optional(),
+    outputSchema: z
+      .object({ type: z.literal("object") })
+      .passthrough()
+      .readonly()
+      .optional(),
   })
   .passthrough()
   .readonly();
 export type McpToolInfo = z.infer<typeof mcpToolInfoSchema>;
+
+const contentAnnotations = z.record(z.unknown()).optional();
+const base64 = z
+  .string()
+  .regex(/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/);
+export const mcpContentSchema = z.discriminatedUnion("type", [
+  z.object({
+    type: z.literal("text"),
+    text: z.string(),
+    annotations: contentAnnotations,
+  }),
+  z.object({
+    type: z.literal("image"),
+    data: base64,
+    mimeType: z.string(),
+    annotations: contentAnnotations,
+  }),
+  z.object({
+    type: z.literal("audio"),
+    data: base64,
+    mimeType: z.string(),
+    annotations: contentAnnotations,
+  }),
+  z.object({
+    type: z.literal("resource_link"),
+    uri: z.string(),
+    name: z.string(),
+    title: z.string().optional(),
+    description: z.string().optional(),
+    mimeType: z.string().optional(),
+    size: z.number().nonnegative().optional(),
+    annotations: contentAnnotations,
+  }),
+  z.object({
+    type: z.literal("resource"),
+    resource: z.union([
+      z.object({
+        uri: z.string(),
+        mimeType: z.string().optional(),
+        text: z.string(),
+        annotations: contentAnnotations,
+      }),
+      z.object({
+        uri: z.string(),
+        mimeType: z.string().optional(),
+        blob: base64,
+        annotations: contentAnnotations,
+      }),
+    ]),
+    annotations: contentAnnotations,
+  }),
+]);
+export type McpContent = z.infer<typeof mcpContentSchema>;
+export interface McpToolOutcome {
+  readonly text: string;
+  readonly isError: boolean;
+  readonly truncated: boolean;
+  readonly content?: readonly McpContent[];
+  readonly structuredContent?: Readonly<Record<string, unknown>>;
+}
 
 export const mcpStdioRegisterDtoSchema = z
   .object({
@@ -343,7 +410,7 @@ export interface McpService {
       signal?: AbortSignal;
       redactValues?: readonly string[];
     }>,
-  ): Promise<Readonly<{ text: string; isError: boolean; truncated: boolean }>>;
+  ): Promise<McpToolOutcome>;
   /** Terminate this instance's live connection for `id` if present. */
   revoke(id: string): Promise<void>;
   dispose(): Promise<void>;

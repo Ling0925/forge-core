@@ -116,8 +116,9 @@ export class StdioMcpConnection extends JsonRpcConnection {
     const text = `${JSON.stringify(payload)}\n`;
     if (Buffer.byteLength(text, "utf8") > MCP_MAX_MESSAGE_BYTES)
       throw new ForgeError("tool", "MCP request exceeds the message ceiling.");
-    if (!child.stdin.write(text))
-      this.shutdown(new ForgeError("tool", "MCP server input is blocked."));
+    child.stdin.write(text, (error) => {
+      if (error) this.shutdown(error);
+    });
   }
 
   protected async terminate(): Promise<void> {

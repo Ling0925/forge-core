@@ -146,6 +146,11 @@ function streamableFixture(options: Readonly<{ initProtocol?: string }> = {}) {
     }
     const id = message.id;
     const method = message.method;
+    if (method === "ping") {
+      response.writeHead(200, { "content-type": "application/json" });
+      response.end(result(id, {}));
+      return;
+    }
     if (method === "tools/call") {
       state.calls += 1;
       const params = message.params as
@@ -312,6 +317,11 @@ function legacySseControlFixture(
       }
       response.writeHead(202).end();
       if (message.id === undefined) return;
+      if (message.method === "ping") {
+        for (const stream of streams)
+          stream.write(`event: message\ndata: ${result(message.id, {})}\n\n`);
+        return;
+      }
       if (message.method === "initialize") {
         for (const stream of streams)
           stream.write(
@@ -391,7 +401,9 @@ function legacySseFixture(originOverride?: string) {
       if (message.id === undefined) return;
       const id = message.id;
       let payload: string | undefined;
-      if (message.method === "tools/call") {
+      if (message.method === "ping") {
+        payload = result(id, {});
+      } else if (message.method === "tools/call") {
         state.calls += 1;
         const params = message.params as { arguments?: { text?: unknown } };
         payload = callResult(id, String(params?.arguments?.text ?? ""));
@@ -1042,6 +1054,8 @@ describe("lifecycle defects: negotiation, timeouts and cleanup", () => {
         response.writeHead(200, { "content-type": "application/json" });
         response.end(JSON.stringify(payload));
       };
+      if (message.method === "ping")
+        return json({ jsonrpc: "2.0", id: message.id, result: {} });
       if (message.method === "initialize")
         return json({ jsonrpc: "2.0", id: message.id, result: initResult });
       if (message.method === "notifications/initialized") {
