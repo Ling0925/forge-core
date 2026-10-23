@@ -68,12 +68,14 @@ function wire({
   stop = tool ? "tool_use" : "end_turn",
   args = '{"path":"a"}',
   terminal = true,
+  usage = { output_tokens: 4 },
 }: {
   tool?: boolean;
   thinking?: boolean;
   stop?: string;
   args?: string;
   terminal?: boolean;
+  usage?: Record<string, unknown>;
 } = {}) {
   const events: Record<string, unknown>[] = [messageStart()];
   let index = 0;
@@ -117,7 +119,7 @@ function wire({
     {
       type: "message_delta",
       delta: { stop_reason: stop, stop_sequence: null },
-      usage: { output_tokens: 4 },
+      usage,
     },
   );
   if (terminal) events.push({ type: "message_stop" });
@@ -641,6 +643,74 @@ it("accepts omitted final usage without reporting the initial token counters as 
   );
   expect(result.message.tool_calls?.[0]?.function.arguments).toBe("{}");
   expect(result.usage).toBeUndefined();
+});
+
+it.each([false, true])("preserves the answer and input count for a null usage delta (tool=%s)", async tool => {
+  const provider = await fixture((_req, res) => reply(res, wire({
+    tool, usage: { input_tokens: null, output_tokens: 4 },
+  })));
+  const text: string[] = [];
+  const result = await provider.complete([{ role: "user", content: "go" }], [], {
+    ...options(), onText: value => text.push(value),
+  });
+  if (tool) {
+    expect(result.message.tool_calls).toEqual([{
+      id: "tool_1", type: "function", function: { name: "read_file", arguments: '{"path":"a"}' },
+    }]);
+  } else {
+    expect(result.message.content).toBe("hello");
+    expect(text.join("")).toBe("hello");
+  }
+  expect(result.usage).toEqual({ promptTokens: 15, completionTokens: 4, totalTokens: 19, cachedPromptTokens: 3 });
+});
+
+it("keeps initial cache counters when a delta reports null instead of updated counts", async () => {
+  const provider = await fixture((_req, res) => reply(res, wire({
+    usage: { output_tokens: 4, cache_creation_input_tokens: null, cache_read_input_tokens: null },
+  })));
+  const result = await provider.complete([{ role: "user", content: "go" }], [], options());
+  expect(result.usage).toEqual({ promptTokens: 15, completionTokens: 4, totalTokens: 19, cachedPromptTokens: 3 });
+});
+
+it.each([0, 6])("keeps the latest numeric usage update (%s), including zero, across later nulls", async count => {
+  const stream = wire({ terminal: false, usage: {
+    input_tokens: count, output_tokens: count, cache_creation_input_tokens: count, cache_read_input_tokens: count,
+  } }) + sse({
+    type: "message_delta", delta: { stop_reason: null },
+    usage: { input_tokens: null, cache_creation_input_tokens: null, cache_read_input_tokens: null },
+  }) + sse({ type: "message_stop" });
+  const provider = await fixture((_req, res) => reply(res, stream));
+  const result = await provider.complete([{ role: "user", content: "go" }], [], options());
+  expect(result.usage).toEqual({
+    promptTokens: count * 3, completionTokens: count, totalTokens: count * 4, cachedPromptTokens: count,
+  });
+});
+
+it.each([
+  ...["input_tokens", "output_tokens", "cache_creation_input_tokens", "cache_read_input_tokens"]
+    .flatMap(key => [-1, 1.5, "4"].map(value => ({ output_tokens: 4, [key]: value }))),
+  { output_tokens: null },
+])("still rejects malformed usage counters in deltas %#", async usage => {
+  const provider = await fixture((_req, res) => reply(res, wire({ usage })));
+  const work = provider.complete([{ role: "user", content: "go" }], [], options());
+  await expect(work).rejects.toMatchObject({ classification: "protocol", reason: "invalid_chunk", retryable: false });
+  await expect(work).rejects.toThrow("Anthropic usage validation failed");
+});
+
+it("keeps usage unknown when no input total precedes a null input delta", async () => {
+  const stream = wire({ usage: { input_tokens: null, output_tokens: 4 } })
+    .replace(sse(messageStart()), sse(messageStart({ output_tokens: 0 })));
+  const provider = await fixture((_req, res) => reply(res, stream));
+  const result = await provider.complete([{ role: "user", content: "go" }], [], options());
+  expect(result.message.content).toBe("hello");
+  expect(result.usage).toBeUndefined();
+});
+
+it.each(["input_tokens", "output_tokens"])("does not allow null %s in message_start", async key => {
+  const stream = wire().replace(`"${key}":${key === "input_tokens" ? 10 : 0}`, `"${key}":null`);
+  const provider = await fixture((_req, res) => reply(res, stream));
+  await expect(provider.complete([{ role: "user", content: "go" }], [], options()))
+    .rejects.toMatchObject({ classification: "protocol", reason: "invalid_chunk", retryable: false });
 });
 
 it("accepts legal SSE whose frames omit the event name", async () => {

@@ -84,9 +84,16 @@ const anthropicUsageSchema = z.object({
   input_tokens: tokenCount, output_tokens: tokenCount,
   cache_creation_input_tokens: tokenCount.nullish(), cache_read_input_tokens: tokenCount.nullish(),
 });
-// message_start carries the prompt totals, message_delta only the counters the
-// provider chose to report; a missing delta usage must not discard the answer.
-const anthropicUsageDeltaSchema = anthropicUsageSchema.partial();
+// Compatible gateways may omit counters, but message_start does not use null
+// for input/output totals. In message_delta, null prompt/cache counts mean that
+// the counter has not changed; output_tokens must still be numeric if supplied.
+const anthropicUsageStartSchema = anthropicUsageSchema.partial();
+const anthropicUsageDeltaSchema = z.object({
+  input_tokens: tokenCount.nullish(),
+  output_tokens: tokenCount.optional(),
+  cache_creation_input_tokens: tokenCount.nullish(),
+  cache_read_input_tokens: tokenCount.nullish(),
+});
 const anthropicUsageKeys = [
   "input_tokens",
   "output_tokens",
@@ -94,7 +101,7 @@ const anthropicUsageKeys = [
   "cache_read_input_tokens",
 ] as const;
 type MutableUsage = Partial<
-  Record<(typeof anthropicUsageKeys)[number], number | null>
+  Record<(typeof anthropicUsageKeys)[number], number>
 >;
 const summarize = (content: Content) => ({
   text: content
@@ -423,13 +430,15 @@ export function createAnthropicProvider(
               throw invalid("stream", "unexpected_frame");
             return value;
           };
-          const mergeUsage = (value: unknown): void => {
+          const mergeUsage = (value: unknown, phase: "start" | "delta"): void => {
             if (value === undefined) return;
-            const parsed = anthropicUsageDeltaSchema.safeParse(value);
+            const schema = phase === "start" ? anthropicUsageStartSchema : anthropicUsageDeltaSchema;
+            const parsed = schema.safeParse(value);
             if (!parsed.success) throw invalid("usage", "invalid_chunk");
-            for (const key of anthropicUsageKeys)
-              if (parsed.data[key] !== undefined)
-                usageParts[key] = parsed.data[key];
+            for (const key of anthropicUsageKeys) {
+              const count = parsed.data[key];
+              if (count != null) usageParts[key] = count;
+            }
           };
           const dispatch = (payload: unknown): void => {
             if (!isRecord(payload) || typeof payload.type !== "string")
@@ -447,7 +456,7 @@ export function createAnthropicProvider(
               )
                 throw invalid("stream", "unexpected_frame");
               messageStarted = true;
-              mergeUsage(event.message.usage);
+              mergeUsage(event.message.usage, "start");
               return;
             }
             if (!messageStarted) throw invalid("stream", "unexpected_frame");
@@ -485,7 +494,7 @@ export function createAnthropicProvider(
                   throw invalid("stream", "invalid_finish");
                 stopReason = delta.stop_reason;
               }
-              mergeUsage(event.usage);
+              mergeUsage(event.usage, "delta");
               if (isRecord(event.usage) && event.usage.output_tokens !== undefined)
                 finalOutputReported = true;
               return;

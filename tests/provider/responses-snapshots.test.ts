@@ -1,4 +1,5 @@
 import { afterEach, expect, it, vi } from "vitest";
+import type { ToolCallPreview } from "../../src/shared/schemas";
 import { added, completed, done, fixture, message, textStream, wire } from "../fixtures/responses-stream";
 
 afterEach(() => vi.unstubAllGlobals());
@@ -37,6 +38,35 @@ it("accepts a complete terminal snapshot and replays native tool output without 
   await f.run([first.message, { role: "tool", tool_call_id: call.call_id, content: "found" }]);
   expect(f.bodies[1]).toMatchObject({ input: [...output, { type: "function_call_output", call_id: call.call_id, output: "found" }] });
 });
+
+const earlierCall = { ...call, id: "fc_0", call_id: "call_0", name: "read_file", arguments: '{"path":"a"}' };
+it.each([
+  { earlier: earlierCall, toolOffset: 1 },
+  { earlier: { type: "reasoning", id: "rs_0", summary: [] }, toolOffset: 0 },
+  { earlier: message("Checking"), toolOffset: 0 },
+].flatMap(entry => [false, true].map(ended => ({ ...entry, ended }))))(
+  "keeps tool preview identity when a snapshot inserts an earlier $earlier.type (ended=$ended)",
+  async ({ earlier, toolOffset, ended }) => {
+    const stream = added(1, initialCall) +
+      wire("response.function_call_arguments.delta", { output_index: 1, item_id: call.id, delta: call.arguments }) +
+      (ended ? done(1, call) : "") + completed([earlier, call]);
+    const f = fixture(stream);
+    const previews: ToolCallPreview[] = [];
+    const result = await f.provider.complete([{ role: "user", content: "hello" }], [], {
+      model: "fixture", signal: new AbortController().signal, onText: () => {}, onToolCall: preview => previews.push(preview),
+    });
+    const calls = toolOffset ? [earlierCall, call] : [call];
+    // No index may ever refer to a different call, even before the final snapshot.
+    expect(previews).toEqual(calls.map((item, index) => ({
+      index, name: item.name, argumentsChars: item.arguments.length,
+    })));
+    expect(result.message.tool_calls).toEqual(calls.map(item => ({
+      id: item.call_id, type: "function", function: { name: item.name, arguments: item.arguments },
+    })));
+    expect(result.message.providerState?.output).toEqual([earlier, call]);
+    expect(f.bodies).toHaveLength(1);
+  },
+);
 
 it.each(["text", "arguments"])("accepts terminal output when redundant %s done frames are omitted", async kind => {
   const stream = kind === "text"

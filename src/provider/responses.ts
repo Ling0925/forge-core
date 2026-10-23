@@ -349,11 +349,13 @@ export function createResponsesAdapter(h: Helpers, baseUrl: string) {
         h.notify(() => onWebSearch({ id, status }), "web_search");
       };
       let reasoning = "";
-      // Preview bookkeeping: a tool-sequence index (never output_index, which
-      // also counts reasoning/message items) and the latest accumulated name.
+      // Preview indices follow final tool order, not arrival order or output_index
+      // (which also counts non-tools). Only number the contiguous known prefix:
+      // a missing earlier item may turn out to be another tool in the snapshot.
       const callIndex = new Map<string, number>();
       const names = new Map<string, string>();
       let callCount = 0;
+      let nextPreviewOutputIndex = 0;
       const notifyToolPreview = (outputIndex: number): void => {
         const item = items.get(outputIndex);
         if (!item || item.type !== "function_call") return;
@@ -447,9 +449,18 @@ export function createResponsesAdapter(h: Helpers, baseUrl: string) {
             args.set(p.item.id, initial.arguments ?? "");
             // Added frames may omit the name; the terminal item fills it in.
             names.set(p.item.id, initial.name ?? "");
-            if (callCount < 256) callIndex.set(p.item.id, callCount);
-            callCount += 1;
-            notifyToolPreview(p.output_index);
+          }
+          // An added item of any type can close a gap and release later previews,
+          // including tools whose done frames arrived while their index was unknown.
+          for (;;) {
+            const item = items.get(nextPreviewOutputIndex);
+            if (!item) break;
+            if (item.type === "function_call") {
+              if (callCount < 256) callIndex.set(item.id, callCount);
+              callCount += 1;
+              notifyToolPreview(nextPreviewOutputIndex);
+            }
+            nextPreviewOutputIndex += 1;
           }
         } else if (
           e.type === "response.output_text.delta" ||
@@ -757,7 +768,10 @@ export function createResponsesAdapter(h: Helpers, baseUrl: string) {
       for (const [index, item] of output.entries()) {
         if (item.type === "web_search_call") notifySearch(item.id, item.status);
         if (item.type !== "function_call") continue;
-        if (!ended.has(index)) h.notifyToolCall(onToolCall, toolIndex, item.name, item.arguments.length, item.arguments);
+        // A done frame may have been deferred behind a gap, so it does not prove
+        // that this tool has already received a correctly indexed preview.
+        if (!ended.has(index) || callIndex.get(item.id) !== toolIndex)
+          h.notifyToolCall(onToolCall, toolIndex, item.name, item.arguments.length, item.arguments);
         toolIndex += 1;
       }
       const u = completed.usage;
