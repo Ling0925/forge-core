@@ -1,10 +1,12 @@
-# Core 测试归属与跨应用拆分记录
+# Core 测试归属
 
 本仓从原库 `e089acb` 过滤历史拆分而来，只保留 `src/{core,host,web,provider,store,tools,shared,context,mcp}`。
 Core 测试不得导入 `src/cli`、`src/renderer`、`src/desktop`、Electron、Android 或客户端 UI 实现，也不得引用已不在本仓的
-`tests/cli` 路径。原库继续保留完整测试文件；本文件记录 Core 保留了什么、哪些客户端专用覆盖没有迁移。
+`tests/cli` 路径。CLI、Web UI、Android 的入口测试在各自仓库维护；旧单体完整测试留在主仓历史归档中。
 
-## 本轮处理
+## 拆分时的覆盖映射
+
+下表记录拆分取舍，方便定位回归；“未迁移到 Core”不代表对应客户端已经通过检查。
 
 | Core 测试 | 处理 | 保留的 Core 覆盖 | 未迁移到 Core 的覆盖 |
 | --- | --- | --- | --- |
@@ -26,6 +28,6 @@ Core 测试不得导入 `src/cli`、`src/renderer`、`src/desktop`、Electron、
 
 ## 约束
 
-- Core 的这些测试只通过 `src/host/*`、`src/shared/*`、`src/core/*`、`src/store/*` 等本仓路径验证行为；客户端发现、渲染和命令入口仍由原库测试负责。
+- Core 的这些测试只通过 `src/host/*`、`src/shared/*`、`src/core/*`、`src/store/*` 等本仓路径验证行为；客户端发现、渲染和命令入口由各客户端仓库负责。
 - 没有为了通过测试而在 Core 中复制 CLI 命令实现或 renderer 状态机。
-- 本记录区分“保留的 Core 业务覆盖”和“留在原库的客户端覆盖”，不把删除/未迁移的用例视为通过。
+- 历史用例可从主仓归档恢复取证，不把删除或未迁移的用例视为通过。

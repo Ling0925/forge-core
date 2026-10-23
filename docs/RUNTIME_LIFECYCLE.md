@@ -1,8 +1,7 @@
 # Runtime lifecycle boundaries
 
-This refactor preserves runtime behavior, storage evidence, permission/default
-budgets and provider routing. The coordinator owns the snapshot and all commits.
-The following sequence is the baseline contract, not merely a line-count target.
+The runtime coordinator owns the session snapshot and durable commits. Extracted
+ports own their started work and must settle it before returning control.
 
 | Boundary | Durable/ownership rule |
 | --- | --- |
@@ -40,7 +39,7 @@ and tests a different path than the intended child/construction lifecycle.
   child approvals use the same serial queue; rejected requests do not poison it.
 - `agent-supervisor`: owns current-run child operations, child context/tools,
   approval envelopes and joined cleanup. Existing `agent-operations` retains
-  registration, slot/depth/total limits, scope checks and explicit resolution.
+  registration, active-slot/depth limits, scope checks and explicit resolution.
   Native operations alone receive its mutable operation registry. The coordinator
   receives read-only usage, joined outcomes, and bounded pending reports with an
   explicit delivery acknowledgement after a successful durable save.
@@ -51,8 +50,7 @@ and tests a different path than the intended child/construction lifecycle.
 Focused coverage includes intent-before-effect, result-before-hook, recovery
 without replay, approval cancellation before terminal/unlock, ordered joined read
 batches, child construction/disposal failure, borrowed resources, delayed delivery
-acknowledgement and parent cancellation joining child cleanup. The pre-existing
-fixed-wording edit-preview assertion remains tracked separately by issue #10.
+acknowledgement and parent cancellation joining child cleanup.
 
 ## Compatibility with memory tools and auxiliary inference
 

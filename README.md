@@ -164,6 +164,9 @@ src/shared/     公共类型、schema 与客户端契约
 
 ## 深入阅读
 
+- [架构与模块职责](docs/ARCHITECTURE.md)
+- [项目指令与技能](docs/PROJECT_CONTEXT.md)
+- [模型接入、迁移与支持范围](docs/MODEL_ACCESS_PORT_STATUS.md)
 - [契约归属与浏览器边界](docs/CONTRACT_BOUNDARIES.md)
 - [运行生命周期与取消](docs/RUNTIME_LIFECYCLE.md)
 - [会话存储](docs/SESSION_STORAGE.md) · [持久输入队列](docs/INPUT_QUEUE.md)

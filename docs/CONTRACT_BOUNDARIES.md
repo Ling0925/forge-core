@@ -20,14 +20,12 @@ Factories explicitly return these ports. Shared service signatures do not use
 `ReturnType`/`Parameters` of implementation modules. No domain contract imports
 core, store, MCP, context, desktop, Node builtins or Electron.
 
-The common controller and runtime hub live in `host/`. CLI, Web and the desktop
-worker use that implementation. Desktop window lifecycle, worker port forwarding
-and renderer bridges remain desktop adapters. The old desktop runtime/controller
-paths are compatibility reexports, not a second implementation.
+The common controller and runtime hub live in `host/`. CLI and Web hosts use that
+implementation; Android connects through HTTP/WebSocket. Client UI and lifecycle
+adapters belong to their own repositories. Core does not ship the archived
+Electron runtime/controller paths.
 
 `tests/shared/contract-boundaries.test.ts` checks type-only as well as runtime
 imports, browser bundling, host independence, schema object identity and the
-unchanged moved DTO shapes. A before/after comparison of all 74 preexisting
-exported IPC, shared/config, MCP and project-context tool schemas also matched.
-No RPC fields, persistence records, tool schemas or frontend behavior are changed
-by this ownership refactor.
+existing DTO shapes. Run these checks when moving public contracts; clients and
+persisted records must remain compatible with the declared change.

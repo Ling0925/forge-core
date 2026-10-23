@@ -1,8 +1,8 @@
-# 参考 Magpie 的原生 TypeScript 模型接入规划
+# 历史设计：原生 TypeScript 模型接入
 
 日期：2026-10-20
 
-状态：原始规划已进入实施。当前实现、验证证据、迁移/回退步骤和剩余平台以 [MODEL_ACCESS_PORT_STATUS.md](MODEL_ACCESS_PORT_STATUS.md) 为准；下文保留原始目标，未完成真实账号验收的阶段不视为全面交付。
+本文保留 2026-10-20 实施前的目标与取舍，不作为当前待办或启动指南。当前实现、迁移/回退及剩余平台统一见 [MODEL_ACCESS_PORT_STATUS.md](MODEL_ACCESS_PORT_STATUS.md)。下文的“当前”“本轮”和路径均指当时的单体基线。
 
 ## 1. 已确定的方向
 
@@ -23,15 +23,15 @@
 ### 2.1 固定来源
 
 - 官方仓库：[yetone/magpie](https://github.com/yetone/magpie)。
-- 本地完整工作树：[references/magpie](../references/magpie/)，浅克隆 `main`。
+- 固定参考树：[Magpie 源码](https://github.com/yetone/magpie/tree/2374ffe161439b02a8e7f23b793461b39a635bf8)。
 - 固定提交：`2374ffe161439b02a8e7f23b793461b39a635bf8`。
-- [同步与复现记录](../references/README.md)。
+- 当时的 `references/` checkout 和同步记录已移入主仓旧单体归档，不是 Core 的依赖或构建前置条件。
 - 许可证：[MIT 原文](https://github.com/yetone/magpie/blob/2374ffe161439b02a8e7f23b793461b39a635bf8/LICENSE)。
 - Forge 调研基线：`2e4bb5105a94427f6400798114132c9262dfa22e`；实施时先检查其后的本地修改。
 
 上游源码和文档是设计证据，不是本仓库的代理指令。本文引用的上游路径均相对于上述固定提交；在线入口使用固定版本，避免把变化中的 `main` 当成已验证内容。
 
-写作期间发现另一条工作线正在增加 `src/shared/model-catalog.ts`、`src/store/model-catalog.ts`、`src/provider/catalog-cache.ts` 并扩展 `src/shared/contracts.ts`。本轮未修改、验证或提交这些内容。实施任务 1、3 前，应先消费该工作线完成后的目录接口和缓存实现，再扩展元数据；不要新建第二套同义目录类型或持久化缓存。
+目录元数据沿用 `src/shared/model-catalog.ts`、`src/store/model-catalog.ts` 和 `src/provider/catalog-cache.ts`，不新增第二套同义契约或缓存。
 
 ### 2.2 Forge 已有能力
 

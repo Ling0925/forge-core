@@ -1,211 +1,75 @@
-# Forge architecture and implementation contract
+# Forge Core architecture
 
-> Repository split note (2026-10-22): this document records the original integrated
-> application. This repository now owns only Core and its shared contracts/host
-> transports; CLI, renderer, desktop and Android paths below refer to legacy
-> integration points. See `../README.md` for current package/build boundaries.
+Core owns the TypeScript agent runtime, providers, tools, persistence, project context and host transports. CLI, Web UI and Android are separate clients. The Forge assembly repository pins their versions; it does not contain another runtime. Package usage and build commands are in the [README](../README.md).
 
-Forge is an original single-package Electron + React + TypeScript desktop application and Node 22 CLI. Provenance and authorship boundaries are recorded in [AUTHORSHIP.md](AUTHORSHIP.md).
+## Module ownership
 
-## Shared boundaries
-
-`src/shared/schemas.ts` defines JSON-facing schemas and inferred readonly types for settings, provider config, sessions, messages, tools, inputs and events. `contracts.ts` defines the shared service, runtime, provider, tools and stores plus dependency-injection factories. `ipc.ts` defines validated RPC/worker transport and the narrow `ForgeBridge`. `errors.ts` exports `ForgeError` and `toErrorInfo`. Shared modules import no Node or Electron APIs and do not write files.
-
-Use relative imports, named exports, `import type`, strict TypeScript, readonly values and exhaustive discriminated-union switches. No explicit untyped escape annotations, non-null assertions, type suppressions or ignored failures. `assertNever` throws a typed internal invariant failure without exposing its argument.
-
-Parse unknown persisted, HTTP, IPC and tool-argument data at the receiving boundary. Strict objects reject unknown fields. Owners enforce semantic relationships: session/event identity, tool IDs, timestamps, role/tool sequence and absolute workspace paths. Bound hostile JSON byte size and depth before recursive parsing. Types do not replace runtime validation.
-
-`ForgeError` accepts an ErrorInfo code, an authored safe public message and a retryable boolean. Domain subclasses are permitted. Never construct it from arbitrary exception messages, HTTP bodies, headers, private configuration or user secrets. `toErrorInfo` preserves expected typed failures, reduces Zod errors to a safe validation message, and returns a fixed internal fallback for other values. It does not serialize exceptions or arbitrary objects. Logs and transport must use safe conversion, never unknown Error.message, stack, cause or request/response dumps.
-
-## Mandatory future integration points
-
-| Module | Named export / responsibility |
+| Module | Responsibility |
 | --- | --- |
-| `src/core/harness.ts` | `createHarness(options?: HarnessOptions): Promise<HarnessService>`; orchestration/defaults |
-| `src/core/runtime.ts` | `createAgentRuntime(dependencies: AgentRuntimeDependencies): AgentRuntime`; original bounded loop |
-| `src/provider/openai.ts` | `createModelProvider(config: ProviderConfig): ModelProvider`; OpenAI SDK and Anthropic SDK adapters |
-| `src/tools/local.ts` | `createLocalToolRegistry(workspace: string): Promise<LocalToolRegistry>`; original read/list/search/write/edit/exec adapters |
-| `src/tools/browser.ts` | `createBrowserTools(options: BrowserToolOptions): Promise<LocalToolRegistry>`; optional original Playwright adapters |
-| `src/store/sessions.ts` | `openSessionStore(directory: string): Promise<SessionStore>` |
-| `src/store/settings.ts` | `openSettingsStore(directory: string): Promise<SettingsStore>` |
-| `src/cli/cli.ts` | `runCli(argv: readonly string[], service: HarnessService): Promise<number>`; injected test entry |
-| `src/cli/index.ts` | bootstrap/service disposal/exit code |
-| `src/desktop/main.ts` | privileged window/chooser and validated worker routing |
-| `src/desktop/preload.ts` | sandbox-compatible contextBridge implementing ForgeBridge |
-| `src/desktop/worker.ts` | Node worker_threads worker, one HarnessService, cancellation/approval maps |
-| `src/renderer/index.html` | Vite HTML referencing `./main.tsx` |
-| `src/renderer/main.tsx` | React bootstrap, fonts/styles, optional development diagnostics |
-| `src/renderer/App.tsx` | named `App`; privileged operations only through window.forge |
+| [core/harness.ts](../src/core/harness.ts) | Service assembly, run-boundary configuration and disposal |
+| [core/runtime.ts](../src/core/runtime.ts) | Session lock, provider scheduling, durable tool intent/results and terminal state |
+| [provider/](../src/provider) | Protocol adapters, catalogs, explicit routing, accounts and cloud authentication |
+| [store/](../src/store) | Settings transactions, sessions, checkpoints and private state |
+| [tools/](../src/tools) | Local, browser and external tool adapters |
+| [context/](../src/context) | AGENTS.md and skill discovery |
+| [mcp/](../src/mcp) | Registered MCP servers and connection lifecycle |
+| [host/](../src/host) | Client-neutral controller, runtime hub and local transport |
+| [web/](../src/web) | HTTP/WebSocket API, static host and gateway |
+| [shared/](../src/shared) | Browser-safe schemas, ports and transport contracts |
 
-Core interface signatures remain stable. Domain tests belong in `tests/shared`, `tests/core`, `tests/provider`, `tests/tools`, `tests/store`, `tests/cli` and `tests/desktop` using Vitest `*.test.ts`. Shared colocated contract regression tests are also supplied here. Real Electron/browser QA is separate.
+Clients import `@forge/core/...` exports, not copied source. Shared contracts cannot import Node, Core implementations or client code. Parse unknown persisted data, requests and tool arguments at the receiving boundary; types alone do not validate input. See [contract boundaries](CONTRACT_BOUNDARIES.md) and [test ownership](TEST_OWNERSHIP.md).
 
-## Native model access
+`ForgeError` carries an authored safe public message. Use `toErrorInfo` for unknown errors; never expose arbitrary exceptions, HTTP bodies, headers, private config or credentials through logs and transport.
 
-`shared/model-access.ts` defines private configuration inputs and public projections; `shared/model-catalog.ts` remains the single catalog contract. `core/model-access.ts` owns presets, discovery/refresh, explicit tests/imports, login and quota operations. CLI, Web RPC and desktop worker/IPC call the same `HarnessService.modelAccess` method; renderer has no direct file or token-store access.
+## Model access and routing
 
-Settings transaction v2 stores sources, credentials, private connection parameters and explicit route groups under one lock. Provider snapshots pair the selected credential with its endpoint/revision. Account refresh performs its compare/update under the settings lock. Catalog disk keys distinguish credentials and stable account/Vertex identity without persisting raw responses or short-lived access tokens.
+[Model access](MODEL_ACCESS_PORT_STATUS.md) describes implemented adapters, migration and remaining platform validation. The protocols are OpenAI Chat Completions, OpenAI Responses, Anthropic Messages and native Gemini. OpenAI and Anthropic adapters use their official SDKs; generation SDK retries are disabled so the runtime owns the retry budget.
 
-The runtime remains the sole generation retry owner. The routing adapter chooses one candidate per attempt, records sanitized `provider_attempt` events, and never replays an uncertain failure. Direct selection and explicitly named child models clear inherited route groups. Opaque protocol state is scoped to endpoint, model, protocol, source, credential and a hashed authentication identity; API-key changes invalidate it, while short-lived token rotation within the same account does not.
+The model-access service owns presets, discovery, explicit tests/imports, account login and quota operations. Settings v2 commits sources, credentials, private connection parameters and explicit route groups under one lock. Public projections exclude secrets. Browsing settings is not authorization for inference or account login.
 
-`provider/accounts/` adapts Codex/Copilot; `provider/cloud.ts` resolves explicit Google credentials lazily. Native Gemini joins the existing three adapters. No ambient ADC/third-party credential scan, Go gateway, or hidden external CLI is introduced. These modules include Magpie-derived behavior; see [license attribution](../THIRD_PARTY_NOTICES.md) and [supported/untested boundaries](MODEL_ACCESS_PORT_STATUS.md).
+Sessions retain their source and model. Changing the global active source does not reroute existing sessions; missing pinned sources fail rather than silently falling back. Legacy sessions without source identity bind on their next run. Explicit model selection clears inherited route groups.
 
-## Extended subsystems (current source)
+Routing chooses at most one candidate per generation attempt. Explicit capacity rejection can permit another candidate; timeouts, disconnects, 5xx or partial output do not prove that work was unexecuted. Uncertain routed attempts are not replayed. Opaque protocol continuation is scoped to endpoint, model, protocol, source, credential and authentication identity. Changing a key invalidates that state; refreshing a short-lived token for the same account preserves identity.
 
-### Session routing and durable history (2026-10-17)
-
-- `providerSourceId` belongs to the session. Creation captures the selected source;
-  forks and children inherit it. Runs and semantic compaction use that source's
-  endpoint, protocol and credential. Global activation does not reroute an existing
-  session. An explicit run override can change the binding; a missing pinned source
-  fails without falling back. Legacy sessions capture the active source on their
-  next run because their original provider identity was not recorded.
-- `sessions/summaries/<id>.json` holds an independently validated summary and disk
-  stamps. Listing reads this index, rebuilding stale or missing entries lazily.
-  Invalid individual records are omitted without changing the original files or
-  preventing access to healthy sessions. Explicit detail reads still validate the
-  complete snapshot and committed records.
-- `session-journal.ts` writes immutable, fsynced delta records under a generation
-  derived from the base snapshot and a durable `_journalGeneration` ID. Checkpoints replace the
-  base atomically after 64 records, 4 MiB of deltas, or a terminal run state. A new
-  base selects a new generation, so retained recovery records cannot be applied
-  twice after an interrupted checkpoint. Uncommitted temporary files are ignored.
-  The existing session flock inode is preserved. Mixed old/new executables must
-  not operate on the same state directory; older strict readers reject the new
-  private base marker instead of opening a stale checkpoint as complete history.
-- Reads of generation-backed sessions pin a base and an enumerated, contiguous
-  delta prefix, validating schemas and every hash link before returning. Concurrent
-  appends, temporary files and checkpoint rotation do not force a full replay.
-  Such a read may precede the newest commit; only an unchanged on-disk head can
-  populate the writer cache or summary index. Writers and legacy bases retain the
-  strict head check; corrupt committed data is still an error, not a fallback.
-- The Web bridge preserves host error codes and retryability. The workbench retries
-  only `getSession` transient storage failures, at most twice (100/300 ms delays),
-  with timers cancelled on unmount. A successful refresh clears only that session's
-  read alert, never an unrelated operation's error. No mutation is replayed.
-- Live `text_delta` events are notifications. Successful replies persist once as
-  assistant messages; a failed or cancelled partial reply is retained as one
-  bounded historical event. Cleanup reads the aggregate journal state and retains
-  both the aggregate backup and original base bytes when needed.
-
-These modules build on the foundation without copying any existing harness. They are the implementation behind the workflows in [WORKFLOWS.md](WORKFLOWS.md). Reference/design provenance is recorded in [REFERENCE_DESIGN.md](REFERENCE_DESIGN.md).
-
-### Project context and skills (`src/context/**`, `src/tools/skills.ts`)
-
-- `createProjectContext(workspace, options?) => Promise<ProjectContextService>` with `refresh()`, `getSystemContext()`, `getCatalog()`, `getFingerprint()`, `dispose()`.
-- AGENTS precedence: workspace-root `AGENTS.md` always applies (we never scan parent/home); nested `AGENTS.md` apply only for the accessed subtree, loaded by the native `project_context` tool with a workspace-relative `path`. Rejections: symlink escapes, binary/NUL, >2 MiB, secret-shaped text, >64 KiB per body (refusal is explicit, never silent).
-- Skills discovery roots: `<workspace>/.forge/skills`, `<workspace>/.agents/skills`, plus explicit absolute user dirs. **Catalog injects metadata only**; bodies load lazily via `load_skill`, which is read-only data and grants no permissions. Duplicate skill IDs: first root wins, duplicates listed as warnings with provenance.
-- Integration: at run boundary the harness prepends `getSystemContext()` to the system message, registers `project_context`/`load_skill`, and surfaces `getFingerprint()` to UI for cache visibility. Additive; no shared-package edits.
-
-### Plan, child agents, semantic summary and forks (`src/core/agents.ts`, `src/core/context.ts`, `src/core/runtime.ts`)
-
-- Native tools: `list_models(query?, offset?, limit?)`, `update_plan(explanation, steps)`, `spawn_agent(task, ownership?, model?)`, `list_agents()`, `wait_agents(ids?)`, `cancel_agent(id)`.
-- `list_models` is read-only discovery of exact configured provider-catalog IDs (also available in readonly/plan mode), with a substring `query` (≤256), `offset` (≥0, default 0, relative to the filtered order) and `limit` (1–100, default 50). Its result is `{ ids, total, offset, returned, nextOffset, truncated }`, preserving provider order and exact IDs, capped at 32768 UTF-8 bytes with no partial JSON or sliced IDs; errors are sanitized and never expose provider exception text, endpoint or credentials. Catalog membership is not proof of live quota or availability.
-- Children are distinct sessions: depth **one**, at most **four active**, with no cumulative child-count or tool-call limit, independent context/session/model and tool registry; `permissionCeiling` is inherited so permission never exceeds the parent's. `plan` mode inherits readonly. Parent finish joins children. Only **parent-scoped** `agent_update` envelopes are emitted; raw child events are not forwarded. Child approval envelopes use the **root** sessionId + original child toolCallId + request UUID, serialized through a queue.
-- Semantic summary is provider-generated (max 8192), keeps a stable system prefix, and never mutates the persisted transcript; the explicit excerpt-only fallback is marked `contextSummary.fallback`. Fork copies history only and never executes copied calls; `assertBoundary` requires complete native call pairs, and fork **preserves the source `contextSummary`** when its boundary is at or before the requested fork end and is a complete native-call boundary in the copied transcript (earlier forks omit it to avoid importing future history; the persisted `ProviderState` continuation is capped at 256 output items / 256 KiB). RunInput `mode?: 'build'|'plan'` clamps requested permission to `readonly` for plan. Semantic compaction, fork, and manual cancellation are available to hosts; `cancel_agent` cancels a child.
-- Cold resume uses the local run-end checkpoint (`src/core/run-memory.ts`), with no extra summary model call. It requires a `completed`/`failed`/`cancelled` session idle for at least one hour and an upcoming request above **32,000 calibrated input tokens**. Runtime supplies the same request projection and input-usage calibration used for its context budget: current system/project instructions, projected history, all tool definitions, recovered steering and the new user input (including image estimates). The selected model's latest valid input/estimate pair applies, with the existing 1.25 safety floor; output, cumulative usage and cache discounts do not set the threshold. This is still a pre-request estimate, not provider billing or the previous request's input-plus-output display. The same measure determines whether the two recent turns fit the 12,000-token retention target; otherwise only the checkpoint replaces past conversation. Required instructions/tools/new inputs can themselves exceed that target. New inputs never enter the old checkpoint or its history boundary, and the original transcript remains intact.
-- Child-failure convergence is implemented: parent finish joins children and, if any joined child was **rejected** or did not reach `completed`, the parent's requested `completed` terminal status becomes `failed`; failed child outcomes enter the parent's closing turn for model reconciliation rather than the parent silently reporting `completed`. A child construction failure persists the child session as `failed` and emits the matching `agent_update`. MCP disable/remove actively revokes the live connections owned by this harness process (see below).
-- Parent-generated child-reconciliation input is tagged with `origin: "agent_reconciliation"` on a `user` message. This is **local metadata**, not a new API role: only `user` accepts the field, providers strip it on the wire, and human-turn boundaries and the renderer's collapsed internal record both exclude/annotate it accordingly.
-
-### Checkpoints and git inspection (`src/store/checkpoints.ts`, `src/tools/git.ts`)
-
-- `createCheckpointStore(workspace, directory)` persists **private** backups outside the workspace (owner-only) via `begin`/`complete`/`release`, holds a Linux `flock` through completion, verifies actual post-mutation bytes, and exposes `list`, `getDiff` (unified diff, bounded; the RPC `getCheckpointDiff` cap is 256 KiB), `restore`. Restore is scoped to a **single** checkpoint/file, requires `completed` state, requires the session to be inactive, and refuses when current bytes/mode differ from the recorded after-hash. **It is never a git reset.**
-- `FileChange` previews are **not** backups; `run_command` effects are **not** checkpoints; git state and checkpoints are labeled separately. Production must pass the store to the default local registry or edits are not reversible. Session IDs come from `ToolContext.sessionId`; call IDs from `ToolCall.id`.
-- `git_status`, `git_diff`, `git_log` are **registered native read-only tools** in `src/tools/local.ts` (backed by `src/tools/git.ts`), available in every mode including readonly (64 KiB ceiling; no git init/commit; sensitive paths omitted, known values redacted). They are among the ten local tools (`git_status`, `git_diff`, `git_log`, `list_files`, `read_file`, `write_file`, `edit_file`, `make_directory`, `run_command`, `search_files`), but are **not** checkpoints. Git output may contain secrets, so the host must filter/redact before model/renderer exposure.
-
-### MCP transports (`src/mcp/**`, `src/tools/mcp.ts`)
-
-- MCP uses a shared JSON-RPC lifecycle for stdio, Streamable HTTP and legacy SSE. Discovery supports bounded cursor pagination; calls preserve correlated IDs and return bounded results. Remote headers remain private; public records expose only endpoint and presence/count metadata. OAuth login is not implemented.
-- `createMcpService({ home })` persists user-supplied servers at `<home>/mcp/servers.json` (dir 0700, file 0600, atomic). `register` performs **no launch** and defaults a new server to **disabled**; register, an explicit `enable`, and then actual launch (discovery/call, or a user-requested health probe of an enabled server) are the only ways a server becomes active. Namespaced names `mcp__<server>__<tool>` (<=64 chars, collision-free).
-- Tools `mcp_list_tools`/`mcp_call_tool`: `readonly` denies both; `workspace` requires fresh per-call approval showing the registered command argv or remote endpoint (never private env/header values); `unrestricted` still only reaches user-registered+enabled servers. Local server processes get a minimal environment; key-like host names are rejected; the development API key is never forwarded.
-- `setEnabled(false)` and `remove` actively **revoke** the live connections owned by this harness process, closing local process groups or remote requests/streams; a revoked server never proceeds on stale state and other instances self-correct against the authoritative catalog before their next effect. This is a **same-process** proactive revoke, not a cross-process kill guarantee.
-
-### Tool contracts, scheduling and extensions
-
-- `defineTool` in `src/shared/tool-definition.ts` derives provider JSON schemas from the executable Zod input schemas. Semantic refinements remain runtime checks. Explicit legacy fields remain accepted but are not advertised to new calls.
-- Trusted registries identify concurrency-safe calls. The runtime executes contiguous read-only groups of up to four, commits results in call order, joins cancellation, counts every attempt and waits at mutation barriers. Unknown, native and remote tools remain serial. Recovery closes unresolved calls without replaying them.
-- Host-configured lifecycle hooks use the private `tool-hooks.json` store and the CLI commands in [TOOL_HOOKS.md](TOOL_HOOKS.md). Tool-level hooks serialize execution; runEnd-only hooks do not. Diagnostics are persisted separately from original tool outcomes.
-- `spawn_agent` supports opt-in Git worktrees with independent tool registries and project context. The default remains shared workspace. Retained child changes are exposed by path and base revision; see [AGENT_WORKTREES.md](AGENT_WORKTREES.md).
-
-### Provider API modes (`src/provider/**`)
-
-- Explicit `apiMode?: 'chat-completions'|'responses'|'anthropic'` (default `chat-completions`). The provider **never** auto-detects, falls back, or replays across modes/models. Responses uses native `function_call`/`function_call_output`, strict terminal checks, and reported cached-input usage; opaque reasoning items are persisted on the exact assistant message as versioned `providerState` and replayed only against a matching origin, with old absent-state readable. Anthropic uses native Messages, signed thinking continuation and SDK model pagination. No native Gemini adapter. Details in [PROVIDERS.md](PROVIDERS.md).
-
-### Host bridge, CLI and desktop surfaces
-
-The desktop renderer entrypoint `window.forge` implements `ForgeBridge` in `src/shared/ipc.ts`; `RunInput.mode` and `updateSettings({settings:{apiMode}})` are live, omitting `apiMode` uses chat-completions. The workbench Inspector exposes three tabs — **overview/runtime**, **changes/checkpoints**, and **resources** — alongside live plans and agents. CLI and interactive routes (`forge context|skills|checkpoints|mcp|export`, `/context /skills /checkpoints /mcp`) consume the same typed service APIs. CLI flags, slash commands, and desktop↔CLI session continuity are documented in [WORKFLOWS.md](WORKFLOWS.md) and [CLI.md](CLI.md). `dist/` contains build outputs produced by `scripts/build.mjs`; source and `--help` are authoritative for behavior.
-
-## Settings and provider semantics
-
-First-launch getSettings/getPublic must succeed without endpoint, model or credential. The source of truth is [`defaultPublicSettings` in schemas.ts](../src/shared/schemas.ts): empty baseUrl/model, `system` theme, **`workspace` defaultPermission**, `maxTurns: 20` (legacy compatibility field, no longer a run termination limit), `maxToolCalls: 100`, `requestTimeoutMs: 60000` and `contextBudgetChars: 100000` (legacy fallback for unknown model windows). Browser origins default to `[]`, browser executable to `""`, and `hasApiKey`/`isConfigured` to `false`. `maxToolCalls`, optional `maxRootToolCalls` and `rootTimeoutMs` now remain only as legacy configuration fields and are ignored during execution, including values saved before upgrading. There is no cumulative tool-call, child-count or root elapsed-time budget (see [ROOT_RUN_BUDGET.md](ROOT_RUN_BUDGET.md)). Request timeout is still the provider's idle-data timeout, not a total task deadline.
-
-Persisted partial settings are merged with these defaults and validated by [`store/settings.ts`](../src/store/settings.ts); malformed data must not be silently ignored. No network default is invented. Existing [persistence tests](../tests/store/persistence.test.ts) cover unconfigured startup and explicit overrides; [root-budget settings tests](../tests/store/root-budget-settings.test.ts) cover optional budget roundtrips. These are source-linked rules, not a second defaults object. The three distinct permission/mode/approval controls are described [below](#permission-run-mode-and-cli-approval).
-
-Public and configurable settings permit empty baseUrl/model. Every nonempty endpoint must be HTTP(S) without credentials, query or fragment; every nonempty model is trimmed and bounded. `isConfigured` is derived, not editable: true exactly when both endpoint and model are nonempty and valid. `hasApiKey` is only the credential-presence indicator. ConfigureInput settings are partial; empty endpoint or model explicitly clears configuration. Omitted apiKey preserves the credential, empty apiKey clears it, CR/LF are rejected. Empty keys are valid for user-configured unauthenticated providers.
-
-Private ProviderConfig requires a valid nonempty endpoint and validated key and timeout; it retains its existing shape without a model field. It is never returned through RPC or persisted in sessions. Settings/credential writes require owner-only permissions and separation from session records. Never log ConfigureInput or private config. Public schema does not make private config a renderer payload.
-
-Before listModels, provider creation or run network use, reject unconfigured settings with an actionable typed invalid_input failure asking the user to configure endpoint and model. An explicit run model override does not bypass this guard. Validate ProviderConfig before transport and validate the completion model before a request; invalid boundaries must not initiate network calls.
-
-Transport uses the official OpenAI and Anthropic SDKs with `maxRetries: 0` for generation. OpenAI catalog GET retains one bounded retry. `sdk-transport.ts` enforces the generation idle deadline, catalog total deadline, byte limits and safe error classification; SDKs own HTTP and SSE decoding. Normalize responses/stream chunks through schemas, honor cancellation and test malformed bodies, timeout and streamed tool-call assembly. Tool arguments remain strings until tool dispatch. No provider engine dependency.
+First launch works without endpoint, model or key. Network operations require valid configuration; an empty key remains valid for explicitly configured unauthenticated providers. Omitted credentials preserve stored values, while explicit empty values clear them. Never put private provider configuration in session records or public RPC responses.
 
 ## Permission, run mode and CLI approval
 
-Current backend rules (verified against this source, 2026-10-20):
+These are three separate controls:
 
-1. **Tool permission** (`readonly < workspace < unrestricted`) is the capability bound. Fresh settings default to `workspace`; changing approval answers does not change this value. Runtime computes the requested permission from `control.getPermission()` when present, otherwise `RunInput.permission`, otherwise the captured `settings.defaultPermission`, then clamps it to `session.permissionCeiling` (absent ceiling means `unrestricted`). This calculation is repeated at execution boundaries. Confined paths, registered/enabled MCP servers, browser origins and individual tool checks still apply; command execution is not an OS sandbox.
-2. **Run mode** is `build` by default when omitted. `plan` forces effective permission to `readonly`, even if the input, live control or settings request a higher level. `build` does not grant more than the permission/ceiling calculation. Child agents inherit a ceiling and plan restrictions; they cannot obtain more capability by choosing a different approval mode.
-3. **CLI approval policy** chooses how the CLI answers an approval request already allowed by the above bounds. It is not a tool permission level, run mode, persistent settings default, or guarantee of isolation. An approval request being emitted and the host answering it automatically are separate steps.
+- **Permission**: `readonly < workspace < unrestricted`. Fresh settings default to `workspace`. Runtime resolves the live/requested/default permission and clamps it to the session's inherited ceiling at execution boundaries.
+- **Run mode**: `build` or `plan`. Plan clamps tools to readonly; switching an approval policy cannot bypass it.
+- **Approval policy**: a host decides how to answer permitted approval requests. This does not raise permissions or provide an OS sandbox.
 
-Sources: [`runInputSchema` / permission schemas](../src/shared/schemas.ts), [`effectivePermission` in runtime.ts](../src/core/runtime.ts), [`buildSystemInstructions` default mode](../src/core/prompts.ts), and [tool permission checks](../src/tools/local.ts). Existing behavioral coverage: [prompt/live permission/child ceiling tests](../tests/core/prompt-runtime.test.ts), [plan and child execution tests](../tests/core/evolution.test.ts), [readonly/workspace integration](../tests/core/integration.test.ts).
+The CLI's interactive `full-access`, `auto` and `manual` policies, and the separate noninteractive `--permission unrestricted --yes` requirement, belong to the [CLI guide](https://github.com/Ling0925/forge-cli/blob/master/docs/CLI.md#交互按键).
 
-### CLI approval policy (2026-10-14 confirmation)
-
-Interactive `forge`, `forge chat` and `forge resume UUID` default to `full-access`, which grants tool approval requests within existing permission bounds (including MCP/browser/children). Tools still enforce readonly/plan, path/origin guards, enabled registration and child ceilings. Workspace tools still issue per-call approval requests; the CLI host may automatically answer them. This is not an OS sandbox or permission escalation. `manual` (`ask` alias) asks per request with `[Y/n]`: only fresh, untainted Enter or y/yes approves; paste, queued/history input, Esc, abort and EOF cannot authorize. `auto` retains eligible root `run_command` requests with argv only; other requests still require manual answers. The choice lasts for the CLI process, including /new and /resume; it is not a persisted global setting. Startup and switches warn visibly, automatic answers emit tool/argv audit lines with common credential masking and per-run counts. Unknown arbitrary secrets cannot be perfectly detected.
-
-The single-run `forge run` command (including `run --session UUID`) automatically approves only with **both explicit `--permission unrestricted` and `--yes`**, regardless of a higher saved default. Otherwise a non-TTY approval is denied; a TTY can answer manually. `forge resume UUID` is an interactive opener, not a noninteractive synonym for `run --session`; opening it alone does not execute. Desktop approval buttons are unchanged.
-
-Sources: [`DEFAULT_APPROVAL_MODE`, parsing and eligibility](../src/cli/approval-policy.ts), [interactive host](../src/cli/interactive.ts), [CLI command parsing / run responder](../src/cli/cli.ts). Existing tests: [approval policy](../tests/cli/approval-policy.test.ts) and [CLI parser, interactive resume and explicit non-TTY authorization](../tests/cli/cli.test.ts). Historical approval requirement documents are dated design records; this section is the current rule reference.
+Local tools validate paths, symlinks, argv, environment, time and output limits. MCP and external tools retain their own admission checks. Project instructions and skills cannot grant permission.
 
 ## Runtime and persistence
 
-CLI and desktop share the identical HarnessService, AgentRuntime, session store, provider and tools; CLI does not use IPC or a second loop. Harness captures public settings and private provider config at each run boundary. Settings changes cannot affect an active run. A session's persisted model is authoritative: createSession uses settings.model unless explicitly overridden; settings.model changes affect only new sessions, not resumed sessions.
+A run holds the cross-process session lock through its final durable checkpoint. A busy session fails explicitly; cancellation must join started work before releasing the lock. Save assistant tool calls and pending intent before effects, then commit results and file-change evidence in call order. Recovery records interrupted/uncertain work and never automatically repeats it.
 
-RunInput optionally supplies a trimmed nonempty model override. Runtime applies it only after acquiring the per-session lock, loading/recovering state and determining that a settled run can start. Update and checkpoint session.model before run_started/provider execution. Provider calls and run_started events use that selected model, and subsequent resumes retain it. Lock failure or rejection before a settled start must not mutate the session model. The harness must not wrap runtime.run in a second store lock.
+One accepted user request is one conversation turn. A model generation plus its tools is a step; retries remain within that step, and steering remains in that turn. Old records without step/retry metadata remain readable without fabricated counts.
 
-Runtime holds the cross-process per-session lock through final checkpoint and releases in finally. Concurrent acquisition fails busy, not silent interleaving; cancellation cannot leak a lock. Store.create generates IDs/timestamps and atomically commits idle empty history. Save validates schema/version and atomically checkpoints a complete snapshot under the caller's lock. Events remain logically append-only; an internal journal is permitted. list returns summaries without large fields; missing get rejects not_found; unknown versions fail explicitly. Store owner tests file modes, fsync/rename durability, stale-lock recovery and crashes.
+Deprecated `maxTurns`, `maxToolCalls`, `maxRootToolCalls` and `rootTimeoutMs` fields remain accepted but do not terminate runs. Per-request/tool bounds, cancellation, context budgets and child concurrency/depth limits still apply. Usage counters are observations, not execution limits.
 
-Orphaned running/awaiting_approval snapshots recover to interrupted under lock, preserving pending tool uncertainty. Never replay uncertain effects automatically. Explicit resume requires settled history after reporting uncertainty and safely clearing pending state. Checkpoint each tool call before execution, then result/changes after it; serialize side effects. Tool messages reference exact call IDs. Unknown/malformed calls yield bounded isError results. Assistant content may be null for tool-only messages. Streaming deltas update UI; only normalized final assistant messages enter history.
+Raw history remains retrievable. Context projection and semantic compaction change what is sent to a provider, not the transcript. Cold resume can use a local run-end checkpoint without an additional summary-model call. Forking copies settled history and never executes copied calls.
 
-One accepted run is one conversation turn. `run_started.turn` is session-local and monotone; its `messageIndex` anchors the opening user message. Steering stays in that turn. Each logical model generation and its requested tools form one step, numbered from 1 within the turn. `step_started` and `step_finished` record message boundaries; completed, failed, cancelled and recovered interrupted steps count once. Provider retries retain the same turn/step and persist a bounded `provider_retry` event. Tools carry the same coordinates; child sessions keep their own counters. `run_finished.steps` and `retries` settle the run; the legacy `turns` field still means model iterations, never conversation turns. Old records remain readable, with no invented retry counts or step boundaries.
+See [runtime lifecycle](RUNTIME_LIFECYCLE.md), [session storage](SESSION_STORAGE.md), [input queue](INPUT_QUEUE.md), [memory](MEMORY.md), [async tools](ASYNC_TOOLS.md) and [optional Harness² preflight](HARNESS_ADAPTATION.md) for their owned contracts.
 
-Counting and execution limits are separate. Deprecated `maxTurns`, `maxToolCalls`, `maxRootToolCalls` and `rootTimeoutMs` settings remain accepted for compatibility but never terminate new runs and are not editable in Web settings. The shared ledger still counts dispatched attempts including denials/failures, and records provider-reported usage. Child creation has no cumulative count limit; four-active and depth-one constraints remain. `wait_agents` and automatic reconciliation page up to 32 undelivered results at a time rather than limiting task lifetime. Apply contextBudgetChars before each provider request: retain system instructions/current prompt and remove only whole settled turns with their tool exchanges; emit context_compacted. If minimum context cannot fit, fail budget rather than truncate tool JSON. Publish bounded tool duration/output/browser-resource policies in descriptions. Budget exhaustion emits error(code=budget) and run_finished(failed).
+## Tools and extensions
 
-Caller AbortSignal propagates through provider/tools/approvals, terminates children, checkpoints cancelled and emits exactly one terminal run_finished. Other failures checkpoint failed. Hosts own AbortControllers; no service cancel method is added. Harness disposal aborts/awaits runs and releases resources. Run-scoped tools dispose in finally; providers have no lifecycle method. Injection factories enable deterministic tests.
+- Trusted read-only groups may run concurrently, with ordered result commits and joined cancellation. Unknown, native and remote tools remain serial; mutations are barriers.
+- Private [file checkpoints](../src/store/checkpoints.ts) are distinct from Git diffs and bounded preview text. Restore targets one completed checkpoint/file, requires an inactive session and refuses changed post-edit bytes/mode. Command effects are not automatically checkpointed.
+- [MCP](../src/mcp) supports stdio, Streamable HTTP and legacy SSE. Registration does not launch a server. Calls require explicit enabled registration and applicable permissions; disabling/removing a server revokes connections owned by this process, not arbitrary other processes.
+- [Tool hooks](../src/shared/tool-hooks.ts) are explicitly host-configured. They are not auto-loaded from project instructions or skills. Tool-level hooks serialize execution; run-end-only hooks do not.
+- [Agent worktrees](../src/core/agent-worktrees.ts) are opt-in; shared workspace remains the default. Child permissions cannot exceed the parent ceiling, and parent settlement joins child operations.
+- [Project context and skills](PROJECT_CONTEXT.md) load bounded instruction data without executing it.
 
-Events are ordered, session-tagged, ISO-timestamped: run_started, state/tool/approval notifications, then one run_finished. EventSink is synchronous notification, not backpressure; hosts bound buffering. Observer failures are handled safely and cannot corrupt committed state. Approval false means denial; cancellation rejects and signal is checked before effects. readonly permits confined reads, workspace permits confined changes with approval for destructive writes/exec, unrestricted deliberately expands policy but is not an OS sandbox. No execution through model-supplied code. Exec uses validated argv, not implicit shell interpolation. Test symlink/cwd/environment/time/output confinement.
+## Hosts and builds
 
-FileChange previews are bounded, not backups or rollback guarantees; null means absent and truncated means omitted bytes. Confined paths are normalized workspace-relative; authorized unrestricted absolute paths are explicitly labeled.
+CLI can embed the Harness or attach to a local host. HTTP/WebSocket Core owns tasks independently of the Web page/gateway: disconnecting or restarting Web does not cancel an accepted Core task. Stopping Core affects its owned runs. Reconnection reads recovery state; it must not replay mutations to guess their outcome.
 
-## Desktop protocol and security
+Core builds with `pnpm build` to `dist/`; it does not build React, CLI, Android or Electron. Use the owning repository for client validation. Historical Electron worker, packaging and installation instructions remain in the monolith history, not in the current Core build contract.
 
-Main forks the absolute `dist/desktop/worker.cjs` through a Node `worker_threads` Worker and waits for ready. Worker receives validated WorkerRequest; chooseWorkspace remains main-only. Main/preload validate both directions, match UUID request IDs and methods, and validate result variants. A method check is required to narrow WorkerRequest after schema refinement. Renderer receives only ForgeBridge, never ipcRenderer, executable paths, raw channels or generic RPC.
-
-Main handles directory selection and null cancellation. Worker reserves UUID RunId and active session slot, replies with RunHandle before starting asynchronous events; conflicts reject busy. cancelRun aborts its controller and acknowledges null without claiming settlement. answerApproval matches runId and approvalId, resolves once, acknowledges null; stale/foreign IDs reject not_found. Approval requests use approval_requested events. Main binds requests/runs/approvals to trusted originating webContents. Event subscriptions filter correctly and return idempotent unsubscribers. After terminal run_finished fetch getSession for final checkpoint. Pre-start rejection is an RPC error, not a run event.
-
-On worker death, main rejects pending RPC and reports interrupted terminal notifications for known runs; store recovery determines uncertain effects. Clean maps and deny pending approvals on cancellation, disconnect and shutdown. Use contextIsolation=true, sandbox=true, nodeIntegration=false, restrictive CSP, no remote navigation/new windows and packaged local renderer files. Validate origin/frame for every IPC call. Only worker executes tools.
-
-## Build, dependencies and distribution
-
-Use Node 22.23.1 and pnpm 11.18.0; common execution source targets Node 22 even if Electron 44.7.0 embeds a newer runtime. Versions use the freshly verified Electron, Vite, React plugin, fonts and diagnostic releases. Generate/review the real pnpm lockfile; none is fabricated. Run typecheck, Biome, Vitest and build. Build fails until declared entrypoints exist. Reviewer may apply formatting after acceptance.
-
-esbuild emits executable `dist/cli.mjs` and separate CommonJS main/preload/worker bundles; Vite emits local renderer assets. Node built-ins remain built-ins; electron, playwright and playwright-core are external. The CLI ESM banner supplies createRequire for bundled CommonJS dependencies. Playwright loads resource files dynamically and must not be flattened into a single-file bundle. Preload bundles only shared schemas/IPC and their static Zod dependency, with electron external; the build checks its dependency graph to reject host imports or dynamic-resource dependencies.
-
-Playwright remains an actual production dependency; its matching playwright-core is transitive. electron-builder collects production node_modules, including both packages and their resources, and unpacks those directories from asar. Verify the pnpm-resolved production tree in the packaged output rather than assuming development symlinks work. Browser binaries are separate, not shipped inside asar; use a configured installed executable or `pnpm browser:install`. Test built Playwright imports and real browser launch in Node and Electron.
-
-The CLI is not a standalone single file. Running from the project resolves external packages from project node_modules. The **implemented** `scripts/release.mjs --build` produces a standalone `release/<build-id>/cli/` tree containing `dist/cli.mjs` (as `cli.mjs`), `NOTICE.txt`, a complete portable production dependency tree with playwright/playwright-core and their runtime resources, plus an allowlisted copy of `docs/`, `examples/mcp/` and `examples/skills/`. It also copies Electron's `linux-unpacked` output into `desktop/`, writes `SOURCE-SHA256.json` (provenance over `src/`, `scripts/`, `docs/`, `tests/`, `examples/` and root manifests), `PAYLOAD-SHA256.json` (size+hash of every regular file in both loose trees), `SHA256SUMS` and `release.json`, and creates `cli.tar.gz`/`desktop.tar.gz`. It refuses symlinks or unallowlisted entries and requires Linux x64 + Node 22. `scripts/release.mjs --dry-run` only inspects configuration and Playwright resolution; no build, package or install. Never tar only dist or dangling node_modules links, and preserve executable mode.
-
-`scripts/install-local.mjs` installs a checked release: `--dry-run`, `--install RELEASE_DIR`, `--rollback BUILD_ID`. It verifies `release.json`, the exact four checksummed files, archive path inventory against the loose tree, executable modes, `app.asar` and CLI external dependencies before switching the `current` symlink; installs only to `~/.local/share/forge-harness/releases`, `~/.local/bin/forge{,-desktop}` and a user `forge.desktop` entry; retains older releases; no sudo, autostart or uninstall. `scripts/release-selfcheck.mjs` exercises provenance containment and installer payload binding with temporary fixtures only (no real install/build).
-
-`pnpm desktop` launches built files; `pnpm cli -- --help` invokes CLI. `pnpm dev` rebuilds the same file-origin topology without remote dev server/HMR. Only development branches may dynamically import react-grab/react-scan; production build removes those branches. react-doctor is a separate audit command.
-
-Distribution includes built assets, metadata and required production dependencies, never private `.build` artifacts, state, runtime credentials or development dispatcher files. `.build/` is ignored by git and explicitly excluded from packaging. A release is **not** called final packaged or installed from dry-run/selfcheck alone: after a fresh build, `sha256sum -c SHA256SUMS`, install and installed smoke/GUI QA must be run against the actual artifact, with the results recorded by the release process. The dry-run/selfcheck only prove configuration and fixture behavior, not a completed artifact. See [DELIVERY.md](DELIVERY.md) for the install/verify/rollback steps.
+[Authorship](AUTHORSHIP.md) records provenance; [third-party notices](../THIRD_PARTY_NOTICES.md) preserve license attribution.

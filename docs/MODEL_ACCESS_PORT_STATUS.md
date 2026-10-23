@@ -4,7 +4,7 @@
 
 - 对照 [Magpie `2374ffe161439b02a8e7f23b793461b39a635bf8`](https://github.com/yetone/magpie/tree/2374ffe161439b02a8e7f23b793461b39a635bf8)，不声称固定端点、参考模型或认证流程代表厂商最新线上行为。
 - Forge 保留自己的 TypeScript 运行时、工具审批、设置事务与共享宿主；不启动 Go 网关，不读取其他应用凭据，不引入隐藏的外部 CLI。
-- CLI、Web/桌面供应商管理调用同一宿主 API。来源、组、凭据和模型各有独立 ID；模型 ID 的 `/` 不解释为来源前缀，直接选择模型不自动换模型。
+- CLI、Web 供应商管理调用同一宿主 API。来源、组、凭据和模型各有独立 ID；模型 ID 的 `/` 不解释为来源前缀，直接选择模型不自动换模型。
 - 来源与 MIT 全文见 [THIRD_PARTY_NOTICES.md](../THIRD_PARTY_NOTICES.md)。
 - **交付的是下列实现及本地验证，不是 Magpie 全平台对等。** 真实登录、付费调用和云资源验收尚未执行；没有读取本机真实密钥。
 
@@ -38,7 +38,15 @@
 - 这是按当前公开价格回算的参考值，不是历史账单或中转商实际扣款。现有事件未单独记录缓存写入、音频及工具计费项，无法精确核算这些附加费；缓存写入包含在普通输入估算中。不新增界面说明段落或计费设置。
 - 模型消耗按实际请求中记录的完整模型 ID 归集 Token 和费用，价格查询仍使用上述截断规则；不把同一短名称下的第一条请求统计复制给其他模型。会话切换模型或路由实际选择其他模型时，不再把历史用量全部归给会话当前模型。请求级 usage、`context_usage` 和 `run_finished.usage` 去重：优先实际请求，只补充运行汇总中未覆盖的剩余用量；没有请求明细的旧运行归给当时 `run_started.model`（事件也缺失时才回退到会话模型）。不改写持久化事件，也不重复叠加父运行的子代理汇总。
 - 模型列表保留未匹配价格、失败或进行中请求的模型；未知费用显示「费用未知」，真实零价仍显示 `$0.00`。各模型金额合计逐请求估算和去重后的历史剩余用量估算。历史记录即使没有请求明细也会加载价格，按当前公开基础单价计算输入、缓存读与输出费用，明确显示「汇总估算 / 含历史估算」并在提示中说明无法还原逐请求上下文阶梯价；不将整轮累计 Token 套入请求阶梯、不补造请求记录。真实缺少价格或用量的项仍未知，混合计价时标记「部分」。总费用卡片和每日费用图采用同一费用口径，与模型金额总和一致；请求列表仍只显示真实请求小计。时间筛选对模型、总计、每日和会话 Token 使用同一批记录：请求按请求时间，旧运行的剩余用量按运行时间，避免长会话的历史 Token 混入当前费用区间。
-- 聚焦检查：`pnpm exec vitest run tests/core/model-pricing.test.ts tests/core/model-access-service.test.ts tests/usage-request-records.test.ts tests/usage-stats.test.ts tests/usage-model-distribution.test.ts tests/renderer/usage-requests-mounted.test.ts`。覆盖慢响应体、价格刷新重试、跨重启磁盘缓存与失效回退；浏览器检查用合成会话和价格响应经过生产统计服务，覆盖明暗主题、390/1440 宽度、筛选、翻页、详情，以及模型切换、同短名不同完整 ID、部分/未知/零费用、价格失败与恢复。思考等级另通过本地 HTTP fixture → 真实宿主 → 事件落盘 → 统计 → Chromium 列表和详情的链路验证，使用临时状态目录，不读取真实凭据或触发付费推理。
+聚焦检查按所属仓库运行：
+
+```sh
+# forge-core 根目录
+pnpm exec vitest run tests/core/model-pricing.test.ts tests/core/model-access-service.test.ts \
+  tests/usage-request-records.test.ts tests/usage-stats.test.ts tests/usage-model-distribution.test.ts
+```
+
+Web 的请求列表、筛选、详情和费用显示在 Web 仓库运行 `pnpm exec vitest run tests/renderer/usage-requests-mounted.test.ts`。模型推理等级的验证需要从宿主请求、持久化事件一直检查到统计投影；只改 UI 不能证明旧进程已写入新字段。
 
 ## 账号与未完成平台
 
@@ -88,18 +96,12 @@ forge run '任务' --route-group group-id --permission readonly
 4. 旧会话继续使用已有来源；旧不透明协议状态缺少身份摘要时只丢弃不透明部分，保留通用消息/工具配对。切换源、组、凭据和账号后不会跨身份回放签名状态。
 5. 回退时先停新进程并保留升级后目录，再恢复迁移前**完整备份**，用旧程序打开。仅恢复 `state.v1.backup.json` 不能回退升级后的会话或新功能数据。不要混跑新旧进程，也不要在没有完整备份时删除 v2 数据以“修复”启动。未提供自动降级导出。
 
-## 验证证据（2026-10-20）
+## 历史验证范围（2026-10-20）
 
-以下均使用隔离 fixture，不是线上账号调用；各组可能有重复文件，不合计为唯一测试数量。
+原生接入实施时使用了隔离 HTTP、协议、存储和 Chromium fixture，覆盖来源绑定、迁移、revision、显式导入、取消、429 切换、未知结果不重放、账号刷新/额度和供应商管理交互。CLI 完成过隔离状态下的 save/catalog/inference/route 演练；请求均为本地合成响应。
 
-- 8 个协议文件、193 项通过：OpenAI、Responses/兼容、Anthropic、Gemini、hosted search、工具预览、身份隔离。
-- 18 个迁移/宿主/路由/账号/CLI/统计文件、167 项通过：来源绑定和 fork、v1/v2 与旧配置、revision、显式导入、取消、429 切换、未知结果不重放、单次工具执行、账号刷新与额度等。
-- 4 个预设/元数据/宿主/Chromium 文件、39 项通过；云鉴权模块另有 26 项通过。
-- 真实 Chromium 挂载生产组件进行添加/编辑、预设/区域/协议、目录能力、导入选择、凭据增删、账号登录/额度、路由选择和用量交互；RPC 由 fixture 驱动。Composer、旧来源管理、renderer 缓存和 Web bridge 相关检查通过；不等同于安装版 Electron 或真实 Web 部署验收。
-- 390/1440、light/dark 截图保留在 `.build/model-access/browser/`；有横向溢出断言，未宣称人工逐像素评审。测试账号材料均为合成数据。
-- 最终 5 文件 / 32 项复验通过，含 CLI 刷新失败非零退出、显式组的可用成员压缩、重复手动压缩幂等性、旧来源绑定；CLI 管理测试现为 13 项。
-- 最小编译 `node scripts/build-core.mjs`、`node --check dist/cli.mjs` 已通过。编译后 CLI 使用临时 HOME/FORGE_HOME 和本地 HTTP fixture 完成 help、来源 save、旧 models、catalog、显式 inference、routes save、routed run，退出 0；包括原有自动标题在内共 3 次本地合成生成请求，无外部请求，临时目录已清理。演练脚本为 `.build/model-access/cli-smoke.mjs`，不提交构建目录。
-- 核心/CLI 10 根文件的聚焦 TypeScript 检查还报告 `src/cli/render/history.ts:46` 的 `exactOptionalPropertyTypes`/citations 类型问题；不声称全库 typecheck 通过。最终核心/集成测试 3 根文件的聚焦检查为 0 diagnostics；未运行全量 lint/测试/发布。
-- CLI 子任务因预算耗尽留下草稿，由主代理检查、修复和验证；未自动换用其他模型。所有后续子代理按用户更正使用 `cn:deepseek-v4.1-flash`。
+这些记录不代表当前提交重新通过验收，也不建立真实订阅资格、云资源互通或已安装客户端的结论。当时未运行全量 lint/测试/发布，聚焦 TypeScript 检查还存在 CLI history 的可选属性类型问题。详细分组结果和本地证据路径保留在本文件 Git 历史。
 
-本机交付仅编译 CLI；重开 `forge` 读取新 `dist/cli.mjs`。当前进程不会热更新；未重装、未打桌面包、未重启用户 Web 服务。文档与代码由本轮本地提交收尾；既有目录缓存和其他并发任务的提交保持独立。
+当前构建按所属仓库 README；在 Forge 装配主仓内使用 `node scripts/build-core.mjs` 更新本机 CLI，重开 `forge` 生效。运行中的 Core/Web 需按各自生命周期显式加载新版本。
+
+原始目标与平台取舍见 [历史设计](MODEL_ACCESS_TS_PLAN.md)，当前剩余范围以上面的平台表为准。
