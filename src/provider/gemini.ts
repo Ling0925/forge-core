@@ -122,7 +122,8 @@ const candidateWire = z
     content: z
       .object({
         role: z.string().max(32).optional(),
-        parts: z.array(partWire).max(256),
+        // A repeated field may be omitted when empty; treat that as no parts.
+        parts: z.array(partWire).max(256).optional(),
       })
       .passthrough()
       .optional(),
@@ -403,8 +404,10 @@ const wireContents = (
       const args = argumentsObject(
         parseJson(call.function.arguments) as unknown,
       );
+      // The functionResponse below names this call by id, so a rebuilt call
+      // must carry the same id (Gemini matches responses to calls by id).
       parts.push({
-        functionCall: { name: call.function.name, args },
+        functionCall: { id: call.id, name: call.function.name, args },
         thoughtSignature: SKIP_THOUGHT_SIGNATURE,
       });
     }
@@ -484,6 +487,8 @@ const finishOf = (reason: string | undefined): void => {
     case "PROHIBITED_CONTENT":
     case "SPII":
     case "IMAGE_SAFETY":
+    case "IMAGE_PROHIBITED_CONTENT":
+    case "IMAGE_RECITATION":
       throw new ProviderError(
         "upstream",
         "The provider stopped the response because of content filtering.",
@@ -497,6 +502,8 @@ const finishOf = (reason: string | undefined): void => {
     case "MISSING_THOUGHT_SIGNATURE":
     case "MALFORMED_RESPONSE":
       throw protocol("invalid_tool_call");
+    case "IMAGE_OTHER":
+    case "NO_IMAGE":
     case "OTHER":
       throw new ProviderError(
         "upstream",
@@ -567,7 +574,9 @@ const responseReader = (
       if (part.text || part.thought) throw protocol("invalid_chunk");
       const args = argumentsObject(part.functionCall.args);
       const functionCall = {
-        id: part.functionCall.id ?? `call_${randomUUID()}`,
+        // id is optional; a relay that serializes the empty default still
+        // needs a local identity for history replay and its functionResponse.
+        id: part.functionCall.id || `call_${randomUUID()}`,
         name: part.functionCall.name,
         args,
       };
@@ -592,14 +601,17 @@ const responseReader = (
     if (value || part.thoughtSignature)
       parts.push({ ...part, ...(value ? { text: value } : {}) });
   };
-  const accept = (value: unknown) => {
+  const acceptChunk = (value: unknown) => {
     if (done) throw protocol("unexpected_frame");
     const failure = failureWire.safeParse(value);
     if (failure.success) throw failureOf(failure.data.error);
     const parsed = chunkWire.safeParse(value);
     if (!parsed.success) throw protocol("invalid_chunk");
     const chunk = parsed.data;
-    if (chunk.promptFeedback?.blockReason)
+    const blockReason = chunk.promptFeedback?.blockReason;
+    // A relay that serializes the enum's default value has not blocked
+    // anything; only a real reason stops the reply.
+    if (blockReason && !/^(?:BLOCK_REASON_)?UNSPECIFIED$/i.test(blockReason))
       throw new ProviderError(
         "upstream",
         "The provider stopped the response because of content filtering.",
@@ -614,22 +626,41 @@ const responseReader = (
     if (chunk.candidates.length > 1) throw protocol("invalid_chunk");
     const candidate = chunk.candidates[0];
     if (!candidate) return;
-    if (finish !== undefined && candidate.content?.parts.length)
-      throw protocol("unexpected_frame");
-    if (candidate.finishReason !== undefined) {
-      if (finish !== undefined && finish !== candidate.finishReason)
-        throw protocol("unexpected_frame");
-      finish = candidate.finishReason;
-    }
     const content = candidate.content;
+    const contentParts = content?.parts ?? [];
+    if (finish !== undefined && contentParts.length)
+      throw protocol("unexpected_frame");
+    // An explicitly serialized default enum is not a finish signal. In
+    // particular it must not make the next normal chunk look like extra output.
+    const finishReason = candidate.finishReason;
+    if (finishReason && finishReason !== "FINISH_REASON_UNSPECIFIED") {
+      if (finish !== undefined && finish !== finishReason)
+        throw protocol("unexpected_frame");
+      finish = finishReason;
+    }
     if (!content) return;
+    // A single-turn Content may leave the role blank as well as unset.
     if (
       content.role !== undefined &&
+      content.role !== "" &&
       content.role !== "model" &&
       content.role !== "assistant"
     )
       throw protocol("invalid_chunk");
-    for (const part of content.parts) addPart(part);
+    for (const part of contentParts) addPart(part);
+  };
+  // A complete streamGenerateContent body may be one JSON array of
+  // GenerateContentResponse messages (the REST form when alt=sse is not
+  // honored), and a relay may buffer that array into one SSE data payload.
+  // Each element is a chunk; every one is validated in order, so a cut-off
+  // array still fails JSON parsing and an empty array still fails the finish
+  // checks.
+  const accept = (value: unknown) => {
+    if (Array.isArray(value)) {
+      for (const item of value) acceptChunk(item);
+      return;
+    }
+    acceptChunk(value);
   };
   const dispatch = (payload: string) => {
     if (payload === "[DONE]") {

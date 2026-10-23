@@ -64,6 +64,7 @@ const prose = (part: z.infer<typeof message>["content"][number]): string =>
 const stateEvents = new Set([
   "response.created", "response.in_progress", "response.completed", "response.failed", "response.incomplete", "error",
   "response.output_item.added", "response.output_item.done", "response.output_text.delta", "response.output_text.done",
+  "response.content_part.added", "response.content_part.done",
   "response.refusal.delta", "response.refusal.done", "response.function_call_arguments.delta", "response.function_call_arguments.done",
   "response.web_search_call.in_progress", "response.web_search_call.searching", "response.web_search_call.completed",
   "response.output_text.annotation.added", "response.reasoning_summary_text.delta", "response.reasoning_text.delta", "response.reasoning_text.done",
@@ -102,6 +103,17 @@ type Helpers = {
   ) => void;
 };
 
+type MessagePart = z.infer<typeof message>["content"][number];
+function matchesPart(initial: MessagePart, final: MessagePart | undefined, exact: boolean): boolean {
+  if (!final || initial.type !== final.type) return false;
+  if (exact ? prose(initial) !== prose(final) : !prose(final).startsWith(prose(initial))) return false;
+  if (initial.type === "output_text" && final.type === "output_text" && initial.annotations !== undefined) {
+    if (exact) return isDeepStrictEqual(initial.annotations, final.annotations ?? []);
+    return initial.annotations.every((annotation, index) => isDeepStrictEqual(annotation, final.annotations?.[index]));
+  }
+  return true;
+}
+
 function sameAdded(added: unknown, done: z.infer<typeof outputItem>): boolean {
   const a = z
     .object({
@@ -111,6 +123,7 @@ function sameAdded(added: unknown, done: z.infer<typeof outputItem>): boolean {
       name: z.string().optional(),
       arguments: z.string().optional(),
       role: z.string().optional(),
+      content: message.shape.content.optional(),
     })
     .safeParse(added);
   if (!a.success || a.data.id !== done.id || a.data.type !== done.type)
@@ -122,11 +135,10 @@ function sameAdded(added: unknown, done: z.infer<typeof outputItem>): boolean {
       (a.data.arguments === undefined ||
         done.arguments.startsWith(a.data.arguments))
     );
-  return (
-    done.type !== "message" ||
-    a.data.role === undefined ||
-    a.data.role === done.role
-  );
+  if (done.type === "message")
+    return (a.data.role === undefined || a.data.role === done.role) &&
+      (a.data.content ?? []).every((part, index) => matchesPart(part, done.content[index], false));
+  return true;
 }
 function sameItem(
   a: z.infer<typeof outputItem> | undefined,
@@ -304,13 +316,25 @@ export function createResponsesAdapter(h: Helpers, baseUrl: string) {
       let completedOutput: z.infer<typeof outputItem>[] | undefined;
       let transportDone = false;
       const argumentDone = new Set<string>();
+      const argumentDeltas = new Set<string>();
       const textDone = new Map<string, string>();
       const args = new Map<string, string>();
+      const finishArguments = (itemId: string, value: string) => {
+        const previous = args.get(itemId);
+        // A final snapshot can supply arguments when no deltas were sent. Once
+        // deltas (or another final snapshot) exist, require an exact match: never
+        // repair truncated JSON or replace streamed arguments before execution.
+        if (previous === undefined || (argumentDeltas.has(itemId) || argumentDone.has(itemId)
+          ? previous !== value : !value.startsWith(previous))) throw h.protocol("invalid_tool_call");
+        args.set(itemId, value);
+      };
       const items = new Map<number, { id: string; type: string }>();
       const ended = new Map<number, z.infer<typeof outputItem>>();
       const added = new Map<number, unknown>();
       const textParts = new Map<string, string>();
       const textKinds = new Map<string, "output_text" | "refusal">();
+      const contentAdded = new Map<string, MessagePart>();
+      const contentDone = new Map<string, MessagePart>();
       const reasoningParts = new Map<string, string>();
       const reasoningDone = new Set<string>();
       const annotations = new Map<string, z.infer<typeof urlCitation>>();
@@ -345,18 +369,12 @@ export function createResponsesAdapter(h: Helpers, baseUrl: string) {
           argumentsText,
         );
       };
-      const dispatch = (payload: string, eventName: string | null) => {
-        if (payload === "[DONE]") {
-          if (!completed || transportDone || eventName) throw h.protocol();
-          transportDone = true;
-          return;
-        }
-        const e = z
-          .object({ type: z.string() })
-          .passthrough()
-          .parse(h.parseJson(payload));
-        if (eventName && eventName !== e.type)
-          throw h.protocol();
+      const dispatch = (payload: unknown, eventName: string | null) => {
+        // `message` is SSE's default event type, not a conflicting native type.
+        const nativeEvent = eventName === "message" ? null : eventName;
+        const parsed = z.object({ type: z.string().optional() }).passthrough().parse(payload);
+        const e = { ...parsed, type: parsed.type ?? nativeEvent };
+        if (!e.type || (nativeEvent && nativeEvent !== e.type)) throw h.protocol();
         if (e.type === "response.metadata") {
           const p = z.object({ response_id: id, metadata: z.record(z.unknown()) }).parse(e);
           if (responseId !== undefined && responseId !== p.response_id) throw h.protocol();
@@ -402,6 +420,7 @@ export function createResponsesAdapter(h: Helpers, baseUrl: string) {
                   type: z.literal("message"),
                   id,
                   role: z.literal("assistant").optional(),
+                  content: message.shape.content.optional(),
                 })
                 .parse(p.item),
             );
@@ -455,7 +474,7 @@ export function createResponsesAdapter(h: Helpers, baseUrl: string) {
             const kind = e.type === "response.refusal.delta" ? "refusal" : "output_text";
             if (textKinds.has(partKey) && textKinds.get(partKey) !== kind) throw h.protocol();
             textKinds.set(partKey, kind);
-            if (textDone.has(partKey)) throw h.protocol();
+            if (textDone.has(partKey) || contentDone.has(partKey)) throw h.protocol();
             textParts.set(partKey, (textParts.get(partKey) ?? "") + p.delta);
             text += p.delta;
             if (text.length > 2_000_000) throw h.protocol();
@@ -467,8 +486,20 @@ export function createResponsesAdapter(h: Helpers, baseUrl: string) {
             const next = (args.get(item.id) ?? "") + p.delta;
             if (next.length > 1_000_000) throw h.protocol();
             args.set(item.id, next);
+            if (p.delta) argumentDeltas.add(item.id);
             notifyToolPreview(p.output_index);
           }
+        } else if (e.type === "response.content_part.added" || e.type === "response.content_part.done") {
+          const p = z.object({
+            output_index: z.number().int().min(0).max(511), item_id: id,
+            content_index: z.number().int().min(0).max(255), part: message.shape.content.element,
+          }).parse(e);
+          const item = items.get(p.output_index);
+          const key = `${p.output_index}:${p.content_index}`;
+          const parts = e.type === "response.content_part.done" ? contentDone : contentAdded;
+          if (item?.id !== p.item_id || item.type !== "message" || ended.has(p.output_index) ||
+            parts.has(key) || (parts === contentAdded && contentDone.has(key))) throw h.protocol();
+          parts.set(key, p.part);
         } else if (["response.web_search_call.in_progress", "response.web_search_call.searching", "response.web_search_call.completed"].includes(e.type)) {
           const p = z.object({ item_id: id, output_index: z.number().int().min(0).max(511) }).parse(e);
           const item = items.get(p.output_index);
@@ -485,18 +516,18 @@ export function createResponsesAdapter(h: Helpers, baseUrl: string) {
           const p = z
             .object({
               item_id: id,
-              arguments: z.string(),
+              arguments: z.string().max(1_000_000),
               output_index: z.number().int().optional(),
             })
             .parse(e);
           if (
-            args.get(p.item_id) !== p.arguments ||
             argumentDone.has(p.item_id) ||
             (p.output_index !== undefined &&
               items.get(p.output_index)?.id !== p.item_id) ||
             [...ended.values()].some((item) => item.id === p.item_id)
           )
             throw h.protocol();
+          finishArguments(p.item_id, p.arguments);
           argumentDone.add(p.item_id);
         } else if (e.type === "response.output_item.done") {
           const p = z
@@ -508,12 +539,10 @@ export function createResponsesAdapter(h: Helpers, baseUrl: string) {
             ended.has(p.output_index)
           )
             throw h.protocol();
-          if (
-            p.item.type === "function_call" &&
-            (args.get(p.item.id) !== p.item.arguments ||
-              !sameAdded(added.get(p.output_index), p.item))
-          )
-            throw h.protocol();
+          if (p.item.type === "function_call") {
+            if (!sameAdded(added.get(p.output_index), p.item)) throw h.protocol();
+            finishArguments(p.item.id, p.item.arguments);
+          }
           if (
             p.item.type === "message" &&
             !sameAdded(added.get(p.output_index), p.item)
@@ -551,15 +580,20 @@ export function createResponsesAdapter(h: Helpers, baseUrl: string) {
             items.get(p.output_index)?.type !== "message" ||
             ended.has(p.output_index) ||
             textDone.has(key) ||
-            value === undefined || (textParts.get(key) ?? "") !== value
+            value === undefined || (textParts.has(key) && textParts.get(key) !== value) ||
+            (textKinds.has(key) && textKinds.get(key) !== (e.type === "response.refusal.done" ? "refusal" : "output_text"))
           )
             throw h.protocol();
+          textKinds.set(key, e.type === "response.refusal.done" ? "refusal" : "output_text");
           textDone.set(key, value);
         } else if (e.type === "response.completed") {
           const p = z.object({ response: terminal }).parse(e);
           if (responseId !== undefined && responseId !== p.response.id)
             throw h.protocol();
-          if (ended.size !== items.size) throw h.protocol();
+          // A full completed snapshot is authoritative when a relay coalesces
+          // redundant lifecycle events. It must still agree with every identity,
+          // delta and finished item that actually arrived. An empty snapshot has
+          // no such evidence, so keep requiring all explicit completion frames.
           const output = p.response.output.length
             ? p.response.output
             : Array.from({ length: ended.size }, (_, index) => {
@@ -567,8 +601,8 @@ export function createResponsesAdapter(h: Helpers, baseUrl: string) {
                 if (!entry) throw h.protocol();
                 return entry;
               });
-          if (items.size !== output.length) throw h.protocol();
           if (!p.response.output.length) {
+            if (ended.size !== items.size) throw h.protocol();
             for (const [index, entry] of output.entries()) {
               if (entry.type === "function_call" && !argumentDone.has(entry.id))
                 throw h.protocol();
@@ -577,13 +611,13 @@ export function createResponsesAdapter(h: Helpers, baseUrl: string) {
                   if (!textDone.has(`${index}:${part}`)) throw h.protocol();
             }
           }
-          output.forEach((entry, index) => {
-            if (
-              items.get(index)?.id !== entry.id ||
-              !sameItem(ended.get(index), entry)
-            )
-              throw h.protocol();
-          });
+          for (const [index, observed] of items) {
+            const entry = output[index];
+            if (!entry || observed.id !== entry.id || observed.type !== entry.type ||
+              !sameAdded(added.get(index), entry) ||
+              (ended.has(index) && !sameItem(ended.get(index), entry))) throw h.protocol();
+            if (entry.type === "function_call") finishArguments(entry.id, entry.arguments);
+          }
           completedOutput = output;
           completed = p.response;
           responseId = p.response.id;
@@ -630,8 +664,22 @@ export function createResponsesAdapter(h: Helpers, baseUrl: string) {
             h.notify(onReasoning, p.delta.slice(start, start + 65536));
         }
       };
-      for await (const event of h.events(response))
-        dispatch(event.data, event.event);
+      const contentType = response.headers.get("content-type")?.split(";")[0]?.trim().toLowerCase();
+      if (contentType === "application/json") {
+        // Some gateways honor the request but buffer the reply as JSON. Consume
+        // that same response; never retry the generation or switch protocols.
+        const body = z.object({ status: z.string() }).passthrough().parse(h.parseJson(await response.text()));
+        const type = body.status === "failed" ? "response.failed"
+          : body.status === "incomplete" ? "response.incomplete" : "response.completed";
+        dispatch({ type, response: body }, null);
+      } else {
+        for await (const event of h.events(response)) {
+          if (event.data === "[DONE]") {
+            if (!completed || transportDone || (event.event && event.event !== "message")) throw h.protocol();
+            transportDone = true;
+          } else dispatch(h.parseJson(event.data), event.event);
+        }
+      }
       if (!completed || !completedOutput)
         throw h.protocol("missing_completion");
       const output = validatedOutput(completedOutput, h);
@@ -641,18 +689,25 @@ export function createResponsesAdapter(h: Helpers, baseUrl: string) {
         for (let part = 0; part < entry.content.length; part++) {
           const value = entry.content[part];
           const key = `${index}:${part}`;
-          if (!value || (textParts.get(key) ?? "") !== prose(value) || (textKinds.has(key) && textKinds.get(key) !== value.type))
+          if (!value || (textParts.has(key) && textParts.get(key) !== prose(value)) ||
+            (textDone.has(key) && textDone.get(key) !== prose(value)) ||
+            (textKinds.has(key) && textKinds.get(key) !== value.type))
             throw h.protocol();
         }
       }
-      for (const key of textParts.keys()) {
+      for (const [snapshots, exact] of [[contentAdded, false], [contentDone, true]] as const) {
+        for (const [key, part] of snapshots) {
+          const [index, partIndex] = key.split(":").map(Number);
+          const entry = output[index ?? -1];
+          const final = entry?.type === "message" ? entry.content[partIndex ?? -1] : undefined;
+          if (!matchesPart(part, final, exact)) throw h.protocol();
+        }
+      }
+      for (const [key, value] of [...textParts, ...textDone]) {
         const [index, part] = key.split(":").map(Number);
         const entry = output[index ?? -1];
         const content = entry?.type === "message" ? entry.content[part ?? -1] : undefined;
-        if (
-          !content || prose(content) !== textParts.get(key)
-        )
-          throw h.protocol();
+        if (!content || prose(content) !== value) throw h.protocol();
       }
       for (const [key, value] of reasoningParts) {
         const [index, part] = key.split(":").map(Number);
@@ -691,7 +746,20 @@ export function createResponsesAdapter(h: Helpers, baseUrl: string) {
         .filter((i) => i.type === "message")
         .flatMap((i) => i.content.map(prose))
         .join("");
-      if (text !== finalText || (!text && !calls.length)) throw h.protocol();
+      if (finalText.length > 2_000_000) throw h.protocol("output_limit");
+      if (!finalText.startsWith(text) || (!finalText && !calls.length)) throw h.protocol();
+      // Only emit text absent from the stream, after validating the complete
+      // snapshot. Existing deltas must match whole parts above, not just prefixes.
+      for (let start = text.length; start < finalText.length; start += 65536)
+        h.notify(observer, finalText.slice(start, start + 65536));
+      text = finalText;
+      let toolIndex = 0;
+      for (const [index, item] of output.entries()) {
+        if (item.type === "web_search_call") notifySearch(item.id, item.status);
+        if (item.type !== "function_call") continue;
+        if (!ended.has(index)) h.notifyToolCall(onToolCall, toolIndex, item.name, item.arguments.length, item.arguments);
+        toolIndex += 1;
+      }
       const u = completed.usage;
       const result = providerResponseSchema.parse({
         message: {

@@ -504,13 +504,8 @@ export function createModelProvider(config: ProviderConfig): ModelProvider {
               await response.body?.cancel();
               throw httpError(response.status);
             }
-            if (
-              response.headers
-                .get("content-type")
-                ?.split(";")[0]
-                ?.trim()
-                .toLowerCase() !== "text/event-stream"
-            ) {
+            const contentType = response.headers.get("content-type")?.split(";")[0]?.trim().toLowerCase();
+            if (contentType !== "text/event-stream" && contentType !== "application/json") {
               await response.body?.cancel();
               throw protocol();
             }

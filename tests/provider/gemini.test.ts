@@ -177,6 +177,163 @@ it("streams text, reasoning, images and usage through the native Gemini route", 
   });
 });
 
+it("reads the complete JSON array a relay returns when alt=sse is ignored", async () => {
+  const provider = await fixture((_request, response) => {
+    response.setHeader("content-type", "application/json; charset=utf-8");
+    response.end(
+      JSON.stringify([
+        {
+          candidates: [
+            { content: { role: "model", parts: [{ text: "hel" }] } },
+          ],
+        },
+        {
+          candidates: [
+            {
+              content: { role: "model", parts: [{ text: "lo" }] },
+              finishReason: "STOP",
+            },
+          ],
+          usageMetadata: {
+            promptTokenCount: 3,
+            candidatesTokenCount: 2,
+            totalTokenCount: 5,
+          },
+        },
+      ]),
+    );
+  });
+  const text: string[] = [];
+  const result = await provider.complete(
+    [{ role: "user", content: "go" }],
+    [],
+    { ...options(), onText: (value) => text.push(value) },
+  );
+  expect(text.join("")).toBe("hello");
+  expect(result.message.content).toBe("hello");
+  expect(result.usage).toEqual({
+    promptTokens: 3,
+    completionTokens: 2,
+    totalTokens: 5,
+  });
+});
+
+it("reads a complete JSON array buffered into one SSE event", async () => {
+  const provider = await fixture((_request, response) =>
+    reply(response, [
+      [
+        {
+          candidates: [
+            { content: { role: "model", parts: [{ text: "ok" }] } },
+          ],
+        },
+        {
+          candidates: [
+            { content: { role: "model", parts: [] }, finishReason: "STOP" },
+          ],
+        },
+      ],
+    ]),
+  );
+  await expect(
+    provider.complete([{ role: "user", content: "go" }], [], options()),
+  ).resolves.toMatchObject({ message: { content: "ok" } });
+});
+
+it("merges a usage-only final frame after the finish", async () => {
+  const provider = await fixture((_request, response) =>
+    reply(response, [
+      {
+        candidates: [
+          {
+            content: { role: "model", parts: [{ text: "ok" }] },
+            finishReason: "STOP",
+          },
+        ],
+      },
+      {
+        usageMetadata: {
+          promptTokenCount: 4,
+          candidatesTokenCount: 1,
+          thoughtsTokenCount: 2,
+          totalTokenCount: 7,
+          cachedContentTokenCount: 1,
+        },
+      },
+    ]),
+  );
+  const result = await provider.complete(
+    [{ role: "user", content: "go" }],
+    [],
+    options(),
+  );
+  expect(result.usage).toEqual({
+    promptTokens: 4,
+    completionTokens: 3,
+    totalTokens: 7,
+    cachedPromptTokens: 1,
+  });
+});
+
+it("accepts a blank role and a final status frame whose content has no parts", async () => {
+  const provider = await fixture((_request, response) =>
+    reply(response, [
+      {
+        candidates: [
+          { content: { role: "", parts: [{ text: "ok" }] } },
+        ],
+      },
+      {
+        candidates: [
+          { content: { role: "model" }, finishReason: "STOP" },
+        ],
+      },
+    ]),
+  );
+  const result = await provider.complete(
+    [{ role: "user", content: "go" }],
+    [],
+    options(),
+  );
+  expect(result.message.content).toBe("ok");
+});
+
+it("allocates a local id when a function call omits its optional id", async () => {
+  const provider = await fixture((_request, response) =>
+    reply(response, [
+      {
+        candidates: [
+          {
+            content: {
+              role: "model",
+              parts: [
+                {
+                  functionCall: {
+                    id: "",
+                    name: "read_file",
+                    args: { path: "a" },
+                  },
+                },
+              ],
+            },
+            finishReason: "STOP",
+          },
+        ],
+      },
+    ]),
+  );
+  const result = await provider.complete(
+    [{ role: "user", content: "read" }],
+    [],
+    options(),
+  );
+  expect(result.message.tool_calls?.[0]).toEqual({
+    id: expect.stringMatching(/^call_[0-9a-f-]{36}$/),
+    type: "function",
+    function: { name: "read_file", arguments: '{"path":"a"}' },
+  });
+});
+
 it("round-trips complete tool calls, thought signatures and results by id", async () => {
   const requests: WireBody[] = [];
   const tool = {
@@ -404,8 +561,16 @@ it("replays a signature only for the same endpoint, model and credential", async
   await otherCredential.complete(history(), [], options());
   expect(JSON.stringify(requests[2])).not.toContain("sig-call");
   expect(partOf(requests[2] ?? {}, 1, 0)).toEqual({
-    functionCall: { name: "read_file", args: { path: "a" } },
+    functionCall: { id: call.id, name: "read_file", args: { path: "a" } },
     thoughtSignature: "skip_thought_signature_validator",
+  });
+  // The replayed call carries the id its functionResponse answers.
+  expect(partOf(requests[2] ?? {}, 2, 0)).toEqual({
+    functionResponse: {
+      id: call.id,
+      name: "read_file",
+      response: { output: "ok" },
+    },
   });
   await original.complete(history(), [], {
     ...options(),
@@ -608,6 +773,113 @@ it("maps stream failures, safety stops and empty replies to Forge errors", async
   ).rejects.toMatchObject({
     classification: "protocol",
     reason: "missing_completion",
+  });
+});
+
+it("ignores an unspecified prompt block reason and keeps the candidates", async () => {
+  const provider = await fixture((_request, response) =>
+    reply(response, [
+      {
+        promptFeedback: { blockReason: "BLOCK_REASON_UNSPECIFIED" },
+        candidates: [
+          {
+            content: { role: "model", parts: [{ text: "ok" }] },
+            finishReason: "STOP",
+          },
+        ],
+      },
+    ]),
+  );
+  const result = await provider.complete(
+    [{ role: "user", content: "go" }],
+    [],
+    options(),
+  );
+  expect(result.message.content).toBe("ok");
+});
+
+it.each([
+  ["IMAGE_PROHIBITED_CONTENT", "content_filter"],
+  ["IMAGE_RECITATION", "content_filter"],
+  ["IMAGE_OTHER", "response_incomplete"],
+  ["NO_IMAGE", "response_incomplete"],
+] as const)(
+  "maps the %s finish reason instead of rejecting the protocol",
+  async (finishReason, reason) => {
+    const provider = await fixture((_request, response) =>
+      reply(response, [
+        {
+          candidates: [
+            { content: { role: "model", parts: [] }, finishReason },
+          ],
+        },
+      ]),
+    );
+    await expect(
+      provider.complete([{ role: "user", content: "go" }], [], options()),
+    ).rejects.toMatchObject({ classification: "upstream", reason });
+  },
+);
+
+it("still rejects cut-off JSON, missing finishes and content after finish", async () => {
+  const emptyArray = await fixture((_request, response) => {
+    response.setHeader("content-type", "application/json");
+    response.end("[]");
+  });
+  await expect(
+    emptyArray.complete([{ role: "user", content: "go" }], [], options()),
+  ).rejects.toMatchObject({
+    classification: "protocol",
+    reason: "missing_finish",
+  });
+
+  const truncated = await fixture((_request, response) => {
+    response.setHeader("content-type", "application/json");
+    response.end(
+      '[{"candidates":[{"content":{"role":"model","parts":[{"text":"half"}]}}]},',
+    );
+  });
+  await expect(
+    truncated.complete([{ role: "user", content: "go" }], [], options()),
+  ).rejects.toMatchObject({
+    classification: "protocol",
+    reason: "invalid_json",
+  });
+
+  const missing = await fixture((_request, response) =>
+    reply(response, [
+      { candidates: [{ content: { role: "model", parts: [{ text: "go" }] } }] },
+    ]),
+  );
+  await expect(
+    missing.complete([{ role: "user", content: "go" }], [], options()),
+  ).rejects.toMatchObject({
+    classification: "protocol",
+    reason: "missing_finish",
+  });
+
+  const contradictory = await fixture((_request, response) =>
+    reply(response, [
+      {
+        candidates: [
+          {
+            content: { role: "model", parts: [{ text: "one" }] },
+            finishReason: "STOP",
+          },
+        ],
+      },
+      {
+        candidates: [
+          { content: { role: "model", parts: [{ text: "two" }] } },
+        ],
+      },
+    ]),
+  );
+  await expect(
+    contradictory.complete([{ role: "user", content: "go" }], [], options()),
+  ).rejects.toMatchObject({
+    classification: "protocol",
+    reason: "unexpected_frame",
   });
 });
 
@@ -951,4 +1223,19 @@ it("keeps a base prefix and cuts a pasted endpoint back to it", async () => {
   expect(paths).toEqual([
     "/relay/v1beta/models/gemini-fixture:streamGenerateContent?alt=sse",
   ]);
+});
+
+it.each(["", "FINISH_REASON_UNSPECIFIED"])("does not treat the default finish reason %j as a terminal chunk", async finishReason => {
+  const provider = await fixture((_request, response) => reply(response, [
+    { candidates: [{ content: { parts: [{ text: "hel" }] }, finishReason }] },
+    { candidates: [{ content: { parts: [{ text: "lo" }] }, finishReason: "STOP" }] },
+  ]));
+  expect((await provider.complete([{ role: "user", content: "hello" }], [], options())).message.content).toBe("hello");
+});
+
+it("still requires a real finish after an unspecified finish reason", async () => {
+  const provider = await fixture((_request, response) => reply(response, [
+    { candidates: [{ content: { parts: [{ text: "partial" }] }, finishReason: "FINISH_REASON_UNSPECIFIED" }] },
+  ]));
+  await expect(provider.complete([{ role: "user", content: "hello" }], [], options())).rejects.toMatchObject({ reason: "missing_finish" });
 });

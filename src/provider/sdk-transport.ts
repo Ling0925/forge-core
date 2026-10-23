@@ -13,6 +13,35 @@ type Request = {
   readonly hasBodyFailure: () => boolean;
 };
 
+// Track only framing, not payloads. Control fields and comments at EOF do not
+// constitute a truncated data event. Keep just a field prefix so an unfinished
+// line cannot grow this guard's memory; SDKs still own actual SSE decoding.
+class SseFraming {
+  private prefix = "";
+  private data = false;
+  private cr = false;
+
+  write(text: string): void {
+    for (const char of text) {
+      if (this.cr && char === "\n") {
+        this.cr = false;
+        continue;
+      }
+      this.cr = char === "\r";
+      if (char === "\n" || char === "\r") {
+        if (!this.prefix) this.data = false;
+        else if (this.prefix === "data" || this.prefix === "data:") this.data = true;
+        this.prefix = "";
+      } else if (this.prefix.length < 5) this.prefix += char;
+    }
+  }
+
+  finish(): void {
+    if (this.data || this.prefix === "data" || this.prefix === "data:")
+      throw protocol("unterminated_event");
+  }
+}
+
 // SDKs own HTTP and SSE decoding. This wrapper only enforces Forge's byte,
 // UTF-8 and idle-time limits, including comments and partial streamed frames.
 export async function withSdkRequest<T>(
@@ -48,11 +77,9 @@ export async function withSdkRequest<T>(
     if (!response.body) return response;
     const reader = response.body.getReader();
     const decoder = new TextDecoder("utf-8", { fatal: true });
-    const sse = response.headers
-      .get("content-type")
-      ?.includes("text/event-stream");
+    const sse = response.headers.get("content-type")?.split(";")[0]?.trim().toLowerCase() === "text/event-stream"
+      ? new SseFraming() : undefined;
     let bytes = 0;
-    let tail = "";
     const cancel = () => {
       void reader.cancel().catch(() => undefined);
     };
@@ -65,8 +92,7 @@ export async function withSdkRequest<T>(
           controller.signal.throwIfAborted();
           if (chunk.done) {
             decoder.decode();
-            if (sse && tail && !tail.replace(/\r\n/g, "\n").replace(/\r/g, "\n").endsWith("\n\n"))
-              throw protocol("unterminated_event");
+            sse?.finish();
             controller.signal.removeEventListener("abort", cancel);
             reader.releaseLock();
             target.close();
@@ -76,7 +102,7 @@ export async function withSdkRequest<T>(
           bytes += chunk.value.byteLength;
           if (bytes > 8_000_000) throw protocol("output_limit");
           const text = decoder.decode(chunk.value, { stream: true });
-          tail = (tail + text).slice(-4);
+          sse?.write(text);
           target.enqueue(chunk.value);
         } catch (error) {
           bodyFailure = error;
@@ -163,6 +189,16 @@ export async function* sdkEvents(
         event.raw.some((line) => line.length > 1_200_000)
       )
         throw protocol("output_limit");
+      // The SDK exposes named, data-free records, while SSE dispatch discards
+      // them. Do not JSON.parse an empty heartbeat; real empty/malformed data
+      // remains a protocol error, and adapters still require native completion.
+      if (!event.data && !event.raw.some(line => /^data(?::|$)/.test(line))) {
+        // A broken failure frame must not be mistaken for a heartbeat and then
+        // superseded by successful output from a relay.
+        if (["error", "response.failed", "response.incomplete"].includes(event.event ?? ""))
+          throw protocol("provider_error_event");
+        continue;
+      }
       yield event;
     }
   } finally {

@@ -42,6 +42,26 @@ const options = () => ({
 });
 const sse = (event: Record<string, unknown>) =>
   `event: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`;
+const messageStart = (
+  usage: Record<string, number> = {
+    input_tokens: 10,
+    output_tokens: 0,
+    cache_creation_input_tokens: 2,
+    cache_read_input_tokens: 3,
+  },
+) => ({
+  type: "message_start",
+  message: {
+    id: "msg_1",
+    type: "message",
+    role: "assistant",
+    model: "claude-fixture",
+    content: [],
+    stop_reason: null,
+    stop_sequence: null,
+    usage,
+  },
+});
 function wire({
   tool = false,
   thinking = false,
@@ -55,26 +75,7 @@ function wire({
   args?: string;
   terminal?: boolean;
 } = {}) {
-  const events: Record<string, unknown>[] = [
-    {
-      type: "message_start",
-      message: {
-        id: "msg_1",
-        type: "message",
-        role: "assistant",
-        model: "claude-fixture",
-        content: [],
-        stop_reason: null,
-        stop_sequence: null,
-        usage: {
-          input_tokens: 10,
-          output_tokens: 0,
-          cache_creation_input_tokens: 2,
-          cache_read_input_tokens: 3,
-        },
-      },
-    },
-  ];
+  const events: Record<string, unknown>[] = [messageStart()];
   let index = 0;
   if (thinking) {
     events.push(
@@ -119,6 +120,46 @@ function wire({
       usage: { output_tokens: 4 },
     },
   );
+  if (terminal) events.push({ type: "message_stop" });
+  return events.map(sse).join("");
+}
+function toolReply({
+  input = {},
+  deltas = [],
+  stop = "tool_use",
+  usage = true,
+  terminal = true,
+}: {
+  input?: Record<string, unknown>;
+  deltas?: readonly string[];
+  stop?: string | null;
+  usage?: boolean;
+  terminal?: boolean;
+} = {}) {
+  const events: Record<string, unknown>[] = [
+    messageStart({ input_tokens: 10, output_tokens: 0 }),
+    {
+      type: "content_block_start",
+      index: 0,
+      content_block: {
+        type: "tool_use",
+        id: "tool_1",
+        name: "read_file",
+        input,
+      },
+    },
+    ...deltas.map((partial_json) => ({
+      type: "content_block_delta",
+      index: 0,
+      delta: { type: "input_json_delta", partial_json },
+    })),
+    { type: "content_block_stop", index: 0 },
+    {
+      type: "message_delta",
+      delta: { stop_reason: stop, stop_sequence: null },
+      ...(usage ? { usage: { output_tokens: 4 } } : {}),
+    },
+  ];
   if (terminal) events.push({ type: "message_stop" });
   return events.map(sse).join("");
 }
@@ -545,6 +586,158 @@ it("accepts empty tool argument deltas but keeps the initial input object author
   expect(result.message.tool_calls?.[0]?.function.arguments).toBe("{}");
 });
 
+it.each([
+  { input: { path: "a" }, deltas: [""], expected: '{"path":"a"}' },
+  { input: {}, deltas: [""], expected: "{}" },
+  { input: { path: "a" }, deltas: [" ", "\n\t"], expected: '{"path":"a"}' },
+  { input: {}, deltas: ["  \n"], expected: "{}" },
+  { input: { path: "a" }, deltas: [], expected: '{"path":"a"}' },
+])(
+  "keeps the tool input when compatibility deltas carry no JSON ($expected)",
+  async ({ input, deltas, expected }) => {
+    const provider = await fixture((_req, res) =>
+      reply(res, toolReply({ input, deltas })),
+    );
+    const result = await provider.complete(
+      [{ role: "user", content: "read" }],
+      [],
+      options(),
+    );
+    expect(result.message.tool_calls).toEqual([
+      {
+        id: "tool_1",
+        type: "function",
+        function: { name: "read_file", arguments: expected },
+      },
+    ]);
+  },
+);
+
+it("still rejects whitespace-padded truncated tool arguments", async () => {
+  const provider = await fixture((_req, res) =>
+    reply(res, toolReply({ deltas: ['  {"path":"unfinished'] })),
+  );
+  const work = provider.complete(
+    [{ role: "user", content: "read" }],
+    [],
+    options(),
+  );
+  await expect(work).rejects.toMatchObject({
+    classification: "protocol",
+    reason: "invalid_tool_call",
+    retryable: false,
+  });
+  await expect(work).rejects.toThrow("Anthropic tool_input validation failed");
+});
+
+it("accepts omitted final usage without reporting the initial token counters as final", async () => {
+  const provider = await fixture((_req, res) =>
+    reply(res, toolReply({ usage: false })),
+  );
+  const result = await provider.complete(
+    [{ role: "user", content: "read" }],
+    [],
+    options(),
+  );
+  expect(result.message.tool_calls?.[0]?.function.arguments).toBe("{}");
+  expect(result.usage).toBeUndefined();
+});
+
+it("accepts legal SSE whose frames omit the event name", async () => {
+  const events: Record<string, unknown>[] = [
+    messageStart({ input_tokens: 10, output_tokens: 0 }),
+    {
+      type: "content_block_start",
+      index: 0,
+      content_block: { type: "text", text: "" },
+    },
+    {
+      type: "content_block_delta",
+      index: 0,
+      delta: { type: "text_delta", text: "hello" },
+    },
+    { type: "content_block_stop", index: 0 },
+    {
+      type: "message_delta",
+      delta: { stop_reason: "end_turn", stop_sequence: null },
+      usage: { output_tokens: 1 },
+    },
+    { type: "message_stop" },
+  ];
+  const provider = await fixture((_req, res) =>
+    reply(
+      res,
+      events.map((event) => `data: ${JSON.stringify(event)}\n\n`).join(""),
+    ),
+  );
+  const text: string[] = [];
+  const result = await provider.complete(
+    [{ role: "user", content: "go" }],
+    [],
+    { ...options(), onText: (value) => text.push(value) },
+  );
+  expect(text.join("")).toBe("hello");
+  expect(result.message.content).toBe("hello");
+});
+
+it("classifies malformed SSE payloads as invalid_json", async () => {
+  const provider = await fixture((_req, res) =>
+    reply(
+      res,
+      `${sse(messageStart())}event: content_block_delta\ndata: {"type":"content_block_delta"\n\n`,
+    ),
+  );
+  const work = provider.complete(
+    [{ role: "user", content: "go" }],
+    [],
+    options(),
+  );
+  await expect(work).rejects.toMatchObject({
+    classification: "protocol",
+    reason: "invalid_json",
+    retryable: false,
+  });
+  await expect(work).rejects.toThrow("Anthropic stream validation failed");
+});
+
+it("ignores ping keepalives before and after the message", async () => {
+  const provider = await fixture((_req, res) =>
+    reply(
+      res,
+      [
+        { type: "ping" },
+        messageStart({ input_tokens: 10, output_tokens: 0 }),
+        {
+          type: "content_block_start",
+          index: 0,
+          content_block: { type: "text", text: "" },
+        },
+        {
+          type: "content_block_delta",
+          index: 0,
+          delta: { type: "text_delta", text: "hello" },
+        },
+        { type: "content_block_stop", index: 0 },
+        {
+          type: "message_delta",
+          delta: { stop_reason: "end_turn", stop_sequence: null },
+          usage: { output_tokens: 1 },
+        },
+        { type: "message_stop" },
+        { type: "ping" },
+      ]
+        .map(sse)
+        .join(""),
+    ),
+  );
+  const result = await provider.complete(
+    [{ role: "user", content: "go" }],
+    [],
+    options(),
+  );
+  expect(result.message.content).toBe("hello");
+});
+
 it("shows initial thinking/text blocks and preserves signed context", async () => {
   const content = wire({ thinking: true })
     .replace('"thinking":"","signature":""', '"thinking":"initial ","signature":""')
@@ -562,7 +755,7 @@ it("shows initial thinking/text blocks and preserves signed context", async () =
 
 it.each([
   { body: wire({ tool: true, args: '{"private-sentinel":"unfinished' }), reason: "invalid_tool_call", stage: "tool_input" },
-  { body: wire({ tool: true, args: '[]' }), reason: "invalid_chunk", stage: "content" },
+  { body: wire({ tool: true, args: '[]' }), reason: "invalid_tool_call", stage: "tool_input" },
   { body: wire({ terminal: false }), reason: "invalid_finish", stage: "stream" },
   { body: wire().replace(sse({ type: "content_block_stop", index: 0 }), ""), reason: "invalid_finish", stage: "stream" },
   { body: wire().replace('"input_tokens":10', '"input_tokens":"private-sentinel"'), reason: "invalid_chunk", stage: "usage" },
@@ -600,4 +793,37 @@ it("retains signed and redacted context while excluding only unsigned display th
   const request = JSON.stringify(requests[1]);
   expect(request).toContain("opaque-signature"); expect(request).toContain("opaque-redaction");
   expect(request).not.toContain("unsigned-only");
+});
+
+it.each(["message", "type-only"])("accepts compatible SSE event naming %s", async mode => {
+  const stream = mode === "message"
+    ? wire().replace(/event: [^\n]+/g, "event: message")
+    : wire().replace(/data: \{"type":"[^"]+",?/g, "data: {");
+  const provider = await fixture((_request, response) => reply(response, stream));
+  expect((await provider.complete([{ role: "user", content: "hello" }], [], options())).message.content).toBe("hello");
+});
+
+it.each([
+  wire().replace("event: message_stop", "event: error"),
+  wire().replace("event: content_block_delta", "event: ping"),
+  wire({ stop: "max_tokens", terminal: false }) + sse({ type: "message_delta", delta: { stop_reason: "end_turn" } }) + sse({ type: "message_stop" }),
+])("rejects contradictory event identities and finish reasons %#", async stream => {
+  const provider = await fixture((_request, response) => reply(response, stream));
+  await expect(provider.complete([{ role: "user", content: "hello" }], [], options())).rejects.toMatchObject({ classification: "protocol", retryable: false });
+});
+
+it("keeps the finish reason when a final usage-only delta has a null reason", async () => {
+  const stream = wire({ terminal: false }) + sse({ type: "message_delta", delta: { stop_reason: null }, usage: { output_tokens: 7 } }) + sse({ type: "message_stop" });
+  const provider = await fixture((_request, response) => reply(response, stream));
+  const result = await provider.complete([{ role: "user", content: "hello" }], [], options());
+  expect(result.message.content).toBe("hello");
+  expect(result.usage?.completionTokens).toBe(7);
+});
+
+it("accepts a completed message without usage while keeping usage unknown", async () => {
+  const stream = toolReply({ usage: false }).replace(',"usage":{"input_tokens":10,"output_tokens":0}', "");
+  const provider = await fixture((_request, response) => reply(response, stream));
+  const result = await provider.complete([{ role: "user", content: "hello" }], [], options());
+  expect(result.message.tool_calls?.[0]?.function.arguments).toBe("{}");
+  expect(result.usage).toBeUndefined();
 });
