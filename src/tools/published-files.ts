@@ -7,7 +7,7 @@ import { z } from "zod";
 import type { LocalToolRegistry } from "../shared/contracts";
 import { ForgeError } from "../shared/errors";
 import { invalidToolInput, recoverToolInputError } from "../shared/tool-input";
-import { PUBLISHED_FILE_MAX_BYTES, publishedFileNameSchema, type PublishedFile } from "../shared/published-files";
+import { PUBLISHED_FILE_MAX_BYTES, PUBLISHED_FILE_MAX_MIB, publishedFileNameSchema, type PublishedFile } from "../shared/published-files";
 import type { PublishedFileStore } from "../store/published-files";
 import { createWorkspacePathGuard } from "./path-guard";
 
@@ -53,7 +53,7 @@ export async function createPublishedFileTool(workspace: string, store: Publishe
   const unsafe = (text: string) => secretText(text) || known.some(secret => text.includes(secret));
   let disposed = false;
   return {
-    definitions: [defineTool("publish_file", "Deliver an existing workspace file to this conversation as an immutable downloadable attachment. Use after generating a user-facing report, image or archive; writing a file alone does not send it. Workspace-relative only, no symlinks/hardlinks, credentials or sensitive content; protected state is inaccessible even unrestricted. Maximum 8 MiB/file, 128 files/64 MiB per session. Readonly denied. Only metadata enters context; original bytes are preserved. Do not claim delivery unless this tool succeeds.", argumentsSchema)],
+    definitions: [defineTool("publish_file", `Deliver an existing workspace file to this conversation as an immutable downloadable attachment. Use after generating a user-facing report, image or archive; writing a file alone does not send it. Workspace-relative only, no symlinks/hardlinks, credentials or sensitive content; protected state is inaccessible even unrestricted. Maximum ${PUBLISHED_FILE_MAX_MIB} MiB/file, 128 files/64 MiB per session. Readonly denied. Only metadata enters context; original bytes are preserved. Do not claim delivery unless this tool succeeds.`, argumentsSchema)],
     async execute(call, context) {
       try {
         check(context.signal);
@@ -67,7 +67,7 @@ export async function createPublishedFileTool(workspace: string, store: Publishe
         const target = await guard.resolveRead(path);
         const before = await lstat(target);
         if (!before.isFile() || before.isSymbolicLink() || before.nlink !== 1) fail("Only regular, unlinked workspace files can be published.");
-        if (before.size > PUBLISHED_FILE_MAX_BYTES) fail("File exceeds the 8 MiB ceiling.");
+        if (before.size > PUBLISHED_FILE_MAX_BYTES) fail(`File exceeds the ${PUBLISHED_FILE_MAX_MIB} MiB ceiling.`);
         const handle = await open(target, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
         let bytes: Buffer;
         try {

@@ -1,6 +1,10 @@
 import { z } from "zod";
 
-export const PUBLISHED_FILE_MAX_BYTES = 8 * 1024 * 1024;
+/** Per-file attachment ceiling. Base64 transport expands this by 4/3 (about 70 MiB). */
+export const PUBLISHED_FILE_MAX_BYTES = 50 * 1024 * 1024;
+export const PUBLISHED_FILE_MAX_MIB = PUBLISHED_FILE_MAX_BYTES / (1024 * 1024);
+export const PUBLISHED_FILE_MAX_BASE64_BYTES =
+  Math.ceil(PUBLISHED_FILE_MAX_BYTES / 3) * 4;
 export const PUBLISHED_SESSION_MAX_BYTES = 64 * 1024 * 1024;
 export const PUBLISHED_SESSION_MAX_FILES = 128;
 export const PUBLISHED_PREVIEW_MAX_BYTES = 1024 * 1024;
@@ -21,7 +25,7 @@ export type PublishedFile = z.infer<typeof publishedFileSchema>;
 export const publishedFilesSchema = z.array(publishedFileSchema).max(16).readonly();
 export const publishedFileResponseSchema = z.object({
   file: publishedFileSchema,
-  base64: z.string().max(Math.ceil(PUBLISHED_FILE_MAX_BYTES / 3) * 4)
+  base64: z.string().max(PUBLISHED_FILE_MAX_BASE64_BYTES)
     .refine(value => value.length % 4 === 0 && /^[A-Za-z0-9+/]*={0,2}$/.test(value), "Expected base64 bytes"),
 }).strict().readonly();
 export type PublishedFileResponse = z.infer<typeof publishedFileResponseSchema>;

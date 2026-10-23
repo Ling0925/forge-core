@@ -3,7 +3,8 @@ import { join } from "node:path";
 import { z } from "zod";
 import { ForgeError } from "../shared/errors";
 import {
-  PUBLISHED_FILE_MAX_BYTES, PUBLISHED_SESSION_MAX_BYTES, PUBLISHED_SESSION_MAX_FILES,
+  PUBLISHED_FILE_MAX_BASE64_BYTES, PUBLISHED_FILE_MAX_BYTES, PUBLISHED_FILE_MAX_MIB,
+  PUBLISHED_SESSION_MAX_BYTES, PUBLISHED_SESSION_MAX_FILES,
   publishedFileIdSchema, publishedFileResponseSchema, publishedFileSchema,
   type PublishedFile, type PublishedFileResponse,
 } from "../shared/published-files";
@@ -11,7 +12,8 @@ import { sessionIdSchema, type SessionId } from "../shared/schemas";
 import { atomicJson, privateDirectory, readJson, storageError } from "./io";
 import { fileLock } from "./lock";
 
-const RECORD_LIMIT = Math.ceil(PUBLISHED_FILE_MAX_BYTES / 3) * 4 + 16384;
+const RECORD_LIMIT = PUBLISHED_FILE_MAX_BASE64_BYTES + 16384;
+const SESSION_MAX_MIB = PUBLISHED_SESSION_MAX_BYTES / (1024 * 1024);
 const indexSchema = z.array(publishedFileSchema).max(PUBLISHED_SESSION_MAX_FILES).readonly();
 const hash = (value: Buffer) => createHash("sha256").update(value).digest("hex");
 
@@ -32,7 +34,7 @@ export async function openPublishedFileStore(stateDirectory: string): Promise<Pu
   return {
     async put(rawSessionId, bytes, details, signal) {
       const sessionId = sessionIdSchema.parse(rawSessionId);
-      if (bytes.length > PUBLISHED_FILE_MAX_BYTES) throw new ForgeError("tool", "File exceeds the 8 MiB ceiling.");
+      if (bytes.length > PUBLISHED_FILE_MAX_BYTES) throw new ForgeError("tool", `File exceeds the ${PUBLISHED_FILE_MAX_MIB} MiB ceiling.`);
       await checkDirectories();
       const release = await fileLock(join(indexes, `${sessionId}.lock`), signal);
       const indexPath = join(indexes, `${sessionId}.json`);
@@ -41,7 +43,7 @@ export async function openPublishedFileStore(stateDirectory: string): Promise<Pu
         try { files = indexSchema.parse(await readJson(indexPath, 1024 * 1024)); }
         catch (error) { if (!(error instanceof ForgeError && error.code === "not_found")) throw storageError(); }
         if (files.length >= PUBLISHED_SESSION_MAX_FILES || files.reduce((sum, file) => sum + file.size, bytes.length) > PUBLISHED_SESSION_MAX_BYTES)
-          throw new ForgeError("tool", "Session attachment quota reached (128 files / 64 MiB).");
+          throw new ForgeError("tool", `Session attachment quota reached (${PUBLISHED_SESSION_MAX_FILES} files / ${SESSION_MAX_MIB} MiB).`);
         if (signal.aborted) throw new ForgeError("cancelled", "File publication cancelled.");
         const file = publishedFileSchema.parse({ ...details, id: randomUUID(), size: bytes.length, sha256: hash(bytes), createdAt: new Date().toISOString() });
         // Reserve quota first: failures/crashes may consume quota, never create
