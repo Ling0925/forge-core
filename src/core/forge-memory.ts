@@ -51,6 +51,8 @@ export async function forgeMemory(input: ForgeMemoryInput, options: {
   readonly provider: ModelProvider;
   readonly context: ToolContext;
   readonly secrets?: readonly string[];
+  /** Launch-time session/model snapshot for a host-owned background operation. */
+  readonly current?: import("../shared/schemas").SessionSnapshot;
 }) {
   const { sessions, memories, provider, context } = options;
   const check = () => {
@@ -58,7 +60,8 @@ export async function forgeMemory(input: ForgeMemoryInput, options: {
     if (context.permission === "readonly") throw new ForgeError("tool", "Readonly permission forbids memory synthesis.");
   };
   check();
-  const current = await sessions.get(context.sessionId);
+  const current = options.current ?? await sessions.get(context.sessionId);
+  if (current.id !== context.sessionId) throw new ForgeError("internal", "Memory synthesis session mismatch.");
   check();
   const retrieved = await retrieveMemoryEvidence({ input, current, sessions, memories,
     signal: context.signal, ...(options.secrets ? { secrets: options.secrets } : {}) });

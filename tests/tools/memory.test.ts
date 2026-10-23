@@ -119,6 +119,29 @@ describe("memory tools", () => {
     expect(() => JSON.parse(read.content)).not.toThrow();
   });
 
+  it("only schedules background synthesis after fresh approval and never silently falls back", async () => {
+    expect((await execute("forge_memory", { query: "forge", background: true })).isError).toBe(true);
+    expect(forge).not.toHaveBeenCalled();
+    const background = vi.fn(async (_input, ctx: ToolContext) => {
+      expect(ctx.signal).toBe(context.signal);
+      return { id: randomUUID(), status: "running" };
+    });
+    await tools.dispose();
+    tools = createMemoryToolRegistry(store, { forge, background });
+    const approve = vi.fn(async () => false);
+    const input = { query: "forge", background: true, dry_run: true };
+    expect((await execute("forge_memory", input, { ...context, permission: "readonly", approve })).isError).toBe(true);
+    expect(approve).not.toHaveBeenCalled();
+    expect((await execute("forge_memory", input, { ...context, permission: "workspace", approve })).isError).toBe(true);
+    expect(background).not.toHaveBeenCalled();
+    const response = await execute("forge_memory", input, { ...context, permission: "workspace", approve: async () => true });
+    expect(JSON.parse(response.content)).toMatchObject({ status: "running" });
+    expect(background).toHaveBeenCalledOnce();
+    expect(forge).not.toHaveBeenCalled();
+    await tools.dispose();
+    expect(background.mock.calls[0]?.[1].signal.aborted).toBe(false);
+  });
+
   it("disposes the registry without closing the shared database", async () => {
     await tools.dispose();
     await expect(execute("get_memory", { id: 0 })).rejects.toMatchObject({ code: "cancelled" });

@@ -278,6 +278,7 @@ export async function openInputQueue(options: {
               item.runId,
               item.providerBinding,
               item.acknowledgedPredecessor,
+              item.origin,
             );
             if (
               result === "completed" ||
@@ -344,107 +345,116 @@ export async function openInputQueue(options: {
       });
     active.set(sessionId, operation);
   };
-  return {
-    async enqueue(raw) {
-      const request = enqueueInputSchema.parse(raw);
-      const requestHash = digest(request.input);
-      const item = await transaction(async (ledger) => {
-        const existing = ledger.items.find(
-          (item) => item.inputId === request.inputId,
-        );
-        if (existing) {
-          if (
-            existing.sessionId !== request.input.sessionId ||
-            existing.requestHash !== requestHash
-          )
-            throw new ForgeError(
-              "invalid_input",
-              "This input ID was already accepted with different content.",
-            );
-          return publicItem(existing);
-        }
-        check();
-        if (ledger.items.length >= MAX_RECEIPTS)
-          throw new ForgeError(
-            "busy",
-            "The durable input receipt limit has been reached.",
-          );
-        const prepared = await options.prepare(request.input);
-        const input = runInputSchema.parse(prepared.input);
-        const bytes = Buffer.byteLength(JSON.stringify(input));
-        const waiting = ledger.items.filter(pending);
-        const own = waiting.filter(
-          (item) => item.sessionId === input.sessionId,
-        );
-        const totalBytes = (items: readonly StoredItem[]) =>
-          items.reduce(
-            (sum, item) => sum + Buffer.byteLength(JSON.stringify(item.input)),
-            bytes,
-          );
+  /** One durable acceptance path; origin is host-owned and never caller-supplied. */
+  const accept = async (
+    raw: unknown,
+    origin?: "background_task",
+  ): Promise<QueuedInput> => {
+    const request = enqueueInputSchema.parse(raw);
+    // Legacy-compatible hash: origin is compared separately so a notification
+    // can never be swapped for, or reused as, ordinary explicit input.
+    const requestHash = digest(request.input);
+    const item = await transaction(async (ledger) => {
+      const existing = ledger.items.find(
+        (item) => item.inputId === request.inputId,
+      );
+      if (existing) {
         if (
-          waiting.length >= MAX_PENDING ||
-          own.length >= MAX_SESSION_PENDING ||
-          totalBytes(ledger.items.filter((item) => item.input !== null)) >
-            MAX_TOTAL_BYTES ||
-          totalBytes(
-            ledger.items.filter(
-              (item) =>
-                item.sessionId === input.sessionId && item.input !== null,
-            ),
-          ) > MAX_SESSION_BYTES
+          existing.sessionId !== request.input.sessionId ||
+          existing.origin !== origin ||
+          existing.requestHash !== requestHash
         )
           throw new ForgeError(
-            "busy",
-            "The durable input queue is full. Nothing was accepted.",
-            true,
+            "invalid_input",
+            "This input ID was already accepted with different content.",
           );
-        if (!input.model || !input.permission)
-          throw new ForgeError("internal", "Queue selection was not pinned.");
-        const timestamp = new Date().toISOString();
-        const entry: StoredItem = {
-          inputId: request.inputId,
-          sessionId: input.sessionId,
-          sequence: ledger.nextSequence++,
-          state: "queued",
-          acceptedAt: timestamp,
-          updatedAt: timestamp,
-          runId: null,
-          input,
-          selection: {
-            model: input.model,
-            ...(input.providerSourceId
-              ? { providerSourceId: input.providerSourceId }
-              : {}),
-            ...(input.routeGroupId ? { routeGroupId: input.routeGroupId } : {}),
-            mode: input.mode ?? "build",
-            permission: input.permission,
-          },
-          requestHash,
-          providerBinding: prepared.providerBinding,
-        };
-        const predecessor = await options.predecessor?.(input.sessionId);
-        // A new explicit request after an old terminal failure is not permanently
-        // banned. Never implicitly acknowledge live or uncertain pending effects.
-        if (
-          predecessor?.unsafe &&
-          !predecessor.active &&
-          !runner?.isBusy(input.sessionId)
-        ) {
-          try {
-            const checked = await options.predecessor?.(input.sessionId, true);
-            if (checked && !checked.active)
-              entry.acknowledgedPredecessor = checked.token;
-          } catch (error) {
-            if (!(error instanceof ForgeError) || error.code !== "busy")
-              throw error;
-          }
+        return publicItem(existing);
+      }
+      check();
+      if (ledger.items.length >= MAX_RECEIPTS)
+        throw new ForgeError(
+          "busy",
+          "The durable input receipt limit has been reached.",
+        );
+      const prepared = await options.prepare(request.input);
+      const input = runInputSchema.parse(prepared.input);
+      const bytes = Buffer.byteLength(JSON.stringify(input));
+      const waiting = ledger.items.filter(pending);
+      const own = waiting.filter((item) => item.sessionId === input.sessionId);
+      const totalBytes = (items: readonly StoredItem[]) =>
+        items.reduce(
+          (sum, item) => sum + Buffer.byteLength(JSON.stringify(item.input)),
+          bytes,
+        );
+      if (
+        waiting.length >= MAX_PENDING ||
+        own.length >= MAX_SESSION_PENDING ||
+        totalBytes(ledger.items.filter((item) => item.input !== null)) >
+          MAX_TOTAL_BYTES ||
+        totalBytes(
+          ledger.items.filter(
+            (item) => item.sessionId === input.sessionId && item.input !== null,
+          ),
+        ) > MAX_SESSION_BYTES
+      )
+        throw new ForgeError(
+          "busy",
+          "The durable input queue is full. Nothing was accepted.",
+          true,
+        );
+      if (!input.model || !input.permission)
+        throw new ForgeError("internal", "Queue selection was not pinned.");
+      const timestamp = new Date().toISOString();
+      const entry: StoredItem = {
+        inputId: request.inputId,
+        sessionId: input.sessionId,
+        ...(origin ? { origin } : {}),
+        sequence: ledger.nextSequence++,
+        state: "queued",
+        acceptedAt: timestamp,
+        updatedAt: timestamp,
+        runId: null,
+        input,
+        selection: {
+          model: input.model,
+          ...(input.providerSourceId
+            ? { providerSourceId: input.providerSourceId }
+            : {}),
+          ...(input.routeGroupId ? { routeGroupId: input.routeGroupId } : {}),
+          mode: input.mode ?? "build",
+          permission: input.permission,
+        },
+        requestHash,
+        providerBinding: prepared.providerBinding,
+      };
+      const predecessor = await options.predecessor?.(input.sessionId);
+      // Only an explicit user request may acknowledge a stale terminal failure.
+      // A background notification waits for explicit resume and never resumes
+      // a failed, cancelled, interrupted, paused or otherwise unsafe session.
+      if (
+        !origin &&
+        predecessor?.unsafe &&
+        !predecessor.active &&
+        !runner?.isBusy(input.sessionId)
+      ) {
+        try {
+          const checked = await options.predecessor?.(input.sessionId, true);
+          if (checked && !checked.active)
+            entry.acknowledgedPredecessor = checked.token;
+        } catch (error) {
+          if (!(error instanceof ForgeError) || error.code !== "busy")
+            throw error;
         }
-        ledger.items.push(entry);
-        return publicItem(entry);
-      });
-      schedule(item.sessionId);
-      return item;
-    },
+      }
+      ledger.items.push(entry);
+      return publicItem(entry);
+    });
+    schedule(item.sessionId);
+    return item;
+  };
+  return {
+    enqueue: (raw) => accept(raw),
+    notify: (raw) => accept(raw, "background_task"),
     async list(id) {
       const sessionId = sessionIdSchema.parse(id);
       await options.validateSession(sessionId);

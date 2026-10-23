@@ -40,6 +40,9 @@ import { openSessionStore } from "../store/sessions";
 import { openMemoryStore } from "../store/memory";
 import { createMemoryToolRegistry } from "../tools/memory";
 import { forgeMemory } from "./forge-memory";
+import { openAsyncTaskService } from "./async-tasks";
+import type { AsyncTaskService } from "../shared/async-tasks";
+import { createAsyncTaskToolRegistry } from "../tools/async-tasks";
 import { openSettingsStore } from "../store/settings";
 import { openToolHooksStore } from "../store/tool-hooks";
 import { openHarnessExperienceStore } from "../store/harness-experiences";
@@ -168,6 +171,14 @@ export const createHarness = async (
   const taskAccess = new Set<CommandTaskAccess>();
   const recentTaskAccess: CommandTaskAccess[] = [];
   const taskSecrets = new Set<string>();
+  let asyncTasks: Promise<AsyncTaskService> | undefined;
+  // Only sessions which actually launch retained async receipts enter this map.
+  // Later runs replace the reader so pending commits observe current grants.
+  const asyncPermissions = new Map<SessionId, () => import("../shared/schemas").Permission>();
+  const getAsyncTasks = () => {
+    check();
+    return asyncTasks ??= openAsyncTaskService({ directory, notify: request => inputQueue.notify(request) });
+  };
   const buildTools = async (
     workspace: string,
     settings: PublicSettings,
@@ -207,7 +218,41 @@ export const createHarness = async (
           await createPublishedFileTool(workspace, publishedFiles, { protectedRoots: [directory], redactValues: [apiKey] }),
           createMemoryToolRegistry(memories, { redactValues: [apiKey],
             forge: (input, toolContext) => forgeMemory(input, { sessions: store, memories, provider, context: toolContext, secrets: [apiKey] }),
+            background: async (input, toolContext) => {
+              const current = await store.get(toolContext.sessionId);
+              const main = current.parentSessionId ? await store.get(current.parentSessionId) : current;
+              const service = await getAsyncTasks();
+              const levels = ["readonly", "workspace", "unrestricted"] as const;
+              let ceiling = levels.indexOf(toolContext.permission);
+              const newOwner = !asyncPermissions.has(main.id);
+              if (newOwner) asyncPermissions.set(main.id, () => toolContext.permission);
+              try {
+                return await service.start({ tool: "forge_memory", sessionId: current.id, wakeSessionId: main.id,
+                  resume: { model: main.model, permission: toolContext.permission,
+                    ...(main.providerSourceId ? { providerSourceId: main.providerSourceId } : {}),
+                    ...(main.routeGroupId ? { routeGroupId: main.routeGroupId } : {}) },
+                  signal: toolContext.signal, redact: text => redactMemoryText(text, [apiKey]),
+                  execute: async (signal, onModelUsage) => {
+                    const context = { ...toolContext, signal, onModelUsage,
+                      // No late callbacks into a disposed run's writer/approval queue.
+                      approve: async () => false, onEvent: () => {},
+                      get permission() {
+                        ceiling = Math.min(ceiling, levels.indexOf(toolContext.permission),
+                          levels.indexOf(asyncPermissions.get(main.id)?.() ?? "readonly"));
+                        return levels[ceiling] ?? "readonly";
+                      },
+                    };
+                    return { content: JSON.stringify(await forgeMemory(input, { sessions: store, memories, provider,
+                      context, current, secrets: [apiKey] })), isError: false };
+                  },
+                });
+              } catch (error) {
+                if (newOwner) asyncPermissions.delete(main.id);
+                throw error;
+              }
+            },
           }),
+          createAsyncTaskToolRegistry(getAsyncTasks),
         ] : []),
         createSkillTool(context),
       );
@@ -422,6 +467,17 @@ export const createHarness = async (
       return result;
     },
   });
+  // Existing receipts are recovered at host startup, not as a side effect of a
+  // model's readonly query. Never create this service for hosts which never use it.
+  try {
+    await stat(join(directory, "async-tasks"));
+    await getAsyncTasks();
+  } catch (error) {
+    if (!(error && typeof error === "object" && "code" in error && error.code === "ENOENT")) {
+      await Promise.allSettled([modelAccess.dispose(), inputQueue.dispose(), memories.close(), mcp.dispose()]);
+      throw error;
+    }
+  }
   return {
     inputQueue,
     tasks: {
@@ -432,10 +488,11 @@ export const createHarness = async (
     async cancelSession(rawId) {
       const id = sessionIdSchema.parse(rawId);
       const owned = controls.get(id);
-      if (!owned) return false;
-      owned.controller.abort();
-      await Promise.allSettled([owned.work]);
-      return true;
+      owned?.controller.abort();
+      let stoppedTask = false;
+      try { if (asyncTasks) stoppedTask = await (await asyncTasks).cancelSession(id); }
+      finally { await Promise.allSettled([owned?.work]); }
+      return !!owned || stoppedTask;
     },
     compactSession(rawId, callerSignal) {
       check();
@@ -799,6 +856,12 @@ export const createHarness = async (
             if (predecessor.unsafe && control.acknowledgedPredecessor !== predecessor.token)
               throw new QueueAdmissionError();
           }
+          if (asyncPermissions.has(input.sessionId)) {
+            const levels = ["readonly", "workspace", "unrestricted"] as const;
+            asyncPermissions.set(input.sessionId, () => levels[Math.min(
+              levels.indexOf(input.mode === "plan" ? "readonly" : control?.getPermission?.() ?? input.permission ?? settings.defaultPermission),
+              levels.indexOf(snapshot.permissionCeiling ?? "unrestricted"))] ?? "readonly");
+          }
           rootBudget = createRootRunBudget({ rootSessionId: input.sessionId });
           // An explicit selection (the picked model's source) wins; a session
           // keeps the source it was created with; only when neither exists does
@@ -927,7 +990,14 @@ export const createHarness = async (
             if (tools) await tools.dispose();
           } finally {
             try { await releaseSession?.(); }
-            finally { rootBudget?.close(); active.delete(input.sessionId); }
+            finally {
+              rootBudget?.close(); active.delete(input.sessionId);
+              const reader = asyncPermissions.get(input.sessionId);
+              if (reader) {
+                const permission = reader();
+                asyncPermissions.set(input.sessionId, () => permission);
+              }
+            }
           }
         }
       });
@@ -943,7 +1013,10 @@ export const createHarness = async (
       closing = Promise.allSettled(
         [...controls.values()].map((c) => c.work),
       ).then(async () => {
-        try { await modelAccess.dispose(); }
+        try {
+          try { if (asyncTasks) await (await asyncTasks).dispose(); }
+          finally { await modelAccess.dispose(); }
+        }
         finally {
           await Promise.allSettled([...titleTasks]);
           try { await inputQueue.dispose(); }

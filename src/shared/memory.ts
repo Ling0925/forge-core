@@ -54,6 +54,7 @@ export const forgeMemorySchema = z.object({
   tags: memoryTagsSchema.default([]),
   scope: z.enum(["all", "workspace", "session"]).default("all"),
   max_memories: z.number().int().min(1).max(12).default(4),
+  background: z.boolean().default(false).describe("Return an async task ID after approval; completion wakes the main session. Use async_task to inspect/stop. No automatic retry."),
   dry_run: z.boolean().default(false),
 }).strict();
 export type ForgeMemoryInput = z.infer<typeof forgeMemorySchema>;

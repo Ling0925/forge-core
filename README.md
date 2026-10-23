@@ -8,7 +8,7 @@ Core 可以作为独立 HTTP/WebSocket 服务运行，也可以作为 TypeScript
 
 ## Core 提供什么
 
-- **任务执行**：流式输出、工具调用、子代理、排队与插话、取消和审批。
+- **任务执行**：流式输出、工具调用、子代理、排队与插话、取消和审批；支持跨轮后台工具任务与主会话完成唤醒。
 - **模型接入**：OpenAI Chat Completions / Responses、Anthropic Messages、Gemini，以及来源、凭据与路由管理。
 - **本地工作区**：文件搜索与编辑、命令执行、检查点和改动记录；浏览器、LSP 与 MCP 按配置启用。
 - **持久化上下文**：会话历史、分页读取、上下文压缩、工作记忆与长期记忆。
@@ -167,7 +167,7 @@ src/shared/     公共类型、schema 与客户端契约
 - [契约归属与浏览器边界](docs/CONTRACT_BOUNDARIES.md)
 - [运行生命周期与取消](docs/RUNTIME_LIFECYCLE.md)
 - [会话存储](docs/SESSION_STORAGE.md) · [持久输入队列](docs/INPUT_QUEUE.md)
-- [长期记忆与聚焦整理](docs/MEMORY.md)
+- [长期记忆与聚焦整理](docs/MEMORY.md) · [通用异步工具与主会话唤醒](docs/ASYNC_TOOLS.md)
 - [测试归属](docs/TEST_OWNERSHIP.md)
 - [作者说明](docs/AUTHORSHIP.md) · [第三方声明](THIRD_PARTY_NOTICES.md)
 

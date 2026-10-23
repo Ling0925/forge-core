@@ -27,6 +27,7 @@ const readonlyToolNames = new Set([
   "git_log",
   "get_memory",
   "search_memory",
+  "async_task", // Its own action gate denies stop/wake in readonly mode.
 ]);
 
 /** Pure admission: no effects, budget mutation, event emission or persistence. */

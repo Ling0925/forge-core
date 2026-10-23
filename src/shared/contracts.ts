@@ -32,7 +32,11 @@ export interface RunControl {
   readonly providerBinding?: string;
   /** Trusted predecessor acknowledgment; never a public RunInput field. */
   readonly acknowledgedPredecessor?: string;
+  /** Trusted durable completion notification; never a public RunInput field. */
+  readonly inputOrigin?: "background_task";
   readonly getPermission?: () => Permission | undefined;
+  /** Freeze host permission changes before persisting the terminal permission. */
+  readonly onFinalizing?: () => void;
   /** final=true atomically closes an empty child queue before terminal cleanup. */
   readonly drainSteering: (
     final?: boolean,

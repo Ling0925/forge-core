@@ -54,6 +54,7 @@ export function createWorkerController(
       finished: boolean;
       permission: Permission | undefined;
       permissionChanged: boolean;
+      acceptingPermission: boolean;
       recovery: Map<string, AgentEvent>;
       steering: Extract<RpcRequest, { method: "steerRun" }>[];
       applyingSteering: Extract<RpcRequest, { method: "steerRun" }>[];
@@ -273,6 +274,7 @@ export function createWorkerController(
     providedRunId?: RunId,
     providerBinding?: string,
     acknowledgedPredecessor?: string,
+    inputOrigin?: "background_task",
   ) => {
     if (
       [...runs.values()].some((run) => run.input.sessionId === input.sessionId)
@@ -292,6 +294,7 @@ export function createWorkerController(
       finished: false,
       permission: undefined,
       permissionChanged: false,
+      acceptingPermission: true,
       recovery: new Map<string, AgentEvent>(),
       steering: [],
       applyingSteering: [],
@@ -369,8 +372,10 @@ export function createWorkerController(
               }
             },
             getPermission: () => run.permission,
+            onFinalizing: () => { run.acceptingPermission = false; },
             ...(providerBinding ? { providerBinding } : {}),
             ...(acknowledgedPredecessor ? { acknowledgedPredecessor } : {}),
+            ...(inputOrigin ? { inputOrigin } : {}),
           },
         ),
       )
@@ -392,8 +397,14 @@ export function createWorkerController(
   const queueReady = service.inputQueue?.attach({
     isBusy: (sessionId) =>
       [...runs.values()].some((run) => run.input.sessionId === sessionId),
-    start: (input, runId, binding, predecessor) =>
-      startRun(input, runIdSchema.parse(runId), binding, predecessor).operation,
+    start: (input, runId, binding, predecessor, origin) =>
+      startRun(
+        input,
+        runIdSchema.parse(runId),
+        binding,
+        predecessor,
+        origin,
+      ).operation,
   });
   void queueReady?.catch(() => undefined);
   const queue = async () => {
@@ -677,10 +688,10 @@ export function createWorkerController(
         }
         case "setRunPermission": {
           const run = runs.get(request.runId);
-          if (!run || run.finished || run.abort.signal.aborted)
+          if (!run || run.finished || !run.acceptingPermission || run.abort.signal.aborted)
             throw new ForgeError("not_found", "The run is no longer active.");
           const snapshot = await service.getSession(run.input.sessionId);
-          if (run.finished || run.abort.signal.aborted)
+          if (run.finished || !run.acceptingPermission || run.abort.signal.aborted)
             throw new ForgeError("not_found", "The run is no longer active.");
           const levels = ["readonly", "workspace", "unrestricted"] as const;
           const ceiling =

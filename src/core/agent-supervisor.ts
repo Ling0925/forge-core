@@ -202,7 +202,9 @@ export function createAgentSupervisor(options: SupervisorOptions) {
       unhandledFailure: boolean;
     }> {
       if (cancel)
-        for (const child of children.values()) child.controller.abort();
+        // Completed children may have explicitly transferred async tool work to
+        // the host. Normal parent cleanup is not cancellation of that work.
+        for (const child of children.values()) if (child.active) child.controller.abort();
       const joined = await Promise.allSettled(
         [...children.values()].map((child) => child.work),
       );
