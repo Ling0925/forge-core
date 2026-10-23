@@ -15,7 +15,7 @@ function argument(name: string, fallback?: string): string | undefined {
   return value;
 }
 if (args.includes("--help")) {
-  console.log("Forge Core: --host <IPv4> --port <1024..65535> --workspace <directory> [--socket <private Unix socket>] [--renderer <built Web UI directory>]\nDefaults: host 127.0.0.1, port 5173. API-only unless --renderer is supplied. Personal LAN direct access; no device pairing required. HTTP has no transport secrecy.");
+  console.log("Forge Core: --host <IPv4> --port <1024..65535> --workspace <directory> [--socket <private Unix socket>] [--renderer <built Web UI directory>] [--multi-workspace]\nDefaults: host 127.0.0.1, port 5173. API-only unless --renderer is supplied. Personal LAN direct access; no device pairing required. HTTP has no transport secrecy.");
 } else {
   const host = argument("--host", "127.0.0.1")!;
   const port = Number(argument("--port", "5173"));
@@ -29,7 +29,7 @@ if (args.includes("--help")) {
   let local: Awaited<ReturnType<typeof createLocalHost>> | undefined;
   let web!: Awaited<ReturnType<typeof createWebHost>>;
   try {
-    web = await createWebHost({ runtime, workspace, host, port, ...(rendererRoot === undefined ? {} : { rendererRoot }) });
+    web = await createWebHost({ runtime, workspace, host, port, restrictWorkspace: !args.includes("--multi-workspace"), ...(rendererRoot === undefined ? {} : { rendererRoot }) });
     const socketPath = argument("--socket");
     if (socketPath) local = await createLocalHost({ runtime, socketPath });
   } catch (error) {

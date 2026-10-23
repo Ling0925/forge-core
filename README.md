@@ -14,9 +14,10 @@
 `shared` 及服务端 `web`。不包含 CLI、React renderer、Electron 或 Android 应用。
 HTTP/WebSocket 由 Core 提供；Web UI 是独立构建的静态资源，不是构建前提。
 
-这是仓库和包边界拆分，**仍是原 TypeScript/Node 核心**。没有实现 Rust 移植、
-Android 本地核心、默认单实例 daemon 或跨设备同步。普通 CLI/Web 的进程所有权
-保留旧行为；共享运行状态必须显式连接同一个已有 host，不能仅共享数据目录。
+**仍是 TypeScript/Node 核心**，没有实现 Rust 移植、Android 本地核心或跨设备同步。
+Web 生产入口现在通过独立网关连接本进程，重启 Web 不会停止 Core 中的任务。
+这不是全局单实例 daemon：CLI 或其他入口仍须显式连接同一个 host 才能共享运行状态，
+不能仅靠共享数据目录，也不要同时启动多个持有同一数据目录的 Core。
 
 ## 安装、构建与验证
 
@@ -49,8 +50,28 @@ FORGE_HOME=/path/to/isolated-state node dist/web/serve.js --workspace /absolute/
 ```
 
 可传 `--socket /private/directory/core.sock` 复用现有本地 attach 传输。
-默认仅监听回环地址；显式 LAN 地址仍沿用原有可信网络直连行为，HTTP 无加密，
-不要直接暴露到不可信网络。停止服务会停止它持有的任务，本次没有改变这一语义。
+默认限制为启动工作区；`--multi-workspace` 保留个人 Web 工作台跨工作区的行为。
+默认仅监听回环地址；显式 LAN 地址仍沿用可信网络直连行为，HTTP 无加密，
+不要直接暴露到不可信网络。**停止 Core 仍会停止它持有的任务**；日常更新 UI 只重启 Web。
+
+### 独立 Core + Web
+
+```sh
+# 终端/服务 A：Core 仅监听本机，独立持有任务、审批、会话和事件补发记录
+node dist/web/serve.js --host 127.0.0.1 --port 5175 --workspace /absolute/project --multi-workspace
+# 终端/服务 B：Web UI 仓，先构建其 renderer
+node ../forge-web-ui/scripts/serve.mjs --core-url http://127.0.0.1:5175 --host 127.0.0.1 --port 5173
+```
+
+`@forge/core/web/gateway` 只提供静态 UI 与流式 HTTP/WebSocket 转发，不创建 Harness、
+读写会话或重试任务请求；停止网关只关闭连接。浏览器重连到原 Core，按原 cursor
+补发事件；超出事件保留窗口时重新读取持久化状态。网关只允许明确的本机 IPv4 Core，
+先验证外部 Host/Origin，再改写内部地址；不开放通用代理或跨站 API。
+首次从旧单进程切换时无法搬迁内存中的运行态，必须先等旧任务结束再停止旧服务。
+两个服务不得配置会在 Web 重启时联动停止 Core 的 `PartOf`/`BindsTo` 关系。
+
+发送附件单文件上限为 **50 MiB（52,428,800 字节）**；每会话仍为 128 个、合计 64 MiB。
+此上限不改变文本编辑工具和图片输入各自的限制。
 
 ## 客户端包依赖
 

@@ -1,6 +1,6 @@
 import { z } from "zod";
 
-/** Per-file attachment ceiling. Base64 transport expands this by 4/3 (about 70 MiB). */
+/** Per-file attachment ceiling. Base64 transport expands this by 4/3 (about 67 MiB). */
 export const PUBLISHED_FILE_MAX_BYTES = 50 * 1024 * 1024;
 export const PUBLISHED_FILE_MAX_MIB = PUBLISHED_FILE_MAX_BYTES / (1024 * 1024);
 export const PUBLISHED_FILE_MAX_BASE64_BYTES =

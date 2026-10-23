@@ -3,7 +3,7 @@ import { PUBLISHED_FILE_MAX_BASE64_BYTES } from "../shared/published-files";
 import { hostError } from "./errors";
 
 export const MAX_REQUEST_BYTES = 16 * 1024 * 1024;
-/** One maximum attachment is ~70 MiB as base64; leave 1 MiB for the JSON
+/** One maximum attachment is ~67 MiB as base64; leave 1 MiB for the JSON
  * envelope and 16 MiB for queued writes so it fits with slow-client headroom. */
 export const MAX_RESPONSE_BYTES = Math.max(
   64 * 1024 * 1024,
