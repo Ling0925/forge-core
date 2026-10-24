@@ -9,7 +9,7 @@ import type {
 } from "../shared/ipc";
 import type { ProviderAttempt } from "../shared/model-access";
 import type { AgentEvent, SessionSnapshot, Usage } from "../shared/schemas";
-import { createModelPricingService, estimateAggregateCostUsd, estimateRequestCostUsd, findModelPrice, type ModelPrices, type ModelPricingService } from "./model-pricing";
+import { createModelPricingService, estimateAggregateCostUsd, estimateRequestCostUsd, findModelPrice, normalizePricingModelId, type ModelPrice, type ModelPrices, type ModelPricingService } from "./model-pricing";
 
 type TokenUsageStat = Pick<SessionUsageStat, "promptTokens" | "completionTokens" | "cachedTokens" | "totalTokens">;
 type MutableTokenUsage = { -readonly [K in keyof TokenUsageStat]: TokenUsageStat[K] };
@@ -495,6 +495,25 @@ export function aggregateUsageStats(
       ? Math.min(1, Math.max(0, totalCachedTokens / totalPromptTokens))
       : 0;
 
+  const modelPrices: Record<string, ModelPrice> = {};
+  if (prices) {
+    const candidateModels = new Set<string>([
+      ...modelMap.keys(),
+      ...filtered.map((item) => item.stat.model),
+      ...(filter?.models ?? []),
+    ]);
+    for (const candidate of candidateModels) {
+      if (!candidate) continue;
+      const found = findModelPrice(prices, candidate);
+      if (!found) continue;
+      modelPrices[candidate] = found;
+      const normalized = normalizePricingModelId(candidate);
+      if (normalized) modelPrices[normalized] = found;
+      const canonicalKey = normalizePricingModelId(found.modelId);
+      if (canonicalKey) modelPrices[canonicalKey] = found;
+    }
+  }
+
   return {
     totalPromptTokens,
     totalCompletionTokens,
@@ -508,6 +527,7 @@ export function aggregateUsageStats(
     topSessions,
     ...(routes.length ? { routes } : {}),
     requests,
+    ...(Object.keys(modelPrices).length > 0 ? { modelPrices } : {}),
   };
 }
 
@@ -558,8 +578,13 @@ export function createUsageStatsService(
         }
       }
 
+      const requestedModels =
+        filter?.models?.filter((model) => model.trim().length > 0) ?? [];
       const stats = aggregateUsageStats(computedList, filter);
-      const needsPrices = stats.totalTokens > 0 || stats.requests?.some(request => request.usage !== undefined);
+      const needsPrices =
+        stats.totalTokens > 0 ||
+        stats.requests?.some((request) => request.usage !== undefined) ||
+        requestedModels.length > 0;
       if (!needsPrices) return stats;
       const prices = await pricing.getPrices(filter?.refreshPrices);
       const pricingStatus = pricing.getStatus?.();

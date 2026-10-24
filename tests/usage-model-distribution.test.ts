@@ -221,4 +221,21 @@ describe("model consumption accounting", () => {
       expectReconciled(stats);
     } finally { vi.useRealTimers(); }
   });
+
+  it("exposes matched unit modelPrices for active models even before tokens are recorded", async () => {
+    const getPrices = vi.fn(async () => prices);
+    const service = serviceFor([snapshot([])], { getPrices });
+    const stats = await service.getUsageStats({ models: ["source:vendor/model-a[1m]", "unknown"] });
+    expect(getPrices).toHaveBeenCalledTimes(1);
+    expect(stats.modelPrices?.["source:vendor/model-a[1m]"]).toMatchObject({
+      modelId: "model-a",
+      rates: { input: 3, output: 15, cacheRead: 0.3 },
+    });
+    expect(stats.modelPrices?.["model-a"]).toMatchObject({
+      modelId: "model-a",
+      rates: { input: 3, output: 15, cacheRead: 0.3 },
+    });
+    expect(stats.modelPrices?.unknown).toBeUndefined();
+    expectReconciled(stats);
+  });
 });

@@ -76,11 +76,43 @@ export const usageFilterSchema = z
     workspace: z.string().optional(),
     days: z.number().int().positive().optional(),
     refreshPrices: z.boolean().optional(),
+    models: z.array(z.string().min(1).max(256)).max(256).readonly().optional(),
   })
   .strict()
   .readonly()
   .optional();
 export type UsageFilter = z.infer<typeof usageFilterSchema>;
+
+export const usageTokenRatesSchema = z
+  .object({
+    input: z.number().finite().nonnegative().optional(),
+    output: z.number().finite().nonnegative().optional(),
+    cacheRead: z.number().finite().nonnegative().optional(),
+  })
+  .strict()
+  .readonly();
+export type UsageTokenRates = z.infer<typeof usageTokenRatesSchema>;
+
+export const usageModelPriceSchema = z
+  .object({
+    providerId: z.string(),
+    modelId: z.string(),
+    rates: usageTokenRatesSchema,
+    contextTiers: z
+      .array(
+        z
+          .object({
+            aboveTokens: z.number().finite().nonnegative(),
+            rates: usageTokenRatesSchema,
+          })
+          .strict()
+          .readonly(),
+      )
+      .readonly(),
+  })
+  .strict()
+  .readonly();
+export type UsageModelPrice = z.infer<typeof usageModelPriceSchema>;
 
 export const modelUsageStatSchema = z
   .object({
@@ -178,6 +210,7 @@ export const usageStatsDtoSchema = z
     routes: z.array(routeUsageStatSchema).readonly().optional(),
     requests: z.array(usageRequestSchema).readonly().optional(),
     pricing: usagePricingStatusSchema.optional(),
+    modelPrices: z.record(z.string(), usageModelPriceSchema).readonly().optional(),
   })
   .strict()
   .readonly();
