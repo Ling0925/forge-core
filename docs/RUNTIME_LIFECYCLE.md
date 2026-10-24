@@ -30,6 +30,17 @@ and tests a different path than the intended child/construction lifecycle.
 
 ## Extracted ports
 
+- `runtime-journal`: owns the shared CAS write queue and the durable steering
+  inbox. Accepted input is published to the inbox inside its successful queued
+  checkpoint, then promoted only at the coordinator's exchange boundary. It
+  serializes title/model/tool saves with steering and exposes write settlement;
+  it neither releases the session lock nor schedules requests.
+- `runtime-generation`: owns one provider attempt's bounded text/reasoning
+  buffers, tool previews and flush timers. Closing drains reasoning before text
+  and previews, and rejects late callbacks. The coordinator retains interrupted
+  text, binds generation identity, and decides whether a retry is safe.
+- `runtime-context`: owns pure context compaction and restoration of calibrated
+  size estimates. The original exports remain available from `runtime`.
 - `tool-executor`: receives a single call, live permission/signal, a tool registry,
   optional hooks/native invocation and explicit checkpoint/approval callbacks.
   Returns validated evidence and an optional post-commit hook. It owns the tool
@@ -43,7 +54,7 @@ and tests a different path than the intended child/construction lifecycle.
   Native operations alone receive its mutable operation registry. The coordinator
   receives read-only usage, joined outcomes, and bounded pending reports with an
   explicit delivery acknowledgement after a successful durable save.
-- `runtime`: retains session lock, snapshot/writer, context and provider scheduling,
+- `runtime`: retains session lock, snapshot, context and provider scheduling,
   intent/result commits, ordered events, reconciliation and final status. Existing
   pure context/working-memory calculations stay in their established modules.
 
