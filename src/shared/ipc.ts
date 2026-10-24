@@ -203,7 +203,12 @@ export const usageStatsDtoSchema = z
     totalTokens: z.number().int().nonnegative(),
     totalSessions: z.number().int().nonnegative(),
     totalRuns: z.number().int().nonnegative(),
+    // Known-sample rate, not cached tokens divided by all billed input. When
+    // cacheInputTokens is zero this legacy numeric field is only a placeholder.
     averageCacheRate: z.number().min(0).max(1),
+    cacheInputTokens: z.number().int().nonnegative().optional(),
+    cacheReadTokens: z.number().int().nonnegative().optional(),
+    cachePartial: z.boolean().optional(),
     models: z.array(modelUsageStatSchema).readonly(),
     daily: z.array(dailyUsageStatSchema).readonly(),
     topSessions: z.array(sessionUsageStatSchema).readonly(),

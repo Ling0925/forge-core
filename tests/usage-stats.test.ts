@@ -114,7 +114,12 @@ describe("usage-stats", () => {
     expect(stats.totalCompletionTokens).toBe(75);
     expect(stats.totalCachedTokens).toBe(140);
     expect(stats.totalTokens).toBe(375);
-    expect(stats.averageCacheRate).toBeCloseTo(140 / 300, 4);
+    // The first run's granular report (30) disagrees with its billing total
+    // (40). Cache rates use matched observations; billing totals stay unchanged.
+    expect(stats.averageCacheRate).toBeCloseTo(130 / 300, 4);
+    expect(stats.cacheInputTokens).toBe(300);
+    expect(stats.cacheReadTokens).toBe(130);
+    expect(stats.cachePartial).toBe(true);
 
     expect(stats.models).toHaveLength(2);
     expect(stats.models[0]?.model).toBe("model-b");

@@ -5,6 +5,16 @@ import {
   emptyContextDisplay,
 } from "./context-display";
 import { type AgentEvent, type Usage, contextUsageSchema } from "./schemas";
+import {
+  type CacheUsageState,
+  accumulateCacheUsage,
+  cacheUsageStateSchema,
+  emptyCacheUsage,
+  isUsageRequestBoundary,
+  outputTokensPerSecond,
+  providerRequestKey,
+  summarizeCacheUsage,
+} from "./usage-metrics";
 
 type Totals = Pick<Usage, "promptTokens" | "completionTokens" | "totalTokens">;
 const emptyTotals = (): Totals => ({
@@ -64,6 +74,8 @@ export const sessionUsageStateSchema = z
     cacheRead: measure,
     cacheReports: count,
     requests: count,
+    // Optional so prefixes produced by older Core versions remain readable.
+    cacheState: cacheUsageStateSchema.optional(),
     partial: z.boolean(),
     total: totalsSchema,
     pending: totalsSchema,
@@ -86,11 +98,7 @@ interface UsageState {
   speedPartial: boolean;
   request: RequestState | undefined;
   runHasRequests: boolean;
-  latestCache: number | undefined;
-  cacheInput: number;
-  cacheRead: number;
-  cacheReports: number;
-  requests: number;
+  cache: CacheUsageState;
   partial: boolean;
   total: Totals;
   pending: Totals;
@@ -106,11 +114,7 @@ function emptyState(): UsageState {
     speedPartial: false,
     request: undefined,
     runHasRequests: false,
-    latestCache: undefined,
-    cacheInput: 0,
-    cacheRead: 0,
-    cacheReports: 0,
-    requests: 0,
+    cache: emptyCacheUsage(),
     partial: false,
     total: emptyTotals(),
     pending: emptyTotals(),
@@ -142,11 +146,19 @@ function stateFromSeed(seed: SessionUsageState): UsageState {
         ? undefined
         : { key: seed.request.key, startedAt: seed.request.startedAt },
     runHasRequests: seed.runHasRequests,
-    latestCache: seed.latestCache,
-    cacheInput: seed.cacheInput,
-    cacheRead: seed.cacheRead,
-    cacheReports: seed.cacheReports,
-    requests: seed.requests,
+    cache: seed.cacheState ? cacheUsageStateSchema.parse(seed.cacheState) : {
+      ...emptyCacheUsage(),
+      inputTokens: seed.cacheRead <= seed.cacheInput ? seed.cacheInput : 0,
+      readTokens: seed.cacheRead <= seed.cacheInput ? seed.cacheRead : 0,
+      reports: seed.cacheRead <= seed.cacheInput ? seed.cacheReports : 0,
+      requests: seed.requests,
+      latestRate: seed.latestCache !== undefined && seed.latestCache <= 1 ? seed.latestCache : undefined,
+      // Old prefixes did not retain missing-attempt evidence. Do not certify them.
+      partial: seed.partial || seed.requests > 0 || seed.runHasRequests,
+      runReports: seed.pendingReports,
+      runPromptTokens: seed.pending.promptTokens,
+      runSuccesses: seed.pendingReports,
+    },
     partial: seed.partial,
     total: { ...seed.total },
     pending: { ...seed.pending },
@@ -181,13 +193,14 @@ function stateToSeed(state: UsageState): SessionUsageState {
           },
         }),
     runHasRequests: state.runHasRequests,
-    ...(state.latestCache === undefined
+    ...(state.cache.latestRate === undefined
       ? {}
-      : { latestCache: state.latestCache }),
-    cacheInput: state.cacheInput,
-    cacheRead: state.cacheRead,
-    cacheReports: state.cacheReports,
-    requests: state.requests,
+      : { latestCache: state.cache.latestRate }),
+    cacheInput: state.cache.inputTokens,
+    cacheRead: state.cache.readTokens,
+    cacheReports: state.cache.reports,
+    requests: state.cache.requests,
+    cacheState: state.cache,
     partial: state.partial,
     total: { ...state.total },
     pending: { ...state.pending },
@@ -201,24 +214,16 @@ function cloneState(state: UsageState): UsageState {
     ...state,
     display: { ...state.display },
     request: state.request === undefined ? undefined : { ...state.request },
+    cache: { ...state.cache },
     total: { ...state.total },
     pending: { ...state.pending },
   };
 }
 
-const requestBoundaries = new Set([
-  "run_started",
-  "run_finished",
-  "step_started",
-  "step_finished",
-  "tool_started",
-  "approval_requested",
-]);
-
 function accumulateSpeed(state: UsageState, event: AgentEvent) {
   // Attempt numbers restart at every step/run. Never carry an unmatched request
   // into tools, approval, another step or an idle gap in an interrupted transcript.
-  if (requestBoundaries.has(event.type)) {
+  if (isUsageRequestBoundary(event)) {
     state.speedPartial ||= state.request !== undefined;
     state.request = undefined;
   }
@@ -231,17 +236,7 @@ function accumulateSpeed(state: UsageState, event: AgentEvent) {
   if (event.type !== "provider_attempt") return;
   state.runHasRequests = true;
   const selection = event.selection;
-  const key = JSON.stringify([
-    event.sessionId,
-    event.turn,
-    event.step,
-    selection.attempt,
-    selection.groupId,
-    selection.sourceId,
-    selection.credentialId,
-    selection.model,
-    selection.apiMode,
-  ]);
+  const key = providerRequestKey(event);
   const timestamp = Date.parse(selection.timestamp);
   if (selection.outcome === "started") {
     state.speedPartial ||=
@@ -259,13 +254,7 @@ function accumulateSpeed(state: UsageState, event: AgentEvent) {
   const output = selection.usage?.completionTokens;
   // Match the numerator and denominator to the same measured requests. Missing
   // usage/timing is unknown, not zero, and run wall time is never a substitute.
-  if (
-    Number.isFinite(duration) &&
-    duration > 0 &&
-    output !== undefined &&
-    Number.isFinite(output) &&
-    output >= 0
-  ) {
+  if (output !== undefined && outputTokensPerSecond(output, duration) !== undefined) {
     state.speedTokens += output;
     state.speedDurationMs += duration;
   } else {
@@ -276,6 +265,7 @@ function accumulateSpeed(state: UsageState, event: AgentEvent) {
 function accumulate(state: UsageState, event: AgentEvent) {
   state.display = advanceContextDisplay(state.display, event);
   accumulateSpeed(state, event);
+  accumulateCacheUsage(state.cache, event);
   if (event.type === "run_started") {
     state.pending = emptyTotals();
     state.pendingReports = 0;
@@ -283,16 +273,6 @@ function accumulate(state: UsageState, event: AgentEvent) {
   if (event.type === "context_usage") {
     const usage = event.usage;
     if (usage.basis !== "projected" && usage.promptTokens !== undefined) {
-      state.requests++;
-      state.latestCache =
-        usage.cachedPromptTokens !== undefined && usage.promptTokens > 0
-          ? usage.cachedPromptTokens / usage.promptTokens
-          : undefined;
-      if (usage.cachedPromptTokens !== undefined) {
-        state.cacheInput += usage.promptTokens;
-        state.cacheRead += usage.cachedPromptTokens;
-        state.cacheReports++;
-      }
       state.pending = add(state.pending, {
         promptTokens: usage.promptTokens,
         completionTokens: usage.completionTokens ?? 0,
@@ -302,14 +282,6 @@ function accumulate(state: UsageState, event: AgentEvent) {
     }
   }
   if (event.type === "run_finished") {
-    if (state.pendingReports === 0 && event.usage) {
-      state.requests++;
-      if (event.usage.cachedPromptTokens !== undefined) {
-        state.cacheInput += event.usage.promptTokens;
-        state.cacheRead += event.usage.cachedPromptTokens;
-        state.cacheReports++;
-      }
-    }
     state.total = add(state.total, event.usage ?? state.pending);
     state.reports += event.usage ? 1 : state.pendingReports;
     state.partial ||= !event.usage || event.usageComplete === false;
@@ -319,6 +291,7 @@ function accumulate(state: UsageState, event: AgentEvent) {
 }
 
 function summarize(state: UsageState) {
+  const cache = summarizeCacheUsage(state.cache);
   return {
     context: state.display.context,
     projected: state.display.projected,
@@ -328,14 +301,15 @@ function summarize(state: UsageState) {
         ? add(state.total, state.pending)
         : undefined,
     partial: state.partial,
-    latestCache: state.latestCache,
-    averageCache:
-      state.cacheInput > 0 ? state.cacheRead / state.cacheInput : undefined,
-    cacheRead: state.cacheReports ? state.cacheRead : undefined,
-    cachePartial: state.cacheReports < state.requests,
+    latestCache: state.cache.latestRate,
+    averageCache: cache.rate,
+    cacheRead: cache.readTokens,
+    cacheInputTokens: cache.inputTokens,
+    cachePartial: cache.partial,
     speed: {
       outputTokens: state.speedTokens,
       durationMs: state.speedDurationMs,
+      tokensPerSecond: outputTokensPerSecond(state.speedTokens, state.speedDurationMs),
       partial: state.speedPartial,
       requestStartedAt: state.request?.startedAt,
     },
@@ -405,7 +379,7 @@ export function appendSessionEvent(
     event.type !== "context_usage" &&
     event.type !== "context_compacted" &&
     event.type !== "provider_attempt" &&
-    !requestBoundaries.has(event.type)
+    !isUsageRequestBoundary(event)
   )
     cache.set(next, previous);
   else {

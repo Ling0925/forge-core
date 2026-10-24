@@ -9,6 +9,15 @@ import type {
 } from "../shared/ipc";
 import type { ProviderAttempt } from "../shared/model-access";
 import type { AgentEvent, SessionSnapshot, Usage } from "../shared/schemas";
+import {
+  type CacheUsageRecord,
+  cacheUsageRecords,
+  emptyCacheUsage,
+  isUsageRequestBoundary,
+  outputTokensPerSecond,
+  providerRequestKey,
+  summarizeCacheUsage,
+} from "../shared/usage-metrics";
 import { createModelPricingService, estimateAggregateCostUsd, estimateRequestCostUsd, findModelPrice, normalizePricingModelId, type ModelPrice, type ModelPrices, type ModelPricingService } from "./model-pricing";
 
 type TokenUsageStat = Pick<SessionUsageStat, "promptTokens" | "completionTokens" | "cachedTokens" | "totalTokens">;
@@ -50,6 +59,8 @@ export interface ComputedSessionUsage {
   /** Separate route projection; never added on top of the deduplicated usage. */
   readonly routing: readonly RouteUsageStat[];
   readonly requests: readonly UsageRequest[];
+  /** Shared cache observations, separate from historical billing remainders. */
+  readonly cacheRecords: readonly CacheUsageRecord[];
 }
 
 /**
@@ -164,16 +175,13 @@ export function sessionRequestRecords(snapshot: SessionSnapshot): readonly Usage
   const pending = new Map<string, number>();
   for (const [index, event] of snapshot.events.entries()) {
     // Attempt numbers restart across runs and tool steps. Keep those boundaries.
-    if (event.type === "run_started" || event.type === "run_finished" ||
-        event.type === "step_started" || event.type === "step_finished") {
+    if (isUsageRequestBoundary(event)) {
       pending.clear();
       continue;
     }
     if (event.type !== "provider_attempt") continue;
     const selection = event.selection;
-    const key = JSON.stringify([
-      event.turn, event.step, selection.attempt, routeIdentityKey(selection),
-    ]);
+    const key = providerRequestKey(event);
     const record: UsageRequest = {
       id: `${snapshot.id}:${index}`,
       sessionId: snapshot.id,
@@ -206,14 +214,14 @@ export function sessionRequestRecords(snapshot: SessionSnapshot): readonly Usage
       : Date.parse(selection.timestamp) - Date.parse(started.startedAt);
     // End-to-end output throughput: includes request latency, not a fabricated
     // streaming-only rate (historical events do not record first-token time).
-    const tokensPerSecond = (selection.usage?.completionTokens ?? Number.NaN) / (durationMs / 1000);
+    const tokensPerSecond = outputTokensPerSecond(selection.usage?.completionTokens, durationMs);
     const completed: UsageRequest = {
       ...(started?.reasoningEffort === undefined ? {} : { reasoningEffort: started.reasoningEffort }),
       ...record,
       ...(started ? { id: started.id, timestamp: started.timestamp, startedAt: started.startedAt } : {}),
       finishedAt: selection.timestamp,
       ...(Number.isFinite(durationMs) && durationMs >= 0 ? { durationMs } : {}),
-      ...(durationMs > 0 && Number.isFinite(tokensPerSecond) && tokensPerSecond >= 0 ? { tokensPerSecond } : {}),
+      ...(tokensPerSecond === undefined ? {} : { tokensPerSecond }),
     };
     if (pendingIndex === undefined) records.push(completed);
     else records[pendingIndex] = completed;
@@ -336,7 +344,8 @@ export function computeSessionUsage(
     runCount: runStats.length,
   };
 
-  return { stat, runStats, routing: routeUsageStats(snapshot.events), requests };
+  return { stat, runStats, routing: routeUsageStats(snapshot.events), requests,
+    cacheRecords: cacheUsageRecords(snapshot.events) };
 }
 
 export function aggregateRouteUsageStats(
@@ -490,10 +499,21 @@ export function aggregateUsageStats(
     .slice(0, 20);
 
   const routes = aggregateRouteUsageStats(filtered);
-  const averageCacheRate =
-    totalPromptTokens > 0
-      ? Math.min(1, Math.max(0, totalCachedTokens / totalPromptTokens))
-      : 0;
+  const cacheState = emptyCacheUsage();
+  for (const item of filtered) {
+    for (const record of item.cacheRecords) {
+      if (!inPeriod(record.timestamp)) continue;
+      cacheState.inputTokens += record.inputTokens;
+      cacheState.readTokens += record.readTokens;
+      cacheState.reports += record.reports;
+      cacheState.requests += record.requests;
+      cacheState.partial ||= record.partial;
+    }
+  }
+  const cache = summarizeCacheUsage(cacheState);
+  // Preserve the numeric wire field for older clients. A zero denominator means
+  // unknown/not applicable, not a measured zero hit rate; expose that explicitly.
+  const averageCacheRate = cache.rate ?? 0;
 
   const modelPrices: Record<string, ModelPrice> = {};
   if (prices) {
@@ -522,6 +542,9 @@ export function aggregateUsageStats(
     totalSessions: filtered.length,
     totalRuns,
     averageCacheRate,
+    cacheInputTokens: cache.inputTokens,
+    cacheReadTokens: cache.readTokens ?? 0,
+    cachePartial: cache.partial,
     models,
     daily,
     topSessions,

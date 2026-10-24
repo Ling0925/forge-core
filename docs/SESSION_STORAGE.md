@@ -17,6 +17,17 @@ The optional `SessionStore.incremental` port is implemented by the disk store. L
 
 Warm metadata commits and revision reads avoid re-serializing, re-hashing and revalidating historical message bodies. Reads still perform bounded filesystem metadata checks. Appending/replacing arrays copies record references, and the runtime writer finds shared prefixes by reference identity; this is not an O(1) persistent-vector implementation. First loads, checkpoints, explicit replacements and legacy v1 replays may process complete history. Compatibility `save(snapshot)` intentionally retains whole-input validation. HTTP snapshot encoding still has its separate fingerprint cost; these benchmarks do not measure browser rendering or end-to-end HTTP latency.
 
+## Usage projections
+
+Session summaries (`shared/session-usage`) and filtered usage statistics use the same browser-safe cache accumulator (`shared/usage-metrics`). Request result events are authoritative; the following context report and run total are not additional requests. Legacy logs fall back to individual context reports, then to a run aggregate when no request samples exist. Missing attempts, incomplete usage and conflicting/extra run totals keep the result partial. Aggregate-only multi-request history cannot prove per-request cache coverage.
+
+- Cache rate is **sum of reported cache-read tokens / sum of input tokens for those same reports**. Missing cache counters are unknown, not zero; explicit zero is a valid report. Impossible counts (cache read greater than input) are excluded and marked partial.
+- `UsageStatsDto.cacheInputTokens` and `cacheReadTokens` are the matched denominator/numerator; `cachePartial` indicates incomplete coverage. Billing totals remain separate and may include historical/auxiliary usage that cannot be attributed to these samples. The existing numeric `averageCacheRate` is retained for compatibility: when `cacheInputTokens` is zero its zero value is a placeholder, **not a measured miss rate**. An older DTO without this metadata does not establish complete coverage.
+- `sessionUsage(...).speed.tokensPerSecond` is total measured output divided by total duration of those same completed requests. It includes request latency, excludes local tools/approval/idle gaps, and is not a streaming-only rate. In-flight requests contribute neither output nor duration; their start time is exposed separately. Missing/invalid timing stays unknown/partial, never replaced with run wall time or estimated text tokens.
+- Paged `usageBefore` carries fixed-size cache lifecycle state so a split between request start/result/context events gives the same result as a full replay. Older prefixes remain readable but their cache coverage is conservatively partial. No session file migration or inference call is required.
+
+Regression coverage is in `tests/usage-metrics.test.ts`, alongside the request/statistics and session-page tests.
+
 ## Reproducible synthetic benchmark
 
 Run `node scripts/benchmark-session-store.mjs` from the repository after installing dependencies. An optional argument selects a baseline checkout with its dependencies available, for example `node scripts/benchmark-session-store.mjs /path/to/baseline`.
