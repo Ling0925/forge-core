@@ -3,6 +3,7 @@ import { lstat, open, opendir } from "node:fs/promises";
 import { dirname, join, relative, sep } from "node:path";
 import { TextDecoder } from "node:util";
 import { ForgeError } from "../shared/errors";
+import { containsSensitiveText, isSensitivePath } from "../shared/content-safety";
 import type {
   WorkspaceDirectoryListingDto,
   WorkspaceFileEntryDto,
@@ -20,31 +21,6 @@ const IGNORED_DIRECTORY_NAMES = new Set([
   ".vite",
 ]);
 
-function isSensitiveSegment(pathValue: string): boolean {
-  return pathValue
-    .split(/[\\/]/)
-    .some(
-      (part) =>
-        /^(?:\.env.*|\.ssh|\.config|\.git|id_rsa|id_ed25519|id_ecdsa|id_dsa)$/i.test(
-          part,
-        ) ||
-        /credentials/i.test(part) ||
-        /\.(?:pem|key|p12|pfx)$/i.test(part),
-    );
-}
-
-function hasSecretPattern(text: string): boolean {
-  return (
-    /^\s*-----BEGIN [A-Z ]*PRIVATE KEY-----/m.test(text) ||
-    /\b(?:sk-[A-Za-z0-9_-]{32,}|gh[pousr]_[A-Za-z0-9]{36,}|AKIA[A-Z0-9]{16})\b/.test(
-      text,
-    ) ||
-    /^\s*(?:export\s+)?(?:api[_-]?key|access[_-]?token|client[_-]?secret|password)\s*=\s*(?:[A-Za-z0-9_-]{8,}|"[A-Za-z0-9_-]{8,}"|'[A-Za-z0-9_-]{8,}')\s*$/im.test(
-      text,
-    )
-  );
-}
-
 export interface WorkspaceFileOptions {
   readonly protectedRoots?: readonly string[];
   readonly redactValues?: readonly string[];
@@ -61,7 +37,7 @@ function redactPreview(text: string, secrets: readonly string[]): string {
   for (const secret of secrets) {
     clean = clean.split(secret).join("[REDACTED]");
   }
-  if (hasSecretPattern(clean)) {
+  if (containsSensitiveText(clean)) {
     return "[敏感内容已隐藏]";
   }
   return clean;
@@ -73,7 +49,7 @@ export async function listWorkspaceDirectory(
   options: WorkspaceFileOptions = {},
 ): Promise<WorkspaceDirectoryListingDto> {
   const normalizedInput = relativePath.trim() === "" ? "." : relativePath.trim();
-  if (isSensitiveSegment(normalizedInput)) {
+  if (isSensitivePath(normalizedInput)) {
     throw new ForgeError("tool", "不允许访问敏感路径。");
   }
   const secrets = normalizeSecrets(options.redactValues);
@@ -85,7 +61,7 @@ export async function listWorkspaceDirectory(
   const safeRelative =
     relative(guard.root, target).split(sep).join("/") || ".";
   if (
-    isSensitiveSegment(safeRelative) ||
+    isSensitivePath(safeRelative) ||
     secrets.some((secret) => safeRelative.includes(secret))
   ) {
     throw new ForgeError("tool", "不允许访问敏感路径。");
@@ -102,7 +78,7 @@ export async function listWorkspaceDirectory(
     if (
       item.isSymbolicLink() ||
       IGNORED_DIRECTORY_NAMES.has(item.name) ||
-      isSensitiveSegment(item.name) ||
+      isSensitivePath(item.name) ||
       secrets.some((secret) => item.name.includes(secret))
     ) {
       continue;
@@ -164,7 +140,7 @@ export async function readWorkspaceFilePreview(
   options: WorkspaceFileOptions = {},
 ): Promise<WorkspaceFilePreviewDto> {
   const normalizedInput = relativePath.trim();
-  if (normalizedInput.length === 0 || isSensitiveSegment(normalizedInput)) {
+  if (normalizedInput.length === 0 || isSensitivePath(normalizedInput)) {
     throw new ForgeError("tool", "不允许读取敏感或无效文件路径。");
   }
   const secrets = normalizeSecrets(options.redactValues);
@@ -177,7 +153,7 @@ export async function readWorkspaceFilePreview(
     relative(guard.root, target).split(sep).join("/") || ".";
   if (
     safeRelative === "." ||
-    isSensitiveSegment(safeRelative) ||
+    isSensitivePath(safeRelative) ||
     secrets.some((secret) => safeRelative.includes(secret))
   ) {
     throw new ForgeError("tool", "不允许读取敏感文件路径。");

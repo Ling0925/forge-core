@@ -241,9 +241,13 @@ describe("project context service", () => {
     await ctx.dispose();
   });
 
-  it("refuses secret-shaped instruction content", async () => {
+  it.each([
+    "API_KEY=abcdefghijklmnop1234\n",
+    "  -----BEGIN PRIVATE KEY-----\nfixture",
+    "\t-----BEGIN RSA PRIVATE KEY-----\nfixture",
+  ])("refuses secret-shaped instruction content: %j", async (content) => {
     const secretDir = join(workspace, "secret");
-    await write(join(secretDir, "AGENTS.md"), "API_KEY=abcdefghijklmnop1234\n");
+    await write(join(secretDir, "AGENTS.md"), content);
     const ctx = await createProjectContext(workspace);
     await ctx.refresh();
     const sources = await ctx.resolveInstructions("secret");

@@ -22,6 +22,7 @@ import { lstat, open, readdir, realpath } from "node:fs/promises";
 import { isAbsolute, join, relative, resolve, sep } from "node:path";
 import { z } from "zod";
 import { ForgeError } from "../shared/errors";
+import { containsSensitiveText, isSensitivePath } from "../shared/content-safety";
 import type { ToolDefinition } from "../shared/schemas";
 import { defineTool } from "../shared/tool-definition";
 import { createProtectedRootMatcher } from "../tools/protected-roots";
@@ -247,7 +248,7 @@ async function readBoundedDescriptorFile(
       throw new ContextContentError("binary", "Binary content refused.");
     }
     const text = content.toString("utf8");
-    if (looksSecret(text)) {
+    if (containsSensitiveText(text)) {
       throw new ContextContentError(
         "sensitive",
         "Secret-shaped content refused.",
@@ -280,35 +281,6 @@ async function readBoundedRegularFile(
     throw new ContextContentError("sensitive", "Sensitive file refused.");
   }
   return readBoundedDescriptorFile(absolutePath, byteLimit);
-}
-
-// ---------------------------------------------------------------------------
-// Content safety: mirrors the core local tool policy classes of binary and
-// secret material. Nothing here grants permissions; it only refuses data.
-// ---------------------------------------------------------------------------
-
-function isSensitivePath(relativePath: string): boolean {
-  return relativePath
-    .split(/[\\/]/)
-    .some(
-      (part) =>
-        /^(?:\.env.*|\.ssh|\.config|\.git)$/i.test(part) ||
-        /^id_(?:rsa|ed25519|ecdsa|dsa)$/i.test(part) ||
-        /credentials/i.test(part) ||
-        /\.(?:pem|key|p12|pfx)$/i.test(part),
-    );
-}
-
-function looksSecret(text: string): boolean {
-  return (
-    /^-----BEGIN [A-Z ]*PRIVATE KEY-----/m.test(text) ||
-    /\b(?:sk-[A-Za-z0-9_-]{32,}|gh[pousr]_[A-Za-z0-9]{36,}|AKIA[A-Z0-9]{16})\b/.test(
-      text,
-    ) ||
-    /^\s*(?:export\s+)?(?:api[_-]?key|access[_-]?token|client[_-]?secret|password)\s*=\s*(?:[A-Za-z0-9_-]{8,}|"[A-Za-z0-9_-]{8,}"|'[A-Za-z0-9_-]{8,}')\s*$/im.test(
-      text,
-    )
-  );
 }
 
 export class ContextContentError extends Error {

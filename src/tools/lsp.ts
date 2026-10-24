@@ -7,6 +7,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { z } from "zod";
 import type { LocalToolRegistry, ToolContext } from "../shared/contracts";
 import { recoverToolInputError } from "../shared/tool-input";
+import { containsSensitiveText, isSensitivePath } from "../shared/content-safety";
 import { lspServersSchema, type ToolCall, type ToolDefinition, type ToolResult } from "../shared/schemas";
 import { createWorkspacePathGuard } from "./path-guard";
 import { StdioLspClient } from "./lsp-client";
@@ -44,17 +45,6 @@ const argsSchema = z.object({
 const definition: ToolDefinition = defineTool("lsp", "Read-only semantic queries through explicitly configured local stdio language servers (not an OS sandbox). readonly denies execution; workspace needs fresh approval per call. Workspace-relative UTF-8 files only, no symlinks/sensitive paths; 1-based UTF-16 positions. Bounded, filtered and paginated results; no automatic install or retry.", argsSchema);
 const object = (value: unknown): value is Record<string, unknown> =>
   typeof value === "object" && value !== null && !Array.isArray(value);
-// Match local filesystem tools' path/content policy without exposing their internals.
-function sensitive(path: string): boolean {
-  return path.split(/[\\/]/).some((part) =>
-    /^(?:\.env.*|\.ssh|\.config|\.git|id_rsa|id_ed25519|id_ecdsa|id_dsa)$/i.test(part) ||
-    /credentials/i.test(part) || /\.(?:pem|key|p12|pfx)$/i.test(part));
-}
-function secretText(text: string): boolean {
-  return /^\s*-----BEGIN [A-Z ]*PRIVATE KEY-----/m.test(text) ||
-    /\b(?:sk-[A-Za-z0-9_-]{32,}|gh[pousr]_[A-Za-z0-9]{36,}|AKIA[A-Z0-9]{16})\b/.test(text) ||
-    /^\s*(?:export\s+)?(?:api[_-]?key|access[_-]?token|client[_-]?secret|password)\s*=\s*(?:[A-Za-z0-9_-]{8,}|"[A-Za-z0-9_-]{8,}"|'[A-Za-z0-9_-]{8,}')\s*$/im.test(text);
-}
 const FILE_LIMIT = 2 * 1024 * 1024;
 const RESULT_LIMIT = 48 * 1024;
 const MAX_ITEMS = 1000;
@@ -79,13 +69,13 @@ export async function createLspToolRegistry(
   const guard = await createWorkspacePathGuard(workspace, options.protectedRoots);
   const known = [...(options.redactValues ?? [])].filter(Boolean).sort((a, b) => b.length - a.length);
   const containsKnown = (text: string) => known.some((s) => text.includes(s));
-  if (configs.some((server) => [server.id, server.command, ...server.args].some((s) => containsKnown(s) || secretText(s))))
+  if (configs.some((server) => [server.id, server.command, ...server.args].some((s) => containsKnown(s) || containsSensitiveText(s))))
     throw new Error("Sensitive LSP server configuration is not permitted.");
   const clean = (text: string, max = 4096): string => {
     // Redact before truncating, so a secret straddling the boundary cannot leak.
     let value = text;
     for (const secret of known) value = value.split(secret).join("[REDACTED]");
-    if (secretText(value)) return "[Sensitive output withheld]";
+    if (containsSensitiveText(value)) return "[Sensitive output withheld]";
     value = value.split(guard.root).join("[workspace]");
     value = value.replace(/\b[a-z][a-z0-9+.-]*:\/\/[^\s<>"'`\])}]+/gi, "[URI withheld]");
     value = value.replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/g, "");
@@ -97,10 +87,10 @@ export async function createLspToolRegistry(
   let disposal: Promise<void> | undefined;
 
   async function read(path: string): Promise<{ absolute: string; text: string; path: string }> {
-    if (sensitive(path) || containsKnown(path)) throw new Error("Sensitive paths are not permitted.");
+    if (isSensitivePath(path) || containsKnown(path)) throw new Error("Sensitive paths are not permitted.");
     const absolute = await guard.resolveRead(path);
     const local = relative(guard.root, absolute).split(sep).join("/");
-    if (sensitive(local) || containsKnown(local)) throw new Error("Sensitive paths are not permitted.");
+    if (isSensitivePath(local) || containsKnown(local)) throw new Error("Sensitive paths are not permitted.");
     const handle = await open(absolute, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
     try {
       const before = await handle.stat();
@@ -119,7 +109,7 @@ export async function createLspToolRegistry(
       // Recheck ancestor symlinks after opening, matching other local tools' guard.
       if (await guard.resolveRead(path) !== absolute) throw new Error("LSP file changed while reading.");
       const text = new TextDecoder("utf-8", { fatal: true }).decode(buffer.subarray(0, length));
-      if (text.includes("\0") || secretText(text) || containsKnown(text))
+      if (text.includes("\0") || containsSensitiveText(text) || containsKnown(text))
         throw new Error("Binary or sensitive content is not permitted.");
       return { absolute, text, path: local };
     } finally { await handle.close(); }
@@ -135,7 +125,7 @@ export async function createLspToolRegistry(
       if (url.protocol !== "file:" || url.search || url.hash || url.hostname) return undefined;
       const absolute = fileURLToPath(url);
       const local = relative(guard.root, absolute).split(sep).join("/");
-      if (!local || sensitive(local) || containsKnown(local)) return undefined;
+      if (!local || isSensitivePath(local) || containsKnown(local)) return undefined;
       if (await guard.resolveRead(local) !== absolute || !(await lstat(absolute)).isFile()) return undefined;
       return { path: clean(local), range: locationRange };
     } catch { return undefined; }

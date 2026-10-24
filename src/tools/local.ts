@@ -10,6 +10,7 @@ import { z } from "zod";
 import type { LocalToolRegistry, ToolContext } from "../shared/contracts";
 import { ForgeError, formatValidationError } from "../shared/errors";
 import { noArgumentFields } from "../shared/tool-input";
+import { containsSensitiveText, isSensitivePath } from "../shared/content-safety";
 import { createDiffPatch } from "../shared/diff";
 import type {
   FileChange,
@@ -169,29 +170,6 @@ function check(signal: AbortSignal): void {
   if (signal.aborted)
     throw new ForgeError("cancelled", "Tool execution cancelled.");
 }
-function sensitive(path: string): boolean {
-  return path
-    .split(/[\\/]/)
-    .some(
-      (part) =>
-        /^(?:\.env.*|\.ssh|\.config|\.git|id_rsa|id_ed25519|id_ecdsa|id_dsa)$/i.test(
-          part,
-        ) ||
-        /credentials/i.test(part) ||
-        /\.(?:pem|key|p12|pfx)$/i.test(part),
-    );
-}
-function secretText(text: string): boolean {
-  return (
-    /^\s*-----BEGIN [A-Z ]*PRIVATE KEY-----/m.test(text) ||
-    /\b(?:sk-[A-Za-z0-9_-]{32,}|gh[pousr]_[A-Za-z0-9]{36,}|AKIA[A-Z0-9]{16})\b/.test(
-      text,
-    ) ||
-    /^\s*(?:export\s+)?(?:api[_-]?key|access[_-]?token|client[_-]?secret|password)\s*=\s*(?:[A-Za-z0-9_-]{8,}|"[A-Za-z0-9_-]{8,}"|'[A-Za-z0-9_-]{8,}')\s*$/im.test(
-      text,
-    )
-  );
-}
 function signature(info: Awaited<ReturnType<typeof lstat>>): string {
   return `${info.dev}:${info.ino}:${info.size}:${info.mtimeMs}:${info.ctimeMs}`;
 }
@@ -286,13 +264,13 @@ export async function createLocalToolRegistry(
   function redact(text: string): string {
     let clean = text;
     for (const value of known) clean = clean.split(value).join("[REDACTED]");
-    if (secretText(clean)) return "[Sensitive output withheld]";
+    if (containsSensitiveText(clean)) return "[Sensitive output withheld]";
     return clean;
   }
   function safeText(text: string): void {
     if (Buffer.byteLength(text, "utf8") > FILE_LIMIT)
       fail("File exceeds the 16 MiB ceiling. Split it into separate files; retrying the same content cannot succeed.");
-    if (text.includes("\0") || containsKnown(text) || secretText(text))
+    if (text.includes("\0") || containsKnown(text) || containsSensitiveText(text))
       fail("Binary or sensitive content is not permitted.");
   }
   const commandOutput = createCommandOutputStore(redact);
@@ -319,7 +297,7 @@ export async function createLocalToolRegistry(
         const local = await realpath(candidate);
         if (
           containsKnown(local) ||
-          sensitive(local) ||
+          isSensitivePath(local) ||
           (process.platform === "win32" && local.startsWith("\\\\"))
         )
           continue;
@@ -348,7 +326,7 @@ export async function createLocalToolRegistry(
   }
   function targetName(path: string): string {
     const name = relative(guard.root, path).split(sep).join("/") || ".";
-    if (sensitive(name) || containsKnown(name))
+    if (isSensitivePath(name) || containsKnown(name))
       fail("Sensitive paths are not permitted.");
     return name;
   }
@@ -407,7 +385,7 @@ export async function createLocalToolRegistry(
     }
   }
   async function read(relativePath: string, signal: AbortSignal) {
-    if (sensitive(relativePath)) fail("Sensitive paths are not permitted.");
+    if (isSensitivePath(relativePath)) fail("Sensitive paths are not permitted.");
     const path = await guard.resolveRead(relativePath);
     targetName(path);
     return { path, ...(await readTarget(path, signal)) };
@@ -434,7 +412,7 @@ export async function createLocalToolRegistry(
     sessionId?: string,
   ): Promise<readonly FileChange[]> {
     safeText(text);
-    if (sensitive(relativePath)) fail("Sensitive paths are not permitted.");
+    if (isSensitivePath(relativePath)) fail("Sensitive paths are not permitted.");
     const path = await guard.resolveWrite(relativePath);
     const name = targetName(path);
     const parent = dirname(path);
@@ -551,7 +529,7 @@ export async function createLocalToolRegistry(
     signal: AbortSignal,
   ): Promise<string> {
     check(signal);
-    if (sensitive(relativePath)) fail("Sensitive paths are not permitted.");
+    if (isSensitivePath(relativePath)) fail("Sensitive paths are not permitted.");
     if (relativePath.includes("\\") && sep !== "\\")
       fail("Backslash paths are not supported.");
     // The guard parses the entire lexical spelling before inspecting any entry.
@@ -598,7 +576,7 @@ export async function createLocalToolRegistry(
       truncated: boolean;
     }>
   > {
-    if (sensitive(relativePath)) fail("Sensitive paths are not permitted.");
+    if (isSensitivePath(relativePath)) fail("Sensitive paths are not permitted.");
     const start = await guard.resolveRead(relativePath);
     targetName(start);
     const entries: {
@@ -640,7 +618,7 @@ export async function createLocalToolRegistry(
         }
         if (
           excluded.has(item.name) ||
-          sensitive(item.name) ||
+          isSensitivePath(item.name) ||
           containsKnown(item.name) ||
           item.isSymbolicLink()
         )
@@ -671,7 +649,7 @@ export async function createLocalToolRegistry(
       fail("Sensitive command arguments are not permitted.");
     if (args.argv.reduce((total, item) => total + item.length, 0) > 7000)
       fail("Command description exceeds the approval ceiling.");
-    if (sensitive(args.cwd)) fail("Sensitive paths are not permitted.");
+    if (isSensitivePath(args.cwd)) fail("Sensitive paths are not permitted.");
     const cwd = await guard.resolveRead(args.cwd);
     const name = targetName(cwd);
     if (!(await lstat(cwd)).isDirectory())
