@@ -13,7 +13,7 @@ async function setup(provider: ModelProvider) {
   cleanup.push(() => rm(root, { recursive: true, force: true }));
   const service = await createHarness({ stateDir: join(root, "state"), providerFactory: () => provider });
   cleanup.push(() => service.dispose());
-  await service.updateSettings({ settings: { model: "fixture-model", baseUrl: "http://fixture.invalid", browserAllowedOrigins: ["https://legacy.test"] } });
+  await service.updateSettings({ settings: { model: "fixture-model", baseUrl: "http://fixture.invalid" } });
   const session = await service.createSession({ workspace: root, title: "Browser plugin fixture" });
   return { root, service, session };
 }
@@ -38,9 +38,8 @@ it("assembles one plugin browser tool set and its instructions without launching
   expect(JSON.stringify(messages)).toContain("Official browser plugin");
   expect(await service.browser!({ sessionId: session.id, action: "status" })).toMatchObject({ available: false });
   await service.configurePlugin!({ pluginId: "browser", enabled: false });
-  await service.run({ sessionId: session.id, prompt: "Inspect legacy metadata" }, () => {}, async () => false, new AbortController().signal);
-  expect(definitions.map(definition => definition.function.name)).not.toContain("browser_snapshot");
-  expect(definitions.map(definition => definition.function.name)).toContain("browser_navigate");
+  await service.run({ sessionId: session.id, prompt: "Inspect metadata with the plugin disabled" }, () => {}, async () => false, new AbortController().signal);
+  expect(definitions.some(definition => definition.function.name.startsWith("browser_"))).toBe(false);
   expect(JSON.stringify(messages.filter(message => message.role === "system"))).not.toContain("Official browser plugin");
 });
 

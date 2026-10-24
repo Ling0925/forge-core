@@ -9,7 +9,7 @@ export const browserPluginConfigSchema = z.object({
   executablePath: executable.default("agent-browser"),
   browserExecutablePath: z.string().max(4096).refine(value => !/[\r\n\0]/.test(value)).default(""),
   // Hostnames, not origins. Only an explicit "*" grants all hosts; empty stays deny-all.
-  // This remains independent of the legacy browserAllowedOrigins grant.
+  // Retired global browser preferences never grant or configure plugin access.
   allowedDomains: z.array(z.union([
     z.literal("*"),
     z.string().min(1).max(253).regex(/^(?:\*\.)?(?:[a-z0-9](?:[a-z0-9-]*[a-z0-9])?\.)*[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$/i),

@@ -275,11 +275,6 @@ export interface AgentRuntime {
     control?: RunControl,
   ): Promise<SessionSnapshot>;
 }
-export interface BrowserToolOptions {
-  readonly executablePath?: string;
-  readonly allowedOrigins: readonly string[];
-  readonly headless?: boolean;
-}
 export const assertNever = (_value: never): never => {
   throw new ForgeError("internal", "An invariant was violated.");
 };

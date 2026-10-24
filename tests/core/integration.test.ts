@@ -1,5 +1,5 @@
 import { once } from "node:events";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -57,10 +57,7 @@ const reply = {
 };
 const fakeKey = "fixture-only-test-key";
 
-const configured = async (
-  origins: string[] = [],
-  executable = "",
-): Promise<{ baseUrl: string; state: string; workspace: string }> => {
+const configured = async (): Promise<{ baseUrl: string; state: string; workspace: string }> => {
   const baseUrl = await gateway(() => reply);
   const [state, workspace] = [await directory(), await directory()];
   const service = await createHarness({ stateDir: state });
@@ -70,8 +67,6 @@ const configured = async (
     settings: {
       baseUrl,
       model: "fixture-model",
-      browserAllowedOrigins: origins,
-      browserExecutablePath: executable,
     },
   });
   return { baseUrl, state, workspace };
@@ -153,8 +148,8 @@ describe("default harness tool integration", () => {
     },
   );
 
-  it("exposes browser tools only when exact allowed origins are configured", async () => {
-    const { state, workspace } = await configured(["http://127.0.0.1:4173"]);
+  it("exposes browser tools only through the explicitly enabled plugin", async () => {
+    const { state, workspace } = await configured();
     let definitions: readonly { function: { name: string } }[] = [];
     const providerFactory = (): ModelProvider => ({
       listModels: async () => ["fixture-model"],
@@ -165,17 +160,20 @@ describe("default harness tool integration", () => {
     });
     const service = await createHarness({ stateDir: state, providerFactory });
     cleanups.push(() => service.dispose());
+    await service.configurePlugin!({ pluginId: "browser", enabled: true,
+      config: { executablePath: "/nonexistent/forge-test-agent-browser", allowedDomains: ["127.0.0.1"] } });
     await runOnce(service, workspace);
     const names = definitions.map((definition) => definition.function.name);
     expect(names).toContain("read_file");
     expect(names).toContain("browser_navigate");
+    expect(names).toContain("browser_snapshot");
     expect(names).toContain("browser_read");
-    // Registration alone must not launch Chromium; definitions are static.
+    // Registration alone must not launch agent-browser or Chromium; definitions are static.
     expect(JSON.stringify(definitions)).not.toContain(fakeKey);
   });
 
   it("keeps an injected tool factory exact and disposes it after the run", async () => {
-    const { state, workspace } = await configured(["http://127.0.0.1:4173"]);
+    const { state, workspace } = await configured();
     let created = 0;
     let disposed = 0;
     const providerFactory = (): ModelProvider => ({
@@ -216,59 +214,35 @@ describe("default harness tool integration", () => {
     expect(disposed).toBe(1);
   });
 
-  it("rejects invalid browser origins and keeps legacy config valid", async () => {
-    const state = await directory();
-    const service = await createHarness({ stateDir: state });
+  it("ignores persisted legacy browser preferences without enabling tools or overwriting plugin configuration", async () => {
+    const { state, workspace } = await configured();
+    const path = join(state, "settings", "state.json");
+    const legacy = JSON.parse(await readFile(path, "utf8"));
+    legacy.settings.browserAllowedOrigins = ["https://legacy.invalid"];
+    legacy.settings.browserExecutablePath = "/unused/legacy-chrome";
+    await writeFile(path, JSON.stringify(legacy));
+    let definitions: readonly { function: { name: string } }[] = [];
+    const service = await createHarness({ stateDir: state, providerFactory: () => ({
+      listModels: async () => ["fixture-model"],
+      complete: async (_messages, tools) => { definitions = tools; return { message: { role: "assistant", content: "done" } }; },
+    }) });
     cleanups.push(() => service.dispose());
-    const defaults = await service.getSettings();
-    expect(defaults.browserAllowedOrigins).toEqual([]);
-    expect(defaults.browserExecutablePath).toBe("");
-    for (const browserAllowedOrigins of [
-      ["*"],
-      ["https://*"],
-      ["https://*.example.invalid"],
-      ["https://user:pass@example.invalid"],
-      ["https://example.invalid/path"],
-      ["https://example.invalid?x=1"],
-      ["https://example.invalid#x"],
-      ["ftp://example.invalid"],
-      ["example.invalid"],
-      [""],
-    ]) {
-      await expect(
-        service.updateSettings({ settings: { browserAllowedOrigins } }),
-      ).rejects.toThrow();
-    }
-    await expect(
-      service.updateSettings({
-        settings: {
-          browserAllowedOrigins: Array.from(
-            { length: 33 },
-            (_, index) => `https://o${index}.invalid`,
-          ),
-        },
-      }),
-    ).rejects.toThrow();
-    const updated = await service.updateSettings({
-      settings: {
-        browserAllowedOrigins: [
-          "https://example.invalid",
-          "http://127.0.0.1:8080",
-        ],
-        browserExecutablePath: "/usr/bin/chromium",
-      },
-    });
-    expect(updated.browserAllowedOrigins).toEqual([
-      "https://example.invalid",
-      "http://127.0.0.1:8080",
-    ]);
-    expect(updated.browserExecutablePath).toBe("/usr/bin/chromium");
-    const cleared = await service.updateSettings({
-      settings: { browserAllowedOrigins: [], browserExecutablePath: "" },
-    });
-    expect(cleared.browserAllowedOrigins).toEqual([]);
-    expect(cleared.browserExecutablePath).toBe("");
-    expect(updated.hasApiKey).toBe(false);
+    const settings = await service.getSettings();
+    expect(settings).not.toHaveProperty("browserAllowedOrigins");
+    expect(settings).not.toHaveProperty("browserExecutablePath");
+    expect(settings.hasApiKey).toBe(true);
+    await runOnce(service, workspace);
+    expect(definitions.some(tool => tool.function.name.startsWith("browser_"))).toBe(false);
+    expect((await service.listPlugins!())[0]).toMatchObject({ enabled: false });
+
+    const configuredPlugin = await service.configurePlugin!({ pluginId: "browser", enabled: true,
+      config: { allowedDomains: ["*"], browserExecutablePath: "/explicit/plugin-chrome" } });
+    await service.updateSettings({ settings: { theme: "light" } });
+    const reopened = await createHarness({ stateDir: state });
+    cleanups.push(() => reopened.dispose());
+    expect((await reopened.listPlugins!())[0]?.config).toEqual(configuredPlugin.config);
+    expect((await reopened.listPlugins!())[0]?.enabled).toBe(true);
+    expect(await reopened.getSettings()).toMatchObject({ theme: "light", model: "fixture-model", hasApiKey: true });
   });
 
   it("still cancels and releases the session lock with default tools", async () => {
@@ -351,13 +325,8 @@ describe("default harness tool integration", () => {
     expect(result.status).toBe("cancelled");
   });
 
-  it("fails safely when the browser registry cannot be created and keeps the local registry closed", async () => {
-    // An executable path that cannot exist fails browser construction/launch;
-    // the run must fail without leaving the local registry active.
-    const { state, workspace } = await configured(
-      ["http://127.0.0.1:4173"],
-      join(tmpdir(), "forge-no-such-browser-executable"),
-    );
+  it("surfaces an unavailable plugin backend without fallback and releases the session lock", async () => {
+    const { state, workspace } = await configured();
     let completions = 0;
     const providerFactory = (): ModelProvider => ({
       listModels: async () => ["fixture-model"],
@@ -396,6 +365,8 @@ describe("default harness tool integration", () => {
     const service = await createHarness({ stateDir: state, providerFactory });
     cleanups.push(() => service.dispose());
     const session = await service.createSession({ workspace });
+    await service.configurePlugin!({ pluginId: "browser", enabled: true,
+      config: { executablePath: "/nonexistent/forge-test-agent-browser", allowedDomains: ["127.0.0.1"] } });
     const events: AgentEvent[] = [];
     const result = await service.run(
       { sessionId: session.id, prompt: "browse" },
@@ -415,10 +386,9 @@ describe("default harness tool integration", () => {
     const finished = events.filter((event) => event.type === "tool_finished");
     expect(finished).toHaveLength(1);
     expect(finished[0]?.result.isError).toBe(true);
-    // The tool-level error is the intended browser lifecycle failure.
-    expect(finished[0]?.result.content).toContain(
-      "Browser operation denied or failed.",
-    );
+    // The tool-level error comes from the plugin transport, not a legacy fallback.
+    expect(finished[0]?.result.content).toMatch(/agent-browser|MCP/);
+    expect(finished[0]?.result.content).not.toContain(fakeKey);
     // Exactly one tool call ran: the failed navigation, with no retries or
     // later browser side effects recorded.
     const toolMessages = result.messages.filter(

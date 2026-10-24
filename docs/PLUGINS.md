@@ -48,9 +48,14 @@ AI 将访问的网站。`*` 会关闭底层域名过滤（也覆盖重定向和�
 允许某主机名会允许它的 HTTP(S) 端口，不能把它当作端口隔离。
 Web 设置中填写 `*` 后先点“保存配置”，再点“启用插件”。
 
-该配置与旧 `browserAllowedOrigins` **彼此独立**：不会把旧的精确 origin
-授权静默扩展成域名授权。插件启用时只注册 agent-browser 的一组 `browser_*`
-工具；未启用时原有 Playwright 配置仍可使用。不在后端失败时自动回退。
+浏览器功能只有此插件一个入口。旧版 Playwright 工具后端、全局浏览器设置及 CLI
+`--browser-origins` / `--browser-executable` 参数已移除；插件禁用时不注册任何
+`browser_*` 工具，失败时也没有旧后端可回退。已保存的旧 `browserAllowedOrigins`
+和全局 `browserExecutablePath` 仅在读取历史配置时被丢弃，后续保存会移除；不会影响
+其它设置，也不会迁移成插件授权或覆盖已经配置的插件。插件内的同名
+`browserExecutablePath` 仍用于选择 Chrome/Chromium。
+
+Playwright 仅作为开发测试依赖保留，不再是 Core 的生产/可选运行依赖。
 
 ## 客户端与嵌入调用
 

@@ -37,24 +37,6 @@ export const permissionSchema = z.enum([
   "unrestricted",
 ]);
 export type Permission = z.infer<typeof permissionSchema>;
-const browserOriginSchema = z
-  .string()
-  .min(1)
-  .max(256)
-  .refine((value) => {
-    try {
-      const url = new URL(value);
-      return (
-        ["http:", "https:"].includes(url.protocol) &&
-        !url.username &&
-        !url.password &&
-        !url.host.includes("*") &&
-        url.origin === value
-      );
-    } catch {
-      return false;
-    }
-  }, "Expected an exact canonical HTTP(S) origin (scheme, host and optional port only; no credentials, path, query, fragment or wildcard)");
 export const lspServerSchema = z.object({
   id: z.string().regex(/^[a-z][a-z0-9_-]{0,31}$/),
   command: z.string().min(1).max(4096).refine(value => !/[\x00-\x1f]/.test(value)),
@@ -103,14 +85,6 @@ export const settingsFields = {
   // Per-model overrides: gateways/aliases need not have the upstream window.
   modelContextWindows: z.record(z.string().min(1).max(256), z.number().int().positive().max(10000000).nullable()).optional(),
   lspServers: lspServersSchema.optional(),
-  browserAllowedOrigins: z.array(browserOriginSchema).max(32).readonly(),
-  browserExecutablePath: z
-    .string()
-    .max(4096)
-    .refine(
-      (value) => !/[\r\n]/.test(value),
-      "Browser executable path must not contain line breaks",
-    ),
 };
 const configurableSettingsFields = {
   ...settingsFields,
@@ -181,8 +155,6 @@ export const defaultPublicSettings: PublicSettings = publicSettingsSchema.parse(
     maxToolCalls: 100,
     requestTimeoutMs: 60000,
     contextBudgetChars: 100000,
-    browserAllowedOrigins: [],
-    browserExecutablePath: "",
     hasApiKey: false,
     isConfigured: false,
   },

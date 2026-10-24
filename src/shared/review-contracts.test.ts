@@ -87,70 +87,19 @@ describe("settings and resume contracts", () => {
     ).toBe(false);
   });
 
-  it("validates browser settings as exact canonical origins with disabled defaults", () => {
-    expect(defaultPublicSettings.browserAllowedOrigins).toEqual([]);
-    expect(defaultPublicSettings.browserExecutablePath).toBe("");
-    expect(
-      configureInputSchema.parse({
-        settings: {
-          browserAllowedOrigins: [
-            "https://example.invalid",
-            "http://127.0.0.1:8080",
-          ],
-          browserExecutablePath: "/usr/bin/chromium",
-        },
-      }),
-    ).toEqual({
-      settings: {
-        browserAllowedOrigins: [
-          "https://example.invalid",
-          "http://127.0.0.1:8080",
-        ],
-        browserExecutablePath: "/usr/bin/chromium",
-      },
-    });
-    for (const origin of [
-      "*",
-      "https://*",
-      "https://*.example.invalid",
-      "https://user:pass@example.invalid",
-      "https://example.invalid/path",
-      "https://example.invalid?x=1",
-      "https://example.invalid#x",
-      "ftp://example.invalid",
-      "example.invalid",
-      "",
-    ]) {
-      expect(
-        configureInputSchema.safeParse({
-          settings: { browserAllowedOrigins: [origin] },
-        }).success,
-      ).toBe(false);
-    }
-    expect(
-      configureInputSchema.safeParse({
-        settings: {
-          browserAllowedOrigins: Array.from(
-            { length: 33 },
-            (_, index) => `https://o${index}.invalid`,
-          ),
-        },
-      }).success,
-    ).toBe(false);
-    expect(
-      configureInputSchema.safeParse({
-        settings: { browserExecutablePath: "a\nb" },
-      }).success,
-    ).toBe(false);
-    // Provider config keeps only endpoint/key/timeout; browser prefs are public only.
-    expect(
-      providerConfigSchema.safeParse({
-        baseUrl: "https://example.invalid",
-        apiKey: "k",
-        requestTimeoutMs: 1000,
-        browserAllowedOrigins: [],
-      }).success,
-    ).toBe(false);
+  it.each([
+    { browserAllowedOrigins: ["https://example.invalid"] },
+    { browserAllowedOrigins: [] },
+    { browserExecutablePath: "/usr/bin/chromium" },
+    { browserExecutablePath: "" },
+  ])("rejects retired global browser settings %j", settings => {
+    expect(defaultPublicSettings).not.toHaveProperty("browserAllowedOrigins");
+    expect(defaultPublicSettings).not.toHaveProperty("browserExecutablePath");
+    expect(configureInputSchema.safeParse({ settings }).success).toBe(false);
+    expect(publicSettingsSchema.safeParse({ ...defaultPublicSettings, ...settings }).success).toBe(false);
+    expect(providerConfigSchema.safeParse({
+      baseUrl: "https://example.invalid", apiKey: "k", requestTimeoutMs: 1000, ...settings,
+    }).success).toBe(false);
   });
 
   it("accepts an optional nonempty resume model override", () => {

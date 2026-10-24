@@ -34,12 +34,17 @@ const TRANSACTION_LIMIT = 16 * 1024 * 1024;
 const NEW_SOURCE_ID = "default";
 const NEW_SOURCE_LABEL = "Default";
 
-// Accept and discard the retired search switch only when reading stored data.
-// Public configuration no longer exposes it, and old disabled/cached values
-// must not prevent automatic live search on Responses agent requests.
+// Accept and discard retired fields only when reading stored data. Public
+// configuration rejects them. Old browser preferences must neither block startup
+// nor enable/configure the browser plugin; that grant lives in its own store.
 const fieldsSchema = configureInputSchema.unwrap().shape.settings.unwrap().unwrap()
-  .extend({ webSearch: z.enum(["disabled", "cached", "live"]).optional() })
-  .transform(({ webSearch: _legacyWebSearch, ...settings }) => settings)
+  .extend({
+    webSearch: z.enum(["disabled", "cached", "live"]).optional(),
+    browserAllowedOrigins: z.unknown().optional(),
+    browserExecutablePath: z.unknown().optional(),
+  })
+  .transform(({ webSearch: _legacyWebSearch, browserAllowedOrigins: _legacyOrigins,
+    browserExecutablePath: _legacyBrowserExecutable, ...settings }) => settings)
   .readonly();
 const credentialValueSchema = configureInputSchema.unwrap().shape.apiKey.unwrap();
 const configSchema = z

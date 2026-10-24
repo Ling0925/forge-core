@@ -74,11 +74,10 @@ import { inputPredecessor, inputProviderBinding, openInputQueue } from "./input-
 import { createSessionWriter } from "./session-writer";
 import { createAgentRuntime, withCancellation } from "./runtime";
 
-// Default per-run tools: local registry with configured-key redaction, plus a
-// browser registry only when exact allowed origins are configured. Chromium is
-// launched lazily by the browser registry on first actual browser tool use;
-// the browser module itself is loaded lazily so local-only hosts work without
-// Playwright installed. Custom injected tool factories keep exact behavior.
+// Default per-run tools include the explicitly enabled plugin registries.
+// Browser tools come only from the browser plugin and launch lazily on use;
+// disabling that plugin leaves no legacy browser backend to fall back to.
+// Custom injected tool factories keep their own behavior.
 const createDefaultTools = async (
   workspace: string,
   settings: PublicSettings,
@@ -107,21 +106,6 @@ const createDefaultTools = async (
     }));
     registries.push(
       await createMcpToolRegistry(mcp, { redactValues: [apiKey] }),
-    );
-    // Explicit plugin selection replaces the legacy backend; never expose two browser tool sets.
-    if (extensions.enabledIds.includes("browser") || settings.browserAllowedOrigins.length === 0)
-      return createCombinedToolRegistry(...registries);
-    const { createBrowserToolRegistry } = await import("../tools/browser");
-    registries.push(
-      await createBrowserToolRegistry({
-        allowedOrigins: settings.browserAllowedOrigins,
-        protectedRoots: [stateDirectory],
-        ...(settings.browserExecutablePath !== ""
-          ? { executablePath: settings.browserExecutablePath }
-          : {}),
-        headless: true,
-        redactValues: [apiKey],
-      }),
     );
     return createCombinedToolRegistry(...registries);
   } catch (error) {

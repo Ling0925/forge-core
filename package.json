@@ -33,8 +33,7 @@
     "zod-to-json-schema": "3.25.2"
   },
   "optionalDependencies": {
-    "agent-browser": "0.39.2",
-    "playwright": "^1.51.1"
+    "agent-browser": "0.39.2"
   },
   "devDependencies": {
     "@biomejs/biome": "^1.9.4",
@@ -42,6 +41,7 @@
     "@types/ws": "^8.18.2",
     "agent-browser-dev": "npm:agent-browser@0.39.2",
     "esbuild": "^0.25.3",
+    "playwright": "^1.51.1",
     "typescript": "^5.8.3",
     "vitest": "^3.1.2"
   }

@@ -24,6 +24,18 @@ test("Core declares no application dependency and builds only its own sources", 
   }
 });
 
+test("production sources and artifacts no longer expose the legacy Playwright browser", async () => {
+  const pkg = JSON.parse(await readFile(new URL("../package.json", import.meta.url), "utf8"));
+  const metadata = JSON.parse(await readFile(new URL("../dist/build-meta.json", import.meta.url), "utf8"));
+  assert(!("playwright" in pkg.dependencies));
+  assert(!("playwright" in pkg.optionalDependencies));
+  assert(!("src/tools/browser.ts" in metadata.inputs));
+  for (const output of Object.values(metadata.outputs))
+    for (const dependency of output.imports)
+      assert(!/^playwright(?:-core)?(?:\/|$)/.test(dependency.path), dependency.path);
+  await assert.rejects(readFile(new URL("../dist/tools/browser.js", import.meta.url)), { code: "ENOENT" });
+});
+
 test("built shared subpaths bundle for browsers without the runtime", async () => {
   const result = await build({
     stdin: { contents: 'export * from "@forge/core/shared/ipc"; export * from "@forge/core/shared/bridge"; export * from "@forge/core/shared/harness-adaptation";', resolveDir: root },
