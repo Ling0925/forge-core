@@ -8,9 +8,12 @@ const executable = z.string().min(1).max(4096).refine(value => !/[\r\n\0]/.test(
 export const browserPluginConfigSchema = z.object({
   executablePath: executable.default("agent-browser"),
   browserExecutablePath: z.string().max(4096).refine(value => !/[\r\n\0]/.test(value)).default(""),
-  // Hostnames, not origins: this is an explicit new grant, not a migration of browserAllowedOrigins.
-  allowedDomains: z.array(z.string().min(1).max(253).regex(/^(?:\*\.)?(?:[a-z0-9](?:[a-z0-9-]*[a-z0-9])?\.)*[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$/i))
-    .max(64).readonly().default([]),
+  // Hostnames, not origins. Only an explicit "*" grants all hosts; empty stays deny-all.
+  // This remains independent of the legacy browserAllowedOrigins grant.
+  allowedDomains: z.array(z.union([
+    z.literal("*"),
+    z.string().min(1).max(253).regex(/^(?:\*\.)?(?:[a-z0-9](?:[a-z0-9-]*[a-z0-9])?\.)*[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$/i),
+  ])).max(64).readonly().default([]),
 }).strict().readonly();
 export type BrowserPluginConfig = z.infer<typeof browserPluginConfigSchema>;
 

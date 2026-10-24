@@ -73,6 +73,16 @@ describe("plugin management", () => {
     expect(browserPluginConfigSchema.safeParse({ executablePath: "x\nunsafe" }).success).toBe(false);
     expect(browserPluginConfigSchema.safeParse({ allowedDomains: ["https://example.com"] }).success).toBe(false);
   });
+  it("persists an explicit all-host wildcard without implicitly starting a browser", async () => {
+    const { host, home, factory } = await fixture();
+    const record = await host.configure({ pluginId: "browser", enabled: true, config: { allowedDomains: ["*"] } });
+    expect(record).toMatchObject({ enabled: true, status: "configured", config: { allowedDomains: ["*"] } });
+    expect(JSON.parse(await readFile(join(home, "plugins.json"), "utf8")).plugins.browser.config.allowedDomains).toEqual(["*"]);
+    expect(factory).not.toHaveBeenCalled();
+    expect(browserPluginConfigSchema.parse({}).allowedDomains).toEqual([]);
+    for (const domain of ["**", "*example.com", "*.*", "https://*", "", " * "])
+      expect(browserPluginConfigSchema.safeParse({ allowedDomains: [domain] }).success).toBe(false);
+  });
   it("checks only after an explicit request and cleans the diagnostic process", async () => {
     const { host, factory, backends } = await fixture();
     expect((await host.health("browser")).status).toBe("ready");
@@ -154,6 +164,25 @@ describe("browser permissions and ownership", () => {
     expect((await registry.execute(call("snapshot", { session: "someone-else" }), context())).isError).toBe(true);
     expect(factory).not.toHaveBeenCalled();
     expect((await registry.execute(call("navigate", { url: "https://child.allowed.test/" }), context())).isError).toBe(false);
+  });
+  it.each([{ domains: ["*"] }, { domains: ["example.com", "*"] }])("allows arbitrary HTTP(S) hosts with $domains without bypassing other permissions", async ({ domains }) => {
+    const { host, factory } = await fixture();
+    await host.configure({ pluginId: "browser", enabled: true, config: { allowedDomains: domains } });
+    const { registry } = await host.createTools("/tmp");
+    const navigation = call("navigate", { url: "https://not-listed.test/page" });
+    expect((await registry.execute(navigation, context("readonly"))).isError).toBe(true);
+    const denied = { ...context("workspace"), approve: vi.fn(async () => false) };
+    expect((await registry.execute(navigation, denied)).isError).toBe(true);
+    expect(denied.approve).toHaveBeenCalledTimes(1);
+    for (const url of ["file:///etc/passwd", "javascript:alert(1)", "https://user:pass@not-listed.test/"])
+      expect((await registry.execute(call("navigate", { url }), context())).isError).toBe(true);
+    expect(factory).not.toHaveBeenCalled();
+    const approved = context("workspace");
+    expect((await registry.execute(navigation, approved)).isError).toBe(false);
+    expect(approved.approve).toHaveBeenCalledTimes(1);
+    await host.browser({ sessionId: id, action: "takeover", enabled: true });
+    expect(await host.browser({ sessionId: id, action: "execute", command: { action: "navigate", url: "http://127.0.0.1:8080/" } })).toMatchObject({ result: { isError: false } });
+    await host.browser({ sessionId: id, action: "takeover", enabled: false });
   });
   it("isolates scopes and rejects session or workspace impersonation", async () => {
     const { host, enable, factory } = await fixture();

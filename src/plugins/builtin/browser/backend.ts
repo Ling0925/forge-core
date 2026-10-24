@@ -213,6 +213,7 @@ function hostAllowed(
   const host = hostname.toLowerCase();
   return allowedDomains.some((pattern) => {
     const domain = pattern.toLowerCase();
+    if (domain === "*") return true;
     if (domain.startsWith("*.")) {
       const base = domain.slice(2);
       return host === base || host.endsWith(`.${base}`);
@@ -317,7 +318,10 @@ function privateEnv(
     AGENT_BROWSER_NO_WEBMCP: "1",
   };
   if (namespace) env.AGENT_BROWSER_NAMESPACE = namespace;
-  if (config.allowedDomains.length)
+  // "*" is Forge's explicit allow-all grant. Omit the upstream filter rather
+  // than passing a literal wildcard as a hostname. The empty-list action guard
+  // below still denies all browser actions when no grant has been configured.
+  if (config.allowedDomains.length && !config.allowedDomains.includes("*"))
     env.AGENT_BROWSER_ALLOWED_DOMAINS = config.allowedDomains.join(",");
   if (config.browserExecutablePath)
     env.AGENT_BROWSER_EXECUTABLE_PATH = config.browserExecutablePath;

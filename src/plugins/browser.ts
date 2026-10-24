@@ -52,7 +52,7 @@ function validateNavigation(command: BrowserCommand, config: BrowserPluginConfig
   const host = url.hostname.toLowerCase();
   if (!["http:", "https:"].includes(url.protocol) || url.username || url.password || !config.allowedDomains.some(pattern => {
     const domain = pattern.toLowerCase();
-    return domain.startsWith("*.") ? host === domain.slice(2) || host.endsWith(`.${domain.slice(2)}`) : host === domain;
+    return domain === "*" || (domain.startsWith("*.") ? host === domain.slice(2) || host.endsWith(`.${domain.slice(2)}`) : host === domain);
   })) throw new ForgeError("tool", "Browser navigation requires a credential-free HTTP(S) URL on a configured allowed hostname.");
 }
 
@@ -70,9 +70,9 @@ export function createBrowserPlugin(options: BrowserPluginOptions = {}): PluginD
     },
     parseConfig(value, enabled) {
       const parsed = browserPluginConfigSchema.safeParse(value);
-      if (!parsed.success) throw new ForgeError("invalid_input", "Invalid browser plugin configuration. Supply executable paths and a bounded hostname allowlist.");
+      if (!parsed.success) throw new ForgeError("invalid_input", "Invalid browser plugin configuration. Supply executable paths and allowed hostnames, or '*' to explicitly allow all hosts.");
       if (enabled && !parsed.data.allowedDomains.length)
-        throw new ForgeError("invalid_input", "Configure allowedDomains before enabling the browser plugin. An empty list never grants unrestricted browsing.");
+        throw new ForgeError("invalid_input", "Configure allowedDomains before enabling the browser plugin. Use ['*'] to explicitly allow all HTTP(S) hosts; an empty list grants no access.");
       return parsed.data;
     },
     async check(input, signal) {
@@ -93,6 +93,8 @@ export function createBrowserPlugin(options: BrowserPluginOptions = {}): PluginD
 
 async function createBrowserScope(input: PluginScopeOptions, factory: NonNullable<BrowserPluginOptions["browserFactory"]>, publishImage: BrowserPluginOptions["publishImage"]): Promise<PluginScope> {
   const config = browserPluginConfigSchema.parse(input.config);
+  const allowedHostnames = config.allowedDomains.includes("*")
+    ? "* (all HTTP(S) hosts, including localhost and LAN)" : config.allowedDomains.join(", ");
   const stop = new AbortController();
   let context: ToolContext | undefined;
   let backend: Promise<BrowserBackend> | undefined;
@@ -167,7 +169,7 @@ async function createBrowserScope(input: PluginScopeOptions, factory: NonNullabl
   const status = (sessionId: SessionId): BrowserResponse => ({ sessionId, available: available && !closed && !stop.signal.aborted, takeover });
   return {
     definitions: tools.map(tool => tool.definition),
-    instructions: `${instructions}\nConfigured allowed hostnames: ${config.allowedDomains.join(", ")}.`,
+    instructions: `${instructions}\nConfigured allowed hostnames: ${allowedHostnames}.`,
     sessions: () => context && available && !closed && !stop.signal.aborted ? [context.sessionId] : [],
     async execute(call, ctx): Promise<ToolResult> {
       try {
@@ -188,7 +190,7 @@ async function createBrowserScope(input: PluginScopeOptions, factory: NonNullabl
         if (ctx.permission !== "unrestricted") {
           const request = { id: randomUUID(), sessionId: ctx.sessionId, toolCallId: ctx.toolCallId,
             toolName: call.function.name,
-            description: clean(`Browser ${command.action}${command.action === "navigate" ? `: ${command.url}` : ""}. Executable: ${config.executablePath}. Allowed hostnames: ${config.allowedDomains.join(", ")}. Page actions may have remote side effects.`) };
+            description: clean(`Browser ${command.action}${command.action === "navigate" ? `: ${command.url}` : ""}. Executable: ${config.executablePath}. Allowed hostnames: ${allowedHostnames}. Page actions may have remote side effects.`) };
           ctx.onEvent({ type: "approval_requested", sessionId: ctx.sessionId, timestamp: new Date().toISOString(), request });
           if (!await ctx.approve(request, signal)) throw new ForgeError("tool", "Browser tool call was denied.");
         }
