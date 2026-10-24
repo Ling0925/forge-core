@@ -3,6 +3,7 @@ import { createAnthropicProvider } from "./anthropic";
 import { createGeminiProvider } from "./gemini";
 import { normalizeModelCatalog } from "./catalog";
 import { ProviderError, protocol, httpError } from "./errors";
+import { parseProviderJson } from "./bounded-json";
 import { createRequestOptions } from "./request-options";
 import { sdkEvents, withSdkRequest } from "./sdk-transport";
 import type { ModelCatalog } from "../shared/model-catalog";
@@ -30,7 +31,6 @@ import type {
 import { estimateToolCallLines } from "../shared/tool-preview-lines";
 import { createResponsesAdapter } from "./responses";
 
-const MAX_BODY = 8_000_000;
 const MAX_TEXT = 2_000_000;
 // Persisted display-only reasoning preview; bounded so a chatty gateway cannot
 // inflate the session transcript. Must match assistantMessageSchema.reasoning.
@@ -121,29 +121,6 @@ const unsupportedSchema = z.object({
     code: z.string().nullable().optional(),
   }),
 });
-// Limit nesting before JSON.parse, including unknown metadata that Zod strips.
-const parseJson = (text: string): unknown => {
-  if (text.length > MAX_BODY) throw protocol("output_limit");
-  let depth = 0;
-  let quoted = false;
-  let escaped = false;
-  for (const char of text) {
-    if (quoted) {
-      if (escaped) escaped = false;
-      else if (char === "\\") escaped = true;
-      else if (char === '"') quoted = false;
-    } else if (char === '"') quoted = true;
-    else if (char === "{" || char === "[") {
-      depth += 1;
-      if (depth > 64) throw protocol("invalid_json");
-    } else if (char === "}" || char === "]") depth -= 1;
-  }
-  try {
-    return JSON.parse(text) as unknown;
-  } catch {
-    throw protocol("invalid_json");
-  }
-};
 const normalizeUsage = (
   usage: z.infer<typeof usageWire> | null | undefined,
 ): Usage | undefined => {
@@ -175,7 +152,7 @@ const checkFinish = (
     throw protocol("invalid_tool_call");
   for (const call of calls) {
     if (!call.function.arguments.trim()) throw protocol("invalid_tool_call");
-    const args = parseJson(call.function.arguments);
+    const args = parseProviderJson(call.function.arguments);
     if (args === null || typeof args !== "object" || Array.isArray(args))
       throw protocol("invalid_tool_call");
   }
@@ -250,7 +227,7 @@ async function readStream(
       return;
     }
     if (done) throw protocol("unexpected_frame");
-    const parsed = chunkSchema.safeParse(parseJson(payload));
+    const parsed = chunkSchema.safeParse(parseProviderJson(payload));
     if (!parsed.success) throw protocol("invalid_chunk");
     const chunk = parsed.data;
     if (chunk.usage) usage = normalizeUsage(chunk.usage);
@@ -376,7 +353,7 @@ export function createModelProvider(config: ProviderConfig): ModelProvider {
   const responses = createResponsesAdapter(
     {
       protocol,
-      parseJson,
+      parseJson: parseProviderJson,
       events: sdkEvents,
       notify,
       notifyToolCall,
@@ -412,7 +389,7 @@ export function createModelProvider(config: ProviderConfig): ModelProvider {
           throw httpError(response.status);
         }
         const parsed = modelsSchema.safeParse(
-          parseJson(await readText(response)),
+          parseProviderJson(await readText(response)),
         );
         if (!parsed.success) throw protocol();
         const next = normalizeModelCatalog(parsed.data.data);
@@ -638,7 +615,7 @@ export function createModelProvider(config: ProviderConfig): ModelProvider {
             throw protocol();
           }
           const parsed = jsonResponseSchema.safeParse(
-            parseJson(await readText(response)),
+            parseProviderJson(await readText(response)),
           );
           if (!parsed.success) throw protocol();
           const choice = parsed.data.choices[0];

@@ -22,6 +22,7 @@ import type {
 } from "../shared/schemas";
 import { estimateToolCallLines } from "../shared/tool-preview-lines";
 import { ProviderError, httpError, protocol } from "./errors";
+import { MAX_PROVIDER_JSON_CHARS, parseProviderJson } from "./bounded-json";
 import { createRequestOptions } from "./request-options";
 import { sdkEvents, withSdkRequest } from "./sdk-transport";
 
@@ -33,7 +34,6 @@ import { sdkEvents, withSdkRequest } from "./sdk-transport";
 // gateway/IR layer.
 const MAX_TEXT = 2_000_000;
 const MAX_REASONING = 131_072;
-const MAX_BODY = 8_000_000;
 const MAX_SIGNATURE = 1_000_000;
 const MAX_MODELS = 10_000;
 const MAX_PAGES = 100;
@@ -43,31 +43,6 @@ const MAX_IMAGE_WIRE = 16_000_000;
 // without any thoughtSignature, so unsigned replay carries the sentinel but
 // never another identity's signature. See gemini_signature.go.
 const SKIP_THOUGHT_SIGNATURE = "skip_thought_signature_validator";
-
-// Bounded JSON parse: reject oversized bodies and absurd nesting before
-// JSON.parse, matching the other native adapters.
-const parseJson = (text: string): unknown => {
-  if (text.length > MAX_BODY) throw protocol("output_limit");
-  let depth = 0;
-  let quoted = false;
-  let escaped = false;
-  for (const char of text) {
-    if (quoted) {
-      if (escaped) escaped = false;
-      else if (char === "\\") escaped = true;
-      else if (char === '"') quoted = false;
-    } else if (char === '"') quoted = true;
-    else if (char === "{" || char === "[") {
-      depth += 1;
-      if (depth > 64) throw protocol("invalid_json");
-    } else if (char === "}" || char === "]") depth -= 1;
-  }
-  try {
-    return JSON.parse(text) as unknown;
-  } catch {
-    throw protocol("invalid_json");
-  }
-};
 
 const functionCallWire = z
   .object({
@@ -402,7 +377,7 @@ const wireContents = (
     if (message.content) parts.push({ text: message.content });
     for (const call of message.tool_calls ?? []) {
       const args = argumentsObject(
-        parseJson(call.function.arguments) as unknown,
+        parseProviderJson(call.function.arguments),
       );
       // The functionResponse below names this call by id, so a rebuilt call
       // must carry the same id (Gemini matches responses to calls by id).
@@ -668,7 +643,7 @@ const responseReader = (
       done = true;
       return;
     }
-    accept(parseJson(payload));
+    accept(parseProviderJson(payload));
   };
   const response = (): ProviderResponse => {
     finishOf(finish);
@@ -756,7 +731,7 @@ const send = async (
 
 const readBody = async (response: Response): Promise<string> => {
   const text = await response.text();
-  if (text.length > MAX_BODY) throw protocol("output_limit");
+  if (text.length > MAX_PROVIDER_JSON_CHARS) throw protocol("output_limit");
   return text;
 };
 
@@ -835,7 +810,7 @@ export function createGeminiProvider(config: ProviderConfig): ModelProvider {
             throw httpError(response.status);
           }
           const body = modelsPageWire.safeParse(
-            parseJson(await readBody(response)),
+            parseProviderJson(await readBody(response)),
           );
           if (!body.success) throw protocol();
           for (const model of body.data.models ?? []) {
@@ -1017,7 +992,7 @@ export function createGeminiProvider(config: ProviderConfig): ModelProvider {
           // A gateway that ignores alt=sse may answer with one JSON body
           // (Factory does, per the reference); it is the same response object.
           if (contentType === "application/json") {
-            reader.accept(parseJson(await readBody(response)));
+            reader.accept(parseProviderJson(await readBody(response)));
             return reader.response();
           }
           await response.body?.cancel();
