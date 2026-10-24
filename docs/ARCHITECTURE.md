@@ -11,6 +11,7 @@ Core owns the TypeScript agent runtime, providers, tools, persistence, project c
 | [provider/](../src/provider) | Protocol adapters, catalogs, explicit routing, accounts and cloud authentication |
 | [store/](../src/store) | Settings transactions, sessions, checkpoints and private state |
 | [tools/](../src/tools) | Local, browser and external tool adapters |
+| [plugins/](../src/plugins) | Host-registered capability modules, configuration, scoped resources and official browser |
 | [context/](../src/context) | AGENTS.md and skill discovery |
 | [mcp/](../src/mcp) | Registered MCP servers and connection lifecycle |
 | [host/](../src/host) | Client-neutral controller, runtime hub and local transport |
@@ -61,6 +62,7 @@ See [runtime lifecycle](RUNTIME_LIFECYCLE.md), [session storage](SESSION_STORAGE
 
 - Trusted read-only groups may run concurrently, with ordered result commits and joined cancellation. Unknown, native and remote tools remain serial; mutations are barriers.
 - Private [file checkpoints](../src/store/checkpoints.ts) are distinct from Git diffs and bounded preview text. Restore targets one completed checkpoint/file, requires an inactive session and refuses changed post-edit bytes/mode. Command effects are not automatically checkpointed.
+- [Plugins](PLUGINS.md) are explicitly host-registered modules with API-versioned manifests, private configuration and run-scoped resources. The optional official browser uses agent-browser MCP; it replaces, rather than duplicates, the legacy browser tools when enabled. Human control and preview share the agent's session and Core transport. No workspace code discovery or automatic installation occurs.
 - [MCP](../src/mcp) supports stdio, Streamable HTTP and legacy SSE. Registration does not launch a server. Calls require explicit enabled registration and applicable permissions; disabling/removing a server revokes connections owned by this process, not arbitrary other processes.
 - [Tool hooks](../src/shared/tool-hooks.ts) are explicitly host-configured. They are not auto-loaded from project instructions or skills. Tool-level hooks serialize execution; run-end-only hooks do not.
 - [Agent worktrees](../src/core/agent-worktrees.ts) are opt-in; shared workspace remains the default. Child permissions cannot exceed the parent ceiling, and parent settlement joins child operations.

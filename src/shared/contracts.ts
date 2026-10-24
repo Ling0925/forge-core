@@ -172,6 +172,16 @@ export interface HarnessService {
   ): Promise<import("./mcp").McpServerRecord>;
   removeMcpServer(id: string): Promise<void>;
   getMcpHealth(id: string): Promise<import("./mcp").McpHealth>;
+  /** Optional plugin administration; absent on older hosts and CLI-only services. */
+  listPlugins?(): Promise<readonly import("./plugins").PluginRecord[]>;
+  configurePlugin?(
+    input: import("./plugins").PluginConfigureInput,
+  ): Promise<import("./plugins").PluginRecord>;
+  checkPlugin?(pluginId: string): Promise<import("./plugins").PluginHealth>;
+  /** Human-initiated browser control; Core validates the session before effects. */
+  browser?(
+    input: import("./plugins").BrowserRequest,
+  ): Promise<import("./plugins").BrowserResponse>;
   listCheckpoints(
     id: SessionId,
   ): Promise<readonly import("./checkpoints").CheckpointMetadata[]>;

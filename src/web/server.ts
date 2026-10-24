@@ -618,6 +618,14 @@ export async function createWebHost(
           return json(response, 403, { error: "Desktop-only operation" });
         let authorizedSnapshot: SessionSnapshot | undefined;
         if (restrictWorkspace) {
+          const sessionIdOf = (): Parameters<HarnessService["getSession"]>[0] | undefined => {
+            if (rpc.method === "startRun") return rpc.input.sessionId;
+            if (rpc.method === "enqueueInput") return rpc.input.input.sessionId;
+            // Browser control carries its session in `input`; a top-level-only
+            // check would let a page drive a session from another workspace.
+            if (rpc.method === "browser") return rpc.input.sessionId;
+            return "sessionId" in rpc ? rpc.sessionId : undefined;
+          };
           if (
             rpc.method === "createSession" &&
             !(await inWorkspace(rpc.input.workspace))
@@ -625,21 +633,8 @@ export async function createWebHost(
             return json(response, 403, {
               error: "This server is restricted to its launch workspace",
             });
-          if (
-            "sessionId" in rpc ||
-            rpc.method === "startRun" ||
-            rpc.method === "enqueueInput"
-          ) {
-            const id =
-              rpc.method === "startRun"
-                ? rpc.input.sessionId
-                : rpc.method === "enqueueInput"
-                  ? rpc.input.input.sessionId
-                  : (
-                      rpc as {
-                        sessionId: Parameters<HarnessService["getSession"]>[0];
-                      }
-                    ).sessionId;
+          const id = sessionIdOf();
+          if (id !== undefined) {
             const session = await snapshotOf(id);
             if (!session)
               return json(response, 403, {

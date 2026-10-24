@@ -50,8 +50,9 @@ export function createCombinedToolRegistry(
       disposal ??= Promise.allSettled(
         registries.map((registry) => registry.dispose()),
       ).then(results => {
-        if (results.some(result => result.status === "rejected"))
-          throw new Error("Tool registry cleanup failed; inspect remaining resources.");
+        const failures = results.flatMap(result => result.status === "rejected" ? [result.reason] : []);
+        if (failures.length)
+          throw new AggregateError(failures, "Tool registry cleanup failed; inspect remaining resources.");
       });
       await disposal;
     },

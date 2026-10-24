@@ -19,6 +19,8 @@ export class StdioMcpConnection extends JsonRpcConnection {
       args: readonly string[];
       env: Readonly<Record<string, string>>;
       requestTimeoutMs: number;
+      /** Private working directory for the server; never inherited implicitly. */
+      cwd?: string;
     }>,
   ) {
     super(options.requestTimeoutMs, Object.values(options.env));
@@ -39,6 +41,8 @@ export class StdioMcpConnection extends JsonRpcConnection {
     const child = spawn(this.options.command, [...this.options.args], {
       stdio: ["pipe", "pipe", "pipe"],
       env: this.env(),
+      // A missing cwd must not silently fall back to Forge's own directory.
+      ...(this.options.cwd === undefined ? {} : { cwd: this.options.cwd }),
       // New process group so the whole tree can be terminated on disposal.
       detached: true,
       windowsHide: true,

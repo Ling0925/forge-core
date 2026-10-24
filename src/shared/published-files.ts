@@ -30,7 +30,7 @@ export const publishedFileResponseSchema = z.object({
 }).strict().readonly();
 export type PublishedFileResponse = z.infer<typeof publishedFileResponseSchema>;
 
-/** Only actual successful publish_file exchanges carry deliverable files. */
+/** Only successful host-owned publication tools carry deliverable files. */
 export function collectPublishedFiles(messages: readonly {
   readonly role: string;
   readonly content: string | null;
@@ -43,7 +43,7 @@ export function collectPublishedFiles(messages: readonly {
     if (message.role === "assistant") {
       calls.clear();
       for (const call of message.tool_calls ?? [])
-        if (call.function.name === "publish_file") calls.add(call.id);
+        if (call.function.name === "publish_file" || call.function.name === "browser_screenshot") calls.add(call.id);
     } else if (message.role === "user") calls.clear();
     else if (message.role === "tool" && message.tool_call_id && calls.delete(message.tool_call_id)) {
       try {

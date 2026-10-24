@@ -533,6 +533,26 @@ export function createWorkerController(
           });
           break;
         }
+        case "listPlugins":
+          if (!service.listPlugins)
+            throw new ForgeError("not_found", "Plugins are unavailable on this host.");
+          respond(request, await service.listPlugins());
+          break;
+        case "configurePlugin":
+          if (!service.configurePlugin)
+            throw new ForgeError("not_found", "Plugins are unavailable on this host.");
+          respond(request, await service.configurePlugin(request.input));
+          break;
+        case "checkPlugin":
+          if (!service.checkPlugin)
+            throw new ForgeError("not_found", "Plugins are unavailable on this host.");
+          respond(request, await service.checkPlugin(request.pluginId));
+          break;
+        case "browser":
+          if (!service.browser)
+            throw new ForgeError("not_found", "Browser control is unavailable on this host.");
+          respond(request, await service.browser(request.input));
+          break;
         case "listCheckpoints":
           respond(request, await service.listCheckpoints(request.sessionId));
           break;

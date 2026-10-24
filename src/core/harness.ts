@@ -6,6 +6,8 @@ import { stat } from "node:fs/promises";
 import { isAbsolute, join, resolve } from "node:path";
 import { createProjectContext } from "../context/index";
 import { createMcpService } from "../mcp/registry";
+import { createPluginHost } from "../plugins/host";
+import { browserRequestSchema } from "../shared/plugins";
 import { createModelProvider } from "../provider/openai";
 import { createModelAccessService } from "./model-access";
 import { createRoutedProvider, createRouteState } from "../provider/routing";
@@ -84,8 +86,9 @@ const createDefaultTools = async (
   checkpointDirectory: string,
   stateDirectory: string,
   mcp: Awaited<ReturnType<typeof createMcpService>>,
+  extensions: Awaited<ReturnType<Awaited<ReturnType<typeof createPluginHost>>["createTools"]>>,
 ): Promise<LocalToolRegistry> => {
-  const registries: LocalToolRegistry[] = [];
+  const registries: LocalToolRegistry[] = [extensions.registry];
   try {
     const local = await createLocalToolRegistry(workspace, {
       redactValues: [apiKey],
@@ -105,7 +108,8 @@ const createDefaultTools = async (
     registries.push(
       await createMcpToolRegistry(mcp, { redactValues: [apiKey] }),
     );
-    if (settings.browserAllowedOrigins.length === 0)
+    // Explicit plugin selection replaces the legacy backend; never expose two browser tool sets.
+    if (extensions.enabledIds.includes("browser") || settings.browserAllowedOrigins.length === 0)
       return createCombinedToolRegistry(...registries);
     const { createBrowserToolRegistry } = await import("../tools/browser");
     registries.push(
@@ -162,6 +166,19 @@ export const createHarness = async (
   let harnessExperiences: ReturnType<typeof openHarnessExperienceStore> | undefined;
   const agentWorktrees = createAgentWorktreeService(directory);
   const publishedFiles = await openPublishedFileStore(directory);
+  const plugins = await createPluginHost(directory, {
+    async publishImage(sessionId, image, signal) {
+      const bytes = Buffer.from(image.data, "base64");
+      const png = bytes.subarray(0, 8).equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]));
+      const jpeg = bytes[0] === 255 && bytes[1] === 216 && bytes[2] === 255;
+      if (bytes.toString("base64") !== image.data || (image.mimeType === "image/png" ? !png : !jpeg))
+        throw new ForgeError("tool", "Browser returned an invalid screenshot.");
+      return publishedFiles.put(sessionId, bytes, {
+        name: `browser-${Date.now()}.${png ? "png" : "jpg"}`, mimeType: image.mimeType,
+        previewKind: "image", description: "Browser screenshot",
+      }, signal);
+    },
+  });
   const usageStatsService = createUsageStatsService(store, createModelPricingService({
     cacheDirectory: directory,
   }));
@@ -188,6 +205,7 @@ export const createHarness = async (
     let local: LocalToolRegistry | undefined;
     let context: Awaited<ReturnType<typeof createProjectContext>> | undefined;
     let service: Awaited<ReturnType<typeof createMcpService>> | undefined;
+    let extensions: Awaited<ReturnType<typeof plugins.createTools>> | undefined;
     try {
       if (options.toolFactory) local = await options.toolFactory(workspace);
       else {
@@ -195,6 +213,7 @@ export const createHarness = async (
           throw new ForgeError("busy", "Too many active tool services");
         service = await createMcpService({ home: directory });
         liveMcp.add(service);
+        extensions = await plugins.createTools(workspace, [apiKey]);
         local = await createDefaultTools(
           workspace,
           settings,
@@ -206,6 +225,7 @@ export const createHarness = async (
           ),
           directory,
           service,
+          extensions,
         );
       }
       context = await createProjectContext(workspace, {
@@ -263,7 +283,7 @@ export const createHarness = async (
       if (apiKey) taskSecrets.add(apiKey);
       let accessReleased = false;
       return {
-        instructions: context.getSystemContext(),
+        instructions: [context.getSystemContext(), extensions?.instructions].filter(Boolean).join("\n\n"),
         tools: {
           definitions: combined.definitions,
           isConcurrencySafe: call => combined.isConcurrencySafe?.(call) === true,
@@ -294,6 +314,7 @@ export const createHarness = async (
     } catch (error) {
       await Promise.allSettled([
         local?.dispose(),
+        extensions?.registry.dispose(),
         context?.dispose(),
         service?.dispose(),
       ]);
@@ -689,6 +710,15 @@ export const createHarness = async (
       check();
       return settingsStore.getPublic();
     },
+    async listPlugins() { check(); return plugins.list(); },
+    async configurePlugin(input) { check(); return plugins.configure(input); },
+    async checkPlugin(id) { check(); return plugins.health(id); },
+    async browser(raw) {
+      check();
+      const input = browserRequestSchema.parse(raw);
+      await store.get(input.sessionId); // Unknown sessions cannot probe another browser owner.
+      return plugins.browser(input);
+    },
     async getToolHooks() { check(); return toolHooksStore.get(); },
     async setToolHooks(config) { check(); await toolHooksStore.set(config); },
     async updateSettings(input) {
@@ -1020,7 +1050,7 @@ export const createHarness = async (
         finally {
           await Promise.allSettled([...titleTasks]);
           try { await inputQueue.dispose(); }
-          finally { try { await memories.close(); } finally { await mcp.dispose(); } }
+          finally { try { await memories.close(); } finally { try { await mcp.dispose(); } finally { await plugins.dispose(); } } }
         }
       });
       return closing;

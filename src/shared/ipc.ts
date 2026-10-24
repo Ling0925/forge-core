@@ -65,6 +65,19 @@ import {
   sessionPageRequestSchema,
   sessionPageSchema,
 } from "./session-page";
+import {
+  type BrowserRequest,
+  type BrowserResponse,
+  type PluginConfigureInput,
+  type PluginHealth,
+  type PluginRecord,
+  browserRequestSchema,
+  browserResponseSchema,
+  pluginConfigureInputSchema,
+  pluginHealthSchema,
+  pluginIdSchema,
+  pluginRecordSchema,
+} from "./plugins";
 import type { WorkspaceDirectoryPage } from "./workspaces";
 
 export const IPC_CHANNELS = Object.freeze({
@@ -440,6 +453,28 @@ export const rpcRequestSchema = z
         serverId: mcpStdioRegisterDtoSchema.unwrap().shape.id,
       })
       .strict(),
+    z.object({ ...requestBase, method: z.literal("listPlugins") }).strict(),
+    z
+      .object({
+        ...requestBase,
+        method: z.literal("configurePlugin"),
+        input: pluginConfigureInputSchema,
+      })
+      .strict(),
+    z
+      .object({
+        ...requestBase,
+        method: z.literal("checkPlugin"),
+        pluginId: pluginIdSchema,
+      })
+      .strict(),
+    z
+      .object({
+        ...requestBase,
+        method: z.literal("browser"),
+        input: browserRequestSchema,
+      })
+      .strict(),
     z
       .object({
         ...requestBase,
@@ -629,6 +664,10 @@ export const rpcResponseSchema = z.union([
   success("setMcpEnabled", z.null()),
   success("removeMcpServer", z.null()),
   success("getMcpHealth", mcpHealthDtoSchema),
+  success("listPlugins", z.array(pluginRecordSchema).max(64).readonly()),
+  success("configurePlugin", pluginRecordSchema),
+  success("checkPlugin", pluginHealthSchema),
+  success("browser", browserResponseSchema),
   success(
     "listCheckpoints",
     z.array(checkpointDtoSchema).max(10000).readonly(),
@@ -679,6 +718,10 @@ export const rpcResponseSchema = z.union([
         "setMcpEnabled",
         "removeMcpServer",
         "getMcpHealth",
+        "listPlugins",
+        "configurePlugin",
+        "checkPlugin",
+        "browser",
         "listCheckpoints",
         "getCheckpointDiff",
         "restoreCheckpoint",
@@ -762,6 +805,12 @@ export interface ForgeBridge {
   setMcpEnabled(serverId: string, enabled: boolean): Promise<void>;
   removeMcpServer(serverId: string): Promise<void>;
   getMcpHealth(serverId: string): Promise<McpHealthDto>;
+  /** Required on the bridge so every client can render the plugin list explicitly. */
+  listPlugins(): Promise<readonly PluginRecord[]>;
+  configurePlugin(input: PluginConfigureInput): Promise<PluginRecord>;
+  checkPlugin(pluginId: string): Promise<PluginHealth>;
+  /** Human RPC only; plugin hosts still enforce the run's readonly permission. */
+  browser(input: BrowserRequest): Promise<BrowserResponse>;
   listCheckpoints(sessionId: SessionId): Promise<readonly CheckpointDto[]>;
   getCheckpointDiff(
     sessionId: SessionId,
