@@ -8,7 +8,7 @@ describe("bounded provider JSON", () => {
   });
 
   it("accepts depth 64 but rejects depth 65 with the protocol error", () => {
-    const nested = (depth: number) => "[".repeat(depth) + "0" + "]".repeat(depth);
+    const nested = (depth: number) => `${"[".repeat(depth)}0${"]".repeat(depth)}`;
     expect(() => parseProviderJson(nested(64))).not.toThrow();
     expect(() => parseProviderJson(nested(65))).toThrow(
       expect.objectContaining({ classification: "protocol", reason: "invalid_json", retryable: false }),
@@ -16,8 +16,8 @@ describe("bounded provider JSON", () => {
   });
 
   it("accepts the character limit and rejects larger responses before parsing", () => {
-    expect(parseProviderJson(" ".repeat(MAX_PROVIDER_JSON_CHARS - 1) + "0")).toBe(0);
-    expect(() => parseProviderJson(" ".repeat(MAX_PROVIDER_JSON_CHARS) + "0")).toThrow(
+    expect(parseProviderJson(`${" ".repeat(MAX_PROVIDER_JSON_CHARS - 1)}0`)).toBe(0);
+    expect(() => parseProviderJson(`${" ".repeat(MAX_PROVIDER_JSON_CHARS)}0`)).toThrow(
       expect.objectContaining({ reason: "output_limit", retryable: false }),
     );
   });
