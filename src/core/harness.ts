@@ -151,6 +151,11 @@ export const createHarness = async (
   const agentWorktrees = createAgentWorktreeService(directory);
   const publishedFiles = await openPublishedFileStore(directory);
   const plugins = await createPluginHost(directory, {
+    async publishOfficePreview(sessionId, preview, signal) {
+      return publishedFiles.put(sessionId, Buffer.from(preview.html, "utf8"), {
+        name: preview.name, mimeType: "text/html", previewKind: "html", description: preview.description,
+      }, signal);
+    },
     async publishImage(sessionId, image, signal) {
       const bytes = Buffer.from(image.data, "base64");
       const png = bytes.subarray(0, 8).equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]));

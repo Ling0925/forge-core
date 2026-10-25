@@ -6,7 +6,8 @@ import { z } from "zod";
  * restrictive CSP and is only ever framed with a sandbox attribute, so the
  * preview can never read the workbench, its session cookie or the filesystem.
  */
-export const HTML_PREVIEW_MAX_BYTES = 1024 * 1024;
+// Office HTML embeds images/fonts; keep this separate from the 1 MiB text preview cap.
+export const HTML_PREVIEW_MAX_BYTES = 8 * 1024 * 1024;
 
 /** Document CSP: inline markup works, every network and top-level capability does not. */
 export const HTML_PREVIEW_CSP = [
@@ -39,7 +40,8 @@ export function isHtmlLanguage(language: string): boolean {
 }
 
 export const htmlPreviewRequestSchema = z
-  .object({ html: z.string().max(HTML_PREVIEW_MAX_BYTES) })
+  .object({ html: z.string().max(HTML_PREVIEW_MAX_BYTES)
+    .refine(html => new TextEncoder().encode(html).byteLength <= HTML_PREVIEW_MAX_BYTES, "HTML exceeds the preview byte limit.") })
   .strict()
   .readonly();
 export type HtmlPreviewRequest = z.infer<typeof htmlPreviewRequestSchema>;

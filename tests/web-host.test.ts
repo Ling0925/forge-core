@@ -651,6 +651,15 @@ describe("Web host with default personal LAN direct access", () => {
     expect(document.headers.get("x-frame-options")).toBe("SAMEORIGIN");
     expect(await document.text()).toBe(markup);
 
+    // Office previews embed assets: HTML may exceed the 1 MiB text limit.
+    const officeHtml = `<html><body>${"x".repeat(5 * 1024 * 1024)}</body></html>`;
+    const office = await post("/api/preview", { html: officeHtml });
+    expect(office.status).toBe(200);
+    const officeUrl = (await office.json()).url as string;
+    expect(await (await fetch(`${url}${officeUrl}`, { headers: auth })).text()).toBe(officeHtml);
+    // Enforce UTF-8 bytes rather than JS characters (3 Mi characters > 8 MiB).
+    expect((await post("/api/preview", { html: "中".repeat(3 * 1024 * 1024) })).status).toBe(400);
+
     // Preview documents also work without a login cookie or page connection id.
     expect((await fetch(`${url}${inlineUrl}`, { headers: { Host: auth.Host } })).status).toBe(200);
     expect((await fetch(`${url}/preview/document?id=${"0".repeat(48)}`, { headers: auth })).status).toBe(404);

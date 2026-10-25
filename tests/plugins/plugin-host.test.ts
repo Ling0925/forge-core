@@ -51,7 +51,10 @@ afterEach(async () => {
 describe("plugin management", () => {
   it("lists disabled builtins and composes tools without launching a backend", async () => {
     const { host, factory, enable, home } = await fixture();
-    expect(await host.list()).toMatchObject([{ enabled: false, status: "disabled", activeSessions: 0, manifest: { id: "browser", apiVersion: 1, builtin: true } }]);
+    expect(await host.list()).toMatchObject([
+      { enabled: false, status: "disabled", activeSessions: 0, manifest: { id: "browser", apiVersion: 1, builtin: true } },
+      { enabled: false, status: "disabled", activeSessions: 0, manifest: { id: "officecli", apiVersion: 1, builtin: true } },
+    ]);
     expect((await host.createTools("/tmp")).registry.definitions).toEqual([]);
     await expect(readFile(join(home, "plugins.json"))).rejects.toMatchObject({ code: "ENOENT" });
     await enable();

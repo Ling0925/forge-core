@@ -18,6 +18,7 @@ import {
 } from "../shared/device-authorization";
 import {
   HTML_PREVIEW_CSP,
+  HTML_PREVIEW_MAX_BYTES,
   htmlPreviewRequestSchema,
   htmlPreviewResponseSchema,
 } from "../shared/html-preview";
@@ -43,8 +44,9 @@ import { WorkspaceBrowseError, browseWorkspaceDirectory } from "./workspaces";
 
 const MAX_BODY = 1024 * 1024;
 const MAX_RPC_BODY = 16 * 1024 * 1024;
-// JSON escaping can inflate an inline HTML preview past the default 1 MiB.
-const MAX_PREVIEW_BODY = 4 * 1024 * 1024;
+// JSON escaping can expand a byte to six ASCII bytes; the decoded document is
+// independently limited before it enters the bounded preview store.
+const MAX_PREVIEW_BODY = 6 * HTML_PREVIEW_MAX_BYTES + 1024;
 const LEASE_MS = 20_000;
 const MAX_EVENT_BYTES = 8 * 1024 * 1024;
 const ackSchema = z.object({ cursor: z.number().int().nonnegative() }).strict();

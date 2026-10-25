@@ -17,6 +17,13 @@ export const browserPluginConfigSchema = z.object({
 }).strict().readonly();
 export type BrowserPluginConfig = z.infer<typeof browserPluginConfigSchema>;
 
+/** OfficeCLI is an explicitly configured host executable, not a project-loaded plugin. */
+export const officecliPluginConfigSchema = z.object({
+  executablePath: executable.default("officecli"),
+  timeoutMs: z.number().int().min(1000).max(300000).default(120000),
+}).strict().readonly();
+export type OfficeCliPluginConfig = z.infer<typeof officecliPluginConfigSchema>;
+
 export const pluginManifestSchema = z.object({
   id: pluginIdSchema,
   name: z.string().min(1).max(100),

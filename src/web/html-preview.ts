@@ -7,7 +7,7 @@ import { createWorkspacePathGuard } from "../tools/path-guard";
 
 const DOCUMENT_LIMIT = 24;
 const DOCUMENT_TTL_MS = 30 * 60 * 1000;
-const DOCUMENT_TOTAL_BYTES = 8 * 1024 * 1024;
+const DOCUMENT_TOTAL_BYTES = 4 * HTML_PREVIEW_MAX_BYTES;
 
 /**
  * Ad-hoc HTML documents (a fenced code block) cannot be framed from a string:
@@ -18,15 +18,17 @@ const DOCUMENT_TOTAL_BYTES = 8 * 1024 * 1024;
 export class HtmlPreviewStore {
   private readonly documents = new Map<
     string,
-    { readonly html: string; readonly createdAt: number }
+    { readonly html: string; readonly size: number; readonly createdAt: number }
   >();
   private bytes = 0;
 
   put(html: string): string {
     this.evict();
     const id = randomBytes(24).toString("hex");
-    this.documents.set(id, { html, createdAt: Date.now() });
-    this.bytes += html.length;
+    const size = Buffer.byteLength(html, "utf8");
+    if (size > HTML_PREVIEW_MAX_BYTES) throw new PreviewFileError(413, "HTML exceeds the preview byte limit.");
+    this.documents.set(id, { html, size, createdAt: Date.now() });
+    this.bytes += size;
     while (
       this.documents.size > DOCUMENT_LIMIT ||
       this.bytes > DOCUMENT_TOTAL_BYTES
@@ -52,7 +54,7 @@ export class HtmlPreviewStore {
     const entry = this.documents.get(id);
     if (!entry) return;
     this.documents.delete(id);
-    this.bytes -= entry.html.length;
+    this.bytes -= entry.size;
   }
 
   private evict(): void {

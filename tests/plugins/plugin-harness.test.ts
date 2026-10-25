@@ -17,6 +17,23 @@ async function setup(provider: ModelProvider) {
   const session = await service.createSession({ workspace: root, title: "Browser plugin fixture" });
   return { root, service, session };
 }
+it("assembles OfficeCLI tools lazily and removes them after disablement", async () => {
+  let definitions: readonly ToolDefinition[] = [];
+  let messages: readonly Message[] = [];
+  const { service, session } = await setup({
+    listModels: async () => ["fixture-model"],
+    complete: async (input, tools) => { definitions = tools; messages = input; return { message: { role: "assistant", content: "done" } }; },
+  });
+  await service.configurePlugin!({ pluginId: "officecli", enabled: true, config: { executablePath: "/nonexistent/officecli-fixture" } });
+  const result = await service.run({ sessionId: session.id, prompt: "Inspect OfficeCLI metadata only" }, () => {}, async () => false, new AbortController().signal);
+  expect(result.status).toBe("completed");
+  expect(definitions.filter(tool => tool.function.name.startsWith("officecli_")).map(tool => tool.function.name)).toEqual(["officecli_run", "officecli_preview"]);
+  expect(JSON.stringify(messages)).toContain("Official OfficeCLI plugin");
+  await service.configurePlugin!({ pluginId: "officecli", enabled: false });
+  await service.run({ sessionId: session.id, prompt: "Inspect disabled plugin" }, () => {}, async () => false, new AbortController().signal);
+  expect(definitions.some(tool => tool.function.name.startsWith("officecli_"))).toBe(false);
+});
+
 const configure = (service: HarnessService) => service.configurePlugin!({ pluginId: "browser", enabled: true,
   config: { executablePath: "/nonexistent/forge-test-agent-browser", allowedDomains: ["example.com"] } });
 

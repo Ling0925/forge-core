@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { HTML_PREVIEW_MAX_BYTES } from "./html-preview";
 
 /** Per-file attachment ceiling. Base64 transport expands this by 4/3 (about 67 MiB). */
 export const PUBLISHED_FILE_MAX_BYTES = 50 * 1024 * 1024;
@@ -8,6 +9,7 @@ export const PUBLISHED_FILE_MAX_BASE64_BYTES =
 export const PUBLISHED_SESSION_MAX_BYTES = 64 * 1024 * 1024;
 export const PUBLISHED_SESSION_MAX_FILES = 128;
 export const PUBLISHED_PREVIEW_MAX_BYTES = 1024 * 1024;
+export const PUBLISHED_HTML_PREVIEW_MAX_BYTES = HTML_PREVIEW_MAX_BYTES;
 export const publishedFileIdSchema = z.string().uuid();
 export const publishedFileNameSchema = z.string().trim().min(1).max(200)
   .refine(name => name !== "." && name !== ".." && !/[\\/\x00-\x1f\x7f]/.test(name), "Expected a plain file name");
@@ -30,6 +32,12 @@ export const publishedFileResponseSchema = z.object({
 }).strict().readonly();
 export type PublishedFileResponse = z.infer<typeof publishedFileResponseSchema>;
 
+/** Shared by host authorization and both live/restored client timelines. */
+const publishingTools: ReadonlySet<string> = new Set(["publish_file", "browser_screenshot", "officecli_preview"]);
+export function publishesPublishedFiles(toolName: string): boolean {
+  return publishingTools.has(toolName);
+}
+
 /** Only successful host-owned publication tools carry deliverable files. */
 export function collectPublishedFiles(messages: readonly {
   readonly role: string;
@@ -43,7 +51,7 @@ export function collectPublishedFiles(messages: readonly {
     if (message.role === "assistant") {
       calls.clear();
       for (const call of message.tool_calls ?? [])
-        if (call.function.name === "publish_file" || call.function.name === "browser_screenshot") calls.add(call.id);
+        if (publishesPublishedFiles(call.function.name)) calls.add(call.id);
     } else if (message.role === "user") calls.clear();
     else if (message.role === "tool" && message.tool_call_id && calls.delete(message.tool_call_id)) {
       try {

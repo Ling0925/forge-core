@@ -1,14 +1,15 @@
-# 插件与官方浏览器
+# 官方插件：浏览器与 OfficeCLI
 
 Core 提供轻量插件宿主，`browser` 是第一个官方内置插件，使用
 [agent-browser](https://github.com/vercel-labs/agent-browser) 的原生 stdio MCP。
-插件代码和权限执行属于 Core；CLI/Web 只负责管理和展示，不各自启动浏览器。
+`officecli` 提供 Word/Excel/PowerPoint 文档操作与 HTML 预览附件，采用独立 CLI 进程。
+插件代码和权限执行属于 Core；CLI/Web 只负责管理和展示，不各自启动插件进程。
 
 ## 启用之前
 
 - 插件默认禁用。列表和配置展示不启动程序、不访问网站。
 - `configured` 只表示已经配置，不表示可执行文件或 Chrome 已验证可用。
-- 显式健康检查会启动独立 MCP 进程、握手和核对工具协议，然后清理；
+- 浏览器的显式健康检查会启动独立 MCP 进程、握手和核对工具协议，然后清理；
   `ready` 不代表 Chrome 已成功启动，也不代表网站访问成功。
 - agent-browser 是精确锁定的可选依赖；禁用浏览器不影响 Core 启动。
   宿主需要可用的 Chrome，可通过 `browserExecutablePath` 指定绝对路径。
@@ -135,6 +136,78 @@ Web 面板首先只查询元数据；只有当前运行实际打开浏览器后�
 显式归还，或取消该运行。模型调用 `browser_screenshot` 生成的附件与面板临时预览
 是两个不同通路；前者可通过会话回放和附件接口访问。
 
+## OfficeCLI 文档插件与 HTML 预览
+
+`officecli` 是第二个官方内置插件，默认禁用。无需再注册一份普通 MCP 服务。
+插件调用宿主显式配置的 [OfficeCLI](https://github.com/iOfficeAI/OfficeCLI) 可执行文件，
+不捆绑二进制、不自动安装、升级或探测真实用户配置。Web 的插件设置页可编辑路径、
+单次超时、检查依赖并启用；CLI 使用同一插件配置接口：
+
+```json
+{ "executablePath": "/absolute/path/to/officecli", "timeoutMs": 120000 }
+```
+
+将上述配置存为 `officecli.json` 后：
+
+```sh
+forge plugins configure officecli --config officecli.json
+forge plugins check officecli
+forge plugins enable officecli
+```
+
+启用或改配置后开启新一轮运行。配置成功仅表示 `configured`；健康检查执行独立的
+`--version`，`ready` 仅证明程序能启动，不替代真实文档转换检查。
+
+### 使用闭环
+
+1. 文档需位于当前工作区；上传附件名称不自动等于文件路径，首版不自动导入附件。
+2. `officecli_run` 接收不含程序名的 `args` 数组，例如
+   `{"args":["view","report.docx","outline"]}`。
+   支持 `help`、`create/new`、`view`、`get`、`query`、`set`、`add`、`remove`、
+   `move`、`raw`、`validate`、`batch`、`dump`、`refresh`，保留 OfficeCLI 的属性参数，
+   不为所有 Office 属性重建 schema。先通过 `help docx|xlsx|pptx add|set` 了解语法。
+3. 查看结构后修改，保留用户未要求覆盖的原稿；大文件按区域读取，最后 `validate`。
+4. `officecli_preview({"path":"report.docx"})` 调用 `view <file> html`，把完整 HTML
+   发布为当前会话的不可变附件。支持 `.docx`、`.xlsx`、`.pptx`，可传 `start/end`。
+   HTML 不塞入模型上下文；返回附件元数据也不代表模型已目视检查。
+5. 在 Web 附件卡点击 **HTML 预览** 直接隔离渲染，也可查看源码或下载 HTML。
+   原 Office 文件仍通过 `publish_file` 单独交付；编辑后再生成一份新预览。
+
+这是快照预览，不是 Office 在线编辑器、实时 watch 或原生 Office 像素级渲染。
+预览 iframe 复用现有 opaque-origin sandbox 和禁止网络的 CSP；脚本只在该预览内
+运行，不能访问 Forge DOM、会话 cookie 或工作区。外部图片、字体、脚本不会加载，
+因此复杂文档可能与 Office 原生效果不同。没有预览接口的宿主保留源码/下载入口。
+HTML 上限为 8 MiB（UTF-8 字节），普通文本仍为 1 MiB；超限、截断、失败或非完整
+HTML 不发布伪成功预览，应缩小范围或交付原文档。会话附件原有配额不变。
+
+### 执行与安全边界
+
+- 本插件采用直接 CLI 模式而非常驻 MCP：强制 `OFFICECLI_NO_AUTO_RESIDENT=1`，
+  每次操作保存后退出。不暴露 `open/save/close/watch/mcp/install/update` 等常驻或
+  安装入口，不使用 `--browser` 打开外部页面。
+- 程序使用显式 argv、最小环境及私有 HOME，不继承 Forge 的 Provider 密钥。
+  取消、超时、禁用与作用域结束负责终止本插件进程并有界等待，不重放不确定修改。
+  POSIX 会向所属进程组发信号并在宽限后升级 SIGKILL；Windows 仅能保证向直属子进程
+  发信号。主动脱离进程组或操作系统无法终止的进程不在回收保证内，仍需检查宿主。
+- readonly/plan 禁止全部 OfficeCLI 工具（即使 view 也可能触发上游修复写入）；
+  workspace 每次调用都审批，审批后重查权限、配置和文件路径。unrestricted 省略审批，
+  仍保留这些校验。
+- 主文档和显式 `--input/--xml-file/--template/--out/--output/-o` 文件参数必须在
+  工作区，拒绝敏感路径、受保护状态、符号链接、硬链接和超大输入。`args` 不是 shell。
+  **这不是操作系统沙箱**：受信任的二进制、文档关联资源、属性值、批处理内容仍可能
+  产生其它文件或网络 I/O；不要向属性或批处理传入未授权外部资源/凭据。
+- 修改由外部程序保存，不在 Forge 原生文件检查点内。先读结构、保留副本，不因退出码
+  或取消推断文件没有变动。错误输出有界且对已知秘密脱敏；HTML 秘密命中时拒绝发布。
+
+上游接口说明：[view](https://github.com/iOfficeAI/OfficeCLI/wiki/command-view)、
+[Word HTML](https://github.com/iOfficeAI/OfficeCLI/wiki/command-view-word)、
+[Excel HTML](https://github.com/iOfficeAI/OfficeCLI/wiki/command-view-excel)。
+真实二进制联调是显式 opt-in（使用临时状态，不连接真实模型）：
+
+```sh
+FORGE_OFFICECLI_EXECUTABLE=/absolute/path/to/officecli pnpm exec vitest run tests/plugins/officecli-live.test.ts
+```
+
 ## 扩展边界
 
 - `src/shared/plugins.ts`：版本化 manifest、配置、健康状态与浏览器客户端契约。
@@ -142,6 +215,8 @@ Web 面板首先只查询元数据；只有当前运行实际打开浏览器后�
 - `src/plugins/types.ts` / `host.ts`：宿主显式注册、配置校验、作用域装配与回收。
 - `src/plugins/browser.ts`：浏览器权限、工具白名单、会话互斥和人工接管。
 - `src/plugins/builtin/browser/`：agent-browser MCP 适配和外部进程资源。
+- `src/plugins/officecli.ts` / `builtin/officecli/`：OfficeCLI 权限、文档参数、预览发布与直接进程适配。
+- `src/shared/published-files.ts`：宿主附件授权与客户端实时/历史时间线共用的发布工具分类；新增产物工具不在各客户端重复维护白名单。
 
 首版插件贡献工具 registry 和有界的官方使用指令，继续复用已有 MCP、Skills 与
 Tool Hooks；没有新增第三方动态加载器、市场、自动更新、任意 UI 代码注入或

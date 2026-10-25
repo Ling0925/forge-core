@@ -9,12 +9,13 @@ import { openPluginStore, type PluginEntry } from "../store/plugins";
 import { createCombinedToolRegistry } from "../tools/combined";
 import { createBrowserPlugin, type BrowserPluginOptions } from "./browser";
 import type { PluginDefinition, PluginScope } from "./types";
+import { createOfficeCliPlugin, type OfficeCliPluginOptions } from "./officecli";
 
-export async function createPluginHost(home: string, options: BrowserPluginOptions & {
+export async function createPluginHost(home: string, options: BrowserPluginOptions & OfficeCliPluginOptions & {
   readonly definitions?: readonly PluginDefinition[];
 } = {}) {
   const store = await openPluginStore(home);
-  const definitions = options.definitions ?? [createBrowserPlugin(options)];
+  const definitions = options.definitions ?? [createBrowserPlugin(options), createOfficeCliPlugin(options)];
   if (definitions.length > 64) throw new ForgeError("invalid_input", "Too many registered plugins.");
   const catalog = new Map<string, PluginDefinition>();
   for (const definition of definitions) {
@@ -46,7 +47,7 @@ export async function createPluginHost(home: string, options: BrowserPluginOptio
   const disposeScopes = async (items: readonly { scope: PluginScope }[]) => {
     const outcomes = await Promise.allSettled(items.map(item => item.scope.dispose()));
     if (outcomes.some(outcome => outcome.status === "rejected"))
-      throw new ForgeError("tool", "Plugin cleanup failed; inspect owned browser processes before starting again.");
+      throw new ForgeError("tool", "Plugin cleanup failed; inspect owned processes before starting again.");
   };
   return {
     async list() {
