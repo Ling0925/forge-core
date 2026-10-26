@@ -339,5 +339,5 @@ export function chartFence(spec: unknown): string {
 export function chartFenceBody(fence: string): string {
   const trimmed = fence.trim();
   const match = /^```[a-z]*[^\n]*\n([\s\S]*?)\n```$/.exec(trimmed);
-  return match ? match[1] : trimmed;
+  return match?.[1] ?? trimmed;
 }
