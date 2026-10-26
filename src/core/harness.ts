@@ -41,6 +41,7 @@ import { createPublishedFileTool } from "../tools/published-files";
 import { openSessionStore } from "../store/sessions";
 import { openMemoryStore } from "../store/memory";
 import { createMemoryToolRegistry } from "../tools/memory";
+import { createChartToolRegistry } from "../tools/chart";
 import { forgeMemory } from "./forge-memory";
 import { openAsyncTaskService } from "./async-tasks";
 import type { AsyncTaskService } from "../shared/async-tasks";
@@ -190,6 +191,7 @@ export const createHarness = async (
     settings: PublicSettings,
     apiKey: string,
     provider: ModelProvider,
+    uiHost?: "web",
   ) => {
     let local: LocalToolRegistry | undefined;
     let context: Awaited<ReturnType<typeof createProjectContext>> | undefined;
@@ -264,6 +266,9 @@ export const createHarness = async (
           createAsyncTaskToolRegistry(getAsyncTasks),
         ] : []),
         createSkillTool(context),
+        // The chart tool is a pure validator with no side effects; only the
+        // Web host stamps uiHost, so CLI/desktop runs never advertise it.
+        ...(uiHost === "web" ? [createChartToolRegistry()] : []),
       );
       const ownedService = service;
       const ownedContext = context;
@@ -943,6 +948,7 @@ export const createHarness = async (
             settings,
             config.apiKey,
             provider,
+            input.uiHost,
           );
           tools = built.tools;
           rootBudget.checkAdmission();
@@ -999,7 +1005,7 @@ export const createHarness = async (
               const current = await settingsStore.getPublic();
               const childSourceId = inferSourceId(current, childInput?.model) ?? providerSourceId;
               const child = await modelAccess.resolveProvider(childSourceId, undefined, childSignal ?? signal, childInput?.model);
-              return { ...await buildTools(workspace, current, child.config.apiKey, child.provider), provider: child.provider,
+              return { ...await buildTools(workspace, current, child.config.apiKey, child.provider, input.uiHost), provider: child.provider,
                 ...(childSourceId ? { providerSourceId: childSourceId } : {}) };
             },
           }).run({ ...input, ...(providerSourceId ? { providerSourceId } : {}), ...(routeGroupId ? { routeGroupId } : {}) }, onEvent, approve, signal, control);

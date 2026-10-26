@@ -838,6 +838,9 @@ export const runInputSchema = z
     model: settingsFields.model.optional(),
     providerSourceId: providerSourceIdSchema.optional(),
   routeGroupId: z.string().min(1).optional(),
+  /** Set by the Web host when forwarding a page request; selects Web-only
+   * capabilities (chart tool + fence prompt). The CLI never sets it. */
+  uiHost: z.literal("web").optional(),
   })
   .strict()
   .refine(input => Boolean(input.prompt || input.images?.length), "请输入消息或添加图片。")

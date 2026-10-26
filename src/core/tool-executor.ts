@@ -28,6 +28,7 @@ const readonlyToolNames = new Set([
   "get_memory",
   "search_memory",
   "async_task", // Its own action gate denies stop/wake in readonly mode.
+  "render_chart", // Pure spec validation; no files, commands or network.
 ]);
 
 /** Pure admission: no effects, budget mutation, event emission or persistence. */

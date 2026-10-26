@@ -678,6 +678,22 @@ export async function createWebHost(
         const oldestRequest = requestIds.values().next().value;
         if (requestIds.size > 8192 && oldestRequest)
           requestIds.delete(oldestRequest);
+        // This host serves the Web chat UI: stamp runs it starts or queues with
+        // the trusted uiHost marker so Core registers the chart tool and the
+        // fence prompt. A page cannot clear it (strict schema drops nothing
+        // here; the server overwrites) and the CLI never sets it.
+        const forwarded: RpcRequest =
+          rpc.method === "startRun"
+            ? { ...rpc, input: { ...rpc.input, uiHost: "web" as const } }
+            : rpc.method === "enqueueInput"
+              ? {
+                  ...rpc,
+                  input: {
+                    ...rpc.input,
+                    input: { ...rpc.input.input, uiHost: "web" as const },
+                  },
+                }
+              : rpc;
         const result: RpcResponse =
           rpc.method === "getSession" && authorizedSnapshot
             ? {
@@ -693,7 +709,7 @@ export async function createWebHost(
                   method: rpc.method,
                   result: paginateSession(authorizedSnapshot, rpc.page),
                 }
-              : await runtime.request(rpc);
+              : await runtime.request(forwarded);
         if (result.ok && result.method === "getSession") {
           const base = request.headers["x-forge-snapshot"];
           const update = sessionDeltas.encode(
