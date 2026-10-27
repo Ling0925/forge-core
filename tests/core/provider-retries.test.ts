@@ -22,18 +22,18 @@ it("stops a model retry loop after three identical tool failures", async () => {
   expect(f.events.findLast(event => event.type === "error")).toMatchObject({ error: { code: "tool", retryable: false } });
 });
 
-function fixture(complete: ModelProvider["complete"], execute?: LocalToolRegistry["execute"]) {
+function fixture(complete: ModelProvider["complete"], execute?: LocalToolRegistry["execute"], providerOptions: Partial<ModelProvider> = {}) {
   let snapshot = sessionSnapshotSchema.parse({ version: 1, id: "11111111-1111-4111-8111-111111111111",
     title: "Retry fixture", workspace: "/tmp", model: "same-model", status: "idle",
     createdAt: "2026-01-01T00:00:00.000Z", updatedAt: "2026-01-01T00:00:00.000Z", messages: [], events: [], changes: [] });
   const store: SessionStore = { list: async () => [], get: async () => snapshot, create: async () => snapshot,
     save: async value => { snapshot = sessionSnapshotSchema.parse(value); }, acquire: async () => async () => {} };
   const tools: LocalToolRegistry = { definitions: [], execute: execute ?? (async () => ({ content: "ok", isError: false })), dispose: async () => {} };
-  const runtime = createAgentRuntime({ store, tools, provider: { listModels: async () => [], complete }, settings: defaultPublicSettings });
+  const runtime = createAgentRuntime({ store, tools, provider: { ...providerOptions, listModels: async () => [], complete }, settings: defaultPublicSettings });
   const events: AgentEvent[] = [];
   const controller = new AbortController();
   return { events, controller, snapshot: () => snapshot,
-    run: (observe?: (event: AgentEvent) => void) => runtime.run({ sessionId: snapshot.id, prompt: "do work" }, event => { events.push(event); observe?.(event); }, async () => false, controller.signal) };
+    run: (observe?: (event: AgentEvent) => void, permission: "readonly" | "unrestricted" = "unrestricted") => runtime.run({ sessionId: snapshot.id, prompt: "do work", permission }, event => { events.push(event); observe?.(event); }, async () => false, controller.signal) };
 }
 
 it("allows exactly five additional attempts, discards failed drafts and keeps the same request", async () => {
@@ -81,6 +81,9 @@ it("stops after six failed requests rather than retrying an entire task", async 
   const f = fixture(async () => { calls++; throw new ProviderError("network", "Connection failed", true); });
   const running = f.run(); await vi.runAllTimersAsync(); await running;
   expect(calls).toBe(6); expect(f.snapshot().status).toBe("failed");
+  expect(f.events.findLast(event => event.type === "error")).toMatchObject({ error: {
+    retryable: true, message: expect.stringContaining("reason=retry_limit_reached; retries=5/5"),
+  } });
   expect(f.events.filter(event => event.type === "provider_retry")).toHaveLength(5);
   expect(f.events.findLast(event => event.type === "run_finished")).toMatchObject({ turns: 1, toolCalls: 0 });
 });
@@ -116,6 +119,27 @@ it.each([
   const f = fixture(async () => { calls++; throw error; });
   const running = f.run(); await vi.runAllTimersAsync(); await running;
   expect(calls).toBe(1); expect(f.events.some(event => event.type === "provider_retry")).toBe(false);
+});
+
+it.each(["readonly", "unrestricted"] as const)("explains Responses retry decisions without weakening hosted-search safety (%s)", async permission => {
+  vi.useFakeTimers(); let calls = 0; let effects = 0;
+  const f = fixture(async (messages, _tools, options) => {
+    expect(options.webSearch).toBe(permission === "readonly" ? "disabled" : "live");
+    if (++calls === 1) return { message: { role: "assistant", content: null,
+      tool_calls: [{ id: "effect", type: "function", function: { name: "read_file", arguments: '{"path":"fixture.txt"}' } }] } };
+    expect(messages.filter(message => message.role === "tool")).toHaveLength(1);
+    if (calls === 2) throw new ProviderError("http", "Temporarily unavailable", true, 503);
+    return { message: { role: "assistant", content: "done" } };
+  }, async () => { effects++; return { content: "one effect", isError: false }; }, { apiMode: "responses" });
+  const running = f.run(undefined, permission); await vi.runAllTimersAsync(); await running;
+  expect(effects).toBe(1);
+  expect(calls).toBe(permission === "readonly" ? 3 : 2);
+  expect(f.snapshot().status).toBe(permission === "readonly" ? "completed" : "failed");
+  if (permission === "unrestricted") {
+    expect(f.events.filter(event => event.type === "provider_retry")).toHaveLength(0);
+    expect(f.events.findLast(event => event.type === "error")).toMatchObject({ error: { retryable: true,
+      message: expect.stringContaining("reason=hosted_search_may_have_executed; retries=0/5") } });
+  }
 });
 
 it("cancels during backoff without constructing another provider request", async () => {

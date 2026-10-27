@@ -7,6 +7,15 @@ export interface BridgeTransport {
 }
 type Results = { [M in RpcRequest["method"]]: Extract<RpcResponse, { ok: true; method: M }>["result"] };
 
+export class HostResponseError extends Error {
+  constructor(readonly method: RpcRequest["method"], readonly reason: "schema_mismatch" | "id_mismatch" | "method_mismatch") {
+    // Only local method names and fixed labels, never payloads, Zod issues or received IDs.
+    super(`Invalid host response for ${method}: ${reason}. ` +
+      "The Core/client contract or cached build may differ. Refresh the client; after a Core update, wait for active tasks to finish before restarting Core. No request was automatically replayed.");
+    this.name = "HostResponseError";
+  }
+}
+
 // LAN HTTP is not a secure context: randomUUID may be absent, getRandomValues is available.
 export function requestId(): string {
   const bytes = crypto.getRandomValues(new Uint8Array(16));
@@ -32,8 +41,13 @@ export function createTransportBridge(transport: BridgeTransport): ForgeBridge {
   async function request<M extends RpcRequest["method"]>(method: M, fields: object = {}): Promise<Results[M]> {
     const input = rpcRequestSchema.parse({ id: requestId(), method, ...fields });
     // Never replay uncertain effects when the transport fails.
-    const response = rpcResponseSchema.safeParse(await transport.request(input));
-    if (!response.success || response.data.id !== input.id || response.data.method !== method) throw new Error("Invalid host response.");
+    const raw = await transport.request(input);
+    if (typeof raw === "object" && raw !== null && !Array.isArray(raw)) {
+      if ("id" in raw && typeof raw.id === "string" && raw.id !== input.id) throw new HostResponseError(method, "id_mismatch");
+      if ("method" in raw && typeof raw.method === "string" && raw.method !== method) throw new HostResponseError(method, "method_mismatch");
+    }
+    const response = rpcResponseSchema.safeParse(raw);
+    if (!response.success) throw new HostResponseError(method, "schema_mismatch");
     if (!response.data.ok) {
       const { code, message, retryable } = response.data.error;
       throw new ForgeError(code, message, retryable);

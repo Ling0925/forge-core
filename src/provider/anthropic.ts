@@ -243,7 +243,7 @@ export function createAnthropicProvider(
           { signal },
         )) {
           raw.push({ ...model, id: settingsFields.model.parse(model.id) });
-          if (raw.length > 10000) throw protocol("output_limit");
+          if (raw.length > 10000) throw protocol("output_limit", { stage: "model_catalog", observed: raw.length, limit: 10000, unit: "items" });
         }
         // Publish a cache only after every page succeeded.
         const next = normalizeModelCatalog(raw, { protocol: "anthropic" });
@@ -578,7 +578,7 @@ export function createAnthropicProvider(
                   throw invalid("stream", "invalid_chunk");
                 const assembled = (argumentsByIndex.get(index) ?? "") + fragment;
                 if (assembled.length > 1_000_000)
-                  throw protocol("output_limit");
+                  throw protocol("output_limit", { stage: "tool_arguments", observed: assembled.length, limit: 1_000_000, unit: "utf16_code_units" });
                 argumentsByIndex.set(index, assembled);
                 preview(index, block);
                 return;

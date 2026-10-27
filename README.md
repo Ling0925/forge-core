@@ -87,7 +87,7 @@ FORGE_HOME=/absolute/path/to/private-state \
 
 ## 模型与 MCP
 
-模型协议由来源或逐模型配置明确选择，不会在协议失败后自动切换到 Chat Completions。适配器支持各协议的流式结果和受支持的完整响应形式；截断响应、冲突工具调用和缺少完成信号仍作为错误处理。用量缺失时保留未知状态，不记成零消耗。兼容性回归位于 [tests/provider](tests/provider)。
+模型协议由来源或逐模型配置明确选择，不会在协议失败后自动切换到 Chat Completions。适配器支持各协议的流式结果和受支持的完整响应形式；截断响应、冲突工具调用和缺少完成信号仍作为错误处理。用量缺失时保留未知状态，不记成零消耗。兼容性回归位于 [tests/provider](tests/provider)。错误阶段、重试决策和运行构建识别见 [错误诊断](docs/ERROR_DIAGNOSTICS.md)；子代理可独立选择其他供应商，规则见 [跨供应商派发](docs/AGENT_COLLABORATION.md#不带角色的跨供应商模型选择)。
 
 MCP 支持 **stdio、Streamable HTTP、Legacy SSE**。注册不会连接；启用后才允许发现和调用，连接测试会握手并发送 ping。模型通过 `mcp_list_servers` → `mcp_list_tools` → `mcp_call_tool` 发现并使用工具，大目录按 `nextOffset` 分页。
 

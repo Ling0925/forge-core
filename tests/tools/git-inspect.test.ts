@@ -310,3 +310,19 @@ it("refuses git log when the workspace is at or under a protected state root", a
     expect(String(failure)).not.toContain("BENIGN_SENTINEL_SUBJECT");
   }
 });
+
+it("keeps protected roots refusing workspace-level git inspection", async () => {
+  const { root, git } = await repo();
+  const state = join(root, "managed");
+  await mkdir(state, { recursive: true });
+  git("init", "-q", state);
+  // The guard still runs before any git probe, so the refusal is not demoted to the
+  // ordinary not-applicable answer for a workspace without repository metadata.
+  for (const action of ["status", "diff", "log"] as const) {
+    const failure = await gitInspect(root, action, undefined, [], [root]).then(
+      () => null,
+      (error: unknown) => error,
+    );
+    expect(failure).toMatchObject({ code: "PROTECTED_PATH" });
+  }
+});

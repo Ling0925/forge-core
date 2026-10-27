@@ -6,6 +6,7 @@ import type {
 } from "openai/resources/responses/responses";
 import { z } from "zod";
 import type { ProtocolReason } from "../shared/errors";
+import type { ProviderDiagnostic, ProviderStage } from "./errors";
 import { providerResponseSchema, toolCallSchema } from "../shared/schemas";
 import type { WebCitation, WebSearchMode, WebSearchProgress } from "../shared/web-search";
 import { citationRecord, searchRecord, urlCitation, webSearchCall } from "./responses-web-search";
@@ -87,8 +88,8 @@ const terminal = z.object({
     .optional(),
 });
 type Helpers = {
-  protocol: (reason?: ProtocolReason) => Error;
-  parseJson: (text: string) => unknown;
+  protocol: (reason?: ProtocolReason, detail?: ProviderDiagnostic) => Error;
+  parseJson: (text: string, stage?: ProviderStage) => unknown;
   events: (response: Response) => AsyncIterable<ServerSentEvent>;
   /** Opaque credential identity; replaying state across accounts is unsafe. */
   credentialId?: string | undefined;
@@ -192,9 +193,9 @@ function validatedOutput(
       )
         throw h.protocol();
       calls.add(item.call_id);
-      const value = h.parseJson(item.arguments);
+      const value = h.parseJson(item.arguments, "tool_arguments");
       if (!value || typeof value !== "object" || Array.isArray(value))
-        throw h.protocol();
+        throw h.protocol("invalid_tool_call", { stage: "tool_arguments" });
     }
   }
   return parsed;
@@ -488,14 +489,14 @@ export function createResponsesAdapter(h: Helpers, baseUrl: string) {
             if (textDone.has(partKey) || contentDone.has(partKey)) throw h.protocol();
             textParts.set(partKey, (textParts.get(partKey) ?? "") + p.delta);
             text += p.delta;
-            if (text.length > 2_000_000) throw h.protocol();
+            if (text.length > 2_000_000) throw h.protocol("output_limit", { stage: "output_text", observed: text.length, limit: 2_000_000, unit: "utf16_code_units" });
             for (let i = 0; i < p.delta.length; i += 65536)
               h.notify(observer, p.delta.slice(i, i + 65536));
           } else {
             if (item.type !== "function_call" || argumentDone.has(item.id))
               throw h.protocol();
             const next = (args.get(item.id) ?? "") + p.delta;
-            if (next.length > 1_000_000) throw h.protocol();
+            if (next.length > 1_000_000) throw h.protocol("output_limit", { stage: "tool_arguments", observed: next.length, limit: 1_000_000, unit: "utf16_code_units" });
             args.set(item.id, next);
             if (p.delta) argumentDeltas.add(item.id);
             notifyToolPreview(p.output_index);
@@ -688,7 +689,7 @@ export function createResponsesAdapter(h: Helpers, baseUrl: string) {
           if (event.data === "[DONE]") {
             if (!completed || transportDone || (event.event && event.event !== "message")) throw h.protocol();
             transportDone = true;
-          } else dispatch(h.parseJson(event.data), event.event);
+          } else dispatch(h.parseJson(event.data, "sse_event"), event.event);
         }
       }
       if (!completed || !completedOutput)
@@ -757,7 +758,7 @@ export function createResponsesAdapter(h: Helpers, baseUrl: string) {
         .filter((i) => i.type === "message")
         .flatMap((i) => i.content.map(prose))
         .join("");
-      if (finalText.length > 2_000_000) throw h.protocol("output_limit");
+      if (finalText.length > 2_000_000) throw h.protocol("output_limit", { stage: "output_text", observed: finalText.length, limit: 2_000_000, unit: "utf16_code_units" });
       if (!finalText.startsWith(text) || (!finalText && !calls.length)) throw h.protocol();
       // Only emit text absent from the stream, after validating the complete
       // snapshot. Existing deltas must match whole parts above, not just prefixes.

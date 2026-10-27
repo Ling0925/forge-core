@@ -151,10 +151,10 @@ const checkFinish = (
   if (new Set(calls.map((call) => call.id)).size !== calls.length)
     throw protocol("invalid_tool_call");
   for (const call of calls) {
-    if (!call.function.arguments.trim()) throw protocol("invalid_tool_call");
-    const args = parseProviderJson(call.function.arguments);
+    if (!call.function.arguments.trim()) throw protocol("invalid_tool_call", { stage: "tool_arguments" });
+    const args = parseProviderJson(call.function.arguments, "tool_arguments");
     if (args === null || typeof args !== "object" || Array.isArray(args))
-      throw protocol("invalid_tool_call");
+      throw protocol("invalid_tool_call", { stage: "tool_arguments" });
   }
 };
 const notify = (observer: (text: string) => void, text: string): void => {
@@ -227,7 +227,7 @@ async function readStream(
       return;
     }
     if (done) throw protocol("unexpected_frame");
-    const parsed = chunkSchema.safeParse(parseProviderJson(payload));
+    const parsed = chunkSchema.safeParse(parseProviderJson(payload, "sse_event"));
     if (!parsed.success) throw protocol("invalid_chunk");
     const chunk = parsed.data;
     if (chunk.usage) usage = normalizeUsage(chunk.usage);
@@ -246,7 +246,7 @@ async function readStream(
       }
       if (delta.content) {
         text += delta.content;
-        if (text.length > MAX_TEXT) throw protocol("output_limit");
+        if (text.length > MAX_TEXT) throw protocol("output_limit", { stage: "output_text", observed: text.length, limit: MAX_TEXT, unit: "utf16_code_units" });
         // Shared event text deltas have a smaller bound than final content.
         for (let start = 0; start < delta.content.length; start += 65536)
           notify(observer, delta.content.slice(start, start + 65536));
@@ -282,11 +282,9 @@ async function readStream(
           name: previous.name + (part.function?.name ?? ""),
           arguments: previous.arguments + (part.function?.arguments ?? ""),
         };
-        if (
-          next.id.length > 256 ||
-          next.name.length > 64 ||
-          next.arguments.length > 1_000_000
-        )
+        if (next.arguments.length > 1_000_000)
+          throw protocol("output_limit", { stage: "tool_arguments", observed: next.arguments.length, limit: 1_000_000, unit: "utf16_code_units" });
+        if (next.id.length > 256 || next.name.length > 64)
           throw protocol("invalid_tool_call");
         calls.set(part.index, next);
         // Cumulative snapshot only: the raw fragment never leaves this scope.

@@ -1006,3 +1006,23 @@ describe("Web gateway", () => {
     ).rejects.toThrow();
   });
 });
+
+
+it("forwards version headers and allows only the read-only version GET without Origin", async () => {
+  const core = await startFakeCore((_request, response) => {
+    response.writeHead(200, { "Content-Type": "application/json", "X-Forge-Core-Build": "running-build",
+      "X-Forge-Core-Disk-Build": "disk-build", "X-Forge-Core-Restart-Required": "true" });
+    response.end('{"restartRequired":"true"}');
+  });
+  const gateway = await startGateway(core.url, await rendererFixture());
+  const version = await gatewayCall(gateway, "/api/version");
+  expect(version.status).toBe(200);
+  expect(version.headers["x-forge-core-build"]).toBe("running-build");
+  expect(version.headers["x-forge-core-disk-build"]).toBe("disk-build");
+  expect(version.headers["x-forge-core-restart-required"]).toBe("true");
+  expect((await gatewayCall(gateway, "/api/version", { headers: { Origin: "http://foreign.invalid" } })).status).toBe(403);
+  expect((await gatewayCall(gateway, "/api/version", { method: "POST" })).status).toBe(403);
+  expect((await gatewayCall(gateway, "/api/rpc")).status).toBe(403);
+  expect((await gatewayCall(gateway, "/api/version", { headers: { Host: "foreign.invalid" } })).status).toBe(403);
+  expect(core.requests).toHaveLength(1);
+});

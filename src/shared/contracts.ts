@@ -254,6 +254,14 @@ export interface AgentRuntimeDependencies {
   readonly settings: PublicSettings;
   /** Fresh public role catalog for admission, never private provider configuration. */
   readonly getAgentProfiles?: () => Promise<readonly import("./agent-profiles").AgentProfile[]>;
+  /** Cross-source discovery and exact child selection; never changes the parent's binding. */
+  readonly delegationModels?: {
+    list(signal: AbortSignal, providerSourceId?: string): Promise<{
+      models: readonly { id: string; providerSourceId?: string }[];
+      unavailableSourceIds: readonly string[];
+    }>;
+    resolve(model: string, providerSourceId: string | undefined, signal: AbortSignal): Promise<string | undefined>;
+  };
   /** Only the active supervisor can create this identity-bound child capability. */
   readonly advisorParent?: import("./agent-coordination").AdvisorParentPort;
   readonly childToolFactory?: ToolFactory;

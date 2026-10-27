@@ -10,6 +10,7 @@ import { createPluginHost } from "../plugins/host";
 import { browserRequestSchema } from "../shared/plugins";
 import { createModelProvider } from "../provider/openai";
 import { createModelAccessService } from "./model-access";
+import { createDelegationModels } from "./delegation-models";
 import { createRoutedProvider, createRouteState } from "../provider/routing";
 import { openModelCatalogStore } from "../store/model-catalog";
 import type {
@@ -992,6 +993,13 @@ export const createHarness = async (
             agentWorktrees,
             settings,
             getAgentProfiles: async () => (await settingsStore.getPublic()).agentProfiles ?? [],
+            delegationModels: createDelegationModels({
+              getSettings: () => settingsStore.getPublic(),
+              listModels: async (sourceId, requestSignal) => {
+                const resolved = await modelAccess.resolveProvider(sourceId, undefined, requestSignal);
+                return resolved.provider.listModels(requestSignal);
+              },
+            }),
             provider,
             tools,
             projectInstructions: built.instructions,
@@ -1007,7 +1015,8 @@ export const createHarness = async (
             childContextFactory: async (workspace, childInput, childSignal) => {
               // Delegated model IDs remain exact, even when the parent chose a group.
               const current = await settingsStore.getPublic();
-              const childSourceId = childInput?.providerSourceId ?? inferSourceId(current, childInput?.model) ?? providerSourceId;
+              // Admission already resolved an exact source. Never fall back to the parent's provider.
+              const childSourceId = childInput?.providerSourceId;
               const child = await modelAccess.resolveProvider(childSourceId, undefined, childSignal ?? signal, childInput?.model);
               return { ...await buildTools(workspace, current, child.config.apiKey, child.provider, input.uiHost), provider: child.provider,
                 ...(childSourceId ? { providerSourceId: childSourceId } : {}) };

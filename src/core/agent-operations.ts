@@ -5,7 +5,7 @@ import { agentProfileSummary } from "./agent-profiles";
 import { z } from "zod";
 import type { AgentRuntimeDependencies, ApprovalHandler, RunControl } from "../shared/contracts";
 import { ForgeError } from "../shared/errors";
-import { sessionIdSchema, settingsFields, type Permission, type RunInput, type SessionSnapshot, type ToolResult, type Usage } from "../shared/schemas";
+import { providerSourceIdSchema, sessionIdSchema, settingsFields, type Permission, type RunInput, type SessionSnapshot, type ToolResult, type Usage } from "../shared/schemas";
 
 export const MAX_ACTIVE_AGENTS = 4;
 // A report page bound, not a lifetime limit on child creation.
@@ -52,7 +52,8 @@ const pathSchema = z.string().trim().min(1).max(512).refine(value =>
 const spawnArgs = z.object({
   task: z.string().trim().min(1).max(16384),
   ownership: z.string().trim().min(1).max(4096).optional(),
-  model: settingsFields.model.optional(),
+  model: settingsFields.model.optional().describe("Exact model ID, unchanged. Omit to inherit the parent selection. Explicit IDs resolve across all configured sources."),
+  providerSourceId: providerSourceIdSchema.optional().describe("Exact source ID from list_models. Required when the same model belongs to multiple sources; never inferred from a model prefix."),
   profileId: agentProfileIdSchema.optional(),
   profileRevision: z.number().int().positive().optional(),
   writePaths: z.array(pathSchema).max(32).optional(),
@@ -96,6 +97,7 @@ export function agentSummary(snapshot: SessionSnapshot, limit = 4096) {
   const terminal = snapshot.events.findLast(event => event.type === "run_finished");
   return {
     id: snapshot.id, status: snapshot.status, model: snapshot.model,
+    ...(snapshot.providerSourceId ? { providerSourceId: snapshot.providerSourceId } : {}),
     workspace: snapshot.workspace, ...(snapshot.agentWorktree ? { worktree: snapshot.agentWorktree } : {}),
     summary: text.slice(0, limit), totalChars: text.length, truncated: text.length > limit,
     nextOffset: text.length > limit ? limit : null,
@@ -233,7 +235,12 @@ export async function executeAgentOperation(name: string, args: Record<string, u
       if (profile?.model.mode === "inherit" && parsed.model !== undefined && parsed.model !== snapshot.model)
         throw new ForgeError("invalid_input", "This profile inherits the parent model. Edit its model configuration to select another model.");
       const model = profile?.model.mode === "fixed" ? profile.model.model : parsed.model ?? snapshot.model;
-      const sourceId = profile?.model.mode === "fixed" ? profile.model.providerSourceId : snapshot.providerSourceId;
+      const profileSourceId = profile?.model.mode === "fixed" ? profile.model.providerSourceId : snapshot.providerSourceId;
+      if (profile && parsed.providerSourceId !== undefined && parsed.providerSourceId !== profileSourceId)
+        throw new ForgeError("invalid_input", "The profile's provider source cannot be overridden by spawn_agent.");
+      // An explicit model is a new selection, not a model within the parent's provider.
+      let sourceId = profile ? profileSourceId : parsed.providerSourceId ??
+        (parsed.model === undefined ? snapshot.providerSourceId : undefined);
       const levels: readonly Permission[] = ["readonly", "workspace", "unrestricted"];
       const permission = levels[Math.min(levels.indexOf(env.permission), levels.indexOf(profile?.permission ?? env.permission))]!;
       const isolation = parsed.isolation ?? profile?.isolation ?? "shared";
@@ -249,6 +256,7 @@ export async function executeAgentOperation(name: string, args: Record<string, u
         throw new ForgeError("tool", "This host cannot construct tools for an isolated child workspace.");
       const conflicts = isolation === "worktree" ? [] : [...children.entries()].filter(([, child]) => child.active && child.isolation !== "worktree" && child.writePaths.some(a => writePaths.some(b => overlaps(a, b))));
       if (conflicts.length) return { content: JSON.stringify({ code: "scope_conflict", error: "Declared write paths overlap active children. Wait or assign disjoint paths; this is coordination, not a sandbox.", ids: conflicts.map(([id]) => id) }), isError: true };
+      if (deps.delegationModels) sourceId = await deps.delegationModels.resolve(model, sourceId, env.signal);
       deps.rootBudget?.checkAdmission();
       check(env.signal);
       const child = await deps.store.create({ workspace: snapshot.workspace, title: parsed.task.slice(0, 256), model,
@@ -282,7 +290,7 @@ export async function executeAgentOperation(name: string, args: Record<string, u
         sessionId: child.id, model: child.model,
         prompt: `${parsed.task}\nOwnership: ${parsed.ownership ?? "unspecified"}`,
         permission, ...(input.mode ? { mode: input.mode } : {}),
-        ...(profile && sourceId ? { providerSourceId: sourceId } : {}),
+        ...(sourceId ? { providerSourceId: sourceId } : {}),
       }, env.approveChild(child.id), AbortSignal.any([env.signal, controller.signal]), {
         getPermission: () => env.permission,
         drainSteering(final = false) {
@@ -319,6 +327,7 @@ export async function executeAgentOperation(name: string, args: Record<string, u
       void operation.work.catch(() => undefined);
       deps.onChildOperation?.(child.id, controller, operation.work);
       return output({ childSessionId: child.id, model: child.model, workspace: childWorkspace, isolation, permission,
+        ...(sourceId ? { providerSourceId: sourceId } : {}),
         ...(profile ? { profile: agentProfileSummary(profile) } : {}), declaredWritePathCount: writePaths.length,
         warning: isolation === "worktree"
           ? "Separate checkout of committed HEAD; parent uncommitted files are not copied. Changes are retained here for inspection and merge."

@@ -47,6 +47,22 @@ await harness.updateSettings({
 
 这些限制不是进程或文件系统沙箱：允许 `command` 后仍由宿主权限/审批与项目约束管理命令效果，`writePaths` 是协作范围声明而非 OS 隔离。角色指令、advisor 回答、工具注解都不能扩大权限。角色会话不运行 Harness 自适应探测，以免绕过其工具范围。
 
+## 不带角色的跨供应商模型选择
+
+`list_models({ query?, providerSourceId?, offset?, limit? })` 默认合并所有已配置来源，而不是只查询主代理当前供应商。`models` 返回 `{ id, providerSourceId }`，兼容的 `ids` 与它逐项对应；同名 ID 可在不同来源出现。分页计数以来源/模型对为单位。`partial`、`unavailableSourceIds`（最多列 50 个）与 `unavailableSourceCount` 标明未能完整发现的来源，目录存在不代表实时可用或有额度。
+
+`spawn_agent({ task, model?, providerSourceId?, ... })` 的规则：
+
+- 不传模型和来源：继承父会话的精确模型与来源。
+- 显式传来源：使用该来源与原样模型 ID；目录不可用或未列出的模型也不会被擅自替换。
+- 只传模型：先匹配各来源已配置的默认模型、选择列表、手工元数据及 alias 键；若无明确配置归属，再查询全部来源目录。唯一归属才绑定。
+- 配置归属重复、目录重复、查询不完整且缺少明确归属、模型未知或来源失效：在创建子会话和工作树前返回可操作错误。用 `list_models` 获取精确来源后补 `providerSourceId`，不退回主代理供应商。
+- 模型 ID 中的 `:`、`/` 都是 ID 的一部分，不当作来源分隔符。alias 仍只按用户显式配置映射。
+- 子代理使用独立 Provider/协议与来源凭据；子会话保存选定来源以便后续恢复，不改变主会话或全局活动来源。
+- 使用 `profileId` 时仍服从固定/继承策略，不能通过 `model` 或 `providerSourceId` 覆盖角色约束。
+
+嵌入式、仅环境变量配置且没有来源注册表的宿主继续使用其注入 Provider；跨来源发现由可选的 `AgentRuntimeDependencies.delegationModels` 能力提供。
+
 ## 子代理答疑
 
 子代理调用：

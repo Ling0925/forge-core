@@ -37,6 +37,7 @@ import { summarizeWorkingState } from "./working-memory";
 import { buildSystemInstructions } from "./prompts";
 import { createGenerationStream } from "./runtime-generation";
 import { createToolFailureGuard } from "./tool-failure-guard";
+import { stoppedProviderRetry, type RetryStopReason } from "./provider-retry";
 import { adaptHarness, HARNESS_PROBE_TOOLS, harnessStrategyMessage } from "./harness-adaptation";
 import { BASELINE_HARNESS_STRATEGY, HARNESS_ADAPTATION_DEFAULTS, type HarnessAdaptationReport } from "../shared/harness-adaptation";
 import { createToolHookService } from "./tool-hooks";
@@ -753,21 +754,16 @@ export const createAgentRuntime = (
             rootBudget.observeUsage(input.sessionId, undefined);
             // Never retry cancellation, observer failures, auth rejection or
             // non-provider errors; only bounded transient provider failures.
-            if (
-              signal.aborted ||
-              // A hosted search may already have run/billed even without a final
-              // frame. A mixed route tracks the actual member's authorization
-              // below, so non-Responses members retain their safe retry policy.
-              (webSearch !== "disabled" && routing === undefined) ||
-              attempt >= MAX_GENERATION_RETRIES ||
-              !isRetryableProviderFailure(error) ||
-              // A route group's members share this budget. Only a request that
-              // provably never reached the provider may spend the next attempt
-              // on another member; partial output, unknown execution, hosted
-              // search and cancellation are never replayed.
-              (routing !== undefined && !routing.mayRetry(input.sessionId))
-            )
-              throw error;
+            if (signal.aborted) throw error;
+            // A hosted search may have run/billed without a final frame. Routed
+            // members keep their own proof-of-nonexecution gate; do not weaken it.
+            const stopped: RetryStopReason | undefined = !isRetryableProviderFailure(error)
+              ? "non_retryable_failure"
+              : webSearch !== "disabled" && routing === undefined ? "hosted_search_may_have_executed"
+              : attempt >= MAX_GENERATION_RETRIES ? "retry_limit_reached"
+              : routing !== undefined && !routing.mayRetry(input.sessionId) ? "route_execution_uncertain"
+              : undefined;
+            if (stopped) throw stoppedProviderRetry(error, stopped, attempt, MAX_GENERATION_RETRIES);
             attempt += 1;
             retries += 1;
             hadProviderRetries = true;

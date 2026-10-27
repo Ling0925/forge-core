@@ -210,12 +210,9 @@ const argumentsObject = (value: unknown): Readonly<Record<string, unknown>> => {
   if (typeof parsed === "string") {
     // Some relays forward functionCall.args as JSON text instead of a Struct.
     // A string that is not a complete JSON object is never executed.
-    if (parsed.length > MAX_TEXT) throw protocol("output_limit");
-    try {
-      parsed = JSON.parse(parsed) as unknown;
-    } catch {
-      throw protocol("invalid_tool_call");
-    }
+    if (parsed.length > MAX_TEXT) throw protocol("output_limit", { stage: "tool_arguments", observed: parsed.length, limit: MAX_TEXT, unit: "utf16_code_units" });
+    try { parsed = JSON.parse(parsed) as unknown; }
+    catch { throw protocol("invalid_tool_call", { stage: "tool_arguments" }); }
   }
   if (parsed === undefined || parsed === null) return {};
   if (typeof parsed !== "object" || Array.isArray(parsed))
@@ -377,7 +374,7 @@ const wireContents = (
     if (message.content) parts.push({ text: message.content });
     for (const call of message.tool_calls ?? []) {
       const args = argumentsObject(
-        parseProviderJson(call.function.arguments),
+        parseProviderJson(call.function.arguments, "tool_arguments"),
       );
       // The functionResponse below names this call by id, so a rebuilt call
       // must carry the same id (Gemini matches responses to calls by id).
@@ -570,7 +567,7 @@ const responseReader = (
       emit(options.onReasoning, value);
     } else if (value) {
       text += value;
-      if (text.length > MAX_TEXT) throw protocol("output_limit");
+      if (text.length > MAX_TEXT) throw protocol("output_limit", { stage: "output_text", observed: text.length, limit: MAX_TEXT, unit: "utf16_code_units" });
       emit(options.onText, value);
     }
     if (value || part.thoughtSignature)
@@ -643,7 +640,7 @@ const responseReader = (
       done = true;
       return;
     }
-    accept(parseProviderJson(payload));
+    accept(parseProviderJson(payload, "sse_event"));
   };
   const response = (): ProviderResponse => {
     finishOf(finish);
@@ -731,7 +728,7 @@ const send = async (
 
 const readBody = async (response: Response): Promise<string> => {
   const text = await response.text();
-  if (text.length > MAX_PROVIDER_JSON_CHARS) throw protocol("output_limit");
+  if (text.length > MAX_PROVIDER_JSON_CHARS) throw protocol("output_limit", { stage: "json_response", observed: text.length, limit: MAX_PROVIDER_JSON_CHARS, unit: "utf16_code_units" });
   return text;
 };
 

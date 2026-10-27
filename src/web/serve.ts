@@ -1,8 +1,9 @@
 #!/usr/bin/env node
 import { resolve } from "node:path";
 import { createHarness } from "../core/harness";
-import { createRuntimeHub } from "../host/runtime";
 import { createLocalHost } from "../host/local-server";
+import { createRuntimeHub } from "../host/runtime";
+import { coreBuildInfo } from "../shared/build-info";
 import { validLanEndpoint } from "./lan";
 import { createWebHost } from "./server";
 
@@ -64,6 +65,9 @@ if (args.includes("--help")) {
   }
   console.log(`Forge Web: ${web.origin}`);
   console.log(`Workspace: ${web.workspace}`);
+  console.log(
+    `Core build: ${coreBuildInfo ? `${coreBuildInfo.id} (${coreBuildInfo.builtAt})` : "unknown (source run)"}`,
+  );
   console.log("Personal LAN direct access: anyone who can reach this address can use the workbench. No device pairing required. HTTP is not confidential.");
   let stopping = false;
   for (const signal of ["SIGINT", "SIGTERM"] as const) process.on(signal, () => {

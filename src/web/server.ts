@@ -33,6 +33,7 @@ import type { SessionSnapshot } from "../shared/schemas";
 import { paginateSession } from "../shared/session-page";
 import { workspaceBrowseRequestSchema } from "../shared/workspaces";
 import { openDeviceAuthorization } from "../store/devices";
+import { coreBuildDiagnostics, applyBuildHeaders, BUILD_HEADERS } from "./build-info";
 import {
   HtmlPreviewStore,
   PreviewFileError,
@@ -434,6 +435,7 @@ export async function createWebHost(
     ): Promise<void> => {
       if (protectedRequest && status < 400 && !(await authorized())) {
         target.removeHeader("X-Forge-Snapshot");
+        for (const name of Object.values(BUILD_HEADERS)) target.removeHeader(name);
         return writeJson(target, 401, {
           error: "Device authorization required",
         });
@@ -447,6 +449,34 @@ export async function createWebHost(
     if (!validHost(request))
       return json(response, 403, { error: "Unexpected host" });
     const path = request.url?.split("?")[0];
+    // Read-only build diagnosis. Same Host/Origin boundary as every other API
+    // path, but GET and no body, so a page can poll it without an RPC request.
+    // Nothing here is path-, workspace- or secret-derived.
+    if (path === "/api/version") {
+      // A same-origin page GET carries no Origin, so absence is allowed; any
+      // Origin that is present must be the launch origin, and the Host check
+      // above still rejects DNS rebinding.
+      if (
+        request.method !== "GET" ||
+        (request.headers.origin !== undefined &&
+          request.headers.origin !== origin)
+      )
+        return json(response, 403, { error: "Same-origin GET required" });
+      // Custom authenticated hosts keep the same device gate as every other
+      // API path; the answer itself is still only a build id and timestamp.
+      if (!trustedLan) {
+        device = await authenticate(request);
+        if (!(await authorized()))
+          return json(response, 401, { error: "Device authorization required" });
+      }
+      const snapshot = await coreBuildDiagnostics.snapshot();
+      applyBuildHeaders(response, snapshot);
+      return json(response, 200, {
+        running: snapshot.running,
+        disk: snapshot.disk,
+        restartRequired: snapshot.restartRequired,
+      });
+    }
     if (path?.startsWith("/api/")) {
       if (
         request.method !== "POST" ||
@@ -507,6 +537,8 @@ export async function createWebHost(
             heartbeat: 0,
             lastSeen: Date.now(),
           });
+          const build = await coreBuildDiagnostics.snapshot();
+          applyBuildHeaders(response, build);
           return json(response, 200, {
             workspace,
             restrictWorkspace,
@@ -537,6 +569,9 @@ export async function createWebHost(
           const { cursor } = ackSchema.parse(input);
           const oldest = events[0]?.cursor ?? sequence + 1;
           client.lastSeen = Date.now();
+          // Reconnect status keeps the same static build facts, so a page that
+          // resumes an old connection still notices a rebuilt Core.
+          applyBuildHeaders(response, await coreBuildDiagnostics.snapshot());
           return json(response, 200, {
             resumable: cursor >= oldest - 1 && cursor <= sequence,
           });

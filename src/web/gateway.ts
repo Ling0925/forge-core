@@ -593,7 +593,14 @@ export async function createWebGateway(
     if (requestOrigin.count > 1)
       return writeGatewayError(response, 403, "Unexpected origin", request);
     if (pathname.startsWith("/api/")) {
-      if (requestOrigin.count !== 1 || requestOrigin.value !== origin)
+      // The build diagnosis is a bodyless same-origin GET: an absent Origin is
+      // what a page's fetch sends, but a present Origin must match exactly.
+      const diagnosed = pathname === "/api/version" && request.method === "GET";
+      if (
+        diagnosed
+          ? requestOrigin.count === 1 && requestOrigin.value !== origin
+          : requestOrigin.count !== 1 || requestOrigin.value !== origin
+      )
         return writeGatewayError(
           response,
           403,

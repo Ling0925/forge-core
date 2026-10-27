@@ -100,7 +100,7 @@ export async function withSdkRequest<T>(
           }
           if (chunk.value.byteLength) touch();
           bytes += chunk.value.byteLength;
-          if (bytes > 8_000_000) throw protocol("output_limit");
+          if (bytes > 8_000_000) throw protocol("output_limit", { stage: "transport_body", observed: bytes, limit: 8_000_000, unit: "bytes" });
           const text = decoder.decode(chunk.value, { stream: true });
           sse?.write(text);
           target.enqueue(chunk.value);
@@ -184,11 +184,9 @@ export async function* sdkEvents(
   const controller = new AbortController();
   try {
     for await (const event of _iterSSEMessages(response, controller)) {
-      if (
-        event.data.length > 1_200_000 ||
-        event.raw.some((line) => line.length > 1_200_000)
-      )
-        throw protocol("output_limit");
+      const chars = event.raw.reduce((maximum, line) => Math.max(maximum, line.length), event.data.length);
+      if (chars > 1_200_000)
+        throw protocol("output_limit", { stage: "sse_event", observed: chars, limit: 1_200_000, unit: "utf16_code_units" });
       // The SDK exposes named, data-free records, while SSE dispatch discards
       // them. Do not JSON.parse an empty heartbeat; real empty/malformed data
       // remains a protocol error, and adapters still require native completion.
