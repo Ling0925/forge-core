@@ -66,6 +66,7 @@ See [runtime lifecycle](RUNTIME_LIFECYCLE.md), [session storage](SESSION_STORAGE
 - [MCP](../src/mcp) supports stdio, Streamable HTTP and legacy SSE. Registration does not launch a server. Calls require explicit enabled registration and applicable permissions; disabling/removing a server revokes connections owned by this process, not arbitrary other processes.
 - [Tool hooks](../src/shared/tool-hooks.ts) are explicitly host-configured. They are not auto-loaded from project instructions or skills. Tool-level hooks serialize execution; run-end-only hooks do not.
 - [Agent worktrees](../src/core/agent-worktrees.ts) are opt-in; shared workspace remains the default. Child permissions cannot exceed the parent ceiling, and parent settlement joins child operations.
+- [Configured agents and advisor coordination](AGENT_COLLABORATION.md) bind immutable role/model/tool snapshots to new children. Durable child questions interrupt result waits and final reconciliation; answers never widen authority or revive historical tasks.
 - [Project context and skills](PROJECT_CONTEXT.md) load bounded instruction data without executing it.
 
 ## Hosts and builds

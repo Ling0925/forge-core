@@ -15,6 +15,8 @@ import { nativeDefinitions } from "./agents";
 import { withCancellation } from "./cancellation";
 import { toToolHookOutcome } from "./tool-hooks";
 
+const roleDenied = (): ToolResult => ({ content: "Agent role policy denies this tool. Guidance and approval cannot widen the role's tool policy.", isError: true });
+
 const readonlyToolNames = new Set([
   "list_files",
   "read_file",
@@ -39,10 +41,15 @@ export function planReadBatch(
     hasHooks: boolean;
     permission(): Permission;
     tools: LocalToolRegistry;
+    allowTool?: (name: string, args?: unknown) => boolean;
   },
 ): ToolCall[] {
   const batch: ToolCall[] = [];
   for (const candidate of calls.slice(index, index + 4)) {
+    if (options.allowTool) {
+      try { if (!options.allowTool(candidate.function.name, JSON.parse(candidate.function.arguments))) break; }
+      catch { break; }
+    }
     if (
       options.hasHooks ||
       nativeDefinitions.some(
@@ -67,10 +74,16 @@ export function executeReadBatch(
     permission(): Permission;
     signal: AbortSignal;
     onModelUsage?: (usage: Usage | undefined) => void;
+    allowTool?: (name: string, args?: unknown) => boolean;
   },
 ): Promise<PromiseSettledResult<ToolResult>[]> {
   return Promise.allSettled(
     calls.map(async (call) => {
+      if (options.allowTool) {
+        let args: unknown;
+        try { args = JSON.parse(call.function.arguments); } catch { return invalidToolInput(new SyntaxError("Invalid tool arguments")); }
+        if (!options.allowTool(call.function.name, args)) return roleDenied();
+      }
       const result = toolResultSchema.parse(
         await options.tools.execute(call, {
           sessionId: options.sessionId,
@@ -111,6 +124,7 @@ interface ToolExecution {
   checkpointApproval(status: "awaiting_approval" | "running"): Promise<void>;
   requestApproval: ApprovalHandler;
   native?: (() => Promise<ToolResult>) | undefined;
+  allowTool?: (name: string, args?: unknown) => boolean;
   hooks?: ToolHookService | undefined;
   diagnostics(items: readonly ToolHookDiagnostic[]): void;
 }
@@ -123,6 +137,13 @@ export async function executeToolCall(options: ToolExecution): Promise<{
   afterCommit?: () => Promise<void>;
 }> {
   const { call, signal, hooks } = options;
+  // A role policy is execution admission, not just a filtered model tool list.
+  // Deny before hooks/approvals can start work, including forged native calls.
+  if (options.allowTool) {
+    let args: unknown;
+    try { args = JSON.parse(call.function.arguments); } catch { return { result: invalidToolInput(new SyntaxError("Invalid tool arguments")) }; }
+    if (!options.allowTool(call.function.name, args)) return { result: roleDenied() };
+  }
   let acceptingEvents = true;
   let requested = false;
   let toolEvents = 0;

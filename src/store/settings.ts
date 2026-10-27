@@ -1,5 +1,7 @@
 import { join } from "node:path";
 import { z } from "zod";
+import { agentProfilesSchema } from "../shared/agent-profiles";
+import type { AgentProfile, AgentProfileOperation } from "../shared/agent-profiles";
 import type { SettingsStore } from "../shared/contracts";
 import { ForgeError } from "../shared/errors";
 import {
@@ -74,6 +76,12 @@ type StoredSource = z.infer<typeof storedSourceSchema> & {
 type StoredState = Readonly<{
   version?: 1 | 2;
   routeGroups?: readonly RouteGroup[];
+  // Role profiles are a top-level collection, never part of the settings patch:
+  // a UI settings write must not be able to replace the whole array.
+  agentProfiles?: readonly AgentProfile[];
+  // Monotonic allocation counter. Kept across removals so a re-created id cannot
+  // reuse a revision an older window still believes is current.
+  agentProfilesRevision?: number;
   settings: StoredSettings;
   apiKey: string;
   sources: readonly StoredSource[];
@@ -88,6 +96,9 @@ const transactionSchema = z
     apiKey: credentialValueSchema,
     sources: z.array(storedSourceSchema).optional(),
     routeGroups: z.array(routeGroupSchema).readonly().optional(),
+    // Absent in every older transaction: migrated to an empty collection.
+    agentProfiles: agentProfilesSchema.optional(),
+    agentProfilesRevision: z.number().int().nonnegative().optional(),
     activeSourceId: providerSourceIdSchema.optional(),
   })
   .strict()
@@ -202,11 +213,22 @@ function validateReferences(state: StoredState): void {
     if (!source || (member.credentialId && !sourceCredentials(source).some(item => item.id === member.credentialId)))
       throw invalid("路由仍引用此来源或凭据，请先更新路由成员。");
   }
+  // A stored fixed profile must always resolve: it is an explicit model choice,
+  // never a hint to fall back to whatever source happens to be active.
+  for (const profile of state.agentProfiles ?? []) {
+    const selection = profile.model;
+    if (selection.mode !== "fixed") continue;
+    const sourceId = selection.providerSourceId;
+    if (!state.sources.some(source => source.id === sourceId))
+      throw invalid("智能体配置固定使用的模型来源不存在，请先修改或删除该智能体配置。");
+  }
 }
 function hasExtendedState(state: StoredState): boolean {
-  return state.version === 2 || state.routeGroups !== undefined || state.settings.apiMode === "gemini" || state.sources.some(source =>
-    source.credentials !== undefined || source.connection !== undefined || source.apiMode === "gemini" ||
-    Object.keys(sourceAccessFields).some(key => source[key as keyof StoredSource] !== undefined));
+  return state.version === 2 || state.routeGroups !== undefined ||
+    state.agentProfiles !== undefined || state.agentProfilesRevision !== undefined ||
+    state.settings.apiMode === "gemini" || state.sources.some(source =>
+      source.credentials !== undefined || source.connection !== undefined || source.apiMode === "gemini" ||
+      Object.keys(sourceAccessFields).some(key => source[key as keyof StoredSource] !== undefined));
 }
 
 export async function openSettingsStore(
@@ -235,6 +257,10 @@ export async function openSettingsStore(
     apiKey: state.apiKey,
     sources: [...state.sources],
     ...(state.routeGroups === undefined ? {} : { routeGroups: state.routeGroups }),
+    ...(state.agentProfiles === undefined ? {} : { agentProfiles: state.agentProfiles }),
+    ...(state.agentProfilesRevision === undefined
+      ? {}
+      : { agentProfilesRevision: state.agentProfilesRevision }),
     ...(state.activeSourceId === undefined
       ? {}
       : { activeSourceId: state.activeSourceId }),
@@ -273,6 +299,12 @@ export async function openSettingsStore(
     const state: StoredState = {
       version: parsed.data.version,
       ...(parsed.data.routeGroups === undefined ? {} : { routeGroups: parsed.data.routeGroups }),
+      ...(parsed.data.agentProfiles === undefined
+        ? {}
+        : { agentProfiles: parsed.data.agentProfiles }),
+      ...(parsed.data.agentProfilesRevision === undefined
+        ? {}
+        : { agentProfilesRevision: parsed.data.agentProfilesRevision }),
       settings: parsed.data.settings,
       apiKey: parsed.data.apiKey,
       sources: (parsed.data.sources ?? []).map((source) => ({
@@ -372,6 +404,8 @@ export async function openSettingsStore(
         hasApiKey: apiKey !== "",
         isConfigured: settings.baseUrl !== "" && settings.model !== "",
         providerSources: stored.sources.map(publicSource),
+        // Explicit empty list: older configs migrate without rewriting the file.
+        agentProfiles: stored.agentProfiles ?? [],
         ...(stored.routeGroups === undefined ? {} : { routeGroups: stored.routeGroups }),
         ...(stored.activeSourceId === undefined
           ? {}
@@ -466,12 +500,21 @@ export async function openSettingsStore(
               "invalid_input",
               "Settings failed validation.",
             );
-          const { source, sources: batch, route, settings, apiKey } = parsed.data;
+          const { source, sources: batch, route, agent, settings, apiKey } =
+            parsed.data;
           if ((source || batch) && (settings !== undefined || apiKey !== undefined))
             throw invalid("来源操作不能与普通设置或密钥更新同时提交。");
           if (source && batch) throw invalid("不能同时提交单个来源和来源批次。");
+          // Profile CRUD and source edits each validate cross-references against
+          // the other, so combining them would make the outcome order-dependent.
+          if (agent !== undefined && (source || batch))
+            throw invalid("智能体配置操作不能与来源操作同时提交。");
           const stored = await load();
-          let next = settings !== undefined || apiKey !== undefined ? updateLegacy(stored, parsed.data) : stored;
+          // Profile CRUD merges into the loaded collection, so it never rewrites
+          // unrelated roles, provider sources or ordinary settings.
+          let next = agent === undefined ? stored : updateAgent(stored, agent);
+          if (settings !== undefined || apiKey !== undefined)
+            next = updateLegacy(next, parsed.data);
           for (const operation of batch ?? (source ? [source] : []))
             next = await updateSource(next, operation, options.referencedSessions ?? (async () => []));
           if (route) {
@@ -489,6 +532,63 @@ export async function openSettingsStore(
       );
       return operation;
     },
+  };
+}
+
+// A profile save/remove is one collection entry edit under the same lock and
+// transaction as every other setting. Revisions come from a counter that also
+// advances on removal, so deleting and re-creating an id cannot resurrect a
+// revision an older window still holds.
+function updateAgent(
+  state: StoredState,
+  operation: AgentProfileOperation,
+): StoredState {
+  const profiles = [...(state.agentProfiles ?? [])];
+  const index = profiles.findIndex(
+    profile => profile.id === (operation.type === "save" ? operation.profile.id : operation.id),
+  );
+  const existing = index === -1 ? undefined : profiles[index];
+  if (operation.type === "remove" && existing === undefined)
+    throw new ForgeError(
+      "not_found",
+      "未找到该智能体配置，可能已在别处删除。",
+    );
+  // New profiles must prove they expect "no existing profile" (0); updates must
+  // echo the committed revision they were shown.
+  if ((existing?.revision ?? 0) !== operation.expectedRevision)
+    throw invalid(
+      "该智能体配置已被其他窗口或 CLI 修改。请重新加载设置后再保存，避免覆盖对方的改动。",
+    );
+  const previousRevision = state.agentProfilesRevision ?? 0;
+  const revision = Math.max(
+    previousRevision,
+    ...profiles.map(profile => profile.revision),
+  ) + 1;
+  if (operation.type === "remove") profiles.splice(index, 1);
+  else {
+    const saved: AgentProfile = {
+      ...operation.profile,
+      revision,
+    };
+    // Only the source id is stored; credentials are never copied into a role.
+    // A fixed profile must name an existing source so it can never silently
+    // fall back to whatever provider happens to be active.
+    const selection = saved.model;
+    if (
+      selection.mode === "fixed" &&
+      !state.sources.some(source => source.id === selection.providerSourceId)
+    )
+      throw invalid("智能体配置固定使用的模型来源不存在，请先配置该来源。");
+    if (existing === undefined) {
+      if (profiles.length >= 64) throw invalid("智能体配置最多 64 个。");
+      profiles.push(saved);
+    } else profiles[index] = saved;
+  }
+  return {
+    ...state,
+    version: 2,
+    agentProfiles: profiles,
+    agentProfilesRevision: revision,
   };
 }
 
@@ -569,6 +669,14 @@ async function updateSource(
     );
   }
   if (index === -1) throw unknownSource();
+  // A fixed profile names an explicit source. Removing it would silently move
+  // that role to another provider, so refuse and let the user decide instead.
+  const fixed = (state.agentProfiles ?? []).filter(profile =>
+    profile.model.mode === "fixed" && profile.model.providerSourceId === operation.id);
+  if (fixed.length > 0)
+    throw invalid(
+      `有 ${fixed.length} 个智能体配置固定使用此来源（${fixed.slice(0, 5).map(profile => profile.name).join("、")}）。请先修改或删除这些智能体配置，再删除该模型来源。`,
+    );
   // Sessions pin the source they were created with; removing it would strand
   // them with a source id that no longer resolves. Require an explicit ack.
   const pinned = await referencedSessions(operation.id);

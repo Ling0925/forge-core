@@ -7,6 +7,8 @@ import {
   runInputSchema,
 } from "../shared/schemas";
 import { createSessionWriter } from "./session-writer";
+import { advisorRequestSchema, type AdvisorRequest } from "../shared/agent-coordination";
+import { agentEventSchema, type AgentEvent } from "../shared/schemas";
 
 interface RuntimeJournalState {
   readonly current: () => SessionSnapshot | undefined;
@@ -63,6 +65,36 @@ export function createRuntimeJournal(
       return loaded;
     },
     save: (): Promise<void> => enqueueWrite(() => checkpoint()),
+    async acceptAdvisor(raw: AdvisorRequest): Promise<AgentEvent> {
+      const request = advisorRequestSchema.parse(raw);
+      if (request.parentSessionId !== input.sessionId)
+        throw new ForgeError("invalid_input", "Advisor record belongs to another parent.");
+      let committed!: AgentEvent;
+      await enqueueWrite(async () => {
+        const current = state.current();
+        if (!current) throw new ForgeError("internal", "Session has not loaded.");
+        const previous = current.advisorRequests ?? [];
+        const index = previous.findIndex(item => item.id === request.id);
+        if (index < 0 && previous.length >= 10000)
+          throw new ForgeError("budget", "Advisor history is full; start a new parent session.");
+        const requests = [...previous];
+        if (index < 0) requests.push(request); else requests[index] = request;
+        committed = agentEventSchema.parse({ type: "advisor_update", request,
+          sessionId: input.sessionId, timestamp: state.now() });
+        // Metadata/event only: never insert a message into an open tool exchange.
+        state.replace({ ...current, advisorRequests: requests, events: [...current.events, committed] });
+        try { await checkpoint(); }
+        catch (error) {
+          // Do not later claim an unacknowledged transition succeeded. Preserve
+          // unrelated model/progress updates made while the writer was awaiting IO.
+          const latest = state.current();
+          if (latest) state.replace({ ...latest, advisorRequests: previous,
+            events: latest.events.filter(event => event !== committed) });
+          throw error;
+        }
+      });
+      return committed;
+    },
     async settle(): Promise<void> {
       let pending: Promise<void>;
       do { pending = writes; await pending; } while (pending !== writes);

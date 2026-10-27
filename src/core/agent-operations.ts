@@ -1,4 +1,7 @@
 import { posix } from "node:path";
+import { agentProfileIdSchema, agentProfileSchema } from "../shared/agent-profiles";
+import { advisorInputSchema, advisorAnswerInputSchema, type AdvisorCoordinator } from "../shared/agent-coordination";
+import { agentProfileSummary } from "./agent-profiles";
 import { z } from "zod";
 import type { AgentRuntimeDependencies, ApprovalHandler, RunControl } from "../shared/contracts";
 import { ForgeError } from "../shared/errors";
@@ -34,6 +37,8 @@ export interface AgentEnvironment {
   permission: Permission;
   signal: AbortSignal;
   children: Map<string, ChildOperation>;
+  advisor?: AdvisorCoordinator;
+  toolCallId?: string;
   runChild: (input: RunInput, approve: ApprovalHandler, signal: AbortSignal, control?: RunControl) => Promise<SessionSnapshot>;
   approveChild: (id: SessionSnapshot["id"]) => ApprovalHandler;
   saveResolution?: (id: string, childUpdatedAt: string, resolution: string) => Promise<void>;
@@ -48,8 +53,10 @@ const spawnArgs = z.object({
   task: z.string().trim().min(1).max(16384),
   ownership: z.string().trim().min(1).max(4096).optional(),
   model: settingsFields.model.optional(),
+  profileId: agentProfileIdSchema.optional(),
+  profileRevision: z.number().int().positive().optional(),
   writePaths: z.array(pathSchema).max(32).optional(),
-  isolation: z.enum(["shared", "worktree"]).default("shared").describe("shared keeps the parent workspace; worktree uses a separate detached checkout of committed HEAD and retains its changes for inspection/merge."),
+  isolation: z.enum(["shared", "worktree"]).optional().describe("shared keeps the parent workspace; worktree uses a separate detached checkout of committed HEAD and retains its changes for inspection/merge."),
 }).strict();
 const listArgs = z.object({
   offset: z.number().int().min(0).max(Number.MAX_SAFE_INTEGER).default(0),
@@ -69,7 +76,13 @@ const resultArgs = idArgs.extend({
 const messageArgs = idArgs.extend({ message: z.string().trim().min(1).max(16384) }).strict();
 const resolveArgs = idArgs.extend({ resolution: z.string().trim().min(1).max(4096) }).strict();
 
+const profileListArgs = z.object({
+  query: z.string().max(256).optional(),
+  offset: z.number().int().min(0).max(Number.MAX_SAFE_INTEGER).default(0),
+  limit: z.number().int().min(1).max(50).default(20),
+}).strict();
 export const agentArgumentSchemas = {
+  list_agent_profiles: profileListArgs, advisor: advisorInputSchema, answer_advisor: advisorAnswerInputSchema,
   spawn_agent: spawnArgs, list_agents: listArgs, wait_agents: waitArgs,
   cancel_agent: idArgs, get_agent_result: resultArgs,
   send_agent_message: messageArgs, resolve_agent: resolveArgs,
@@ -171,31 +184,81 @@ async function pauseUntil(work: Promise<unknown>, signal: AbortSignal, timeout: 
 export async function executeAgentOperation(name: string, args: Record<string, unknown>, env: AgentEnvironment): Promise<ToolResult> {
   const { children, deps, snapshot, input } = env;
   check(env.signal);
+  if (snapshot.parentSessionId && name !== "advisor")
+    throw new ForgeError("invalid_input", "Only the primary agent can manage child tasks or answer advisor requests.");
   switch (name) {
+    case "advisor": {
+      if (!snapshot.parentSessionId || !deps.advisorParent || !env.toolCallId)
+        throw new ForgeError("invalid_input", "advisor is only available to a child owned by an active parent run.");
+      const request = await deps.advisorParent.ask(advisorInputSchema.parse(args), env.toolCallId, env.signal);
+      return { content: JSON.stringify(request), isError: request.status !== "answered" };
+    }
+    case "answer_advisor": {
+      if (!env.advisor) throw new ForgeError("invalid_input", "This run has no advisor coordinator.");
+      const request = await env.advisor.answer(advisorAnswerInputSchema.parse(args));
+      return output({ requestId: request.id, childSessionId: request.childSessionId, status: request.status,
+        ...(request.deliveredAt ? { deliveredAt: request.deliveredAt } : {}) });
+    }
+    case "list_agent_profiles": {
+      const { query, offset, limit } = profileListArgs.parse(args);
+      const catalog = await deps.getAgentProfiles?.() ?? deps.settings.agentProfiles ?? [];
+      check(env.signal);
+      const needle = query?.toLowerCase();
+      const matching = catalog.filter(profile => profile.enabled && (!needle ||
+        `${profile.id} ${profile.name} ${profile.description} ${profile.whenToUse}`.toLowerCase().includes(needle)));
+      const profiles: ReturnType<typeof agentProfileSummary>[] = [];
+      for (const profile of matching.slice(offset, offset + limit)) {
+        const next = agentProfileSummary(profile);
+        if (Buffer.byteLength(JSON.stringify([...profiles, next]), "utf8") > RESULT_BYTES - 1024) break;
+        profiles.push(next);
+      }
+      const end = offset + profiles.length;
+      return output({ profiles, total: matching.length, offset, nextOffset: end < matching.length ? end : null,
+        truncated: end < matching.length });
+    }
     case "spawn_agent": {
       deps.rootBudget?.checkAdmission();
       const parsed = spawnArgs.parse(args);
-      if (snapshot.parentSessionId) throw new ForgeError("invalid_input", "Child agents cannot spawn further agents.");
+      if (parsed.profileRevision !== undefined && !parsed.profileId)
+        throw new ForgeError("invalid_input", "profileRevision requires profileId.");
+      const catalog = parsed.profileId ? await deps.getAgentProfiles?.() ?? deps.settings.agentProfiles ?? [] : [];
+      const found = catalog.find(item => item.id === parsed.profileId);
+      if (parsed.profileId && (!found || !found.enabled))
+        throw new ForgeError("invalid_input", "Agent profile is missing or disabled. Rediscover profiles; no task was started.");
+      const profile = found ? agentProfileSchema.parse(found) : undefined;
+      if (parsed.profileRevision !== undefined && profile?.revision !== parsed.profileRevision)
+        throw new ForgeError("invalid_input", "Agent profile changed. Rediscover its configuration before starting work.");
+      if (profile?.model.mode === "fixed" && parsed.model !== undefined && parsed.model !== profile.model.model)
+        throw new ForgeError("invalid_input", "A fixed agent model cannot be overridden by spawn_agent.");
+      if (profile?.model.mode === "inherit" && parsed.model !== undefined && parsed.model !== snapshot.model)
+        throw new ForgeError("invalid_input", "This profile inherits the parent model. Edit its model configuration to select another model.");
+      const model = profile?.model.mode === "fixed" ? profile.model.model : parsed.model ?? snapshot.model;
+      const sourceId = profile?.model.mode === "fixed" ? profile.model.providerSourceId : snapshot.providerSourceId;
+      const levels: readonly Permission[] = ["readonly", "workspace", "unrestricted"];
+      const permission = levels[Math.min(levels.indexOf(env.permission), levels.indexOf(profile?.permission ?? env.permission))]!;
+      const isolation = parsed.isolation ?? profile?.isolation ?? "shared";
+      check(env.signal);
       if ([...children.values()].filter(child => child.active).length >= MAX_ACTIVE_AGENTS)
         throw new ForgeError("busy", "Four child agents are active; wait for a slot before spawning.");
       const writePaths = [...new Set(parsed.writePaths ?? [])];
-      if (parsed.isolation === "worktree" && env.permission === "readonly")
+      if (isolation === "worktree" && permission === "readonly")
         throw new ForgeError("tool", "Readonly mode cannot create a worktree.");
-      if (parsed.isolation === "worktree" && !deps.agentWorktrees)
+      if (isolation === "worktree" && !deps.agentWorktrees)
         throw new ForgeError("tool", "This host does not provide agent worktrees.");
-      if (parsed.isolation === "worktree" && !deps.childContextFactory && !deps.childToolFactory)
+      if (isolation === "worktree" && !deps.childContextFactory && !deps.childToolFactory)
         throw new ForgeError("tool", "This host cannot construct tools for an isolated child workspace.");
-      const conflicts = parsed.isolation === "worktree" ? [] : [...children.entries()].filter(([, child]) => child.active && child.isolation !== "worktree" && child.writePaths.some(a => writePaths.some(b => overlaps(a, b))));
+      const conflicts = isolation === "worktree" ? [] : [...children.entries()].filter(([, child]) => child.active && child.isolation !== "worktree" && child.writePaths.some(a => writePaths.some(b => overlaps(a, b))));
       if (conflicts.length) return { content: JSON.stringify({ code: "scope_conflict", error: "Declared write paths overlap active children. Wait or assign disjoint paths; this is coordination, not a sandbox.", ids: conflicts.map(([id]) => id) }), isError: true };
       deps.rootBudget?.checkAdmission();
       check(env.signal);
-      const child = await deps.store.create({ workspace: snapshot.workspace, title: parsed.task.slice(0, 256), model: parsed.model ?? snapshot.model,
-        ...(snapshot.providerSourceId ? { providerSourceId: snapshot.providerSourceId } : {}) });
+      const child = await deps.store.create({ workspace: snapshot.workspace, title: parsed.task.slice(0, 256), model,
+        ...(sourceId ? { providerSourceId: sourceId } : {}) });
       await deps.store.save({ ...child, parentSessionId: input.sessionId, agentTask: parsed.task,
+        ...(profile ? { agentProfile: profile, agentProfileId: profile.id, agentProfileName: profile.name } : {}),
         ...(parsed.ownership ? { ownership: parsed.ownership } : {}),
-        ...(parsed.writePaths ? { writePaths } : {}), permissionCeiling: env.permission });
+        ...(parsed.writePaths ? { writePaths } : {}), permissionCeiling: permission });
       let childWorkspace = child.workspace;
-      if (parsed.isolation === "worktree" && deps.agentWorktrees) {
+      if (isolation === "worktree" && deps.agentWorktrees) {
         try {
           deps.rootBudget?.checkAdmission();
           check(env.signal);
@@ -211,15 +274,17 @@ export async function executeAgentOperation(name: string, args: Record<string, u
       const controller = new AbortController();
       const operation: ChildOperation = {
         controller, work: Promise.resolve(child), model: child.model, active: true,
-        acceptingMessages: true, delivered: false, writePaths, isolation: parsed.isolation, messages: [],
+        acceptingMessages: true, delivered: false, writePaths, isolation, messages: [],
       };
       // Reserve before any child code runs; release the active slot only after cleanup settles.
       children.set(child.id, operation);
       operation.work = Promise.resolve().then(() => env.runChild({
         sessionId: child.id, model: child.model,
         prompt: `${parsed.task}\nOwnership: ${parsed.ownership ?? "unspecified"}`,
-        permission: env.permission, ...(input.mode ? { mode: input.mode } : {}),
+        permission, ...(input.mode ? { mode: input.mode } : {}),
+        ...(profile && sourceId ? { providerSourceId: sourceId } : {}),
       }, env.approveChild(child.id), AbortSignal.any([env.signal, controller.signal]), {
+        getPermission: () => env.permission,
         drainSteering(final = false) {
           if (final && operation.messages.length === 0) operation.acceptingMessages = false;
           return operation.messages.splice(0);
@@ -253,8 +318,9 @@ export async function executeAgentOperation(name: string, args: Record<string, u
       });
       void operation.work.catch(() => undefined);
       deps.onChildOperation?.(child.id, controller, operation.work);
-      return output({ childSessionId: child.id, model: child.model, workspace: childWorkspace, isolation: parsed.isolation, declaredWritePathCount: writePaths.length,
-        warning: parsed.isolation === "worktree"
+      return output({ childSessionId: child.id, model: child.model, workspace: childWorkspace, isolation, permission,
+        ...(profile ? { profile: agentProfileSummary(profile) } : {}), declaredWritePathCount: writePaths.length,
+        warning: isolation === "worktree"
           ? "Separate checkout of committed HEAD; parent uncommitted files are not copied. Changes are retained here for inspection and merge."
           : "Shared workspace. Declared paths only prevent overlapping assignments; commands and file writes are not sandboxed by ownership." });
     }
@@ -266,7 +332,9 @@ export async function executeAgentOperation(name: string, args: Record<string, u
       for (const item of all.slice(offset, offset + limit)) {
         const operation = children.get(item.id);
         const details = operation?.result ?? await deps.store.get(item.id);
+        const question = env.advisor?.pending().find(request => request.childSessionId === item.id);
         const entry = { ...item, currentRun: !!operation, active: operation?.active ?? false,
+          ...(question ? { activity: "awaiting_advisor", advisorRequestId: question.id } : {}),
           ownership: details.ownership?.slice(0, 512), ownershipTruncated: (details.ownership?.length ?? 0) > 512,
           writePaths: details.writePaths?.slice(0, 8), writePathsTruncated: (details.writePaths?.length ?? 0) > 8,
           controllable: !!operation?.active, handled: !!operation?.resolution || handled(env, details) };
@@ -292,9 +360,22 @@ export async function executeAgentOperation(name: string, args: Record<string, u
       }
       const ready = (id: string) => errors.has(id) || history.has(id) || !children.get(id)?.active;
       const pending = ids.filter(id => !ready(id)).map(id => children.get(id)!.work.catch(() => undefined));
-      if (pending.length && !(parsed.mode === "any" && ids.some(ready)))
-        await pauseUntil(parsed.mode === "any" ? Promise.race(pending) : Promise.all(pending), env.signal, parsed.timeout_ms);
+      if (pending.length && !(parsed.mode === "any" && ids.some(ready))) {
+        const waiting = new AbortController();
+        const pause = pauseUntil(parsed.mode === "any" ? Promise.race(pending) : Promise.all(pending),
+          AbortSignal.any([env.signal, waiting.signal]), parsed.timeout_ms);
+        try {
+          if (env.advisor) await env.advisor.wait(pause, env.signal);
+          else await pause;
+        } finally {
+          waiting.abort();
+          await pause.catch(() => undefined);
+        }
+      }
       check(env.signal);
+      const questions = env.advisor?.pending() ?? [];
+      if (questions.length) return output({ reason: "advisor", requests: questions.slice(0, 1), pendingCount: questions.length,
+        waitingIds: ids, instruction: "Answer this request with answer_advisor, then continue waiting. No child result was marked delivered." });
       const report = (id: string, limit: number) => {
         const child = children.get(id);
         if (child) return childReport(id, child, limit);
@@ -330,6 +411,7 @@ export async function executeAgentOperation(name: string, args: Record<string, u
       if (!child) throw new ForgeError("invalid_input", "Child is not controlled by this run; historical sessions cannot be cancelled here.");
       child.acceptingMessages = false;
       child.controller.abort();
+      await env.advisor?.cancelChild(id);
       await child.work.catch(() => undefined);
       const result = output(childReport(id, child));
       child.delivered = true;

@@ -74,6 +74,7 @@ import { QueueAdmissionError } from "../shared/input-queue";
 import { inputPredecessor, inputProviderBinding, openInputQueue } from "./input-queue";
 import { createSessionWriter } from "./session-writer";
 import { createAgentRuntime, withCancellation } from "./runtime";
+import { assertAgentModel } from "./agent-profiles";
 
 // Default per-run tools include the explicitly enabled plugin registries.
 // Browser tools come only from the browser plugin and launch lazily on use;
@@ -874,6 +875,8 @@ export const createHarness = async (
             settingsStore.getPublic(),
             store.get(input.sessionId),
           ]);
+          // A role's model is frozen with its session, including manual continuation.
+          assertAgentModel(snapshot.agentProfile, input);
           // Recheck under the actual execution lock, before provider/tool construction.
           if (control?.providerBinding) {
             const predecessor = inputPredecessor(snapshot);
@@ -988,6 +991,7 @@ export const createHarness = async (
             toolHooks: await toolHooksStore.get(),
             agentWorktrees,
             settings,
+            getAgentProfiles: async () => (await settingsStore.getPublic()).agentProfiles ?? [],
             provider,
             tools,
             projectInstructions: built.instructions,
@@ -1003,7 +1007,7 @@ export const createHarness = async (
             childContextFactory: async (workspace, childInput, childSignal) => {
               // Delegated model IDs remain exact, even when the parent chose a group.
               const current = await settingsStore.getPublic();
-              const childSourceId = inferSourceId(current, childInput?.model) ?? providerSourceId;
+              const childSourceId = childInput?.providerSourceId ?? inferSourceId(current, childInput?.model) ?? providerSourceId;
               const child = await modelAccess.resolveProvider(childSourceId, undefined, childSignal ?? signal, childInput?.model);
               return { ...await buildTools(workspace, current, child.config.apiKey, child.provider, input.uiHost), provider: child.provider,
                 ...(childSourceId ? { providerSourceId: childSourceId } : {}) };

@@ -1,7 +1,7 @@
 import { expect, it } from "vitest";
 import { buildSystemInstructions } from "../../src/core/prompts";
 import { createAgentRuntime } from "../../src/core/runtime";
-import { nativeDefinitions } from "../../src/core/agents";
+import { nativeDefinitions, nativeDefinitionsFor } from "../../src/core/agents";
 import type { ModelProvider, SessionStore } from "../../src/shared/contracts";
 import { defaultPublicSettings, sessionSnapshotSchema, sessionIdSchema, type Message } from "../../src/shared/schemas";
 
@@ -173,7 +173,7 @@ it("uses inherited child ceilings and scope when projecting a legacy summarized 
   expect(result.status).toBe("completed");
   expect(f.received[0]?.[0]?.content).toBe(buildSystemInstructions({
     session: f.state, permission: "readonly", mode: "build", maxToolCalls: 17,
-    projectInstructions: "PROJECT_V1", toolNames: nativeDefinitions.map(definition => definition.function.name),
+    projectInstructions: "PROJECT_V1", toolNames: nativeDefinitionsFor(true, false).map(definition => definition.function.name),
   }));
   expect(f.received[0]?.[1]?.content).toContain("prior work, do not replay");
   expect(result.messages.slice(0, legacy.length)).toEqual(legacy);

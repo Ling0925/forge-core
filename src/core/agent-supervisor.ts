@@ -20,6 +20,7 @@ import {
 import type { ApprovalQueue } from "./approval-queue";
 import { withCancellation } from "./cancellation";
 import { createAgentProgress } from "./agent-progress";
+import type { AdvisorCoordinator } from "../shared/agent-coordination";
 
 type AgentUpdate = Omit<
   Extract<AgentEvent, { type: "agent_update" }>,
@@ -32,6 +33,7 @@ interface SupervisorOptions {
   signal: AbortSignal;
   approvalQueue: ApprovalQueue;
   approve: ApprovalHandler;
+  advisor?: AdvisorCoordinator;
   emitUpdate(update: AgentUpdate): void;
   emitApproval(request: ApprovalRequest): void;
   emitProgress?: Parameters<typeof createAgentProgress>[1];
@@ -73,6 +75,7 @@ export function createAgentSupervisor(options: SupervisorOptions) {
         .createRuntime({
           ...deps,
           tools,
+          ...(options.advisor ? { advisorParent: options.advisor.forChild(input.sessionId) } : {}),
           ...(context ? { projectInstructions: context.instructions } : {}),
           ...(context?.provider ? { provider: context.provider } : {}),
         })
@@ -173,7 +176,7 @@ export function createAgentSupervisor(options: SupervisorOptions) {
     });
   return {
     /** Mutable operations are exposed only to existing native agent operations. */
-    native: { children, runChild, approveChild, onSettled },
+    native: { children, runChild, approveChild, onSettled, ...(options.advisor ? { advisor: options.advisor } : {}) },
     get size(): number {
       return children.size;
     },
@@ -181,13 +184,20 @@ export function createAgentSupervisor(options: SupervisorOptions) {
       return [...children.values()];
     },
     async joinPending(): Promise<
-      { reports: string; commitDelivery(): void } | undefined
+      { reports: string; advisorPending?: boolean; commitDelivery(): void } | undefined
     > {
       const pending = [...children.entries()].filter(
         ([, child]) => !child.delivered,
       ).slice(0, MAX_AGENT_REPORTS);
       if (!pending.length) return undefined;
-      await Promise.allSettled(pending.map(([, child]) => child.work));
+      let joined = false;
+      const joining = Promise.allSettled(pending.map(([, child]) => child.work)).then(() => { joined = true; });
+      if (options.advisor) {
+        do {
+          await options.advisor.wait(joining, signal);
+          if (options.advisor.pending().length) return { reports: "", advisorPending: true, commitDelivery() {} };
+        } while (!joined);
+      } else await joining;
       const page = boundedReportPage(pending, ([id, child], limit) => childReport(id, child, limit));
       return {
         reports: page.content,

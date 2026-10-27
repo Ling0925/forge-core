@@ -117,6 +117,7 @@ describe("child supervision boundaries", () => {
       }),
     );
     operation.executionError = true;
+    operation.active = true; // This fixture's promise is still awaiting cleanup.
     supervisor.native.children.set(snapshot.id, operation);
     let settled = false;
     const result = supervisor.settle(true).then((value) => {

@@ -252,6 +252,10 @@ export interface AgentRuntimeDependencies {
   readonly toolHooks?: import("./tool-hooks").ToolHooksConfig;
   readonly agentWorktrees?: import("./agent-worktrees").AgentWorktreeService;
   readonly settings: PublicSettings;
+  /** Fresh public role catalog for admission, never private provider configuration. */
+  readonly getAgentProfiles?: () => Promise<readonly import("./agent-profiles").AgentProfile[]>;
+  /** Only the active supervisor can create this identity-bound child capability. */
+  readonly advisorParent?: import("./agent-coordination").AdvisorParentPort;
   readonly childToolFactory?: ToolFactory;
   readonly childContextFactory?: (workspace: string, input?: RunInput, signal?: AbortSignal) => Promise<{
     readonly tools: LocalToolRegistry; readonly instructions: string; readonly provider?: ModelProvider; readonly providerSourceId?: string;

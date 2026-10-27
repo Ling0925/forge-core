@@ -1,4 +1,6 @@
 import { rootBudgetSnapshotSchema, rootTimeoutSchema, rootToolLimitSchema } from "./run-budget";
+import { agentProfileIdSchema, agentProfileSchema, agentProfilesSchema, agentProfileOperationSchema } from "./agent-profiles";
+import { advisorRequestSchema } from "./agent-coordination";
 import { z } from "zod";
 import { sourceAccessFields, providerProtocolSchema, credentialInputSchema, publicCredentialSchema, connectionInputSchema, publicConnectionSchema, routeGroupSchema, routeOperationSchema, accountTokensSchema, providerAttemptSchema, reasoningEffortSchema } from "./model-access";
 import { createDiffPatch, unavailablePatch } from "./diff";
@@ -132,6 +134,7 @@ export const publicSettingsSchema = z
     isConfigured: z.boolean(),
     providerSources: z.array(publicProviderSourceSchema).readonly().optional(),
     routeGroups: z.array(routeGroupSchema).readonly().optional(),
+    agentProfiles: agentProfilesSchema.optional(),
     activeSourceId: providerSourceIdSchema.optional(),
     // FORGE_* variables keep priority: the UI must be able to warn about it.
     environmentOverride: z.boolean().optional(),
@@ -204,6 +207,7 @@ export const configureInputSchema = z
     source: providerSourceOperationSchema.optional(),
     sources: z.array(providerSourceOperationSchema).readonly().optional(),
     route: routeOperationSchema.optional(),
+    agent: agentProfileOperationSchema.optional(),
     settings: z
       .object(configurableSettingsFields)
       .partial()
@@ -573,6 +577,7 @@ export const agentEventSchema = z
         currentTool: z.object({ name: z.string().max(256), target: z.string().max(1024) }).strict().optional(),
       })
       .strict(),
+    z.object({ ...eventBase, type: z.literal("advisor_update"), request: advisorRequestSchema }).strict(),
     // Ephemeral cumulative child reply: never a parent message or stored event.
     z.object({
       ...eventBase,
@@ -774,6 +779,8 @@ const summaryFields = {
   updatedAt: timestampSchema,
   status: sessionStatusSchema,
   parentSessionId: sessionIdSchema.optional(),
+  agentProfileId: agentProfileIdSchema.optional(),
+  agentProfileName: z.string().min(1).max(80).optional(),
   archived: z.boolean().optional(),
 };
 export const sessionSummarySchema = z.object(summaryFields).strict().readonly();
@@ -795,6 +802,9 @@ export const sessionSnapshotSchema = z
     plans: z.array(taskPlanSchema).max(10000).readonly().optional(),
     parentSessionId: sessionIdSchema.optional(),
     agentTask: z.string().max(16384).optional(),
+    // Immutable role snapshot: editing settings never retargets an existing child.
+    agentProfile: agentProfileSchema.optional(),
+    advisorRequests: z.array(advisorRequestSchema).max(10000).readonly().optional(),
     agentWorktree: z.object({
       repository: z.string().min(1).max(4096),
       worktree: z.string().min(1).max(4096),

@@ -38,7 +38,7 @@ test("production sources and artifacts no longer expose the legacy Playwright br
 
 test("built shared subpaths bundle for browsers without the runtime", async () => {
   const result = await build({
-    stdin: { contents: 'export * from "@forge/core/shared/ipc"; export * from "@forge/core/shared/bridge"; export * from "@forge/core/shared/harness-adaptation";', resolveDir: root },
+    stdin: { contents: 'export * from "@forge/core/shared/ipc"; export * from "@forge/core/shared/bridge"; export * from "@forge/core/shared/harness-adaptation"; export * from "@forge/core/shared/agent-profiles"; export * from "@forge/core/shared/agent-coordination";', resolveDir: root },
     bundle: true, platform: "browser", format: "esm", write: false, metafile: true, logLevel: "silent",
   });
   const text = result.outputFiles.map(file => file.text).join("\n");
