@@ -1,5 +1,6 @@
+import { execFileSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { chmod, readdir, rename, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdir, readdir, rename, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { build } from "esbuild";
@@ -44,6 +45,11 @@ const result = await build({
   },
   logLevel: "info",
 });
+if (process.platform === "darwin") {
+  await mkdir("dist/native", { recursive: true });
+  execFileSync("/usr/bin/cc", ["-O2", "-Wall", "-Wextra", "-Werror", "native/flock.c", "-o", "dist/native/forge-flock"], { stdio: "inherit" });
+  await chmod("dist/native/forge-flock", 0o755);
+}
 await chmod("dist/web/serve.js", 0o755);
 await writeFile("dist/build-meta.json", JSON.stringify(result.metafile, null, 2) + "\n");
 // Written only after a successful build, atomically, so a reader never sees a
