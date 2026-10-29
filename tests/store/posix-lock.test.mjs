@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { spawn } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
 import { once } from "node:events";
 import { chmod, mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
@@ -9,6 +9,11 @@ import { fileLock } from "../../dist/store/lock.js";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
 const base = resolve(process.env.FORGE_TEST_TMP_DIR ?? join(root, "../../.forge/tmp/posix-lock"));
+
+test("macOS lock helper keeps a macOS 13 deployment target", { skip: process.platform !== "darwin" }, () => {
+  const commands = execFileSync("/usr/bin/otool", ["-l", join(root, "dist/native/forge-flock")], { encoding: "utf8" });
+  assert.match(commands, /\bminos 13\.0(?:\.0)?\s/);
+});
 
 test("POSIX lock owns the inode until release and recovers after owner death", { skip: !["darwin", "linux"].includes(process.platform) }, async t => {
   await mkdir(base, { recursive: true });

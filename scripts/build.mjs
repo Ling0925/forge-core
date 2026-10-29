@@ -47,7 +47,8 @@ const result = await build({
 });
 if (process.platform === "darwin") {
   await mkdir("dist/native", { recursive: true });
-  execFileSync("/usr/bin/cc", ["-O2", "-Wall", "-Wextra", "-Werror", "native/flock.c", "-o", "dist/native/forge-flock"], { stdio: "inherit" });
+  // Do not inherit the build host's OS version: the desktop bundle targets macOS 13.
+  execFileSync("/usr/bin/cc", ["-mmacosx-version-min=13.0", "-O2", "-Wall", "-Wextra", "-Werror", "native/flock.c", "-o", "dist/native/forge-flock"], { stdio: "inherit" });
   await chmod("dist/native/forge-flock", 0o755);
 }
 await chmod("dist/web/serve.js", 0o755);
