@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
-import { lstat, readdir } from "node:fs/promises";
+import { lstat, readFile, readdir } from "node:fs/promises";
 import { join } from "node:path";
 import { z } from "zod";
 import { ForgeError } from "../shared/errors";
@@ -58,6 +58,19 @@ const summaryIndexSchema = z
     summary: sessionSummarySchema,
   })
   .strict();
+/**
+ * `digest` is the hash of the record's parsed JSON. `seenAt` is when its stamp
+ * was last confirmed against the content: a stamp taken within RACY_MS of the
+ * file's mtime cannot prove a later same-tick in-place change is absent.
+ */
+type CachedRecord = {
+  stamp: Stamp;
+  change: SessionChange;
+  digest: string;
+  seenAt: number;
+};
+// Coarse inode clocks tick every few ms on Linux and up to 2 s elsewhere.
+const RACY_MS = 2000;
 type Loaded = {
   snapshot: SessionSnapshot;
   hash: string;
@@ -69,7 +82,7 @@ type Loaded = {
   legacy: boolean;
   // A valid read prefix is not necessarily the current writable head.
   cacheable: boolean;
-  records: readonly { stamp: Stamp; change: SessionChange }[];
+  records: readonly CachedRecord[];
 };
 const baseRecordSchema = z
   .object({ _journalGeneration: z.string().uuid().optional() })
@@ -214,6 +227,29 @@ export function createSessionJournal(
       throw error;
     }
   };
+  // Racy-git style check: a cached record whose stamp was taken too close to
+  // its mtime is re-read once more, since an in-place rewrite in the same
+  // clock tick keeps size/mtime/ctime. Mutates seenAt once confirmed.
+  const settledRecords = async (
+    cached: Loaded,
+    entries: readonly { path: string; stamp: Stamp }[],
+  ): Promise<boolean> => {
+    for (const [i, record] of cached.records.entries()) {
+      if (record.stamp.mtimeMs < record.seenAt - RACY_MS) continue;
+      const entry = entries[i];
+      if (!entry) return false;
+      const seenAt = Date.now();
+      let value: unknown;
+      try {
+        value = JSON.parse(await readFile(entry.path, "utf8"));
+      } catch {
+        return false;
+      }
+      if (hash(value) !== record.digest) return false;
+      (record as { seenAt: number }).seenAt = seenAt;
+    }
+    return true;
+  };
   const load = async (id: SessionId, readOnly = false): Promise<Loaded> => {
     for (let attempt = 0; attempt < 3; attempt++) {
       const base = await stamp(basePath(id));
@@ -250,7 +286,8 @@ export function createSessionJournal(
       if (
         cached?.records.some(
           (record, i) => !same(record.stamp, entries[i]?.stamp ?? null),
-        )
+        ) ||
+        (cached && !(await settledRecords(cached, entries)))
       ) {
         cache.delete(id);
         continue;
@@ -258,7 +295,9 @@ export function createSessionJournal(
       const records = [...loaded.records];
       let { snapshot, hash: currentHash, bytes } = loaded;
       for (const entry of entries.slice(records.length)) {
-        const parsed = recordSchema.safeParse(await readJson(entry.path));
+        const seenAt = Date.now();
+        const raw = await readJson(entry.path);
+        const parsed = recordSchema.safeParse(raw);
         if (!parsed.success) throw storageError();
         const record = parsed.data;
         if (record.before !== currentHash) throw storageError();
@@ -298,7 +337,7 @@ export function createSessionJournal(
             append: changes.slice(record.changes.keep),
           },
         };
-        records.push({ stamp: entry.stamp, change });
+        records.push({ stamp: entry.stamp, change, digest: hash(raw), seenAt });
         currentHash = record.after;
         bytes += entry.stamp.size;
       }
@@ -449,7 +488,10 @@ export function createSessionJournal(
         journal: await stamp(directory, true),
         count: previous.count + 1,
         bytes: previous.bytes + info.size,
-        records: [...previous.records, { stamp: info, change }],
+        records: [
+          ...previous.records,
+          { stamp: info, change, digest: hash(record), seenAt: Date.now() },
+        ],
       };
     }
     remember(id, loaded);
