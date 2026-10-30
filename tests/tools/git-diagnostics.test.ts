@@ -317,12 +317,20 @@ it("reports the deadline that actually applied to a timed-out inspection", () =>
 
 it("applies a configured git inspection deadline", async () => {
   const { root } = await repo();
-  // 1 ms cannot fit a git process spawn, so the configured deadline must fire.
-  await expect(
-    gitInspect(root, "status", undefined, [], [], { timeoutMs: 1 }),
-  ).rejects.toMatchObject({ code: "tool", message: /timed out after/ });
   // The default deadlines are generous enough for a small repository.
   await expect(gitInspect(root, "status")).resolves.toMatchObject({
     repository: true,
   });
+  // A FIFO HEAD blocks git's repository discovery until killed, so only the
+  // configured deadline can end the inspection (no timing race).
+  await rm(join(root, ".git", "HEAD"));
+  execFileSync("mkfifo", [join(root, ".git", "HEAD")]);
+  const started = Date.now();
+  await expect(
+    gitInspect(root, "status", undefined, [], [], { timeoutMs: 200 }),
+  ).rejects.toMatchObject({
+    code: "tool",
+    message: expect.stringContaining("timed out after 0.2 seconds"),
+  });
+  expect(Date.now() - started).toBeLessThan(5000);
 });
