@@ -190,6 +190,25 @@ export const createHarness = async (
         await release();
       }
     };
+    // Model listings share source defaulting, disposal-aware signals and the
+    // post-resolution disposed check.
+    const listingProvider = async (
+      signal: AbortSignal | undefined,
+      requestedSourceId: string | undefined,
+    ) => {
+      check();
+      const sourceId = await defaultSourceId(requestedSourceId);
+      const requestSignal = AbortSignal.any(
+        signal ? [signal, disposal.signal] : [disposal.signal],
+      );
+      const { provider } = await modelAccess.resolveProvider(
+        sourceId,
+        undefined,
+        requestSignal,
+      );
+      check();
+      return { provider, requestSignal };
+    };
     const runSession = createHarnessRun({
       store,
       settingsStore,
@@ -445,29 +464,16 @@ export const createHarness = async (
         );
       },
       async listModels(signal, requestedSourceId, refresh) {
-        check();
-        const sourceId = await defaultSourceId(requestedSourceId);
-        const requestSignal = AbortSignal.any(
-          signal ? [signal, disposal.signal] : [disposal.signal],
+        const { provider, requestSignal } = await listingProvider(
+          signal,
+          requestedSourceId,
         );
-        const { provider } = await modelAccess.resolveProvider(
-          sourceId,
-          undefined,
-          requestSignal,
-        );
-        check();
         return provider.listModels(requestSignal, refresh);
       },
       async listModelCatalog(signal, requestedSourceId, refresh) {
-        check();
-        const sourceId = await defaultSourceId(requestedSourceId);
-        const requestSignal = AbortSignal.any(
-          signal ? [signal, disposal.signal] : [disposal.signal],
-        );
-        const { provider } = await modelAccess.resolveProvider(
-          sourceId,
-          undefined,
-          requestSignal,
+        const { provider, requestSignal } = await listingProvider(
+          signal,
+          requestedSourceId,
         );
         if (!provider.listModelCatalog)
           throw new ForgeError(
