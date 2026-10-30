@@ -2,7 +2,11 @@ import { mkdir, mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
-import { nativeDefinitions } from "../../src/core/agents";
+import { nativeDefinitionsFor } from "../../src/core/agents";
+
+// A primary session without an advisor parent: the child-only advisor tool is
+// not offered (c31060f), so the runtime sends exactly these native definitions.
+const nativeDefinitions = nativeDefinitionsFor(false, false);
 import { projectSummary } from "../../src/core/context";
 import { buildSystemInstructions } from "../../src/core/prompts";
 import { COLD_RESUME_TOKENS, openRunMemory } from "../../src/core/run-memory";
