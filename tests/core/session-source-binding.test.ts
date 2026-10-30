@@ -12,7 +12,8 @@ const spawnPrompts = new Map<string, Record<string, unknown>>([
   // No model/source: the child inherits the parent's exact selection.
   ["spawn-bound-child", {}],
   // An explicit model routes by configured ownership (8cfef20), never by the
-  // parent or the globally active source; unlisted IDs fail before a child.
+  // parent or the globally active source. Unlisted IDs fail before a child
+  // with two or more sources and go to the only source when there is one.
   ["spawn-declared-child", { model: "child-fixture" }],
   ["spawn-unlisted-child", { model: "unlisted-fixture" }],
 ]);
@@ -224,7 +225,7 @@ it("routes an explicit child model to its declaring source, not the parent's", a
   ).toMatchObject({ baseUrl: "https://b.invalid/v1", apiKey: "fixture-b" });
 });
 
-it("refuses an explicit unlisted child model instead of falling back to the parent source", async () => {
+it("refuses an explicit unlisted child model with several sources instead of falling back to the parent source", async () => {
   const parent = await service.createSession({
     workspace: directory,
     title: "parent",
@@ -238,4 +239,25 @@ it("refuses an explicit unlisted child model instead of falling back to the pare
   expect(requests.some((request) => request.model === "unlisted-fixture")).toBe(
     false,
   );
+});
+
+it("routes an explicit unlisted child model to the only configured source", async () => {
+  await service.updateSettings({ source: { type: "remove", id: "b" } });
+  const parent = await service.createSession({
+    workspace: directory,
+    title: "parent",
+  });
+  expect((await run(parent.id, "spawn-unlisted-child")).status).toBe(
+    "completed",
+  );
+  const child = (await service.listSessions()).find(
+    (item) => item.parentSessionId === parent.id,
+  );
+  expect(child).toMatchObject({
+    providerSourceId: "a",
+    model: "unlisted-fixture",
+  });
+  expect(
+    requests.find((request) => request.model === "unlisted-fixture"),
+  ).toMatchObject({ baseUrl: "https://a.invalid/v1", apiKey: "fixture-a" });
 });
