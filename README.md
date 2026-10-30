@@ -13,7 +13,7 @@ Core 可以作为独立 HTTP/WebSocket 服务运行，也可以作为 TypeScript
 - **本地工作区**：文件搜索与编辑、命令执行、检查点和改动记录；浏览器、LSP 与 MCP 按配置启用。
 - **官方插件**：统一清单、配置、启停和诊断；首个 `browser` 插件接入 agent-browser，支持同会话截图预览与人工接管，默认禁用。见[插件与浏览器](docs/PLUGINS.md)。
 - **持久化上下文**：会话历史、分页读取、上下文压缩、工作记忆与长期记忆。
-- **客户端连接**：HTTP RPC、WebSocket 事件与恢复游标，以及 Linux 本地 Unix socket。
+- **客户端连接**：HTTP RPC、WebSocket 事件与恢复游标，以及 POSIX（Linux、macOS 等）本地 Unix socket。
 
 本仓是 TypeScript/Node 实现，不包含 CLI、React 界面、Electron 或 Android 应用。
 
