@@ -319,7 +319,7 @@ export const createHarness = async (
             ...(callerSignal ? [callerSignal] : []),
           ]);
           return compactSessionSnapshot(
-            { settingsStore, modelAccess },
+            { settingsStore, modelAccess, routeState },
             id,
             s,
             signal,

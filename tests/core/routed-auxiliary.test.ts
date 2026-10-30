@@ -5,7 +5,12 @@ import { expect, it, vi } from "vitest";
 import { createHarness } from "../../src/core/harness";
 import { ProviderError } from "../../src/provider/errors";
 import type { HarnessService } from "../../src/shared/contracts";
-import type { Message, ProviderSource } from "../../src/shared/schemas";
+import {
+  type Message,
+  type ProviderSource,
+  sessionSnapshotSchema,
+} from "../../src/shared/schemas";
+import { openSessionStore } from "../../src/store/sessions";
 
 // Background requests of a routed session (auto-title, manual compaction)
 // follow the same route as its run steps: a member that is rate limited
@@ -145,3 +150,38 @@ it.each(["route group", "credential rotation"])(
     }
   },
 );
+
+it("rotates credentials for manual compaction like a run does", async () => {
+  const { directory, calls, service } = await harness("one");
+  try {
+    await service.updateSettings({
+      source: {
+        type: "save",
+        source: { ...source("s"), credentialRouting: "order" },
+        credentials,
+      },
+    });
+    const session = await service.createSession({
+      workspace: directory,
+      title: "Compaction rotation",
+      providerSourceId: "s",
+    });
+    const store = await openSessionStore(join(directory, "state"));
+    await store.save(
+      sessionSnapshotSchema.parse({
+        ...session,
+        status: "completed",
+        messages: [
+          { role: "system", content: "system instructions" },
+          { role: "user", content: "archived evidence ".repeat(10000) },
+          { role: "assistant", content: "done" },
+        ],
+      }),
+    );
+    const result = await service.compactSession(session.id);
+    expect(result.contextSummary?.fallback).toBe(false);
+    expect(calls).toEqual(["one:summary", "two:summary"]);
+  } finally {
+    await cleanup(service, directory);
+  }
+});
