@@ -105,6 +105,17 @@ MCP 支持 **stdio、Streamable HTTP、Legacy SSE**。注册不会连接；启�
 
 无需外部服务的示例：[examples/mcp/echo-server.mjs](examples/mcp/echo-server.mjs)。
 
+### 可调限制（设置项）
+
+下列设置均为可选，不填即用括号里的默认值：
+
+- `defaultContextWindowTokens`：未知模型的上下文窗口（128000）。
+- `gitInspectionTimeoutMs`：`git_status` / `git_diff` / `git_log` 每个 git 进程的超时（未设置时 status/diff 30 秒，探测与 log 10 秒）。
+- `maxActiveAgents`：每个父运行同时活跃的子 Agent 数（4，范围 1–32）。
+- `maxAgentDepth`：委派深度（1 = 只有主 Agent 能派子任务，最大 4）。
+- `maxSessionPlans`：每个会话的计划数（10000；持久化格式上限也是 10000，只能调低）。
+- Vertex 来源：`vertex.models` 用自己的模型列表替换内置参考列表；`vertex.discoverModels: true` 会调用 Vertex `publishers.models.list` 获取 Gemini 模型，失败时回退到 `models` 或内置列表。
+
 ## 作为包使用
 
 包名为 `@forge/core`，当前标记为 `private`，本地客户端通过 `file:../forge-core` 依赖它：
