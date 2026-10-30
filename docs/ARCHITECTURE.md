@@ -6,8 +6,8 @@ Core owns the TypeScript agent runtime, providers, tools, persistence, project c
 
 | Module | Responsibility |
 | --- | --- |
-| [core/harness.ts](../src/core/harness.ts) | Service assembly, run-boundary configuration and disposal |
-| [core/runtime.ts](../src/core/runtime.ts) | Session lock, provider scheduling, durable tool intent/results and terminal state |
+| [core/harness.ts](../src/core/harness.ts) | Service assembly, run-boundary configuration and disposal. Its parts live in `core/harness-{tools,memory-tools,provider-selection,run,input-queue,sessions,titles,compaction,checkpoints,published-files}.ts` |
+| [core/runtime.ts](../src/core/runtime.ts) | Session lock, provider scheduling, durable tool intent/results and terminal state. `run()` drives the step loop over shared `RunState`; its steps live in `core/runtime-{state,events,permission,usage,steering,step-context,provider-request,tool-calls,reconciliation,recovery,harness-preflight,finish,retry}.ts` |
 | [provider/](../src/provider) | Protocol adapters, catalogs, explicit routing, accounts and cloud authentication |
 | [store/](../src/store) | Settings transactions, sessions, checkpoints and private state |
 | [tools/](../src/tools) | Local, browser and external tool adapters |
