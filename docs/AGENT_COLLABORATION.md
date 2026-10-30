@@ -10,7 +10,7 @@ Core 提供角色配置持久化、按角色创建子任务和运行内双向答
 
 - `id`、`name`、`description`、`whenToUse`、`instructions`、`enabled`；ID 为小写字母开头的字母、数字、`_`、`-`，最多 64 字符。
 - `model: { mode: "inherit" }` 或 `{ mode: "fixed", providerSourceId, model }`；固定 ID 原样保留，来源必须已配置，只保存来源标识，不复制密钥。
-- `permission`：`readonly`、`workspace`、`unrestricted`，作为上限。
+- `permission`：`readonly`、`workspace`、`unrestricted`，作为角色上限，而不是独立授权。`unrestricted` 表示不额外收紧父会话权限（Web 显示“继承主会话权限”）；`workspace` 则显式保留命令、浏览器、网络等操作的逐次用户审批。新建角色及前后端模板默认使用继承策略，探索/审查模板仍为只读。
 - `tools`：继承宿主可用工具，或限定 `read/edit/command/web/browser/mcp/memory` 工具组。MCP 还必须明确列出 `mcpServers`。
 - `isolation`：默认 `shared` 或 `worktree`；调用时可明确覆盖，readonly 不创建工作树。
 - `revision`：保存后的版本号，由存储生成；输入不自行填写它。
@@ -44,6 +44,12 @@ await harness.updateSettings({
 5. 旧的、不带 `profileId` 的 `spawn_agent` 仍可使用。配置修改仅影响后续派发，不改变运行中或历史会话的角色快照。
 
 有效权限为父运行当前权限、子会话创建时上限及角色上限的交集。父运行后续降权也会收紧子任务。工具组既过滤模型可见列表，也在实际执行前检查（含并发读取和 MCP alias）；伪造工具调用不能绕过。角色不含 `web` 时关闭 Provider 托管搜索。子代理不暴露父级管理工具，不能再派发或回答别的子任务。
+
+### 长任务与审批
+
+选择继承策略后，免审批的主会话创建免审批子任务，不再因为默认角色配置被降成 `workspace` 而逐次打断用户。主会话自身为 `workspace` 时，子任务仍需同样的用户审批；`readonly` / plan 模式仍不能执行写入或命令。该策略不是“主代理替用户批准”：确实需要审批时仍进入主会话的审批队列，并保留子会话归属。
+
+已保存的角色不会因为模板更新而自动放宽。如果旧前后端角色仍设为 `workspace`，在 **设置 → 智能体 → 编辑 → 权限策略** 选择 **继承主会话权限** 并保存，再派发新子任务。运行中/历史子任务保留原快照；父会话后续升权也不会越过子任务创建时的上限，需要重新派发。角色模型、工具组与只读限制不因该选择改变。
 
 这些限制不是进程或文件系统沙箱：允许 `command` 后仍由宿主权限/审批与项目约束管理命令效果，`writePaths` 是协作范围声明而非 OS 隔离。角色指令、advisor 回答、工具注解都不能扩大权限。角色会话不运行 Harness 自适应探测，以免绕过其工具范围。
 
@@ -103,6 +109,7 @@ Core 从运行内绑定获取父会话、父 run、子会话及 tool call 身份
 
 - `tests/store/agent-profile-settings.test.ts`：旧配置、CRUD、冲突、来源引用、并发及事务回滚。
 - `tests/core/agent-profiles.test.ts`：角色发现、派发快照、精确模型来源、权限及执行工具限制。
+- `tests/core/agent-permissions.test.ts`：真实本地工具验证连续命令/写入免重复审批、主会话/旧角色审批上限、只读与计划模式及运行中降权。
 - `tests/core/advisor.test.ts`：绑定、幂等、并发、持久化顺序、超时、取消及失效请求。
 - `tests/core/agent-runtime-advisor.test.ts`：真实运行时的等待/收尾唤醒、结果闭合、投递确认、混合批次拒绝和恢复。
 

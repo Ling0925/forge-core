@@ -91,6 +91,8 @@ export const agentProfileInputSchema = z
     instructions: z.string().trim().min(1).max(16384),
     enabled: z.boolean(),
     model: agentModelSelectionSchema,
+    // A ceiling, not a grant: unrestricted inherits the parent's permissions without
+    // extra narrowing; workspace deliberately retains per-operation user approvals.
     permission: z.enum(["readonly", "workspace", "unrestricted"]),
     tools: agentToolPolicySchema,
     isolation: z.enum(["shared", "worktree"]),
@@ -163,7 +165,7 @@ export const agentProfileTemplates: readonly AgentProfileInput[] = [
       "先读项目界面规范与现有组件，复用设计语言，遵守分配的写入范围。先明确接口和状态，再实现及做真实渲染交互验证。接口或需求不明确时用 advisor 提问。交付改动、实际检查及未覆盖项，不将编译成功当作界面验收。",
     enabled: true,
     model: { mode: "inherit" },
-    permission: "workspace",
+    permission: "unrestricted",
     tools: {
       mode: "restricted",
       groups: ["read", "edit", "command", "browser"],
@@ -180,7 +182,7 @@ export const agentProfileTemplates: readonly AgentProfileInput[] = [
       "先检查相关调用方、存储边界和测试，在职责范围内实现最小完整变更。接口语义、兼容性或任务范围有关键歧义时用 advisor 提问。保留并发修改，交付实现位置、具体验证及阻塞项，不自动重放不确定的副作用。",
     enabled: true,
     model: { mode: "inherit" },
-    permission: "workspace",
+    permission: "unrestricted",
     tools: {
       mode: "restricted",
       groups: ["read", "edit", "command"],
