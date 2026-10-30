@@ -22,11 +22,7 @@ import { nativeDefinitions, nativeDefinitionsFor } from "./agents";
 import { createApprovalQueue } from "./approval-queue";
 import { withCancellation } from "./cancellation";
 import { projectSummary, summaryBoundary } from "./context";
-import {
-  HARNESS_PROBE_TOOLS,
-  adaptHarness,
-  harnessStrategyMessage,
-} from "./harness-adaptation";
+import { harnessStrategyMessage } from "./harness-adaptation";
 import { buildSystemInstructions } from "./prompts";
 import { createRootRunBudget } from "./run-budget";
 import {
@@ -36,6 +32,10 @@ import {
 } from "./runtime-context";
 import { createRunEvents } from "./runtime-events";
 import { createRunFinish } from "./runtime-finish";
+import {
+  type RunPreflightScope,
+  runHarnessPreflight,
+} from "./runtime-harness-preflight";
 import { createRuntimeJournal } from "./runtime-journal";
 import { createEffectivePermission } from "./runtime-permission";
 import {
@@ -219,6 +219,17 @@ export const createAgentRuntime = (
       effectivePermission,
       drainSteering,
       drainAdvisor,
+    };
+    const preflightScope: RunPreflightScope = {
+      run: run as LoadedRunState,
+      input,
+      deps,
+      signal,
+      rootBudget,
+      check,
+      save,
+      event,
+      onModelUsage,
     };
     const toolScope: RunToolScope = {
       run: run as LoadedRunState,
@@ -446,58 +457,8 @@ export const createAgentRuntime = (
           "invalid_input",
           "Harness adaptation cannot bypass a configured specialist's tool policy.",
         );
-      if (input.harness) {
-        const host = deps.harnessAdaptation;
-        if (!host)
-          throw new ForgeError(
-            "invalid_input",
-            "This runtime host does not support Harness adaptation.",
-          );
-        if (run.snapshot.routeGroupId)
-          throw new ForgeError(
-            "invalid_input",
-            "Harness adaptation requires a direct model selection, not a route group.",
-          );
-        if (input.harness.experience === "read-write" && !host.experiences)
-          throw new ForgeError(
-            "invalid_input",
-            "This runtime host does not support Harness experience persistence.",
-          );
-        run.phase = "provider";
-        run.adaptation = await adaptHarness({
-          input: input.harness,
-          host,
-          provider: deps.provider,
-          sessionId: input.sessionId,
-          workspace: run.snapshot.workspace,
-          model: run.snapshot.model,
-          messages: projectSummary(run.snapshot),
-          signal,
-          systemInstructions: buildSystemInstructions({
-            session: run.snapshot,
-            permission: "readonly",
-            mode: "plan",
-            projectInstructions: deps.projectInstructions,
-            toolNames: HARNESS_PROBE_TOOLS,
-          }),
-          onUsage: onModelUsage,
-          onToolCall: () => {
-            check();
-            const reservation = rootBudget.reserve(input.sessionId, 1);
-            try {
-              reservation.dispatch();
-            } finally {
-              reservation.release();
-            }
-          },
-          onProgress: async (progress) => {
-            check();
-            event({ type: "harness_adaptation", progress });
-            await save();
-          },
-        });
-        check();
-      }
+      if (input.harness)
+        await runHarnessPreflight(preflightScope, input.harness);
       let reportedWindow: number | null = null;
       if (!deps.settings.modelContextWindows?.[run.snapshot.model]) {
         const metadataSignal = AbortSignal.any([
