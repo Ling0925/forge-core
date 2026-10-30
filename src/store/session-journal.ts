@@ -177,8 +177,9 @@ export function createSessionJournal(
     hash([loaded.baseHash, current]);
   const committed = async (directory: string) => {
     const journal = await stamp(directory, true);
-    if (!journal) return { journal, entries: [] };
-    const names = (await readdir(directory, { withFileTypes: true }))
+    if (!journal) return { journal, entries: [], listing: "" };
+    const all = await readdir(directory, { withFileTypes: true });
+    const names = all
       .filter((entry) => entry.name.endsWith(".json"))
       .sort((a, b) => a.name.localeCompare(b.name));
     if (names.length > CHECKPOINT_RECORDS) throw storageError();
@@ -195,7 +196,23 @@ export function createSessionJournal(
         return { path, stamp: info };
       }),
     );
-    return { journal, entries };
+    return { journal, entries, listing: listingOf(all) };
+  };
+  // Directory timestamps come from the kernel's coarse clock, so an append in
+  // the same tick leaves the directory stamp unchanged (size too, on ext4).
+  // The entry listing is compared as well before a prefix counts as stable.
+  const listingOf = (entries: readonly { name: string }[]) =>
+    entries
+      .map((entry) => entry.name)
+      .sort()
+      .join("\0");
+  const currentListing = async (directory: string) => {
+    try {
+      return listingOf(await readdir(directory, { withFileTypes: true }));
+    } catch (error) {
+      if (hasCode(error, "ENOENT")) return "";
+      throw error;
+    }
   };
   const load = async (id: SessionId, readOnly = false): Promise<Loaded> => {
     for (let attempt = 0; attempt < 3; attempt++) {
@@ -225,7 +242,7 @@ export function createSessionJournal(
         };
       }
       const directory = journalPath(id, loaded.baseHash);
-      const { journal, entries } = await committed(directory);
+      const { journal, entries, listing } = await committed(directory);
       // Directory mtime alone cannot detect an in-place modification of a record.
       // Check every bounded record's identity/ctime, including on a cache hit.
       if (cached && entries.length < cached.records.length)
@@ -297,7 +314,9 @@ export function createSessionJournal(
         continue;
       }
       const cacheable =
-        same(base, currentBase) && same(journal, currentJournal);
+        same(base, currentBase) &&
+        same(journal, currentJournal) &&
+        (await currentListing(directory)) === listing;
       // Closed generations are retained. Readers can return the validated
       // captured prefix without a quiet interval; writers/CAS and legacy bases
       // still require a stable head. A stale prefix cannot replace a newer
