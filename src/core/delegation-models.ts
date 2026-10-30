@@ -123,13 +123,15 @@ export function createDelegationModels(options: {
         declaredModels(source).includes(model),
       );
       if (declared.length > 1) throw ambiguous();
-      if (declared.length === 1) return declared[0]!.id;
+      if (declared.length === 1) return declared[0]?.id;
       const catalog = await discover(settings, signal);
       const owners = [
         ...new Set(
           catalog.models
             .filter((entry) => entry.id === model)
-            .map((entry) => entry.providerSourceId!),
+            .flatMap((entry) =>
+              entry.providerSourceId ? [entry.providerSourceId] : [],
+            ),
         ),
       ];
       if (owners.length > 1) throw ambiguous();

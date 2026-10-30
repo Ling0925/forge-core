@@ -310,13 +310,15 @@ export function computeSessionUsage(
       }
     | undefined;
 
-  const ensureRun = (timestamp?: string) =>
-    (current ??= {
+  const ensureRun = (timestamp?: string) => {
+    current ??= {
       model: snapshot.model,
       timestamp: timestamp ?? snapshot.updatedAt,
       requests: [],
       context: tokenUsage(),
-    });
+    };
+    return current;
+  };
   const finishRun = (usage?: Usage, timestamp?: string) => {
     if (!current) return;
     const reported = usage ? tokenUsage(usage) : current.context;

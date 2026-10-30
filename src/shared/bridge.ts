@@ -27,8 +27,7 @@ export class HostResponseError extends Error {
   ) {
     // Only local method names and fixed labels, never payloads, Zod issues or received IDs.
     super(
-      `Invalid host response for ${method}: ${reason}. ` +
-        "The Core/client contract or cached build may differ. Refresh the client; after a Core update, wait for active tasks to finish before restarting Core. No request was automatically replayed.",
+      `Invalid host response for ${method}: ${reason}. The Core/client contract or cached build may differ. Refresh the client; after a Core update, wait for active tasks to finish before restarting Core. No request was automatically replayed.`,
     );
     this.name = "HostResponseError";
   }
@@ -37,8 +36,8 @@ export class HostResponseError extends Error {
 // LAN HTTP is not a secure context: randomUUID may be absent, getRandomValues is available.
 export function requestId(): string {
   const bytes = crypto.getRandomValues(new Uint8Array(16));
-  bytes[6] = (bytes[6]! & 15) | 64;
-  bytes[8] = (bytes[8]! & 63) | 128;
+  bytes[6] = ((bytes[6] ?? 0) & 15) | 64;
+  bytes[8] = ((bytes[8] ?? 0) & 63) | 128;
   const hex = Array.from(bytes, (byte) =>
     byte.toString(16).padStart(2, "0"),
   ).join("");

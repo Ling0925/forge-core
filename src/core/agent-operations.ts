@@ -14,6 +14,7 @@ import type {
   ApprovalHandler,
   RunControl,
 } from "../shared/contracts";
+import { C0_CONTROL } from "../shared/control-characters";
 import { ForgeError } from "../shared/errors";
 import {
   type Permission,
@@ -82,7 +83,8 @@ const pathSchema = z
   .refine(
     (value) =>
       !value.startsWith("/") &&
-      !/[\\:*?\[\]\x00-\x1f]/.test(value) &&
+      !/[\\:*?[\]]/.test(value) &&
+      !C0_CONTROL.test(value) &&
       !value.split("/").includes(".."),
     "Expected a literal workspace-relative path, not a glob",
   )
@@ -500,7 +502,7 @@ export async function executeAgentOperation(
             levels.indexOf(env.permission),
             levels.indexOf(profile?.permission ?? env.permission),
           )
-        ]!;
+        ] ?? "readonly";
       const isolation = parsed.isolation ?? profile?.isolation ?? "shared";
       check(env.signal);
       if (
@@ -788,7 +790,10 @@ export async function executeAgentOperation(
         errors.has(id) || history.has(id) || !children.get(id)?.active;
       const pending = ids
         .filter((id) => !ready(id))
-        .map((id) => children.get(id)!.work.catch(() => undefined));
+        .flatMap((id) => {
+          const child = children.get(id);
+          return child ? [child.work.catch(() => undefined)] : [];
+        });
       if (pending.length && !(parsed.mode === "any" && ids.some(ready))) {
         const waiting = new AbortController();
         const pause = pauseUntil(

@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { UNSAFE_DISPLAY_CHARACTER } from "./control-characters";
 
 export const webSearchModeSchema = z.enum(["disabled", "cached", "live"]);
 export type WebSearchMode = z.infer<typeof webSearchModeSchema>;
@@ -15,7 +16,8 @@ export const webSourceUrlSchema = z
         ["http:", "https:"].includes(url.protocol) &&
         !url.username &&
         !url.password &&
-        !/[\s\u0000-\u001f\u007f-\u009f\u202a-\u202e\u2066-\u2069]/.test(value)
+        !/\s/.test(value) &&
+        !UNSAFE_DISPLAY_CHARACTER.test(value)
       );
     } catch {
       return false;

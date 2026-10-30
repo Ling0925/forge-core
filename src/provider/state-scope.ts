@@ -10,8 +10,8 @@ export function providerStateScope(config: ProviderConfig): string {
       ? [config.account.platform, config.account.accountId]
       : [config.account?.platform ?? "api-key", config.apiKey];
   const headers = Object.entries(config.headers ?? {})
-    .map(([name, value]) => [name.toLowerCase(), value])
-    .sort(([a], [b]) => a!.localeCompare(b!));
+    .map(([name, value]) => [name.toLowerCase(), value] as const)
+    .sort(([a], [b]) => a.localeCompare(b));
   return createHash("sha256")
     .update(
       JSON.stringify([

@@ -6,6 +6,7 @@ import {
   agentProfileSchema,
   agentProfilesSchema,
 } from "./agent-profiles";
+import { C0_CONTROL } from "./control-characters";
 import { createDiffPatch, unavailablePatch } from "./diff";
 import {
   harnessAdaptationOptionsSchema,
@@ -74,7 +75,7 @@ export const lspServerSchema = z
       .string()
       .min(1)
       .max(4096)
-      .refine((value) => !/[\x00-\x1f]/.test(value)),
+      .refine((value) => !C0_CONTROL.test(value)),
     args: z
       .array(
         z

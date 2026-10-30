@@ -76,7 +76,7 @@ if (process.platform === "darwin") {
 await chmod("dist/web/serve.js", 0o755);
 await writeFile(
   "dist/build-meta.json",
-  JSON.stringify(result.metafile, null, 2) + "\n",
+  `${JSON.stringify(result.metafile, null, 2)}\n`,
 );
 // Written only after a successful build, atomically, so a reader never sees a
 // half-written manifest and a crashed build cannot advertise a new identity.

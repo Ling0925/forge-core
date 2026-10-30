@@ -412,7 +412,12 @@ async function createBrowserScope(
               command.action === "screenshot"
             ) {
               await assert(signal);
-              const file = await publishImage!(
+              if (!publishImage)
+                throw new ForgeError(
+                  "tool",
+                  "Browser screenshot publication is unavailable in this host.",
+                );
+              const file = await publishImage(
                 ctx.sessionId,
                 outcome.image,
                 signal,

@@ -9,6 +9,7 @@ import {
   isSensitivePath,
 } from "../shared/content-safety";
 import type { LocalToolRegistry, ToolContext } from "../shared/contracts";
+import { NON_LAYOUT_CONTROLS } from "../shared/control-characters";
 import {
   type ToolCall,
   type ToolDefinition,
@@ -153,10 +154,7 @@ export async function createLspToolRegistry(
       /\b[a-z][a-z0-9+.-]*:\/\/[^\s<>"'`\])}]+/gi,
       "[URI withheld]",
     );
-    value = value.replace(
-      /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/g,
-      "",
-    );
+    value = value.replace(NON_LAYOUT_CONTROLS, "");
     return value.slice(0, max);
   };
   const result = (value: unknown, isError = false): ToolResult => ({
@@ -317,22 +315,31 @@ export async function createLspToolRegistry(
           (e) => e.replace(/^\./, "").toLowerCase() === extension,
         ),
       );
-      if (matches.length !== 1)
+      const [server] = matches;
+      if (matches.length !== 1 || !server)
         throw new Error(
           matches.length
             ? "Ambiguous LSP server configuration."
             : "No LSP server configured for this extension.",
         );
-      const server = matches[0]!;
       const signal = AbortSignal.any([ctx.signal, shutdown.signal]);
       await authorize({ ...ctx, signal }, call, server);
       const document = await read(args.path);
       if (signal.aborted) throw new Error("LSP invocation cancelled.");
+      // The schema requires line/character for every operation except symbols.
+      const position =
+        args.operation === "symbols" ||
+        args.line === undefined ||
+        args.character === undefined
+          ? undefined
+          : { line: args.line, character: args.character };
       if (args.operation !== "symbols") {
         const lines = document.text.split(/\r\n|\r|\n/);
+        const line = position ? lines[position.line - 1] : undefined;
         if (
-          args.line! > lines.length ||
-          args.character! > lines[args.line! - 1]!.length + 1
+          !position ||
+          line === undefined ||
+          position.character > line.length + 1
         )
           throw new Error("LSP position is outside the document.");
       }
@@ -381,14 +388,14 @@ export async function createLspToolRegistry(
       }[args.operation];
       const response = await client.request(`textDocument/${method}`, {
         textDocument: { uri },
-        ...(args.operation === "symbols"
-          ? {}
-          : {
+        ...(position
+          ? {
               position: {
-                line: args.line! - 1,
-                character: args.character! - 1,
+                line: position.line - 1,
+                character: position.character - 1,
               },
-            }),
+            }
+          : {}),
         ...(args.operation === "references"
           ? { context: { includeDeclaration: true } }
           : {}),

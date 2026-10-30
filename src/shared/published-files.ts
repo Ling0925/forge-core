@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { C0_CONTROL_OR_DELETE } from "./control-characters";
 import { HTML_PREVIEW_MAX_BYTES } from "./html-preview";
 
 /** Per-file attachment ceiling. Base64 transport expands this by 4/3 (about 67 MiB). */
@@ -17,7 +18,11 @@ export const publishedFileNameSchema = z
   .min(1)
   .max(200)
   .refine(
-    (name) => name !== "." && name !== ".." && !/[\\/\x00-\x1f\x7f]/.test(name),
+    (name) =>
+      name !== "." &&
+      name !== ".." &&
+      !/[\\/]/.test(name) &&
+      !C0_CONTROL_OR_DELETE.test(name),
     "Expected a plain file name",
   );
 export const publishedFileSchema = z

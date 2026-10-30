@@ -1384,10 +1384,10 @@ export const createAgentRuntime = (
             });
           closeStep("completed");
           await save();
-          checkToolFailure(
-            calls.find((call) => call.function.name === "advisor")!,
-            result,
+          const advisorCall = calls.find(
+            (call) => call.function.name === "advisor",
           );
+          if (advisorCall) checkToolFailure(advisorCall, result);
           continue;
         }
         // All parameters are now complete and validated; queued calls are no

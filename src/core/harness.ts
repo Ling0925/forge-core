@@ -236,10 +236,22 @@ export const createHarness = async (
   >();
   const getAsyncTasks = () => {
     check();
-    return (asyncTasks ??= openAsyncTaskService({
+    asyncTasks ??= openAsyncTaskService({
       directory,
       notify: (request) => inputQueue.notify(request),
-    }));
+    });
+    return asyncTasks;
+  };
+  const getHarnessExperiences = () => {
+    harnessExperiences ??= openHarnessExperienceStore(directory);
+    return harnessExperiences;
+  };
+  // Without an explicit source, use the active one unless the environment
+  // overrides the provider configuration.
+  const defaultSourceId = async (requested: string | undefined) => {
+    if (requested !== undefined) return requested;
+    const settings = await settingsStore.getPublic();
+    return settings.environmentOverride ? undefined : settings.activeSourceId;
   };
   const buildTools = async (
     workspace: string,
@@ -1050,12 +1062,9 @@ export const createHarness = async (
       check();
       return settingsStore.update(configureInputSchema.parse(input));
     },
-    async getModelContextWindow(model, signal, sourceId) {
+    async getModelContextWindow(model, signal, requestedSourceId) {
       check();
-      if (sourceId === undefined) {
-        const settings = await settingsStore.getPublic();
-        if (!settings.environmentOverride) sourceId = settings.activeSourceId;
-      }
+      const sourceId = await defaultSourceId(requestedSourceId);
       const requestSignal = AbortSignal.any(
         signal ? [signal, disposal.signal] : [disposal.signal],
       );
@@ -1070,12 +1079,9 @@ export const createHarness = async (
         (await provider.getModelContextWindow?.(model, requestSignal)) ?? null
       );
     },
-    async listModels(signal, sourceId, refresh) {
+    async listModels(signal, requestedSourceId, refresh) {
       check();
-      if (sourceId === undefined) {
-        const settings = await settingsStore.getPublic();
-        if (!settings.environmentOverride) sourceId = settings.activeSourceId;
-      }
+      const sourceId = await defaultSourceId(requestedSourceId);
       const requestSignal = AbortSignal.any(
         signal ? [signal, disposal.signal] : [disposal.signal],
       );
@@ -1087,12 +1093,9 @@ export const createHarness = async (
       check();
       return provider.listModels(requestSignal, refresh);
     },
-    async listModelCatalog(signal, sourceId, refresh) {
+    async listModelCatalog(signal, requestedSourceId, refresh) {
       check();
-      if (sourceId === undefined) {
-        const settings = await settingsStore.getPublic();
-        if (!settings.environmentOverride) sourceId = settings.activeSourceId;
-      }
+      const sourceId = await defaultSourceId(requestedSourceId);
       const requestSignal = AbortSignal.any(
         signal ? [signal, disposal.signal] : [disposal.signal],
       );
@@ -1101,7 +1104,12 @@ export const createHarness = async (
         undefined,
         requestSignal,
       );
-      return provider.listModelCatalog!(requestSignal, refresh);
+      if (!provider.listModelCatalog)
+        throw new ForgeError(
+          "provider",
+          "This provider does not expose a model catalog.",
+        );
+      return provider.listModelCatalog(requestSignal, refresh);
     },
     async modelAccess(input, signal) {
       check();
@@ -1539,15 +1547,9 @@ export const createHarness = async (
                       redactMemoryText(text, [config.apiKey, config.baseUrl]),
                     experiences: {
                       list: async (scope) =>
-                        (
-                          await (harnessExperiences ??=
-                            openHarnessExperienceStore(directory))
-                        ).list(scope),
+                        (await getHarnessExperiences()).list(scope),
                       save: async (experience) =>
-                        (
-                          await (harnessExperiences ??=
-                            openHarnessExperienceStore(directory))
-                        ).save(experience),
+                        (await getHarnessExperiences()).save(experience),
                     },
                   },
                 }

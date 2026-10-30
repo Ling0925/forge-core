@@ -189,13 +189,14 @@ function seedFromLegacy(state: StoredState): StoredState {
 // The active source is projected onto the legacy top-level pair so runtimes and
 // the CLI keep working through the no-argument provider config path.
 function projectActive(state: StoredState, source: StoredSource): StoredState {
+  // Drop a stale top-level apiMode when the active source has none.
+  const { apiMode: _staleApiMode, ...inherited } = state.settings;
   const settings: Record<string, unknown> = {
-    ...state.settings,
+    ...inherited,
     baseUrl: source.baseUrl,
     model: source.model,
+    ...(source.apiMode === undefined ? {} : { apiMode: source.apiMode }),
   };
-  if (source.apiMode === undefined) delete settings.apiMode;
-  else settings.apiMode = source.apiMode;
   return {
     ...state,
     settings: settings as StoredSettings,
@@ -545,13 +546,14 @@ export async function openSettingsStore(
     };
   };
   const providerSnapshot = async (
-    sourceId?: string,
+    requestedSourceId?: string,
     credentialId?: string,
     model?: string,
   ) => {
     const state = await effective();
-    if (sourceId === undefined && !state.environmentOverride)
-      sourceId = state.stored.activeSourceId;
+    const sourceId =
+      requestedSourceId ??
+      (state.environmentOverride ? undefined : state.stored.activeSourceId);
     if (sourceId !== undefined) {
       const source = state.stored.sources.find(
         (candidate) => candidate.id === sourceId,
@@ -590,10 +592,12 @@ export async function openSettingsStore(
         throw invalid(
           `${credential.account?.platform === "codex" ? "Codex 账号" : "账号"}固定使用 ${exclusive} 协议，不能${model === undefined ? "" : `为模型 ${model} `}覆盖为 ${override}。`,
         );
+      const publicSource = state.public.providerSources?.find(
+        (candidate) => candidate.id === source.id,
+      );
+      if (!publicSource) throw invalid("未找到模型来源。");
       return {
-        source: state.public.providerSources!.find(
-          (candidate) => candidate.id === source.id,
-        )!,
+        source: publicSource,
         config: providerConfigSchema.parse({
           ...source.connection,
           baseUrl: modelProtocolEndpoint(source, protocol) ?? source.baseUrl,
@@ -848,7 +852,8 @@ async function updateSource(
             : { account: item.account ?? previous?.account }),
         };
       }) ?? existing?.credentials;
-    if (credentials && operation.apiKey !== undefined) {
+    const replacementApiKey = operation.apiKey;
+    if (credentials && replacementApiKey !== undefined) {
       const id =
         operation.source.activeCredentialId ??
         existing?.activeCredentialId ??
@@ -859,7 +864,7 @@ async function updateSource(
           ? {
               ...item,
               type: "api-key" as const,
-              apiKey: operation.apiKey!,
+              apiKey: replacementApiKey,
               account: undefined,
             }
           : item,
@@ -988,17 +993,16 @@ function updateLegacy(
       };
       return next;
     }
+    // `apiMode` is optional: dropping it when unset keeps the source exact.
+    const { apiMode: _currentApiMode, ...currentWithoutApiMode } = current;
     const synced: StoredSource = {
-      ...current,
+      ...currentWithoutApiMode,
       baseUrl: baseUrl as string,
       model: (settings.model as string | undefined) ?? "",
       ...(settings.apiMode === undefined
         ? {}
         : { apiMode: settings.apiMode as StoredSource["apiMode"] }),
     };
-    // `apiMode` is optional: dropping it when unset keeps the source exact.
-    if (settings.apiMode === undefined)
-      delete (synced as { apiMode?: unknown }).apiMode;
     const providerChanged =
       input.apiKey !== undefined ||
       ["baseUrl", "model", "apiMode"].some((key) => Object.hasOwn(patch, key));
@@ -1043,7 +1047,7 @@ function updateLegacy(
   const existing = sources.findIndex((source) => source.id === NEW_SOURCE_ID);
   const created: StoredSource = {
     id: NEW_SOURCE_ID,
-    label: existing === -1 ? NEW_SOURCE_LABEL : sources[existing]!.label,
+    label: sources[existing]?.label ?? NEW_SOURCE_LABEL,
     baseUrl: baseUrl as string,
     model: (settings.model as string | undefined) ?? "",
     ...(settings.apiMode === undefined

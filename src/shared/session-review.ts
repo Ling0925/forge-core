@@ -44,7 +44,8 @@ export function sessionReviewInput(
   const patches: string[] = [];
   let patchChars = 0;
   for (let i = snapshot.changes.length - 1; i >= 0; i--) {
-    const change = snapshot.changes[i]!;
+    const change = snapshot.changes[i];
+    if (!change) continue;
     const entry = JSON.stringify({
       change: i + 1,
       ...change,

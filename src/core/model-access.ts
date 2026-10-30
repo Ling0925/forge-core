@@ -45,6 +45,19 @@ import {
   modelCatalogCacheKey,
 } from "../store/model-catalog";
 
+/** Narrow the optional catalog capability with an authored error instead of a non-null assertion. */
+function requireCatalog(
+  provider: Pick<ModelProvider, "listModelCatalog">,
+): NonNullable<ModelProvider["listModelCatalog"]> {
+  const list = provider.listModelCatalog;
+  if (!list)
+    throw new ForgeError(
+      "provider",
+      "This provider does not expose a model catalog.",
+    );
+  return list.bind(provider);
+}
+
 const cancelled = () => new ForgeError("cancelled", "模型接入操作已取消。");
 const checkSignal = (signal: AbortSignal) => {
   if (signal.aborted) throw cancelled();
@@ -187,7 +200,12 @@ export function createModelAccessService(
     previous?.auth.dispose();
     const transport = createRequestOptions(config);
     const fetch = options.cloudFetch ?? transport.fetch;
-    const auth = createVertexAuth(config.vertex!, {
+    if (!config.vertex)
+      throw new ForgeError(
+        "provider",
+        "Vertex connection settings are missing.",
+      );
+    const auth = createVertexAuth(config.vertex, {
       ...(fetch ? { fetch } : {}),
       requestTimeoutMs: config.requestTimeoutMs,
     });
@@ -343,14 +361,14 @@ export function createModelAccessService(
     return (await loadSnapshot(sourceId, credentialId, signal)).config;
   }
   async function resolveProvider(
-    sourceId?: string,
+    requestedSourceId?: string,
     credentialId?: string,
     signal = options.signal,
     model?: string,
     validate?: SelectionValidator,
   ) {
     const current = await loadSnapshot(
-      sourceId,
+      requestedSourceId,
       credentialId,
       signal,
       model,
@@ -365,7 +383,7 @@ export function createModelAccessService(
         ? undefined
         : (source?.modelAliases?.[model] ?? model);
     const requestedProtocol = modelProtocolOverride(source, model);
-    sourceId = source?.id ?? sourceId;
+    const sourceId = source?.id ?? requestedSourceId;
     if (config.vertex) {
       if (requestedProtocol !== undefined && requestedProtocol !== "gemini")
         throw new ForgeError(
@@ -618,14 +636,15 @@ export function createModelAccessService(
                 window.limit !== null &&
                 window.limit > 0,
             );
-            windows.sort(
-              (a, b) => a.remaining! / a.limit! - b.remaining! / b.limit!,
-            );
+            // The filter above guarantees numeric remaining/limit with limit > 0.
+            const ratio = (entry: (typeof windows)[number]) =>
+              (entry.remaining ?? 0) / (entry.limit ?? 1);
+            windows.sort((a, b) => ratio(a) - ratio(b));
             const window = windows[0];
-            if (window)
+            if (window && window.remaining !== null && window.limit !== null)
               quotas.set(key(member), {
-                remaining: window.remaining!,
-                limit: window.limit!,
+                remaining: window.remaining,
+                limit: window.limit,
                 ...(window.resetAt === null
                   ? {}
                   : { resetsAt: window.resetAt }),
@@ -662,7 +681,7 @@ export function createModelAccessService(
         if (!resolved.has(key(member))) return "credential-unavailable";
         const model = metadata.get(key(member));
         const mode =
-          resolved.get(key(member))!.config.apiMode ?? "chat-completions";
+          resolved.get(key(member))?.config.apiMode ?? "chat-completions";
         if (model?.protocols && !model.protocols.includes(mode))
           return "protocol-unsupported";
         if (request.hasImages && model?.vision === false)
@@ -692,7 +711,7 @@ export function createModelAccessService(
         try {
           const models = input.includeUnselected
             ? await catalogUnfiltered(signal, input.refresh)
-            : await provider.listModelCatalog!(signal, input.refresh);
+            : await requireCatalog(provider)(signal, input.refresh);
           const snapshot = await catalogStore.inspect(key);
           return {
             type: input.type,
@@ -746,7 +765,7 @@ export function createModelAccessService(
               ? testModel
               : (input.model ?? source?.model);
           if (input.kind === "catalog")
-            await provider.listModelCatalog!(testSignal, true);
+            await requireCatalog(provider)(testSignal, true);
           else {
             if (!model)
               throw new ForgeError("invalid_input", "请选择测试模型。");

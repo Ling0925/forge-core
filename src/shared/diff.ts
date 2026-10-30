@@ -66,8 +66,8 @@ export function createDiffPatch(before: string, after: string): DiffPatch {
   let removed = 0;
   const ranges: { from: number; to: number }[] = [];
   for (let i = 0; i < script.length; i++) {
-    const step = script[i]!;
-    if (step.op === "equal") continue;
+    const step = script[i];
+    if (!step || step.op === "equal") continue;
     if (step.op === "insert") added++;
     else removed++;
     const from = Math.max(0, i - CONTEXT);
@@ -92,7 +92,8 @@ export function createDiffPatch(before: string, after: string): DiffPatch {
   for (const range of ranges) {
     if (exhausted || hunks.length >= MAX_HUNKS) break;
     while (cursor < range.from) {
-      const step = script[cursor++]!;
+      const step = script[cursor++];
+      if (!step) break;
       if (step.op !== "insert") oldLine++;
       if (step.op !== "delete") newLine++;
     }
@@ -105,7 +106,8 @@ export function createDiffPatch(before: string, after: string): DiffPatch {
     };
     bytes += 128; // Bounded integer fields and array punctuation.
     while (cursor < range.to) {
-      const step = script[cursor]!;
+      const step = script[cursor];
+      if (!step) break;
       const cost = byteLength(JSON.stringify(step)) + 1;
       if (
         retained >= MAX_PATCH_LINES ||

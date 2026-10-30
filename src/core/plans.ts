@@ -96,9 +96,10 @@ export function updateSessionPlan(
     );
   const plan: TaskPlan = {
     ...input,
-    id: create ? randomUUID() : previous!.id,
+    id: create || !previous ? randomUUID() : previous.id,
     title:
-      input.title ?? (create ? `计划 ${plans.length + 1}` : previous!.title),
+      input.title ??
+      (create || !previous ? `计划 ${plans.length + 1}` : previous.title),
   };
   return recordPlan(snapshot, plan);
 }

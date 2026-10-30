@@ -351,7 +351,7 @@ export function parseChartFence(source: string): ChartValidation {
 
 /** Canonical fence text returned by render_chart and copyable by the UI. */
 export function chartFence(spec: unknown): string {
-  return "```chart\n" + JSON.stringify(spec, null, 2) + "\n```";
+  return `\`\`\`chart\n${JSON.stringify(spec, null, 2)}\n\`\`\``;
 }
 
 /** Strip a ```chart (or bare ```) fence wrapper, returning the JSON body. */

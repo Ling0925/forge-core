@@ -45,7 +45,8 @@ export function createCachedProviderFactory(
           ? {
               // Hosts can inject independent metadata lookup without a full catalog.
               getModelContextWindow: (model: string, signal?: AbortSignal) =>
-                provider.getModelContextWindow!(model, signal),
+                provider.getModelContextWindow?.(model, signal) ??
+                Promise.resolve(null),
             }
           : {}),
       complete: (messages, definitions, options) =>

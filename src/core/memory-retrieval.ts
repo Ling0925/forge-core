@@ -314,7 +314,8 @@ export async function retrieveMemoryEvidence(options: {
   // making every >6k memory uneditable. Never pass off a partial read as complete.
   for (const [index, item] of evidence.entries()) {
     if (item.source.kind !== "memory" || !item.truncated) continue;
-    const complete = completeMemories.get(item.ref)!;
+    const complete = completeMemories.get(item.ref);
+    if (!complete) continue;
     const extra = JSON.stringify(complete).length - JSON.stringify(item).length;
     if (chars + extra > limits.expandedInputChars) continue;
     evidence[index] = complete;

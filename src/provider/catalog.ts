@@ -450,9 +450,9 @@ export function mergeCatalog(
     const entries = byId.get(id) ?? [];
     const provenance: Record<string, CatalogSource> = {};
     const identity = entries.find((entry) => entry.value.provenance?.id);
-    if (identity)
-      provenance.id =
-        identity.source === "user" ? "user" : identity.value.provenance!.id!;
+    const upstreamId = identity?.value.provenance?.id;
+    if (identity && upstreamId)
+      provenance.id = identity.source === "user" ? "user" : upstreamId;
     const pick = <T>(
       key: string,
       selected: Readonly<{ source: CatalogSource; value: T }> | undefined,

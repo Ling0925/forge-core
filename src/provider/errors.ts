@@ -57,7 +57,7 @@ function diagnosticText(detail?: ProviderDiagnostic): string {
   const fields: string[] = [`stage=${detail.stage}`];
   for (const key of ["observed", "limit"] as const) {
     const value = detail[key];
-    if (Number.isSafeInteger(value) && value! >= 0)
+    if (typeof value === "number" && Number.isSafeInteger(value) && value >= 0)
       fields.push(`${key}=${value}`);
   }
   if (

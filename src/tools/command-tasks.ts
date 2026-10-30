@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { z } from "zod";
 import type { LocalToolRegistry, ToolContext } from "../shared/contracts";
+import { C0_CONTROL_OR_DELETE } from "../shared/control-characters";
 import { ForgeError } from "../shared/errors";
 import type { ToolCall, ToolDefinition, ToolResult } from "../shared/schemas";
 import { jsonObjectSchema } from "../shared/schemas";
@@ -156,7 +157,11 @@ export function withCommandTasks(
       for (const [index, arg] of safe.entries()) {
         const item =
           index === 0 ? (arg.split(/[\\/]/).at(-1) ?? "Command") : arg;
-        if (item.length > 40 || /[\s\x00-\x1f\x7f]/.test(item)) {
+        if (
+          item.length > 40 ||
+          /\s/.test(item) ||
+          C0_CONTROL_OR_DELETE.test(item)
+        ) {
           parts.push("…");
           break;
         }
@@ -167,7 +172,7 @@ export function withCommandTasks(
         ) {
           parts.push(
             item.startsWith("--")
-              ? item.split("=")[0]!
+              ? (item.split("=")[0] ?? item)
               : item.length <= 3
                 ? item
                 : "-…",

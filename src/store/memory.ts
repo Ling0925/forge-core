@@ -273,7 +273,12 @@ export async function openMemoryStore(directory: string): Promise<MemoryStore> {
           )
           .all(...params, input.limit, input.offset);
         const hits = rows.map((row) => {
-          const value = record(row)!;
+          const value = record(row);
+          if (!value)
+            throw new ForgeError(
+              "internal",
+              "Memory index returned an empty row.",
+            );
           const matches = input.keywords
             .map((keyword) =>
               value.details.toLowerCase().indexOf(keyword.toLowerCase()),

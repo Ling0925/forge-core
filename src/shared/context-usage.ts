@@ -77,7 +77,7 @@ export function budgetUsage(budget: ContextBudget): {
 export function estimateTokens(text: string): number {
   let weight = 0;
   for (const char of text) {
-    const code = char.codePointAt(0)!;
+    const code = char.codePointAt(0) ?? 0;
     weight += code < 128 ? 0.25 : (code < 2048 ? 2 : code < 65536 ? 3 : 4) / 3;
   }
   return Math.ceil(weight);

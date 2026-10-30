@@ -71,6 +71,7 @@ function validKey(key: string): boolean {
 function slug(value: string): string {
   const normalized = value
     .normalize("NFKD")
+    // biome-ignore lint/suspicious/noMisleadingCharacterClass: a range of standalone combining marks, stripped after NFKD decomposition.
     .replace(/[\u0300-\u036f]/g, "")
     .toLowerCase()
     .replace(/[^a-z0-9_-]+/g, "-")
@@ -150,8 +151,9 @@ function primaryEndpoint(
     typeof raw.baseAPI === "string"
       ? protocolFor[raw.baseAPI.toLowerCase()]
       : undefined;
-  if (requested && endpoints[requested])
-    return { baseUrl: endpoints[requested]!, apiMode: requested };
+  const requestedEndpoint = requested ? endpoints[requested] : undefined;
+  if (requested && requestedEndpoint)
+    return { baseUrl: requestedEndpoint, apiMode: requested };
   const order: readonly Protocol[] = [
     "chat-completions",
     "responses",
@@ -203,7 +205,7 @@ function models(raw: RecordValue): {
   if (!ids.length) return { selection: { mode: "none" }, model: "" };
   return {
     selection: { mode: "selected", models: [...new Set(ids)] },
-    model: ids[0]!,
+    model: ids[0] ?? "",
   };
 }
 
@@ -637,10 +639,9 @@ export function parseMagpieImport(textInput: string): MagpieImportResult {
         documents = wrapper.providers.filter(
           (entry): entry is RecordValue => object(entry) !== undefined,
         );
-      } else if (object(wrapper.provider)) {
-        documents = [object(wrapper.provider)!];
       } else {
-        documents = [wrapper];
+        const single = object(wrapper.provider);
+        documents = [single ?? wrapper];
       }
     }
   }

@@ -21,7 +21,7 @@ if (args.includes("--help")) {
     "Forge Core: --host <IPv4> --port <1024..65535> --workspace <directory> [--socket <private Unix socket>] [--renderer <built Web UI directory>] [--multi-workspace]\nDefaults: host 127.0.0.1, port 5173. API-only unless --renderer is supplied. Personal LAN direct access; no device pairing required. HTTP has no transport secrecy.",
   );
 } else {
-  const host = argument("--host", "127.0.0.1")!;
+  const host = argument("--host") ?? "127.0.0.1";
   const port = Number(argument("--port", "5173"));
   const workspace = argument("--workspace");
   if (!workspace) throw new Error("Missing --workspace.");
