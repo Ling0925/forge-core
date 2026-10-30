@@ -20,11 +20,6 @@ import type {
 } from "../shared/contracts";
 import { ForgeError } from "../shared/errors";
 import { QueueAdmissionError } from "../shared/input-queue";
-import {
-  modelProtocol,
-  modelProtocolEndpoint,
-  modelProtocolOverride,
-} from "../shared/model-protocol";
 import { browserRequestSchema } from "../shared/plugins";
 import {
   collectPublishedFiles,
@@ -39,11 +34,7 @@ import {
   sessionTitleSchema,
   settingsFields,
 } from "../shared/schemas";
-import type {
-  PublicSettings,
-  SessionId,
-  SessionSnapshot,
-} from "../shared/schemas";
+import type { SessionId, SessionSnapshot } from "../shared/schemas";
 import type { CommandTaskAccess } from "../shared/task-view";
 import { createCheckpointStore } from "../store/checkpoints";
 import { openHarnessExperienceStore } from "../store/harness-experiences";
@@ -58,12 +49,15 @@ import { createAgentWorktreeService } from "./agent-worktrees";
 import { openAsyncTaskService } from "./async-tasks";
 import { assertBoundary, projectSummary } from "./context";
 import { createDelegationModels } from "./delegation-models";
-import { createHarnessTools } from "./harness-tools";
 import {
-  inputPredecessor,
-  inputProviderBinding,
-  openInputQueue,
-} from "./input-queue";
+  assertProviderEndpoint,
+  createProviderSelection,
+  inferSourceId,
+  queuedSelectionValidator,
+  selectRouteGroup,
+} from "./harness-provider-selection";
+import { createHarnessTools } from "./harness-tools";
+import { inputPredecessor, openInputQueue } from "./input-queue";
 import { redactMemoryText } from "./memory-retrieval";
 import { createModelAccessService } from "./model-access";
 import { createModelPricingService } from "./model-pricing";
@@ -80,22 +74,6 @@ import {
   listWorkspaceDirectory,
   readWorkspaceFilePreview,
 } from "./workspace-files";
-
-/**
- * A model name is the user's real choice, and each source publishes its own
- * models, so the source follows the model when it is unambiguous. Returns
- * undefined when nothing identifies a source; callers then fall back.
- */
-function inferSourceId(
-  settings: PublicSettings,
-  model: string | undefined,
-): string | undefined {
-  if (model === undefined || model === "") return undefined;
-  const owners = (settings.providerSources ?? []).filter(
-    (source) => source.model === model,
-  );
-  return owners.length === 1 ? owners[0]?.id : undefined;
-}
 
 export const createHarness = async (
   options: HarnessOptions = {},
@@ -188,13 +166,8 @@ export const createHarness = async (
     harnessExperiences ??= openHarnessExperienceStore(directory);
     return harnessExperiences;
   };
-  // Without an explicit source, use the active one unless the environment
-  // overrides the provider configuration.
-  const defaultSourceId = async (requested: string | undefined) => {
-    if (requested !== undefined) return requested;
-    const settings = await settingsStore.getPublic();
-    return settings.environmentOverride ? undefined : settings.activeSourceId;
-  };
+  const { defaultSourceId, rememberSource, queueProviderBinding } =
+    createProviderSelection(settingsStore);
   const { buildTools, buildProbeTools } = createHarnessTools({
     directory,
     options,
@@ -223,26 +196,6 @@ export const createHarness = async (
   };
   const catalogStore = await openModelCatalogStore(directory);
   const routeState = createRouteState();
-  /**
-   * The "active" source is only the fallback for callers that name no source.
-   * Whenever a caller does name one, remember it, so selecting a model in any
-   * client automatically keeps that source for the next run.
-   */
-  const rememberSource = async (
-    sourceId: string | undefined,
-  ): Promise<void> => {
-    if (!sourceId) return;
-    const current = await settingsStore.getPublic();
-    if (current.activeSourceId === sourceId) return;
-    try {
-      await settingsStore.update({
-        source: { type: "activate", id: sourceId },
-      });
-    } catch {
-      // Remembering the fallback is best-effort: the run already resolved its
-      // own source explicitly and must not fail because of this.
-    }
-  };
   const disposal = new AbortController();
   const modelAccess = createModelAccessService({
     settingsStore,
@@ -285,13 +238,6 @@ export const createHarness = async (
   const check = (): void => {
     if (disposed) throw new ForgeError("cancelled", "Harness is disposed.");
   };
-  const endpoint = (baseUrl: string): void => {
-    if (!baseUrl)
-      throw new ForgeError(
-        "invalid_input",
-        "Configure a provider endpoint before continuing.",
-      );
-  };
   const mutate = async (
     id: SessionId,
     fn: (s: SessionSnapshot) => Promise<SessionSnapshot>,
@@ -307,63 +253,6 @@ export const createHarness = async (
     } finally {
       await release();
     }
-  };
-  // Bind configured selection, not resolved account tokens or normalized cloud URLs.
-  // Route members can be temporarily unavailable; admission must not turn a valid
-  // fallback group into a direct request to its first member.
-  const queueProviderBinding = async (
-    settings: PublicSettings,
-    model: string,
-    sourceId?: string,
-    routeGroupId?: string,
-  ) => {
-    if (routeGroupId) {
-      const group = settings.routeGroups?.find(
-        (item) => item.id === routeGroupId,
-      );
-      if (!group)
-        throw new ForgeError("not_found", "会话的路由组已不可用，请重新选择。");
-      const members = group.members.map((member) => {
-        const source = settings.providerSources?.find(
-          (item) => item.id === member.sourceId,
-        );
-        return [
-          member.sourceId,
-          member.credentialId ?? null,
-          member.enabled ?? true,
-          modelProtocolEndpoint(source, modelProtocol(source, member.model)) ??
-            null,
-          modelProtocolOverride(source, member.model) ??
-            source?.apiMode ??
-            null,
-          source?.modelAliases?.[member.model] ?? member.model,
-        ];
-      });
-      return createHash("sha256")
-        .update(
-          JSON.stringify([
-            group.id,
-            group.strategy,
-            group.sticky ?? false,
-            members,
-          ]),
-        )
-        .digest("hex");
-    }
-    const config = await settingsStore.getProviderConfig(
-      sourceId,
-      undefined,
-      model,
-    );
-    endpoint(config.baseUrl);
-    const source = settings.providerSources?.find(
-      (item) => item.id === sourceId,
-    );
-    return inputProviderBinding(
-      config,
-      source?.modelAliases?.[model] ?? model,
-      sourceId,
-    );
   };
   const inputQueue = await openInputQueue({
     directory,
@@ -1060,28 +949,12 @@ export const createHarness = async (
           const requestedModel = settingsFields.model.parse(
             input.model ?? snapshot.model,
           );
-          const directSource = settings.providerSources?.find(
-            (source) => source.id === providerSourceId,
+          const selectedGroup = selectRouteGroup(
+            settings,
+            providerSourceId,
+            requestedModel,
+            group,
           );
-          const credentials = directSource?.credentials?.filter(
-            (item) => item.enabled,
-          );
-          // Direct selections rotate only their explicitly configured credentials.
-          const selectedGroup =
-            group ??
-            (credentials && credentials.length > 1 && directSource
-              ? {
-                  id: `credentials:${directSource.id}`,
-                  label: directSource.label,
-                  strategy: directSource.credentialRouting ?? "order",
-                  sticky: directSource.sticky,
-                  members: credentials.map((credential) => ({
-                    sourceId: directSource.id,
-                    model: requestedModel,
-                    credentialId: credential.id,
-                  })),
-                }
-              : undefined);
           if (
             control?.providerBinding &&
             control.providerBinding !==
@@ -1096,50 +969,13 @@ export const createHarness = async (
               "invalid_input",
               "The queued provider selection changed before execution. Nothing was replayed.",
             );
-          const validateSelection: Parameters<
-            typeof modelAccess.resolveProvider
-          >[4] = control?.providerBinding
-            ? (config, source, model) => {
-                const selectedModel = model ?? requestedModel;
-                const actual = inputProviderBinding(
-                  config,
-                  source?.modelAliases?.[selectedModel] ?? selectedModel,
-                  config.sourceId ?? providerSourceId,
-                );
-                let expected = control.providerBinding;
-                if (routeGroupId) {
-                  const acceptedSource = settings.providerSources?.find(
-                    (item) => item.id === config.sourceId,
-                  );
-                  if (!acceptedSource)
-                    throw new ForgeError(
-                      "invalid_input",
-                      "The queued route source is no longer available.",
-                    );
-                  expected = inputProviderBinding(
-                    {
-                      ...config,
-                      baseUrl:
-                        modelProtocolEndpoint(
-                          acceptedSource,
-                          modelProtocol(acceptedSource, selectedModel),
-                        ) ?? acceptedSource.baseUrl,
-                      apiMode:
-                        modelProtocolOverride(acceptedSource, selectedModel) ??
-                        acceptedSource.apiMode,
-                    },
-                    acceptedSource.modelAliases?.[selectedModel] ??
-                      selectedModel,
-                    acceptedSource.id,
-                  );
-                }
-                if (actual !== expected)
-                  throw new ForgeError(
-                    "invalid_input",
-                    "The queued provider selection changed before execution. Nothing was replayed.",
-                  );
-              }
-            : undefined;
+          const validateSelection = queuedSelectionValidator(
+            control,
+            settings,
+            requestedModel,
+            providerSourceId,
+            routeGroupId,
+          );
           const prepared = selectedGroup
             ? await modelAccess.prepareRoute(
                 selectedGroup,
@@ -1157,7 +993,7 @@ export const createHarness = async (
               validateSelection,
             ));
           const { config } = resolved;
-          endpoint(config.baseUrl);
+          assertProviderEndpoint(config.baseUrl);
           // An explicit source (or one the model alone identifies) is what the
           // user just chose, so remember it as the fallback for the next run.
           await rememberSource(
