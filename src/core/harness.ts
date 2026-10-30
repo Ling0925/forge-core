@@ -5,13 +5,9 @@ import { createProjectContext } from "../context/index";
 import { createMcpService } from "../mcp/registry";
 import { createPluginHost } from "../plugins/host";
 import { createModelProvider } from "../provider/openai";
-import { createRouteState, createRoutedProvider } from "../provider/routing";
+import { createRouteState } from "../provider/routing";
 import type { AsyncTaskService } from "../shared/async-tasks";
-import type {
-  HarnessOptions,
-  HarnessService,
-  LocalToolRegistry,
-} from "../shared/contracts";
+import type { HarnessOptions, HarnessService } from "../shared/contracts";
 import { ForgeError } from "../shared/errors";
 import { QueueAdmissionError } from "../shared/input-queue";
 import { browserRequestSchema } from "../shared/plugins";
@@ -19,7 +15,6 @@ import {
   collectPublishedFiles,
   publishedFileIdSchema,
 } from "../shared/published-files";
-import type { RootRunBudget } from "../shared/run-budget";
 import {
   configureInputSchema,
   createSessionInputSchema,
@@ -38,28 +33,21 @@ import { openPublishedFileStore } from "../store/published-files";
 import { openSessionStore } from "../store/sessions";
 import { openSettingsStore } from "../store/settings";
 import { openToolHooksStore } from "../store/tool-hooks";
-import { assertAgentModel } from "./agent-profiles";
 import { createAgentWorktreeService } from "./agent-worktrees";
 import { openAsyncTaskService } from "./async-tasks";
 import { assertBoundary, projectSummary } from "./context";
-import { createDelegationModels } from "./delegation-models";
 import { compactSessionSnapshot } from "./harness-compaction";
 import {
-  assertProviderEndpoint,
   createProviderSelection,
   inferSourceId,
-  queuedSelectionValidator,
-  selectRouteGroup,
 } from "./harness-provider-selection";
+import { createHarnessRun } from "./harness-run";
 import { createHarnessTitles } from "./harness-titles";
 import { createHarnessTools } from "./harness-tools";
 import { inputPredecessor, openInputQueue } from "./input-queue";
-import { redactMemoryText } from "./memory-retrieval";
 import { createModelAccessService } from "./model-access";
 import { createModelPricingService } from "./model-pricing";
-import { createRootRunBudget } from "./run-budget";
 import { openRunMemory } from "./run-memory";
-import { createAgentRuntime } from "./runtime";
 import { createSessionWriter } from "./session-writer";
 import { resolveStateDirectory } from "./state-directory";
 import { createTaskService } from "./task-service";
@@ -241,6 +229,25 @@ export const createHarness = async (
       await release();
     }
   };
+  const runSession = createHarnessRun({
+    store,
+    settingsStore,
+    modelAccess,
+    routeState,
+    queueProviderBinding,
+    rememberSource,
+    buildTools,
+    buildProbeTools,
+    stopTitle,
+    startTitle,
+    runMemory,
+    toolHooksStore,
+    agentWorktrees,
+    getHarnessExperiences,
+    asyncPermissions,
+    track,
+    active,
+  });
   const inputQueue = await openInputQueue({
     directory,
     validateSession: async (id) => {
@@ -752,278 +759,9 @@ export const createHarness = async (
         controller.signal,
       ]);
       // Defer work so the reservation exists before the first asynchronous boundary.
-      const operation = Promise.resolve().then(async () => {
-        let tools: LocalToolRegistry | undefined;
-        let releaseSession: (() => Promise<void>) | undefined;
-        let rootBudget: RootRunBudget | undefined;
-        try {
-          await stopTitle(input.sessionId);
-          try {
-            releaseSession = await store.acquire(input.sessionId, signal);
-          } catch (error) {
-            if (
-              control?.providerBinding &&
-              error instanceof ForgeError &&
-              error.code === "busy"
-            )
-              throw new QueueAdmissionError();
-            throw error;
-          }
-          if (signal.aborted)
-            throw new ForgeError("cancelled", "Run cancelled.");
-          const [settings, snapshot] = await Promise.all([
-            settingsStore.getPublic(),
-            store.get(input.sessionId),
-          ]);
-          // A role's model is frozen with its session, including manual continuation.
-          assertAgentModel(snapshot.agentProfile, input);
-          // Recheck under the actual execution lock, before provider/tool construction.
-          if (control?.providerBinding) {
-            const predecessor = inputPredecessor(snapshot);
-            if (
-              predecessor.unsafe &&
-              control.acknowledgedPredecessor !== predecessor.token
-            )
-              throw new QueueAdmissionError();
-          }
-          if (asyncPermissions.has(input.sessionId)) {
-            const levels = ["readonly", "workspace", "unrestricted"] as const;
-            asyncPermissions.set(
-              input.sessionId,
-              () =>
-                levels[
-                  Math.min(
-                    levels.indexOf(
-                      input.mode === "plan"
-                        ? "readonly"
-                        : (control?.getPermission?.() ??
-                            input.permission ??
-                            settings.defaultPermission),
-                    ),
-                    levels.indexOf(
-                      snapshot.permissionCeiling ?? "unrestricted",
-                    ),
-                  )
-                ] ?? "readonly",
-            );
-          }
-          rootBudget = createRootRunBudget({ rootSessionId: input.sessionId });
-          // An explicit selection (the picked model's source) wins; a session
-          // keeps the source it was created with; only when neither exists does
-          // the model, and finally the remembered fallback, decide.
-          const providerSourceId =
-            input.providerSourceId ??
-            snapshot.providerSourceId ??
-            inferSourceId(settings, input.model) ??
-            settings.activeSourceId;
-          const routeGroupId =
-            input.routeGroupId ??
-            (input.model !== undefined || input.providerSourceId !== undefined
-              ? undefined
-              : snapshot.routeGroupId);
-          const group = routeGroupId
-            ? settings.routeGroups?.find((item) => item.id === routeGroupId)
-            : undefined;
-          if (routeGroupId && !group)
-            throw new ForgeError(
-              "not_found",
-              "会话的路由组已不可用，请重新选择。",
-            );
-          if (input.harness && routeGroupId)
-            throw new ForgeError(
-              "invalid_input",
-              "Harness adaptation requires a direct model selection, not a route group.",
-            );
-          const requestedModel = settingsFields.model.parse(
-            input.model ?? snapshot.model,
-          );
-          const selectedGroup = selectRouteGroup(
-            settings,
-            providerSourceId,
-            requestedModel,
-            group,
-          );
-          if (
-            control?.providerBinding &&
-            control.providerBinding !==
-              (await queueProviderBinding(
-                settings,
-                requestedModel,
-                providerSourceId,
-                routeGroupId,
-              ))
-          )
-            throw new ForgeError(
-              "invalid_input",
-              "The queued provider selection changed before execution. Nothing was replayed.",
-            );
-          const validateSelection = queuedSelectionValidator(
-            control,
-            settings,
-            requestedModel,
-            providerSourceId,
-            routeGroupId,
-          );
-          const prepared = selectedGroup
-            ? await modelAccess.prepareRoute(
-                selectedGroup,
-                signal,
-                validateSelection,
-              )
-            : undefined;
-          const resolved =
-            prepared?.base ??
-            (await modelAccess.resolveProvider(
-              providerSourceId,
-              undefined,
-              signal,
-              requestedModel,
-              validateSelection,
-            ));
-          const { config } = resolved;
-          assertProviderEndpoint(config.baseUrl);
-          // An explicit source (or one the model alone identifies) is what the
-          // user just chose, so remember it as the fallback for the next run.
-          await rememberSource(
-            input.providerSourceId ?? inferSourceId(settings, input.model),
-          );
-          rootBudget.checkAdmission();
-          const provider =
-            selectedGroup && prepared
-              ? createRoutedProvider({
-                  group: selectedGroup,
-                  state: routeState,
-                  ...(prepared.apiMode ? { apiMode: prepared.apiMode } : {}),
-                  mayUseWebSearch: prepared.mayUseWebSearch,
-                  contextWindow: prepared.contextWindow,
-                  quota: prepared.quota,
-                  exclude: prepared.exclude,
-                  resolve: (member, requestSignal) =>
-                    modelAccess.resolveProvider(
-                      member.sourceId,
-                      member.credentialId,
-                      requestSignal,
-                      member.model,
-                      validateSelection,
-                    ),
-                })
-              : resolved.provider;
-          if (signal.aborted)
-            throw new ForgeError("cancelled", "Run cancelled.");
-          const built = await buildTools(
-            snapshot.workspace,
-            settings,
-            config.apiKey,
-            provider,
-            input.uiHost,
-          );
-          tools = built.tools;
-          rootBudget.checkAdmission();
-          const budget = rootBudget;
-          const result = await createAgentRuntime({
-            rootBudget: budget,
-            store,
-            sessionLock: { id: input.sessionId, release: releaseSession },
-            autoTitle: {
-              secrets: [config.apiKey, config.baseUrl],
-              start: (claimed, apply) =>
-                startTitle(claimed, apply, {
-                  signal,
-                  provider: resolved.provider,
-                  secrets: [config.apiKey, config.baseUrl],
-                  beginUsage: () => budget.beginUsage(input.sessionId),
-                }),
-            },
-            runMemory,
-            toolHooks: await toolHooksStore.get(),
-            agentWorktrees,
-            settings,
-            getAgentProfiles: async () =>
-              (await settingsStore.getPublic()).agentProfiles ?? [],
-            delegationModels: createDelegationModels({
-              getSettings: () => settingsStore.getPublic(),
-              listModels: async (sourceId, requestSignal) => {
-                const resolved = await modelAccess.resolveProvider(
-                  sourceId,
-                  undefined,
-                  requestSignal,
-                );
-                return resolved.provider.listModels(requestSignal);
-              },
-            }),
-            provider,
-            tools,
-            projectInstructions: built.instructions,
-            ...(input.harness
-              ? {
-                  harnessAdaptation: {
-                    createProbeTools: () =>
-                      buildProbeTools(snapshot.workspace, config.apiKey),
-                    redact: (text: string) =>
-                      redactMemoryText(text, [config.apiKey, config.baseUrl]),
-                    experiences: {
-                      list: async (scope) =>
-                        (await getHarnessExperiences()).list(scope),
-                      save: async (experience) =>
-                        (await getHarnessExperiences()).save(experience),
-                    },
-                  },
-                }
-              : {}),
-            onChildOperation: track,
-            childContextFactory: async (workspace, childInput, childSignal) => {
-              // Delegated model IDs remain exact, even when the parent chose a group.
-              const current = await settingsStore.getPublic();
-              // Admission already resolved an exact source. Never fall back to the parent's provider.
-              const childSourceId = childInput?.providerSourceId;
-              const child = await modelAccess.resolveProvider(
-                childSourceId,
-                undefined,
-                childSignal ?? signal,
-                childInput?.model,
-              );
-              return {
-                ...(await buildTools(
-                  workspace,
-                  current,
-                  child.config.apiKey,
-                  child.provider,
-                  input.uiHost,
-                )),
-                provider: child.provider,
-                ...(childSourceId ? { providerSourceId: childSourceId } : {}),
-              };
-            },
-          }).run(
-            {
-              ...input,
-              ...(providerSourceId ? { providerSourceId } : {}),
-              ...(routeGroupId ? { routeGroupId } : {}),
-            },
-            onEvent,
-            approve,
-            signal,
-            control,
-          );
-          return result;
-        } finally {
-          try {
-            if (tools) await tools.dispose();
-          } finally {
-            try {
-              await releaseSession?.();
-            } finally {
-              rootBudget?.close();
-              active.delete(input.sessionId);
-              const reader = asyncPermissions.get(input.sessionId);
-              if (reader) {
-                const permission = reader();
-                asyncPermissions.set(input.sessionId, () => permission);
-              }
-            }
-          }
-        }
-      });
+      const operation = Promise.resolve().then(() =>
+        runSession(input, onEvent, approve, signal, control),
+      );
       active.set(input.sessionId, operation);
       track(input.sessionId, controller, operation);
       return operation;
