@@ -26,7 +26,6 @@ import { executionTurns } from "../shared/execution";
 import {
   BASELINE_HARNESS_STRATEGY,
   HARNESS_ADAPTATION_DEFAULTS,
-  type HarnessAdaptationReport,
 } from "../shared/harness-adaptation";
 import { recordPlan } from "../shared/plans";
 import {
@@ -70,7 +69,6 @@ import { buildSystemInstructions } from "./prompts";
 import { type RetryStopReason, stoppedProviderRetry } from "./provider-retry";
 import { createRootRunBudget } from "./run-budget";
 import {
-  CONTEXT_SCALE_FLOOR,
   compactContext,
   isHumanTurn,
   seedContextScale,
@@ -82,6 +80,7 @@ import {
   RETRY_DELAYS_MS,
   retryDelay,
 } from "./runtime-retry";
+import { createRunState } from "./runtime-state";
 import { claimAutoTitle } from "./session-title";
 import {
   executeReadBatch,
@@ -195,27 +194,25 @@ export const createAgentRuntime = (
       if (!deps.rootBudget) rootBudget.close();
       throw error;
     }
-    let snapshot: SessionSnapshot | undefined;
-    let canDelegate = false;
+    const run = createRunState();
     const levels = ["readonly", "workspace", "unrestricted"] as const;
-    let notificationCap: Permission | undefined;
     const effectivePermission = () => {
       // A background notification is an internal continuation, not a new grant.
       // Pin its cap once from the last actual run/permission change so neither a
       // later dynamic grant nor this run's own events can widen it; without
       // persisted evidence it stays readonly.
       if (control?.inputOrigin === "background_task")
-        notificationCap ??=
-          snapshot &&
+        run.notificationCap ??=
+          run.snapshot &&
           [
             "running",
             "awaiting_approval",
             "failed",
             "cancelled",
             "interrupted",
-          ].includes(snapshot.status)
+          ].includes(run.snapshot.status)
             ? "readonly"
-            : previousRunPermission(snapshot?.events ?? []);
+            : previousRunPermission(run.snapshot?.events ?? []);
       const requested =
         input.mode === "plan"
           ? "readonly"
@@ -226,54 +223,34 @@ export const createAgentRuntime = (
         levels[
           Math.min(
             levels.indexOf(requested),
-            levels.indexOf(snapshot?.permissionCeiling ?? "unrestricted"),
+            levels.indexOf(run.snapshot?.permissionCeiling ?? "unrestricted"),
             levels.indexOf(
-              snapshot?.agentProfile?.permission ?? "unrestricted",
+              run.snapshot?.agentProfile?.permission ?? "unrestricted",
             ),
-            levels.indexOf(notificationCap ?? "unrestricted"),
+            levels.indexOf(run.notificationCap ?? "unrestricted"),
           )
         ] ?? "readonly"
       );
     };
-    let hookFailed = false;
-    let ranEndHooks = false;
-    let turns = 0;
-    let turn: number | undefined;
-    let activeStep: number | undefined;
-    let steps = 0;
-    let retries = 0;
-    let toolCalls = 0;
-    let stopReason = "completed";
-    let usage: Usage = { promptTokens: 0, completionTokens: 0, totalTokens: 0 };
-    let reportedUsageTurns = 0;
-    let auxiliaryUsageComplete = true;
-    let adaptation: HarnessAdaptationReport | undefined;
     const onModelUsage = (incoming: Usage | undefined) => {
       rootBudget.observeUsage(input.sessionId, incoming);
       if (!incoming) {
-        auxiliaryUsageComplete = false;
+        run.auxiliaryUsageComplete = false;
         return;
       }
       const cached =
         incoming.cachedPromptTokens === undefined
-          ? usage.cachedPromptTokens
-          : (usage.cachedPromptTokens ?? 0) + incoming.cachedPromptTokens;
-      usage = {
-        promptTokens: usage.promptTokens + incoming.promptTokens,
-        completionTokens: usage.completionTokens + incoming.completionTokens,
-        totalTokens: usage.totalTokens + incoming.totalTokens,
+          ? run.usage.cachedPromptTokens
+          : (run.usage.cachedPromptTokens ?? 0) + incoming.cachedPromptTokens;
+      run.usage = {
+        promptTokens: run.usage.promptTokens + incoming.promptTokens,
+        completionTokens:
+          run.usage.completionTokens + incoming.completionTokens,
+        totalTokens: run.usage.totalTokens + incoming.totalTokens,
         ...(cached === undefined ? {} : { cachedPromptTokens: cached }),
       };
     };
-    let hadProviderRetries = false;
     const checkToolFailure = createToolFailureGuard();
-    let phase: "storage" | "provider" | "tool" = "storage";
-    let incompleteText = "";
-    let generation:
-      | { id: string; step: number | undefined; finished: boolean }
-      | undefined;
-    /** Learned estimate->real-input scale for this run; see CONTEXT_SCALE_FLOOR. */
-    let contextScale = CONTEXT_SCALE_FLOOR;
     const approvalQueue = createApprovalQueue();
     const now = deps.now ?? (() => new Date().toISOString());
     const notify = (event: AgentEvent): void => {
@@ -284,41 +261,51 @@ export const createAgentRuntime = (
       }
     };
     const event = (body: EventBody): void => {
-      if (!snapshot)
+      if (!run.snapshot)
         throw new ForgeError("internal", "Session has not loaded.");
       const event = agentEventSchema.parse({
-        ...(turn === undefined ? {} : { turn }),
-        ...(activeStep === undefined ? {} : { step: activeStep }),
+        ...(run.turn === undefined ? {} : { turn: run.turn }),
+        ...(run.activeStep === undefined ? {} : { step: run.activeStep }),
         ...body,
         sessionId: input.sessionId,
         timestamp: now(),
       });
-      snapshot = { ...snapshot, events: [...snapshot.events, event] };
+      run.snapshot = {
+        ...run.snapshot,
+        events: [...run.snapshot.events, event],
+      };
       notify(event);
     };
     const finishGeneration = (
       status: "completed" | "failed" | "cancelled" | "superseded",
     ): void => {
-      if (!generation || generation.finished) return;
-      generation.finished = true;
+      if (!run.generation || run.generation.finished) return;
+      run.generation.finished = true;
       event({
         type: "generation_finished",
-        generationId: generation.id,
-        ...(generation.step === undefined ? {} : { step: generation.step }),
+        generationId: run.generation.id,
+        ...(run.generation.step === undefined
+          ? {}
+          : { step: run.generation.step }),
         status,
       });
     };
     const closeStep = (status: "completed" | "cancelled" | "failed"): void => {
-      if (!snapshot || turn === undefined || activeStep === undefined) return;
+      if (
+        !run.snapshot ||
+        run.turn === undefined ||
+        run.activeStep === undefined
+      )
+        return;
       event({
         type: "step_finished",
-        turn,
-        step: activeStep,
+        turn: run.turn,
+        step: run.activeStep,
         status,
-        messageIndex: snapshot.messages.length,
+        messageIndex: run.snapshot.messages.length,
       });
-      steps += 1;
-      activeStep = undefined;
+      run.steps += 1;
+      run.activeStep = undefined;
     };
     const hookDiagnostics = (
       diagnostics: readonly ToolHookDiagnostic[],
@@ -326,7 +313,7 @@ export const createAgentRuntime = (
     ): void => {
       for (const diagnostic of diagnostics) {
         if (["failed", "timed_out", "cancelled"].includes(diagnostic.status))
-          hookFailed = true;
+          run.hookFailed = true;
         event({
           type: "tool_hook",
           diagnostic,
@@ -338,8 +325,8 @@ export const createAgentRuntime = (
     const ephemeral = (body: EventBody): void => {
       notify(
         agentEventSchema.parse({
-          ...(turn === undefined ? {} : { turn }),
-          ...(activeStep === undefined ? {} : { step: activeStep }),
+          ...(run.turn === undefined ? {} : { turn: run.turn }),
+          ...(run.activeStep === undefined ? {} : { step: run.activeStep }),
           ...body,
           sessionId: input.sessionId,
           timestamp: now(),
@@ -351,9 +338,9 @@ export const createAgentRuntime = (
       if (signal.aborted) throw new ForgeError("cancelled", "Run cancelled.");
     };
     const journal = createRuntimeJournal(deps.store, input, {
-      current: () => snapshot,
+      current: () => run.snapshot,
       replace: (value) => {
-        snapshot = value;
+        run.snapshot = value;
       },
       now,
       check,
@@ -375,7 +362,7 @@ export const createAgentRuntime = (
       approvalQueue,
       approve,
       advisor,
-      parentModel: () => snapshot?.model ?? deps.settings.model,
+      parentModel: () => run.snapshot?.model ?? deps.settings.model,
       createRuntime: createAgentRuntime,
       emitUpdate: event,
       emitProgress: (body) => ephemeral(body),
@@ -390,11 +377,11 @@ export const createAgentRuntime = (
       const request = pending.find(
         (item) => force || !notifiedAdvisor.has(item.id),
       );
-      if (!request || !snapshot) return false;
-      snapshot = {
-        ...snapshot,
+      if (!request || !run.snapshot) return false;
+      run.snapshot = {
+        ...run.snapshot,
         messages: [
-          ...snapshot.messages,
+          ...run.snapshot.messages,
           {
             role: "user",
             origin: "agent_reconciliation",
@@ -408,7 +395,6 @@ export const createAgentRuntime = (
     };
     const includeSteering = journal.includeSteering;
     const acceptSteering = journal.acceptSteering;
-    let acceptingTitle = true;
     const closeSteering = (): void => {
       journal.closeSteering();
       control?.setSteeringHandler?.(undefined);
@@ -423,20 +409,20 @@ export const createAgentRuntime = (
       check();
       if (drained.length) {
         const messages = drained.map(journal.message);
-        if (!snapshot)
+        if (!run.snapshot)
           throw new ForgeError("internal", "Session has not loaded.");
-        snapshot = {
-          ...snapshot,
-          messages: [...snapshot.messages, ...messages],
+        run.snapshot = {
+          ...run.snapshot,
+          messages: [...run.snapshot.messages, ...messages],
         };
         await save();
         control?.onSteeringApplied?.();
       }
       if (received || drained.length) {
-        if (adaptation?.status === "adopted") {
+        if (run.adaptation?.status === "adopted") {
           // A changed task invalidates the comparison; never replay the preflight.
-          adaptation = {
-            ...adaptation,
+          run.adaptation = {
+            ...run.adaptation,
             status: "baseline",
             strategy: BASELINE_HARNESS_STRATEGY,
             rationale:
@@ -445,7 +431,7 @@ export const createAgentRuntime = (
           };
           event({
             type: "harness_adaptation",
-            progress: { phase: "completed", report: adaptation },
+            progress: { phase: "completed", report: run.adaptation },
           });
           await save();
         } else if (received && !drained.length) await save();
@@ -459,7 +445,7 @@ export const createAgentRuntime = (
       closeSteering();
       await settleWrites();
       let status = requestedStatus;
-      if (!snapshot)
+      if (!run.snapshot)
         throw new ForgeError("internal", "Session has not loaded.");
       await advisor.close(status === "cancelled" ? "cancelled" : "interrupted");
       const joined = await supervisor.settle(status !== "completed");
@@ -481,28 +467,28 @@ export const createAgentRuntime = (
       }
       if (status === "completed" && joined.unhandledFailure) status = "failed";
       if (signal.aborted) status = "cancelled";
-      if (status === "completed" && hookFailed) status = "failed";
-      if (hooks?.configured && !ranEndHooks) {
-        ranEndHooks = true;
+      if (status === "completed" && run.hookFailed) status = "failed";
+      if (hooks?.configured && !run.ranEndHooks) {
+        run.ranEndHooks = true;
         hookDiagnostics(
           await hooks.runEnd(
             {
               session: {
                 sessionId: input.sessionId,
-                workspace: snapshot.workspace,
+                workspace: run.snapshot.workspace,
                 permission: effectivePermission(),
               },
               run: {
                 status,
-                toolCalls,
-                steps: steps + (activeStep === undefined ? 0 : 1),
+                toolCalls: run.toolCalls,
+                steps: run.steps + (run.activeStep === undefined ? 0 : 1),
               },
             },
             { signal },
           ),
         );
       }
-      if (status === "completed" && hookFailed) status = "failed";
+      if (status === "completed" && run.hookFailed) status = "failed";
       if (signal.aborted) status = "cancelled";
       closeStep(status);
       // Cancellation/failure must not erase messages already acknowledged to the
@@ -529,50 +515,50 @@ export const createAgentRuntime = (
       rootBudget.finishSession(
         input.sessionId,
         status,
-        status !== "completed" && stopReason === "completed"
+        status !== "completed" && run.stopReason === "completed"
           ? "child_or_hook_failure"
-          : stopReason,
+          : run.stopReason,
       );
       // Completion notifications must not inherit the permission from run start
       // after the user lowered it during inference. Freeze host updates before
       // the final checkpoint; no acknowledged change can race that snapshot.
       control?.onFinalizing?.();
       const finalPermission = effectivePermission();
-      if (previousRunPermission(snapshot.events) !== finalPermission)
+      if (previousRunPermission(run.snapshot.events) !== finalPermission)
         event({ type: "permission_changed", permission: finalPermission });
       const terminal = agentEventSchema.parse({
         type: "run_finished",
         budget: rootBudget.snapshot(
-          snapshot.parentSessionId ? input.sessionId : undefined,
+          run.snapshot.parentSessionId ? input.sessionId : undefined,
         ),
         sessionId: input.sessionId,
         timestamp: now(),
         status,
-        ...(turn === undefined ? {} : { turn }),
-        turns,
-        steps,
-        retries,
-        messageIndex: snapshot.messages.length,
-        toolCalls,
-        usage,
+        ...(run.turn === undefined ? {} : { turn: run.turn }),
+        turns: run.turns,
+        steps: run.steps,
+        retries: run.retries,
+        messageIndex: run.snapshot.messages.length,
+        toolCalls: run.toolCalls,
+        usage: run.usage,
         usageComplete:
-          auxiliaryUsageComplete &&
-          !hadProviderRetries &&
-          reportedUsageTurns === turns,
+          run.auxiliaryUsageComplete &&
+          !run.hadProviderRetries &&
+          run.reportedUsageTurns === run.turns,
         ...(supervisor.size
           ? {
               childUsage,
-              totalUsage: addUsage(usage, childUsage),
+              totalUsage: addUsage(run.usage, childUsage),
               childUsageComplete: supervisor
                 .operations()
                 .every((child) => child.usageComplete === true),
             }
           : {}),
       });
-      snapshot = {
-        ...snapshot,
+      run.snapshot = {
+        ...run.snapshot,
         status,
-        events: [...snapshot.events, terminal],
+        events: [...run.snapshot.events, terminal],
       };
       await save();
       // Library promotion happens only after the formal task's successful
@@ -582,28 +568,29 @@ export const createAgentRuntime = (
         !signal.aborted &&
         effectivePermission() !== "readonly" &&
         input.harness?.experience === "read-write" &&
-        adaptation?.status === "adopted" &&
+        run.adaptation?.status === "adopted" &&
         deps.harnessAdaptation?.experiences
       ) {
         try {
-          const verified = adaptation.probes.find(
+          const verified = run.adaptation.probes.find(
             (probe) => probe.id === "composed",
           );
           const experience = await deps.harnessAdaptation.experiences.save({
             scope: {
-              workspace: snapshot.workspace,
-              model: snapshot.model,
+              workspace: run.snapshot.workspace,
+              model: run.snapshot.model,
               domain:
                 input.harness.domain ?? HARNESS_ADAPTATION_DEFAULTS.domain,
             },
             sessionId: input.sessionId,
-            reportId: adaptation.id,
-            strategy: adaptation.strategy,
-            lesson: adaptation.rationale,
+            reportId: run.adaptation.id,
+            strategy: run.adaptation.strategy,
+            lesson: run.adaptation.rationale,
             evidence: (verified?.evidence ?? [])
               .filter(
                 (item) =>
-                  !item.isError && adaptation?.evidenceIds.includes(item.id),
+                  !item.isError &&
+                  run.adaptation?.evidenceIds.includes(item.id),
               )
               .slice(0, 4)
               .map((item) =>
@@ -621,7 +608,7 @@ export const createAgentRuntime = (
           notify(
             agentEventSchema.parse({
               type: "error",
-              sessionId: snapshot.id,
+              sessionId: run.snapshot.id,
               timestamp: now(),
               error: {
                 code: "storage",
@@ -634,12 +621,12 @@ export const createAgentRuntime = (
         }
       }
       try {
-        await deps.runMemory?.record(snapshot);
+        await deps.runMemory?.record(run.snapshot);
       } catch {
         notify(
           agentEventSchema.parse({
             type: "error",
-            sessionId: snapshot.id,
+            sessionId: run.snapshot.id,
             timestamp: now(),
             error: {
               code: "storage",
@@ -651,25 +638,25 @@ export const createAgentRuntime = (
         );
       }
       notify(terminal);
-      return snapshot;
+      return run.snapshot;
     };
     try {
-      snapshot = await journal.read();
+      run.snapshot = await journal.read();
       rootBudget.enter(input.sessionId);
-      assertAgentModel(snapshot.agentProfile, input);
-      canDelegate =
+      assertAgentModel(run.snapshot.agentProfile, input);
+      run.canDelegate =
         (await agentDepth(
-          snapshot,
+          run.snapshot,
           (id) => deps.store.get(id),
           deps.settings.maxAgentDepth ?? DEFAULT_MAX_AGENT_DEPTH,
         )) < (deps.settings.maxAgentDepth ?? DEFAULT_MAX_AGENT_DEPTH);
       const roleDefinitions = nativeDefinitionsFor(
-        Boolean(snapshot.parentSessionId),
+        Boolean(run.snapshot.parentSessionId),
         Boolean(deps.advisorParent),
-        canDelegate,
+        run.canDelegate,
       );
       const allowTool = (name: string, args?: unknown) =>
-        isAgentToolAllowed(snapshot?.agentProfile, name, args) &&
+        isAgentToolAllowed(run.snapshot?.agentProfile, name, args) &&
         (!nativeDefinitions.some((item) => item.function.name === name) ||
           roleDefinitions.some((item) => item.function.name === name));
       const definitions = [
@@ -677,7 +664,7 @@ export const createAgentRuntime = (
         ...roleDefinitions,
       ].filter((item) => allowTool(item.function.name));
       // Recovery describes old requests; it does not revive their waiters or tools.
-      for (const request of snapshot.advisorRequests ?? [])
+      for (const request of run.snapshot.advisorRequests ?? [])
         if (request.status === "pending")
           notify(
             await journal.acceptAdvisor({
@@ -690,12 +677,12 @@ export const createAgentRuntime = (
         (definition) => definition.function.name,
       );
       let currentInstructions = buildSystemInstructions({
-        session: snapshot,
+        session: run.snapshot,
         permission: effectivePermission(),
         mode: input.mode,
         projectInstructions: deps.projectInstructions,
         toolNames,
-        canDelegate,
+        canDelegate: run.canDelegate,
       });
       const project = (state: SessionSnapshot) => {
         const projected = projectSummary(state).map((message, index) =>
@@ -711,8 +698,8 @@ export const createAgentRuntime = (
                 ...projected,
               ];
         const guidance =
-          adaptation?.status === "adopted"
-            ? harnessStrategyMessage(adaptation.strategy)
+          run.adaptation?.status === "adopted"
+            ? harnessStrategyMessage(run.adaptation.strategy)
             : undefined;
         // A lower-trust reference before the actual user turns, included in
         // context accounting but never installed as system policy or history.
@@ -727,28 +714,32 @@ export const createAgentRuntime = (
           : {}),
         ...(input.images?.length ? { images: input.images } : {}),
       };
-      contextScale = seedContextScale(
-        snapshot.events,
-        input.model ?? snapshot.model,
+      run.contextScale = seedContextScale(
+        run.snapshot.events,
+        input.model ?? run.snapshot.model,
       );
       if (deps.runMemory)
-        snapshot = await deps.runMemory.restore(snapshot, now(), (state) => {
-          // Count the upcoming request without appending new inputs to the old
-          // checkpoint: its hash and summary boundary must remain about past work.
-          const upcoming = {
-            ...state,
-            messages: [...state.messages, ...journal.pendingMessages, prompt],
-          };
-          return (
-            measureContext(project(upcoming), null, definitions).usedTokens *
-            contextScale
-          );
-        });
+        run.snapshot = await deps.runMemory.restore(
+          run.snapshot,
+          now(),
+          (state) => {
+            // Count the upcoming request without appending new inputs to the old
+            // checkpoint: its hash and summary boundary must remain about past work.
+            const upcoming = {
+              ...state,
+              messages: [...state.messages, ...journal.pendingMessages, prompt],
+            };
+            return (
+              measureContext(project(upcoming), null, definitions).usedTokens *
+              run.contextScale
+            );
+          },
+        );
       if (
-        snapshot.status === "running" ||
-        snapshot.status === "awaiting_approval"
+        run.snapshot.status === "running" ||
+        run.snapshot.status === "awaiting_approval"
       ) {
-        const previous = executionTurns(snapshot).at(-1);
+        const previous = executionTurns(run.snapshot).at(-1);
         if (
           previous &&
           !previous.finish &&
@@ -760,7 +751,7 @@ export const createAgentRuntime = (
               type: "step_finished",
               turn: previous.turn,
               step: previous.currentStep,
-              messageIndex: snapshot.messages.length,
+              messageIndex: run.snapshot.messages.length,
               status: "interrupted",
             });
           event({
@@ -773,11 +764,11 @@ export const createAgentRuntime = (
               (previous.currentStep === undefined ? 0 : 1),
             toolCalls: previous.toolCalls ?? 0,
             retries: previous.retries ?? 0,
-            messageIndex: snapshot.messages.length,
+            messageIndex: run.snapshot.messages.length,
             usageComplete: false,
           });
         }
-        snapshot = { ...snapshot, status: "interrupted" };
+        run.snapshot = { ...run.snapshot, status: "interrupted" };
         event({ type: "state_changed", status: "interrupted" });
         await save();
       }
@@ -787,70 +778,76 @@ export const createAgentRuntime = (
         pendingTool: _pending,
         routeGroupId: previousRoute,
         ...settled
-      } = snapshot;
+      } = run.snapshot;
       const routeGroupId =
         input.routeGroupId ??
         (input.model !== undefined || input.providerSourceId !== undefined
           ? undefined
           : previousRoute);
-      snapshot = {
+      run.snapshot = {
         ...settled,
         ...(routeGroupId ? { routeGroupId } : {}),
-        model: input.model ?? snapshot.model,
+        model: input.model ?? run.snapshot.model,
         ...(input.providerSourceId
           ? { providerSourceId: input.providerSourceId }
           : {}),
         messages: closeCalls(
-          snapshot.messages,
+          run.snapshot.messages,
           "prior execution was interrupted; inspect effects before retry",
         ),
       };
       includeSteering(); // Recover accepted inputs after closing any interrupted tool calls.
       currentInstructions = buildSystemInstructions({
-        session: snapshot,
+        session: run.snapshot,
         permission,
         mode: input.mode,
         projectInstructions: deps.projectInstructions,
         toolNames,
-        canDelegate,
+        canDelegate: run.canDelegate,
       });
       if (
-        !snapshot.contextSummary &&
-        !snapshot.messages.some((message) => message.role === "system")
+        !run.snapshot.contextSummary &&
+        !run.snapshot.messages.some((message) => message.role === "system")
       )
-        snapshot = {
-          ...snapshot,
+        run.snapshot = {
+          ...run.snapshot,
           messages: [
             {
               role: "system",
               content: currentInstructions,
             },
-            ...snapshot.messages,
+            ...run.snapshot.messages,
           ],
         };
-      turn = (executionTurns(snapshot).at(-1)?.turn ?? 0) + 1;
-      snapshot = {
-        ...snapshot,
+      run.turn = (executionTurns(run.snapshot).at(-1)?.turn ?? 0) + 1;
+      run.snapshot = {
+        ...run.snapshot,
         status: "running",
-        messages: [...snapshot.messages, prompt],
+        messages: [...run.snapshot.messages, prompt],
       };
-      const claimed = claimAutoTitle(snapshot, deps.autoTitle?.secrets ?? []);
-      const shouldName = claimed !== snapshot;
-      snapshot = claimed;
+      const claimed = claimAutoTitle(
+        run.snapshot,
+        deps.autoTitle?.secrets ?? [],
+      );
+      const shouldName = claimed !== run.snapshot;
+      run.snapshot = claimed;
       const started = agentEventSchema.parse({
         type: "run_started",
-        turn,
+        turn: run.turn,
         budget: rootBudget.snapshot(
-          snapshot.parentSessionId ? input.sessionId : undefined,
+          run.snapshot.parentSessionId ? input.sessionId : undefined,
         ),
         sessionId: input.sessionId,
         timestamp: now(),
-        messageIndex: snapshot.messages.length - 1,
-        model: snapshot.model,
+        messageIndex: run.snapshot.messages.length - 1,
+        model: run.snapshot.model,
         permission,
-        title: snapshot.title,
+        title: run.snapshot.title,
       });
-      snapshot = { ...snapshot, events: [...snapshot.events, started] };
+      run.snapshot = {
+        ...run.snapshot,
+        events: [...run.snapshot.events, started],
+      };
       await save();
       journal.openSteering();
       control?.setSteeringHandler?.(acceptSteering);
@@ -858,20 +855,23 @@ export const createAgentRuntime = (
       check();
       rootBudget.checkAdmission();
       if (shouldName && deps.autoTitle) {
-        const fallback = snapshot.title;
-        deps.autoTitle.start(snapshot, async (title) => {
-          if (!acceptingTitle || !snapshot) return false;
-          if (snapshot.titleSource !== "auto" || snapshot.title !== fallback)
+        const fallback = run.snapshot.title;
+        deps.autoTitle.start(run.snapshot, async (title) => {
+          if (!run.acceptingTitle || !run.snapshot) return false;
+          if (
+            run.snapshot.titleSource !== "auto" ||
+            run.snapshot.title !== fallback
+          )
             return true;
-          snapshot = { ...snapshot, title };
+          run.snapshot = { ...run.snapshot, title };
           await save();
-          if (acceptingTitle) ephemeral({ type: "title_changed", title });
+          if (run.acceptingTitle) ephemeral({ type: "title_changed", title });
           return true;
         });
       }
       check();
       rootBudget.checkAdmission();
-      if (input.harness && snapshot.agentProfile)
+      if (input.harness && run.snapshot.agentProfile)
         throw new ForgeError(
           "invalid_input",
           "Harness adaptation cannot bypass a configured specialist's tool policy.",
@@ -883,7 +883,7 @@ export const createAgentRuntime = (
             "invalid_input",
             "This runtime host does not support Harness adaptation.",
           );
-        if (snapshot.routeGroupId)
+        if (run.snapshot.routeGroupId)
           throw new ForgeError(
             "invalid_input",
             "Harness adaptation requires a direct model selection, not a route group.",
@@ -893,18 +893,18 @@ export const createAgentRuntime = (
             "invalid_input",
             "This runtime host does not support Harness experience persistence.",
           );
-        phase = "provider";
-        adaptation = await adaptHarness({
+        run.phase = "provider";
+        run.adaptation = await adaptHarness({
           input: input.harness,
           host,
           provider: deps.provider,
           sessionId: input.sessionId,
-          workspace: snapshot.workspace,
-          model: snapshot.model,
-          messages: projectSummary(snapshot),
+          workspace: run.snapshot.workspace,
+          model: run.snapshot.model,
+          messages: projectSummary(run.snapshot),
           signal,
           systemInstructions: buildSystemInstructions({
-            session: snapshot,
+            session: run.snapshot,
             permission: "readonly",
             mode: "plan",
             projectInstructions: deps.projectInstructions,
@@ -929,7 +929,7 @@ export const createAgentRuntime = (
         check();
       }
       let reportedWindow: number | null = null;
-      if (!deps.settings.modelContextWindows?.[snapshot.model]) {
+      if (!deps.settings.modelContextWindows?.[run.snapshot.model]) {
         const metadataSignal = AbortSignal.any([
           signal,
           AbortSignal.timeout(2000),
@@ -937,7 +937,7 @@ export const createAgentRuntime = (
         try {
           reportedWindow = await withCancellation(
             deps.provider.getModelContextWindow?.(
-              snapshot.model,
+              run.snapshot.model,
               metadataSignal,
             ) ?? Promise.resolve(null),
             metadataSignal,
@@ -947,7 +947,7 @@ export const createAgentRuntime = (
         }
       }
       const windowTokens = resolveContextWindow(
-        snapshot.model,
+        run.snapshot.model,
         deps.settings,
         reportedWindow,
       );
@@ -965,7 +965,7 @@ export const createAgentRuntime = (
       // limit handed to trimming is divided by the scale, so the messages that
       // leave Forge are the ones measured against the budget.
       while (true) {
-        const scale = budget.unit === "tokens" ? contextScale : 1;
+        const scale = budget.unit === "tokens" ? run.contextScale : 1;
         const calibratedSize = (messages: readonly Message[]) =>
           contextSize(messages) * scale;
         const rawLimit = budget.limit / scale;
@@ -973,7 +973,7 @@ export const createAgentRuntime = (
         check();
         rootBudget.checkAdmission();
         currentInstructions = buildSystemInstructions({
-          session: snapshot,
+          session: run.snapshot,
           permission: effectivePermission(),
           mode: input.mode,
           projectInstructions: deps.projectInstructions,
@@ -982,12 +982,12 @@ export const createAgentRuntime = (
         await drainSteering();
         await drainAdvisor();
         check();
-        const before = project(snapshot);
+        const before = project(run.snapshot);
         if (calibratedSize(before) > budget.limit) {
           // Search for a boundary in raw-estimate units: that is what the
           // estimator reports, and the hard trim below uses the same units.
           let boundary = summaryBoundary(
-            snapshot,
+            run.snapshot,
             (messages) =>
               contextSize(
                 messages.map((m, i) =>
@@ -1001,11 +1001,11 @@ export const createAgentRuntime = (
           // If three recent turns alone exceed the hard budget, retain fewer
           // whole turns rather than silently discarding their meaning.
           if (boundary === null) {
-            const latest = snapshot.messages.findLastIndex(isHumanTurn);
+            const latest = run.snapshot.messages.findLastIndex(isHumanTurn);
             if (
-              latest > (snapshot.contextSummary?.boundary ?? 0) &&
-              snapshot.messages
-                .slice(snapshot.contextSummary?.boundary ?? 0, latest)
+              latest > (run.snapshot.contextSummary?.boundary ?? 0) &&
+              run.snapshot.messages
+                .slice(run.snapshot.contextSummary?.boundary ?? 0, latest)
                 .some((m) => m.role !== "system")
             )
               boundary = latest;
@@ -1013,15 +1013,15 @@ export const createAgentRuntime = (
           if (boundary !== null) {
             rootBudget.checkAdmission();
             const summarized = await summarizeWorkingState(
-              snapshot,
+              run.snapshot,
               deps.provider,
               signal,
               boundary,
               Math.floor(windowTokens * 0.8),
               onModelUsage,
             );
-            snapshot = {
-              ...snapshot,
+            run.snapshot = {
+              ...run.snapshot,
               contextSummary: summarized.contextSummary,
             };
             await save();
@@ -1029,14 +1029,18 @@ export const createAgentRuntime = (
               type: "context_compacted",
               removedMessages: Math.max(
                 0,
-                before.length - project(snapshot).length,
+                before.length - project(run.snapshot).length,
               ),
               beforeChars: JSON.stringify(before).length,
-              afterChars: JSON.stringify(project(snapshot)).length,
+              afterChars: JSON.stringify(project(run.snapshot)).length,
             });
           }
         }
-        let context = compactContext(project(snapshot), rawLimit, contextSize);
+        let context = compactContext(
+          project(run.snapshot),
+          rawLimit,
+          contextSize,
+        );
         if (context.removedMessages > 0)
           event({
             type: "context_compacted",
@@ -1049,14 +1053,14 @@ export const createAgentRuntime = (
           ...budgetUsage(budget),
         };
         event({ type: "context_usage", usage: projectedUsage });
-        phase = "provider";
-        turns += 1;
-        activeStep = turns;
+        run.phase = "provider";
+        run.turns += 1;
+        run.activeStep = run.turns;
         event({
           type: "step_started",
-          turn,
-          step: activeStep,
-          messageIndex: snapshot.messages.length,
+          turn: run.turn,
+          step: run.activeStep,
+          messageIndex: run.snapshot.messages.length,
         });
         await save();
         // Hosted search is an ordinary Responses capability, not a user setting.
@@ -1064,7 +1068,7 @@ export const createAgentRuntime = (
         // omits it for members using other protocols. Permission still applies.
         let webSearch: "live" | "disabled" =
           effectivePermission() !== "readonly" &&
-          agentAllowsWebSearch(snapshot.agentProfile) &&
+          agentAllowsWebSearch(run.snapshot.agentProfile) &&
           (deps.provider.apiMode === "responses" ||
             deps.provider.mayUseWebSearch === true)
             ? "live"
@@ -1074,12 +1078,12 @@ export const createAgentRuntime = (
             const request = {
               id: randomUUID(),
               sessionId: input.sessionId,
-              toolCallId: `hosted-search:${turns}:${randomUUID()}`,
+              toolCallId: `hosted-search:${run.turns}:${randomUUID()}`,
               toolName: "web_search",
               description:
                 "Allow provider-hosted live web search if this request uses Responses? The provider may send generated queries to search services and fetch external pages. Queries can include conversation data and may incur provider charges. Local URL/SSRF rules cannot control this service; individual queries and URLs cannot be approved before execution. No Bing fallback.",
             };
-            snapshot = { ...snapshot, status: "awaiting_approval" };
+            run.snapshot = { ...run.snapshot, status: "awaiting_approval" };
             event({ type: "state_changed", status: "awaiting_approval" });
             await save();
             let allowed = false;
@@ -1092,7 +1096,7 @@ export const createAgentRuntime = (
               });
               allowed = await withCancellation(work, signal);
             } finally {
-              snapshot = { ...snapshot, status: "running" };
+              run.snapshot = { ...run.snapshot, status: "running" };
               event({ type: "state_changed", status: "running" });
               await save();
             }
@@ -1117,18 +1121,18 @@ export const createAgentRuntime = (
         for (;;) {
           const generationId = randomUUID();
           const stream = createGenerationStream(
-            { generationId, previewPrefix: `${turns}:${attempt}` },
+            { generationId, previewPrefix: `${run.turns}:${attempt}` },
             {
               emit: ephemeral,
               retainText: (text) => {
-                incompleteText += text;
+                run.incompleteText += text;
               },
             },
           );
           previews = stream.previews;
           check();
           rootBudget.checkAdmission();
-          const attemptStart = incompleteText.length;
+          const attemptStart = run.incompleteText.length;
           try {
             // Inputs can arrive during compaction, approval or retry backoff.
             // Re-project at the actual request boundary, never mutate an in-flight payload.
@@ -1136,7 +1140,7 @@ export const createAgentRuntime = (
             const advised = await drainAdvisor();
             if (steered || advised) {
               context = compactContext(
-                project(snapshot),
+                project(run.snapshot),
                 rawLimit,
                 contextSize,
               );
@@ -1146,19 +1150,19 @@ export const createAgentRuntime = (
               };
               event({ type: "context_usage", usage: projectedUsage });
             }
-            generation = {
+            run.generation = {
               id: generationId,
-              step: activeStep,
+              step: run.activeStep,
               finished: false,
             };
             event({
               type: "generation_started",
               generationId,
-              messageIndex: snapshot.messages.length,
+              messageIndex: run.snapshot.messages.length,
             });
             response = await withCancellation(
               deps.provider.complete(context.messages, definitions, {
-                model: snapshot.model,
+                model: run.snapshot.model,
                 signal,
                 attempt,
                 sessionId: input.sessionId,
@@ -1209,11 +1213,11 @@ export const createAgentRuntime = (
                 MAX_GENERATION_RETRIES,
               );
             attempt += 1;
-            retries += 1;
-            hadProviderRetries = true;
+            run.retries += 1;
+            run.hadProviderRetries = true;
             // Discard only this attempt's partial draft; prior messages and
             // already-persisted tool evidence stay untouched.
-            incompleteText = incompleteText.slice(0, attemptStart);
+            run.incompleteText = run.incompleteText.slice(0, attemptStart);
             finishGeneration("superseded");
             ephemeral({ type: "retry_reset", generationId });
             event({
@@ -1242,34 +1246,35 @@ export const createAgentRuntime = (
               },
         });
         if (incoming) {
-          reportedUsageTurns += 1;
+          run.reportedUsageTurns += 1;
           // Learn this run's estimate error from the provider's real input count.
           // Only positive measurements are usable, and the scale only ever grows,
           // so a light turn cannot mask a heavier one later in the same run.
           if (projectedUsage.usedTokens > 0 && incoming.promptTokens > 0)
-            contextScale = Math.max(
-              contextScale,
+            run.contextScale = Math.max(
+              run.contextScale,
               incoming.promptTokens / projectedUsage.usedTokens,
             );
           // Aggregate only provider-reported cache counts; never invent cached usage.
           const cached =
             incoming.cachedPromptTokens === undefined
-              ? usage.cachedPromptTokens
-              : (usage.cachedPromptTokens ?? 0) + incoming.cachedPromptTokens;
-          usage = {
-            promptTokens: usage.promptTokens + incoming.promptTokens,
+              ? run.usage.cachedPromptTokens
+              : (run.usage.cachedPromptTokens ?? 0) +
+                incoming.cachedPromptTokens;
+          run.usage = {
+            promptTokens: run.usage.promptTokens + incoming.promptTokens,
             completionTokens:
-              usage.completionTokens + incoming.completionTokens,
-            totalTokens: usage.totalTokens + incoming.totalTokens,
+              run.usage.completionTokens + incoming.completionTokens,
+            totalTokens: run.usage.totalTokens + incoming.totalTokens,
             ...(cached === undefined ? {} : { cachedPromptTokens: cached }),
           };
         }
-        snapshot = {
-          ...snapshot,
-          messages: [...snapshot.messages, response.message],
+        run.snapshot = {
+          ...run.snapshot,
+          messages: [...run.snapshot.messages, response.message],
         };
-        incompleteText = "";
-        phase = "storage";
+        run.incompleteText = "";
+        run.phase = "storage";
         const calls = response.message.tool_calls ?? [];
         if (calls.length === 0) closeStep("completed");
         await save();
@@ -1297,10 +1302,10 @@ export const createAgentRuntime = (
             continue;
           }
           if (delivery) {
-            snapshot = {
-              ...snapshot,
+            run.snapshot = {
+              ...run.snapshot,
               messages: [
-                ...snapshot.messages,
+                ...run.snapshot.messages,
                 {
                   role: "user",
                   origin: "agent_reconciliation",
@@ -1318,10 +1323,10 @@ export const createAgentRuntime = (
           );
           check();
           if (background) {
-            snapshot = {
-              ...snapshot,
+            run.snapshot = {
+              ...run.snapshot,
               messages: [
-                ...snapshot.messages,
+                ...run.snapshot.messages,
                 {
                   role: "user",
                   origin: "agent_reconciliation",
@@ -1356,10 +1361,10 @@ export const createAgentRuntime = (
               generationId: response.message.generationId,
               callIndex,
             });
-            snapshot = {
-              ...snapshot,
+            run.snapshot = {
+              ...run.snapshot,
               messages: [
-                ...snapshot.messages,
+                ...run.snapshot.messages,
                 {
                   role: "tool",
                   tool_call_id: call.id,
@@ -1428,12 +1433,12 @@ export const createAgentRuntime = (
               await save();
               check();
               reservation.dispatch(readBatch.length);
-              toolCalls += readBatch.length;
-              phase = "tool";
+              run.toolCalls += readBatch.length;
+              run.phase = "tool";
               outcomes = await executeReadBatch(readBatch, {
                 tools: deps.tools,
                 sessionId: input.sessionId,
-                workspace: snapshot.workspace,
+                workspace: run.snapshot.workspace,
                 permission: effectivePermission,
                 signal,
                 onModelUsage,
@@ -1443,7 +1448,7 @@ export const createAgentRuntime = (
               reservation.release();
             }
             check();
-            phase = "storage";
+            run.phase = "storage";
             for (const [offset, outcome] of outcomes.entries()) {
               const read = readBatch[offset];
               if (!read)
@@ -1455,10 +1460,10 @@ export const createAgentRuntime = (
                       content: JSON.stringify(toErrorInfo(outcome.reason)),
                       isError: true,
                     };
-              snapshot = {
-                ...snapshot,
+              run.snapshot = {
+                ...run.snapshot,
                 messages: [
-                  ...snapshot.messages,
+                  ...run.snapshot.messages,
                   {
                     role: "tool",
                     tool_call_id: read.id,
@@ -1493,11 +1498,11 @@ export const createAgentRuntime = (
           }
           const reservation = rootBudget.reserve(input.sessionId, 1);
           try {
-            snapshot = { ...snapshot, pendingTool: call };
+            run.snapshot = { ...run.snapshot, pendingTool: call };
             await save();
             check();
             reservation.dispatch();
-            toolCalls += 1;
+            run.toolCalls += 1;
           } finally {
             reservation.release();
           }
@@ -1509,12 +1514,12 @@ export const createAgentRuntime = (
             callIndex,
             ...(previewId ? { previewId } : {}),
           });
-          phase = "tool";
-          const toolSnapshot = snapshot;
+          run.phase = "tool";
+          const toolSnapshot = run.snapshot;
           const executed = await executeToolCall({
             call,
             sessionId: input.sessionId,
-            workspace: snapshot.workspace,
+            workspace: run.snapshot.workspace,
             tools: deps.tools,
             permission: effectivePermission,
             signal,
@@ -1524,9 +1529,9 @@ export const createAgentRuntime = (
             allowTool,
             diagnostics: (items) => hookDiagnostics(items, call.id),
             checkpointApproval: async (status) => {
-              if (!snapshot)
+              if (!run.snapshot)
                 throw new ForgeError("internal", "Session has not loaded.");
-              snapshot = { ...snapshot, status };
+              run.snapshot = { ...run.snapshot, status };
               event({ type: "state_changed", status });
               await save();
             },
@@ -1552,22 +1557,22 @@ export const createAgentRuntime = (
                       },
                       signal,
                       toolCallId: call.id,
-                      canDelegate,
+                      canDelegate: run.canDelegate,
                       ...supervisor.native,
                       saveResolution: async (
                         id,
                         childUpdatedAt,
                         resolution,
                       ) => {
-                        if (!snapshot)
+                        if (!run.snapshot)
                           throw new ForgeError(
                             "internal",
                             "Session unavailable",
                           );
-                        snapshot = {
-                          ...snapshot,
+                        run.snapshot = {
+                          ...run.snapshot,
                           agentResolutions: [
-                            ...(snapshot.agentResolutions ?? []).filter(
+                            ...(run.snapshot.agentResolutions ?? []).filter(
                               (item) => item.id !== id,
                             ),
                             {
@@ -1580,14 +1585,14 @@ export const createAgentRuntime = (
                         await save();
                       },
                       savePlan: async (plan) => {
-                        if (!snapshot)
+                        if (!run.snapshot)
                           throw new ForgeError(
                             "internal",
                             "Session unavailable",
                           );
-                        snapshot = {
-                          ...snapshot,
-                          ...recordPlan(snapshot, plan),
+                        run.snapshot = {
+                          ...run.snapshot,
+                          ...recordPlan(run.snapshot, plan),
                         };
                         event({ type: "plan_updated", plan });
                         await save();
@@ -1598,19 +1603,19 @@ export const createAgentRuntime = (
           });
           const { result } = executed;
           check();
-          phase = "storage";
-          const { pendingTool: _completed, ...withoutPending } = snapshot;
-          snapshot = {
+          run.phase = "storage";
+          const { pendingTool: _completed, ...withoutPending } = run.snapshot;
+          run.snapshot = {
             ...withoutPending,
             messages: [
-              ...snapshot.messages,
+              ...run.snapshot.messages,
               {
                 role: "tool",
                 tool_call_id: call.id,
                 content: JSON.stringify(result),
               },
             ],
-            changes: [...snapshot.changes, ...(result.changes ?? [])],
+            changes: [...run.snapshot.changes, ...(result.changes ?? [])],
           };
           event({
             type: "tool_finished",
@@ -1641,19 +1646,19 @@ export const createAgentRuntime = (
         await save();
       }
     } catch (error) {
-      if (!snapshot) throw error;
+      if (!run.snapshot) throw error;
       finishGeneration(signal.aborted ? "cancelled" : "failed");
-      if (incompleteText)
-        snapshot = {
-          ...snapshot,
+      if (run.incompleteText)
+        run.snapshot = {
+          ...run.snapshot,
           events: [
-            ...snapshot.events,
+            ...run.snapshot.events,
             agentEventSchema.parse({
               type: "text_delta",
-              text: incompleteText,
-              ...(generation ? { generationId: generation.id } : {}),
-              ...(turn === undefined ? {} : { turn }),
-              ...(activeStep === undefined ? {} : { step: activeStep }),
+              text: run.incompleteText,
+              ...(run.generation ? { generationId: run.generation.id } : {}),
+              ...(run.turn === undefined ? {} : { turn: run.turn }),
+              ...(run.activeStep === undefined ? {} : { step: run.activeStep }),
               sessionId: input.sessionId,
               timestamp: now(),
             }),
@@ -1664,19 +1669,19 @@ export const createAgentRuntime = (
         : error instanceof ForgeError
           ? error
           : new ForgeError(
-              phase,
-              phase === "provider"
+              run.phase,
+              run.phase === "provider"
                 ? "Model request failed."
-                : phase === "tool"
+                : run.phase === "tool"
                   ? "Tool execution failed; inspect effects before retry."
                   : "Session storage failed.",
               true,
             );
-      stopReason = safe.code;
-      snapshot = {
-        ...snapshot,
+      run.stopReason = safe.code;
+      run.snapshot = {
+        ...run.snapshot,
         messages: closeCalls(
-          snapshot.messages,
+          run.snapshot.messages,
           safe.code === "cancelled"
             ? "execution cancelled; effects may be uncertain; inspect before retry"
             : "execution failed; effects may be uncertain; inspect before retry",
@@ -1686,7 +1691,7 @@ export const createAgentRuntime = (
       return await finish(safe.code === "cancelled" ? "cancelled" : "failed");
     } finally {
       closeSteering();
-      acceptingTitle = false;
+      run.acceptingTitle = false;
       // Cleanup still joins children if terminal persistence or a hook throws.
       try {
         try {
