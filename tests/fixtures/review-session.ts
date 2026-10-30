@@ -1,7 +1,12 @@
 import { createDiffPatch } from "../../src/shared/diff";
-import { sessionSnapshotSchema, type SessionSnapshot } from "../../src/shared/schemas";
+import {
+  type SessionSnapshot,
+  sessionSnapshotSchema,
+} from "../../src/shared/schemas";
 
-export function reviewSession(overrides: Partial<SessionSnapshot> = {}): SessionSnapshot {
+export function reviewSession(
+  overrides: Partial<SessionSnapshot> = {},
+): SessionSnapshot {
   return sessionSnapshotSchema.parse({
     version: 1,
     id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
@@ -13,7 +18,13 @@ export function reviewSession(overrides: Partial<SessionSnapshot> = {}): Session
     status: "completed",
     messages: [],
     events: [],
-    changes: [{ path: "src/example.ts", kind: "modified", patch: createDiffPatch("old\n", "new\n") }],
+    changes: [
+      {
+        path: "src/example.ts",
+        kind: "modified",
+        patch: createDiffPatch("old\n", "new\n"),
+      },
+    ],
     ...overrides,
   });
 }

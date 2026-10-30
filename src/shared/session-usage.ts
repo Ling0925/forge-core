@@ -146,19 +146,24 @@ function stateFromSeed(seed: SessionUsageState): UsageState {
         ? undefined
         : { key: seed.request.key, startedAt: seed.request.startedAt },
     runHasRequests: seed.runHasRequests,
-    cache: seed.cacheState ? cacheUsageStateSchema.parse(seed.cacheState) : {
-      ...emptyCacheUsage(),
-      inputTokens: seed.cacheRead <= seed.cacheInput ? seed.cacheInput : 0,
-      readTokens: seed.cacheRead <= seed.cacheInput ? seed.cacheRead : 0,
-      reports: seed.cacheRead <= seed.cacheInput ? seed.cacheReports : 0,
-      requests: seed.requests,
-      latestRate: seed.latestCache !== undefined && seed.latestCache <= 1 ? seed.latestCache : undefined,
-      // Old prefixes did not retain missing-attempt evidence. Do not certify them.
-      partial: seed.partial || seed.requests > 0 || seed.runHasRequests,
-      runReports: seed.pendingReports,
-      runPromptTokens: seed.pending.promptTokens,
-      runSuccesses: seed.pendingReports,
-    },
+    cache: seed.cacheState
+      ? cacheUsageStateSchema.parse(seed.cacheState)
+      : {
+          ...emptyCacheUsage(),
+          inputTokens: seed.cacheRead <= seed.cacheInput ? seed.cacheInput : 0,
+          readTokens: seed.cacheRead <= seed.cacheInput ? seed.cacheRead : 0,
+          reports: seed.cacheRead <= seed.cacheInput ? seed.cacheReports : 0,
+          requests: seed.requests,
+          latestRate:
+            seed.latestCache !== undefined && seed.latestCache <= 1
+              ? seed.latestCache
+              : undefined,
+          // Old prefixes did not retain missing-attempt evidence. Do not certify them.
+          partial: seed.partial || seed.requests > 0 || seed.runHasRequests,
+          runReports: seed.pendingReports,
+          runPromptTokens: seed.pending.promptTokens,
+          runSuccesses: seed.pendingReports,
+        },
     partial: seed.partial,
     total: { ...seed.total },
     pending: { ...seed.pending },
@@ -254,7 +259,10 @@ function accumulateSpeed(state: UsageState, event: AgentEvent) {
   const output = selection.usage?.completionTokens;
   // Match the numerator and denominator to the same measured requests. Missing
   // usage/timing is unknown, not zero, and run wall time is never a substitute.
-  if (output !== undefined && outputTokensPerSecond(output, duration) !== undefined) {
+  if (
+    output !== undefined &&
+    outputTokensPerSecond(output, duration) !== undefined
+  ) {
     state.speedTokens += output;
     state.speedDurationMs += duration;
   } else {
@@ -309,7 +317,10 @@ function summarize(state: UsageState) {
     speed: {
       outputTokens: state.speedTokens,
       durationMs: state.speedDurationMs,
-      tokensPerSecond: outputTokensPerSecond(state.speedTokens, state.speedDurationMs),
+      tokensPerSecond: outputTokensPerSecond(
+        state.speedTokens,
+        state.speedDurationMs,
+      ),
       partial: state.speedPartial,
       requestStartedAt: state.request?.startedAt,
     },

@@ -1,5 +1,9 @@
 import { describe, expect, it, vi } from "vitest";
-import { autoTitle, claimAutoTitle, cleanTitle } from "../../src/core/session-title";
+import {
+  autoTitle,
+  claimAutoTitle,
+  cleanTitle,
+} from "../../src/core/session-title";
 import type { ModelProvider, SessionStore } from "../../src/shared/contracts";
 import { sessionSnapshotSchema } from "../../src/shared/schemas";
 function fixture() {
@@ -42,7 +46,11 @@ function fixture() {
       signal: new AbortController().signal,
       secrets: ["private-key"],
     });
-    if (title && current.titleSource === "auto" && current.title === claimed.title)
+    if (
+      title &&
+      current.titleSource === "auto" &&
+      current.title === claimed.title
+    )
       await store.save({ ...current, title });
   };
   return { store, provider, run, get: () => current };
@@ -70,11 +78,24 @@ describe("automatic title metadata", () => {
   });
   it("persists the first-message fallback before an unresolved title request", async () => {
     const f = fixture();
-    let resolve!: (value: Awaited<ReturnType<ModelProvider["complete"]>>) => void;
-    f.provider.complete = vi.fn<ModelProvider["complete"]>(() => new Promise(done => { resolve = done; }));
+    let resolve!: (
+      value: Awaited<ReturnType<ModelProvider["complete"]>>,
+    ) => void;
+    f.provider.complete = vi.fn<ModelProvider["complete"]>(
+      () =>
+        new Promise((done) => {
+          resolve = done;
+        }),
+    );
     const work = f.run();
-    await vi.waitFor(() => expect(f.provider.complete).toHaveBeenCalledTimes(1));
-    expect(f.get()).toMatchObject({ title: "修复登录问题", status: "running", autoTitleAttempted: true });
+    await vi.waitFor(() =>
+      expect(f.provider.complete).toHaveBeenCalledTimes(1),
+    );
+    expect(f.get()).toMatchObject({
+      title: "修复登录问题",
+      status: "running",
+      autoTitleAttempted: true,
+    });
     expect(f.get().messages).toHaveLength(1);
     resolve({ message: { role: "assistant", content: "登录修复" } });
     await work;
@@ -113,32 +134,52 @@ describe("automatic title metadata", () => {
     expect(f.provider.complete).toHaveBeenCalledTimes(1);
   });
   it.each([
-    { name: "accepts a title response just before the 30-second deadline", responds: true },
-    { name: "falls back after 30 seconds even if the provider ignores cancellation", responds: false },
+    {
+      name: "accepts a title response just before the 30-second deadline",
+      responds: true,
+    },
+    {
+      name: "falls back after 30 seconds even if the provider ignores cancellation",
+      responds: false,
+    },
   ])("$name", async ({ responds }) => {
     vi.useFakeTimers();
     // Node's native AbortSignal.timeout does not use Vitest's fake timers.
-    const timeout = vi.spyOn(AbortSignal, "timeout").mockImplementation(ms => {
-      const controller = new AbortController();
-      setTimeout(() => controller.abort(new DOMException("Timed out", "TimeoutError")), ms);
-      return controller.signal;
-    });
+    const timeout = vi
+      .spyOn(AbortSignal, "timeout")
+      .mockImplementation((ms) => {
+        const controller = new AbortController();
+        setTimeout(
+          () => controller.abort(new DOMException("Timed out", "TimeoutError")),
+          ms,
+        );
+        return controller.signal;
+      });
     try {
       const f = fixture();
-      let resolve!: (value: Awaited<ReturnType<ModelProvider["complete"]>>) => void;
+      let resolve!: (
+        value: Awaited<ReturnType<ModelProvider["complete"]>>,
+      ) => void;
       let requestSignal: AbortSignal | undefined;
-      f.provider.complete = vi.fn<ModelProvider["complete"]>((_messages, _tools, options) => {
-        requestSignal = options.signal;
-        return new Promise(done => { resolve = done; });
-      });
+      f.provider.complete = vi.fn<ModelProvider["complete"]>(
+        (_messages, _tools, options) => {
+          requestSignal = options.signal;
+          return new Promise((done) => {
+            resolve = done;
+          });
+        },
+      );
       let settled = false;
-      const done = f.run().then(() => { settled = true; });
+      const done = f.run().then(() => {
+        settled = true;
+      });
       await vi.advanceTimersByTimeAsync(29_999);
       expect(timeout).toHaveBeenCalledWith(30_000);
       expect(requestSignal?.aborted).toBe(false);
       expect(settled).toBe(false);
       expect(f.get().title).toBe("修复登录问题");
-      if (responds) resolve({ message: { role: "assistant", content: "登录修复" } });
+      if (responds)
+        resolve({ message: { role: "assistant", content: "登录修复" } });
       else await vi.advanceTimersByTimeAsync(1);
       await done;
       expect(requestSignal?.aborted).toBe(!responds);

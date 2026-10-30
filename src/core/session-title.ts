@@ -44,10 +44,14 @@ export function claimAutoTitle(
     snapshot.forkedFrom
   )
     return snapshot;
-  const user = snapshot.messages.find((m) => m.role === "user" && !m.origin)?.content ?? "";
+  const user =
+    snapshot.messages.find((m) => m.role === "user" && !m.origin)?.content ??
+    "";
   if (!user.trim()) return snapshot;
-  const title = cleanTitle(user.trim().split(/\r?\n/)[0] ?? "", secrets) ||
-    cleanTitle(user, secrets) || "New session";
+  const title =
+    cleanTitle(user.trim().split(/\r?\n/)[0] ?? "", secrets) ||
+    cleanTitle(user, secrets) ||
+    "New session";
   return { ...snapshot, title, titleSource: "auto", autoTitleAttempted: true };
 }
 
@@ -60,7 +64,9 @@ export async function autoTitle(options: {
   readonly beginUsage?: () => (usage: Usage | undefined) => void;
 }): Promise<string | undefined> {
   const { snapshot, provider, signal, secrets } = options;
-  const user = snapshot.messages.find((m) => m.role === "user" && !m.origin)?.content ?? "";
+  const user =
+    snapshot.messages.find((m) => m.role === "user" && !m.origin)?.content ??
+    "";
   if (signal.aborted || !user.trim()) return;
   let observed = false;
   let observation: ((usage: Usage | undefined) => void) | undefined;

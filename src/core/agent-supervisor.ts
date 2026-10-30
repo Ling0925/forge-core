@@ -1,3 +1,4 @@
+import type { AdvisorCoordinator } from "../shared/agent-coordination";
 import type {
   AgentRuntime,
   AgentRuntimeDependencies,
@@ -17,10 +18,9 @@ import {
   boundedReportPage,
   childReport,
 } from "./agent-operations";
+import { createAgentProgress } from "./agent-progress";
 import type { ApprovalQueue } from "./approval-queue";
 import { withCancellation } from "./cancellation";
-import { createAgentProgress } from "./agent-progress";
-import type { AdvisorCoordinator } from "../shared/agent-coordination";
 
 type AgentUpdate = Omit<
   Extract<AgentEvent, { type: "agent_update" }>,
@@ -56,13 +56,19 @@ export function createAgentSupervisor(options: SupervisorOptions) {
     control,
   ) => {
     let tools: typeof deps.tools | undefined;
-    const childProgress = createAgentProgress(input.sessionId, body => options.emitProgress?.(body));
+    const childProgress = createAgentProgress(input.sessionId, (body) =>
+      options.emitProgress?.(body),
+    );
     try {
       deps.rootBudget?.checkAdmission();
       if (childSignal.aborted) throw new Error("Child construction cancelled.");
       const workspace = (await deps.store.get(input.sessionId)).workspace;
       deps.rootBudget?.checkAdmission();
-      const context = await deps.childContextFactory?.(workspace, input, childSignal);
+      const context = await deps.childContextFactory?.(
+        workspace,
+        input,
+        childSignal,
+      );
       tools = context?.tools;
       deps.rootBudget?.checkAdmission();
       if (childSignal.aborted) throw new Error("Child construction cancelled.");
@@ -75,12 +81,19 @@ export function createAgentSupervisor(options: SupervisorOptions) {
         .createRuntime({
           ...deps,
           tools,
-          ...(options.advisor ? { advisorParent: options.advisor.forChild(input.sessionId) } : {}),
+          ...(options.advisor
+            ? { advisorParent: options.advisor.forChild(input.sessionId) }
+            : {}),
           ...(context ? { projectInstructions: context.instructions } : {}),
           ...(context?.provider ? { provider: context.provider } : {}),
         })
         .run(
-          { ...input, ...(context?.providerSourceId ? { providerSourceId: context.providerSourceId } : {}) },
+          {
+            ...input,
+            ...(context?.providerSourceId
+              ? { providerSourceId: context.providerSourceId }
+              : {}),
+          },
           (childEvent) => {
             childProgress(childEvent);
             if (childEvent.type === "run_finished") {
@@ -176,7 +189,13 @@ export function createAgentSupervisor(options: SupervisorOptions) {
     });
   return {
     /** Mutable operations are exposed only to existing native agent operations. */
-    native: { children, runChild, approveChild, onSettled, ...(options.advisor ? { advisor: options.advisor } : {}) },
+    native: {
+      children,
+      runChild,
+      approveChild,
+      onSettled,
+      ...(options.advisor ? { advisor: options.advisor } : {}),
+    },
     get size(): number {
       return children.size;
     },
@@ -184,21 +203,29 @@ export function createAgentSupervisor(options: SupervisorOptions) {
       return [...children.values()];
     },
     async joinPending(): Promise<
-      { reports: string; advisorPending?: boolean; commitDelivery(): void } | undefined
+      | { reports: string; advisorPending?: boolean; commitDelivery(): void }
+      | undefined
     > {
-      const pending = [...children.entries()].filter(
-        ([, child]) => !child.delivered,
-      ).slice(0, MAX_AGENT_REPORTS);
+      const pending = [...children.entries()]
+        .filter(([, child]) => !child.delivered)
+        .slice(0, MAX_AGENT_REPORTS);
       if (!pending.length) return undefined;
       let joined = false;
-      const joining = Promise.allSettled(pending.map(([, child]) => child.work)).then(() => { joined = true; });
+      const joining = Promise.allSettled(
+        pending.map(([, child]) => child.work),
+      ).then(() => {
+        joined = true;
+      });
       if (options.advisor) {
         do {
           await options.advisor.wait(joining, signal);
-          if (options.advisor.pending().length) return { reports: "", advisorPending: true, commitDelivery() {} };
+          if (options.advisor.pending().length)
+            return { reports: "", advisorPending: true, commitDelivery() {} };
         } while (!joined);
       } else await joining;
-      const page = boundedReportPage(pending, ([id, child], limit) => childReport(id, child, limit));
+      const page = boundedReportPage(pending, ([id, child], limit) =>
+        childReport(id, child, limit),
+      );
       return {
         reports: page.content,
         // Caller invokes only after its durable report commit succeeds.
@@ -214,7 +241,8 @@ export function createAgentSupervisor(options: SupervisorOptions) {
       if (cancel)
         // Completed children may have explicitly transferred async tool work to
         // the host. Normal parent cleanup is not cancellation of that work.
-        for (const child of children.values()) if (child.active) child.controller.abort();
+        for (const child of children.values())
+          if (child.active) child.controller.abort();
       const joined = await Promise.allSettled(
         [...children.values()].map((child) => child.work),
       );

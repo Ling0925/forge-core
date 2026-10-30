@@ -315,7 +315,11 @@ it("emits Responses previews keyed by tool sequence and completes a missing name
     );
     response.end(
       wire("response.completed", {
-        response: { id: "resp_1", status: "completed", output: [reason, finished] },
+        response: {
+          id: "resp_1",
+          status: "completed",
+          output: [reason, finished],
+        },
       }) + "data: [DONE]\n\n",
     );
   }, "responses");
@@ -366,49 +370,109 @@ it("emits Responses previews keyed by tool sequence and completes a missing name
   });
 });
 
-it.each(["function_call", "reasoning"])("releases deferred Responses previews when an earlier %s arrives before completion", async kind => {
-  const gate = deferred();
-  const later = { type: "function_call", id: "fc_1", call_id: "call_1", name: "lookup", arguments: args, status: "completed" };
-  const earlier = kind === "function_call"
-    ? { ...later, id: "fc_0", call_id: "call_0", name: "read_file", arguments: '{"path":"a"}' }
-    : { type: "reasoning", id: "rs_0", summary: [] };
-  const expected = [
-    ...(kind === "function_call" ? [{ index: 0, name: "read_file", argumentsChars: '{"path":"a"}'.length }] : []),
-    { index: kind === "function_call" ? 1 : 0, name: "lookup", argumentsChars: args.length },
-  ];
-  const provider = await fixture(async (request, response) => {
-    await drain(request);
-    sse(response);
-    response.write(
-      wire("response.output_item.added", { output_index: 1, item: { type: later.type, id: later.id, call_id: later.call_id, arguments: "", status: "in_progress" } }) +
-      wire("response.output_item.done", { output_index: 1, item: later }) +
-      wire("response.output_item.added", { output_index: 0, item: { ...earlier, status: "in_progress" } }),
+it.each(["function_call", "reasoning"])(
+  "releases deferred Responses previews when an earlier %s arrives before completion",
+  async (kind) => {
+    const gate = deferred();
+    const later = {
+      type: "function_call",
+      id: "fc_1",
+      call_id: "call_1",
+      name: "lookup",
+      arguments: args,
+      status: "completed",
+    };
+    const earlier =
+      kind === "function_call"
+        ? {
+            ...later,
+            id: "fc_0",
+            call_id: "call_0",
+            name: "read_file",
+            arguments: '{"path":"a"}',
+          }
+        : { type: "reasoning", id: "rs_0", summary: [] };
+    const expected = [
+      ...(kind === "function_call"
+        ? [
+            {
+              index: 0,
+              name: "read_file",
+              argumentsChars: '{"path":"a"}'.length,
+            },
+          ]
+        : []),
+      {
+        index: kind === "function_call" ? 1 : 0,
+        name: "lookup",
+        argumentsChars: args.length,
+      },
+    ];
+    const provider = await fixture(async (request, response) => {
+      await drain(request);
+      sse(response);
+      response.write(
+        wire("response.output_item.added", {
+          output_index: 1,
+          item: {
+            type: later.type,
+            id: later.id,
+            call_id: later.call_id,
+            arguments: "",
+            status: "in_progress",
+          },
+        }) +
+          wire("response.output_item.done", { output_index: 1, item: later }) +
+          wire("response.output_item.added", {
+            output_index: 0,
+            item: { ...earlier, status: "in_progress" },
+          }),
+      );
+      await gate.promise;
+      response.end(
+        wire("response.output_item.done", { output_index: 0, item: earlier }) +
+          wire("response.completed", {
+            response: {
+              id: "resp_1",
+              status: "completed",
+              output: [earlier, later],
+            },
+          }),
+      );
+    }, "responses");
+    const previews: ToolCallPreview[] = [];
+    const task = complete(provider, (preview) => previews.push(preview));
+    let settled = false;
+    void task.then(
+      () => {
+        settled = true;
+      },
+      () => {
+        settled = true;
+      },
     );
-    await gate.promise;
-    response.end(
-      wire("response.output_item.done", { output_index: 0, item: earlier }) +
-      wire("response.completed", { response: { id: "resp_1", status: "completed", output: [earlier, later] } }),
-    );
-  }, "responses");
-  const previews: ToolCallPreview[] = [];
-  const task = complete(provider, preview => previews.push(preview));
-  let settled = false;
-  void task.then(() => { settled = true; }, () => { settled = true; });
-  try {
-    await waitFor(() => previews.length >= expected.length, "deferred previews did not resume while the stream was paused");
-    expect(settled).toBe(false);
-    expect(previews).toEqual(expected);
-    gate.resolve();
-    const result = await task;
-    expect(result.message.tool_calls?.map(call => call.function.name)).toEqual(expected.map(preview => preview.name));
-    expect(result.message.providerState?.output).toEqual([earlier, later]);
-    for (const preview of previews) expect(expected[preview.index]?.name).toBe(preview.name);
-    expect(JSON.stringify(previews)).not.toContain("query");
-  } finally {
-    gate.resolve();
-    await task;
-  }
-});
+    try {
+      await waitFor(
+        () => previews.length >= expected.length,
+        "deferred previews did not resume while the stream was paused",
+      );
+      expect(settled).toBe(false);
+      expect(previews).toEqual(expected);
+      gate.resolve();
+      const result = await task;
+      expect(
+        result.message.tool_calls?.map((call) => call.function.name),
+      ).toEqual(expected.map((preview) => preview.name));
+      expect(result.message.providerState?.output).toEqual([earlier, later]);
+      for (const preview of previews)
+        expect(expected[preview.index]?.name).toBe(preview.name);
+      expect(JSON.stringify(previews)).not.toContain("query");
+    } finally {
+      gate.resolve();
+      await task;
+    }
+  },
+);
 
 it("estimates write_file lines live without leaking Chat Completions arguments", async () => {
   const gate = deferred();

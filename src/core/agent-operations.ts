@@ -1,11 +1,31 @@
 import { posix } from "node:path";
-import { agentProfileIdSchema, agentProfileSchema } from "../shared/agent-profiles";
-import { advisorInputSchema, advisorAnswerInputSchema, type AdvisorCoordinator } from "../shared/agent-coordination";
-import { agentProfileSummary } from "./agent-profiles";
 import { z } from "zod";
-import type { AgentRuntimeDependencies, ApprovalHandler, RunControl } from "../shared/contracts";
+import {
+  type AdvisorCoordinator,
+  advisorAnswerInputSchema,
+  advisorInputSchema,
+} from "../shared/agent-coordination";
+import {
+  agentProfileIdSchema,
+  agentProfileSchema,
+} from "../shared/agent-profiles";
+import type {
+  AgentRuntimeDependencies,
+  ApprovalHandler,
+  RunControl,
+} from "../shared/contracts";
 import { ForgeError } from "../shared/errors";
-import { providerSourceIdSchema, sessionIdSchema, settingsFields, type Permission, type RunInput, type SessionSnapshot, type ToolResult, type Usage } from "../shared/schemas";
+import {
+  type Permission,
+  type RunInput,
+  type SessionSnapshot,
+  type ToolResult,
+  type Usage,
+  providerSourceIdSchema,
+  sessionIdSchema,
+  settingsFields,
+} from "../shared/schemas";
+import { agentProfileSummary } from "./agent-profiles";
 
 export const MAX_ACTIVE_AGENTS = 4;
 // A report page bound, not a lifetime limit on child creation.
@@ -39,101 +59,214 @@ export interface AgentEnvironment {
   children: Map<string, ChildOperation>;
   advisor?: AdvisorCoordinator;
   toolCallId?: string;
-  runChild: (input: RunInput, approve: ApprovalHandler, signal: AbortSignal, control?: RunControl) => Promise<SessionSnapshot>;
+  runChild: (
+    input: RunInput,
+    approve: ApprovalHandler,
+    signal: AbortSignal,
+    control?: RunControl,
+  ) => Promise<SessionSnapshot>;
   approveChild: (id: SessionSnapshot["id"]) => ApprovalHandler;
-  saveResolution?: (id: string, childUpdatedAt: string, resolution: string) => Promise<void>;
+  saveResolution?: (
+    id: string,
+    childUpdatedAt: string,
+    resolution: string,
+  ) => Promise<void>;
   onSettled?: (id: SessionSnapshot["id"], child: ChildOperation) => void;
 }
 
-const pathSchema = z.string().trim().min(1).max(512).refine(value =>
-  !value.startsWith("/") && !/[\\:*?\[\]\x00-\x1f]/.test(value) && !value.split("/").includes(".."),
-  "Expected a literal workspace-relative path, not a glob",
-).transform(value => posix.normalize(value).replace(/\/$/, ""));
-const spawnArgs = z.object({
-  task: z.string().trim().min(1).max(16384),
-  ownership: z.string().trim().min(1).max(4096).optional(),
-  model: settingsFields.model.optional().describe("Exact model ID, unchanged. Omit to inherit the parent selection. Explicit IDs resolve across all configured sources."),
-  providerSourceId: providerSourceIdSchema.optional().describe("Exact source ID from list_models. Required when the same model belongs to multiple sources; never inferred from a model prefix."),
-  profileId: agentProfileIdSchema.optional(),
-  profileRevision: z.number().int().positive().optional(),
-  writePaths: z.array(pathSchema).max(32).optional(),
-  isolation: z.enum(["shared", "worktree"]).optional().describe("shared keeps the parent workspace; worktree uses a separate detached checkout of committed HEAD and retains its changes for inspection/merge."),
-}).strict();
-const listArgs = z.object({
-  offset: z.number().int().min(0).max(Number.MAX_SAFE_INTEGER).default(0),
-  limit: z.number().int().min(1).max(50).default(20),
-  currentRun: z.boolean().default(false),
-}).strict();
-const waitArgs = z.object({
-  ids: z.array(sessionIdSchema).max(MAX_AGENT_REPORTS).optional(),
-  mode: z.enum(["all", "any"]).default("all"),
-  timeout_ms: z.number().int().min(0).max(1800000).default(600000),
-}).strict();
+const pathSchema = z
+  .string()
+  .trim()
+  .min(1)
+  .max(512)
+  .refine(
+    (value) =>
+      !value.startsWith("/") &&
+      !/[\\:*?\[\]\x00-\x1f]/.test(value) &&
+      !value.split("/").includes(".."),
+    "Expected a literal workspace-relative path, not a glob",
+  )
+  .transform((value) => posix.normalize(value).replace(/\/$/, ""));
+const spawnArgs = z
+  .object({
+    task: z.string().trim().min(1).max(16384),
+    ownership: z.string().trim().min(1).max(4096).optional(),
+    model: settingsFields.model
+      .optional()
+      .describe(
+        "Exact model ID, unchanged. Omit to inherit the parent selection. Explicit IDs resolve across all configured sources.",
+      ),
+    providerSourceId: providerSourceIdSchema
+      .optional()
+      .describe(
+        "Exact source ID from list_models. Required when the same model belongs to multiple sources; never inferred from a model prefix.",
+      ),
+    profileId: agentProfileIdSchema.optional(),
+    profileRevision: z.number().int().positive().optional(),
+    writePaths: z.array(pathSchema).max(32).optional(),
+    isolation: z
+      .enum(["shared", "worktree"])
+      .optional()
+      .describe(
+        "shared keeps the parent workspace; worktree uses a separate detached checkout of committed HEAD and retains its changes for inspection/merge.",
+      ),
+  })
+  .strict();
+const listArgs = z
+  .object({
+    offset: z.number().int().min(0).max(Number.MAX_SAFE_INTEGER).default(0),
+    limit: z.number().int().min(1).max(50).default(20),
+    currentRun: z.boolean().default(false),
+  })
+  .strict();
+const waitArgs = z
+  .object({
+    ids: z.array(sessionIdSchema).max(MAX_AGENT_REPORTS).optional(),
+    mode: z.enum(["all", "any"]).default("all"),
+    timeout_ms: z.number().int().min(0).max(1800000).default(600000),
+  })
+  .strict();
 const idArgs = z.object({ id: sessionIdSchema }).strict();
-const resultArgs = idArgs.extend({
-  offset: z.number().int().min(0).max(Number.MAX_SAFE_INTEGER).default(0),
-  limit: z.number().int().min(1).max(8192).default(4096),
-}).strict();
-const messageArgs = idArgs.extend({ message: z.string().trim().min(1).max(16384) }).strict();
-const resolveArgs = idArgs.extend({ resolution: z.string().trim().min(1).max(4096) }).strict();
+const resultArgs = idArgs
+  .extend({
+    offset: z.number().int().min(0).max(Number.MAX_SAFE_INTEGER).default(0),
+    limit: z.number().int().min(1).max(8192).default(4096),
+  })
+  .strict();
+const messageArgs = idArgs
+  .extend({ message: z.string().trim().min(1).max(16384) })
+  .strict();
+const resolveArgs = idArgs
+  .extend({ resolution: z.string().trim().min(1).max(4096) })
+  .strict();
 
-const profileListArgs = z.object({
-  query: z.string().max(256).optional(),
-  offset: z.number().int().min(0).max(Number.MAX_SAFE_INTEGER).default(0),
-  limit: z.number().int().min(1).max(50).default(20),
-}).strict();
+const profileListArgs = z
+  .object({
+    query: z.string().max(256).optional(),
+    offset: z.number().int().min(0).max(Number.MAX_SAFE_INTEGER).default(0),
+    limit: z.number().int().min(1).max(50).default(20),
+  })
+  .strict();
 export const agentArgumentSchemas = {
-  list_agent_profiles: profileListArgs, advisor: advisorInputSchema, answer_advisor: advisorAnswerInputSchema,
-  spawn_agent: spawnArgs, list_agents: listArgs, wait_agents: waitArgs,
-  cancel_agent: idArgs, get_agent_result: resultArgs,
-  send_agent_message: messageArgs, resolve_agent: resolveArgs,
+  list_agent_profiles: profileListArgs,
+  advisor: advisorInputSchema,
+  answer_advisor: advisorAnswerInputSchema,
+  spawn_agent: spawnArgs,
+  list_agents: listArgs,
+  wait_agents: waitArgs,
+  cancel_agent: idArgs,
+  get_agent_result: resultArgs,
+  send_agent_message: messageArgs,
+  resolve_agent: resolveArgs,
 } as const;
 
 export function agentResultText(snapshot: SessionSnapshot): string {
-  return snapshot.messages.findLast(message => message.role === "assistant" && !!message.content)?.content ?? "No result";
+  return (
+    snapshot.messages.findLast(
+      (message) => message.role === "assistant" && !!message.content,
+    )?.content ?? "No result"
+  );
 }
 export function agentSummary(snapshot: SessionSnapshot, limit = 4096) {
   const text = agentResultText(snapshot);
-  const terminal = snapshot.events.findLast(event => event.type === "run_finished");
+  const terminal = snapshot.events.findLast(
+    (event) => event.type === "run_finished",
+  );
   return {
-    id: snapshot.id, status: snapshot.status, model: snapshot.model,
-    ...(snapshot.providerSourceId ? { providerSourceId: snapshot.providerSourceId } : {}),
-    workspace: snapshot.workspace, ...(snapshot.agentWorktree ? { worktree: snapshot.agentWorktree } : {}),
-    summary: text.slice(0, limit), totalChars: text.length, truncated: text.length > limit,
+    id: snapshot.id,
+    status: snapshot.status,
+    model: snapshot.model,
+    ...(snapshot.providerSourceId
+      ? { providerSourceId: snapshot.providerSourceId }
+      : {}),
+    workspace: snapshot.workspace,
+    ...(snapshot.agentWorktree ? { worktree: snapshot.agentWorktree } : {}),
+    summary: text.slice(0, limit),
+    totalChars: text.length,
+    truncated: text.length > limit,
     nextOffset: text.length > limit ? limit : null,
-    errors: snapshot.events.filter(event => event.type === "error").slice(-1).map(event => ({
-      code: event.error.code, message: event.error.message.slice(0, 256),
-    })),
-    ...(terminal?.type === "run_finished" && terminal.budget ? { budget: {
-      ...terminal.budget, sessions: terminal.budget.sessions.filter(item => item.sessionId === snapshot.id),
-    } } : {}),
-    ...(terminal?.type === "run_finished" && terminal.usage ? { usage: terminal.usage, usageComplete: terminal.usageComplete ?? false } : {}),
+    errors: snapshot.events
+      .filter((event) => event.type === "error")
+      .slice(-1)
+      .map((event) => ({
+        code: event.error.code,
+        message: event.error.message.slice(0, 256),
+      })),
+    ...(terminal?.type === "run_finished" && terminal.budget
+      ? {
+          budget: {
+            ...terminal.budget,
+            sessions: terminal.budget.sessions.filter(
+              (item) => item.sessionId === snapshot.id,
+            ),
+          },
+        }
+      : {}),
+    ...(terminal?.type === "run_finished" && terminal.usage
+      ? {
+          usage: terminal.usage,
+          usageComplete: terminal.usageComplete ?? false,
+        }
+      : {}),
   };
 }
 export function childReport(id: string, child: ChildOperation, limit = 4096) {
   return {
-    ...(child.result ? agentSummary(child.result, limit) : { id, model: child.model, status: child.active ? "running" : "failed", summary: "No terminal snapshot", truncated: false }),
-    ...(child.executionError ? { status: "failed", error: "Child execution or cleanup failed; inspect effects before proceeding." } : {}),
-    active: child.active, currentRun: true, handled: !!child.resolution,
-    ...(child.usage ? { usage: child.usage, usageComplete: child.usageComplete ?? false } : {}),
+    ...(child.result
+      ? agentSummary(child.result, limit)
+      : {
+          id,
+          model: child.model,
+          status: child.active ? "running" : "failed",
+          summary: "No terminal snapshot",
+          truncated: false,
+        }),
+    ...(child.executionError
+      ? {
+          status: "failed",
+          error:
+            "Child execution or cleanup failed; inspect effects before proceeding.",
+        }
+      : {}),
+    active: child.active,
+    currentRun: true,
+    handled: !!child.resolution,
+    ...(child.usage
+      ? { usage: child.usage, usageComplete: child.usageComplete ?? false }
+      : {}),
   };
 }
 /** Reduce text per item, never slice serialized JSON or silently drop results. */
-export function boundedReports<T>(items: readonly T[], report: (item: T, limit: number) => unknown): string {
+export function boundedReports<T>(
+  items: readonly T[],
+  report: (item: T, limit: number) => unknown,
+): string {
   for (let limit = 4096; ; limit = Math.floor(limit / 2)) {
-    const content = JSON.stringify(items.map(item => report(item, limit)));
+    const content = JSON.stringify(items.map((item) => report(item, limit)));
     if (Buffer.byteLength(content, "utf8") <= RESULT_BYTES) return content;
-    if (!limit) throw new ForgeError("budget", "Agent metadata exceeds the result budget; request fewer IDs.");
+    if (!limit)
+      throw new ForgeError(
+        "budget",
+        "Agent metadata exceeds the result budget; request fewer IDs.",
+      );
   }
 }
 /** Automatic delivery may shrink a page, but never marks undisplayed IDs delivered. */
-export function boundedReportPage<T>(items: readonly T[], report: (item: T, limit: number) => unknown) {
+export function boundedReportPage<T>(
+  items: readonly T[],
+  report: (item: T, limit: number) => unknown,
+) {
   let page = items.slice(0, MAX_AGENT_REPORTS);
   for (;;) {
     try {
       return { items: page, content: boundedReports(page, report) };
     } catch (error) {
-      if (!(error instanceof ForgeError) || error.code !== "budget" || page.length <= 1) throw error;
+      if (
+        !(error instanceof ForgeError) ||
+        error.code !== "budget" ||
+        page.length <= 1
+      )
+        throw error;
       // Only pure serialization is retried, never child work or tool effects.
       page = page.slice(0, Math.ceil(page.length / 2));
     }
@@ -142,26 +275,52 @@ export function boundedReportPage<T>(items: readonly T[], report: (item: T, limi
 function output(value: unknown): ToolResult {
   const content = JSON.stringify(value);
   if (Buffer.byteLength(content, "utf8") > RESULT_BYTES)
-    throw new ForgeError("budget", "Agent result exceeds the output budget; request a smaller page.");
+    throw new ForgeError(
+      "budget",
+      "Agent result exceeds the output budget; request a smaller page.",
+    );
   return { content, isError: false };
 }
 function check(signal: AbortSignal): void {
-  if (signal.aborted) throw new ForgeError("cancelled", "Agent operation cancelled.");
+  if (signal.aborted)
+    throw new ForgeError("cancelled", "Agent operation cancelled.");
 }
 const overlaps = (a: string, b: string): boolean =>
-  a === "." || b === "." || a === b || a.startsWith(`${b}/`) || b.startsWith(`${a}/`);
+  a === "." ||
+  b === "." ||
+  a === b ||
+  a.startsWith(`${b}/`) ||
+  b.startsWith(`${a}/`);
 const handled = (env: AgentEnvironment, child: SessionSnapshot): boolean =>
-  !!env.snapshot.agentResolutions?.some(item => item.id === child.id && item.childUpdatedAt === child.updatedAt);
-async function ownedSnapshot(env: AgentEnvironment, id: string): Promise<SessionSnapshot> {
+  !!env.snapshot.agentResolutions?.some(
+    (item) => item.id === child.id && item.childUpdatedAt === child.updatedAt,
+  );
+async function ownedSnapshot(
+  env: AgentEnvironment,
+  id: string,
+): Promise<SessionSnapshot> {
   // Authorize via relationship before loading a transcript. Never expose unrelated session data.
-  const owned = (await env.deps.store.list()).some(item => item.id === id && item.parentSessionId === env.input.sessionId);
-  if (!owned) throw new ForgeError("invalid_input", "Unknown child of this parent session.");
+  const owned = (await env.deps.store.list()).some(
+    (item) => item.id === id && item.parentSessionId === env.input.sessionId,
+  );
+  if (!owned)
+    throw new ForgeError(
+      "invalid_input",
+      "Unknown child of this parent session.",
+    );
   const child = await env.deps.store.get(sessionIdSchema.parse(id));
   if (child.parentSessionId !== env.input.sessionId)
-    throw new ForgeError("invalid_input", "Unknown child of this parent session.");
+    throw new ForgeError(
+      "invalid_input",
+      "Unknown child of this parent session.",
+    );
   return child;
 }
-async function pauseUntil(work: Promise<unknown>, signal: AbortSignal, timeout: number): Promise<void> {
+async function pauseUntil(
+  work: Promise<unknown>,
+  signal: AbortSignal,
+  timeout: number,
+): Promise<void> {
   check(signal);
   if (timeout === 0) return;
   let timer: ReturnType<typeof setTimeout> | undefined;
@@ -171,7 +330,8 @@ async function pauseUntil(work: Promise<unknown>, signal: AbortSignal, timeout: 
       work,
       new Promise<void>((resolve, reject) => {
         timer = setTimeout(resolve, timeout);
-        abort = () => reject(new ForgeError("cancelled", "Agent wait cancelled."));
+        abort = () =>
+          reject(new ForgeError("cancelled", "Agent wait cancelled."));
         signal.addEventListener("abort", abort, { once: true });
         if (signal.aborted) abort();
       }),
@@ -183,196 +343,459 @@ async function pauseUntil(work: Promise<unknown>, signal: AbortSignal, timeout: 
   check(signal);
 }
 
-export async function executeAgentOperation(name: string, args: Record<string, unknown>, env: AgentEnvironment): Promise<ToolResult> {
+export async function executeAgentOperation(
+  name: string,
+  args: Record<string, unknown>,
+  env: AgentEnvironment,
+): Promise<ToolResult> {
   const { children, deps, snapshot, input } = env;
   check(env.signal);
   if (snapshot.parentSessionId && name !== "advisor")
-    throw new ForgeError("invalid_input", "Only the primary agent can manage child tasks or answer advisor requests.");
+    throw new ForgeError(
+      "invalid_input",
+      "Only the primary agent can manage child tasks or answer advisor requests.",
+    );
   switch (name) {
     case "advisor": {
       if (!snapshot.parentSessionId || !deps.advisorParent || !env.toolCallId)
-        throw new ForgeError("invalid_input", "advisor is only available to a child owned by an active parent run.");
-      const request = await deps.advisorParent.ask(advisorInputSchema.parse(args), env.toolCallId, env.signal);
-      return { content: JSON.stringify(request), isError: request.status !== "answered" };
+        throw new ForgeError(
+          "invalid_input",
+          "advisor is only available to a child owned by an active parent run.",
+        );
+      const request = await deps.advisorParent.ask(
+        advisorInputSchema.parse(args),
+        env.toolCallId,
+        env.signal,
+      );
+      return {
+        content: JSON.stringify(request),
+        isError: request.status !== "answered",
+      };
     }
     case "answer_advisor": {
-      if (!env.advisor) throw new ForgeError("invalid_input", "This run has no advisor coordinator.");
-      const request = await env.advisor.answer(advisorAnswerInputSchema.parse(args));
-      return output({ requestId: request.id, childSessionId: request.childSessionId, status: request.status,
-        ...(request.deliveredAt ? { deliveredAt: request.deliveredAt } : {}) });
+      if (!env.advisor)
+        throw new ForgeError(
+          "invalid_input",
+          "This run has no advisor coordinator.",
+        );
+      const request = await env.advisor.answer(
+        advisorAnswerInputSchema.parse(args),
+      );
+      return output({
+        requestId: request.id,
+        childSessionId: request.childSessionId,
+        status: request.status,
+        ...(request.deliveredAt ? { deliveredAt: request.deliveredAt } : {}),
+      });
     }
     case "list_agent_profiles": {
       const { query, offset, limit } = profileListArgs.parse(args);
-      const catalog = await deps.getAgentProfiles?.() ?? deps.settings.agentProfiles ?? [];
+      const catalog =
+        (await deps.getAgentProfiles?.()) ?? deps.settings.agentProfiles ?? [];
       check(env.signal);
       const needle = query?.toLowerCase();
-      const matching = catalog.filter(profile => profile.enabled && (!needle ||
-        `${profile.id} ${profile.name} ${profile.description} ${profile.whenToUse}`.toLowerCase().includes(needle)));
+      const matching = catalog.filter(
+        (profile) =>
+          profile.enabled &&
+          (!needle ||
+            `${profile.id} ${profile.name} ${profile.description} ${profile.whenToUse}`
+              .toLowerCase()
+              .includes(needle)),
+      );
       const profiles: ReturnType<typeof agentProfileSummary>[] = [];
       for (const profile of matching.slice(offset, offset + limit)) {
         const next = agentProfileSummary(profile);
-        if (Buffer.byteLength(JSON.stringify([...profiles, next]), "utf8") > RESULT_BYTES - 1024) break;
+        if (
+          Buffer.byteLength(JSON.stringify([...profiles, next]), "utf8") >
+          RESULT_BYTES - 1024
+        )
+          break;
         profiles.push(next);
       }
       const end = offset + profiles.length;
-      return output({ profiles, total: matching.length, offset, nextOffset: end < matching.length ? end : null,
-        truncated: end < matching.length });
+      return output({
+        profiles,
+        total: matching.length,
+        offset,
+        nextOffset: end < matching.length ? end : null,
+        truncated: end < matching.length,
+      });
     }
     case "spawn_agent": {
       deps.rootBudget?.checkAdmission();
       const parsed = spawnArgs.parse(args);
       if (parsed.profileRevision !== undefined && !parsed.profileId)
-        throw new ForgeError("invalid_input", "profileRevision requires profileId.");
-      const catalog = parsed.profileId ? await deps.getAgentProfiles?.() ?? deps.settings.agentProfiles ?? [] : [];
-      const found = catalog.find(item => item.id === parsed.profileId);
+        throw new ForgeError(
+          "invalid_input",
+          "profileRevision requires profileId.",
+        );
+      const catalog = parsed.profileId
+        ? ((await deps.getAgentProfiles?.()) ??
+          deps.settings.agentProfiles ??
+          [])
+        : [];
+      const found = catalog.find((item) => item.id === parsed.profileId);
       if (parsed.profileId && (!found || !found.enabled))
-        throw new ForgeError("invalid_input", "Agent profile is missing or disabled. Rediscover profiles; no task was started.");
+        throw new ForgeError(
+          "invalid_input",
+          "Agent profile is missing or disabled. Rediscover profiles; no task was started.",
+        );
       const profile = found ? agentProfileSchema.parse(found) : undefined;
-      if (parsed.profileRevision !== undefined && profile?.revision !== parsed.profileRevision)
-        throw new ForgeError("invalid_input", "Agent profile changed. Rediscover its configuration before starting work.");
-      if (profile?.model.mode === "fixed" && parsed.model !== undefined && parsed.model !== profile.model.model)
-        throw new ForgeError("invalid_input", "A fixed agent model cannot be overridden by spawn_agent.");
-      if (profile?.model.mode === "inherit" && parsed.model !== undefined && parsed.model !== snapshot.model)
-        throw new ForgeError("invalid_input", "This profile inherits the parent model. Edit its model configuration to select another model.");
-      const model = profile?.model.mode === "fixed" ? profile.model.model : parsed.model ?? snapshot.model;
-      const profileSourceId = profile?.model.mode === "fixed" ? profile.model.providerSourceId : snapshot.providerSourceId;
-      if (profile && parsed.providerSourceId !== undefined && parsed.providerSourceId !== profileSourceId)
-        throw new ForgeError("invalid_input", "The profile's provider source cannot be overridden by spawn_agent.");
+      if (
+        parsed.profileRevision !== undefined &&
+        profile?.revision !== parsed.profileRevision
+      )
+        throw new ForgeError(
+          "invalid_input",
+          "Agent profile changed. Rediscover its configuration before starting work.",
+        );
+      if (
+        profile?.model.mode === "fixed" &&
+        parsed.model !== undefined &&
+        parsed.model !== profile.model.model
+      )
+        throw new ForgeError(
+          "invalid_input",
+          "A fixed agent model cannot be overridden by spawn_agent.",
+        );
+      if (
+        profile?.model.mode === "inherit" &&
+        parsed.model !== undefined &&
+        parsed.model !== snapshot.model
+      )
+        throw new ForgeError(
+          "invalid_input",
+          "This profile inherits the parent model. Edit its model configuration to select another model.",
+        );
+      const model =
+        profile?.model.mode === "fixed"
+          ? profile.model.model
+          : (parsed.model ?? snapshot.model);
+      const profileSourceId =
+        profile?.model.mode === "fixed"
+          ? profile.model.providerSourceId
+          : snapshot.providerSourceId;
+      if (
+        profile &&
+        parsed.providerSourceId !== undefined &&
+        parsed.providerSourceId !== profileSourceId
+      )
+        throw new ForgeError(
+          "invalid_input",
+          "The profile's provider source cannot be overridden by spawn_agent.",
+        );
       // An explicit model is a new selection, not a model within the parent's provider.
-      let sourceId = profile ? profileSourceId : parsed.providerSourceId ??
-        (parsed.model === undefined ? snapshot.providerSourceId : undefined);
-      const levels: readonly Permission[] = ["readonly", "workspace", "unrestricted"];
-      const permission = levels[Math.min(levels.indexOf(env.permission), levels.indexOf(profile?.permission ?? env.permission))]!;
+      let sourceId = profile
+        ? profileSourceId
+        : (parsed.providerSourceId ??
+          (parsed.model === undefined ? snapshot.providerSourceId : undefined));
+      const levels: readonly Permission[] = [
+        "readonly",
+        "workspace",
+        "unrestricted",
+      ];
+      const permission =
+        levels[
+          Math.min(
+            levels.indexOf(env.permission),
+            levels.indexOf(profile?.permission ?? env.permission),
+          )
+        ]!;
       const isolation = parsed.isolation ?? profile?.isolation ?? "shared";
       check(env.signal);
-      if ([...children.values()].filter(child => child.active).length >= MAX_ACTIVE_AGENTS)
-        throw new ForgeError("busy", "Four child agents are active; wait for a slot before spawning.");
+      if (
+        [...children.values()].filter((child) => child.active).length >=
+        MAX_ACTIVE_AGENTS
+      )
+        throw new ForgeError(
+          "busy",
+          "Four child agents are active; wait for a slot before spawning.",
+        );
       const writePaths = [...new Set(parsed.writePaths ?? [])];
       if (isolation === "worktree" && permission === "readonly")
         throw new ForgeError("tool", "Readonly mode cannot create a worktree.");
       if (isolation === "worktree" && !deps.agentWorktrees)
-        throw new ForgeError("tool", "This host does not provide agent worktrees.");
-      if (isolation === "worktree" && !deps.childContextFactory && !deps.childToolFactory)
-        throw new ForgeError("tool", "This host cannot construct tools for an isolated child workspace.");
-      const conflicts = isolation === "worktree" ? [] : [...children.entries()].filter(([, child]) => child.active && child.isolation !== "worktree" && child.writePaths.some(a => writePaths.some(b => overlaps(a, b))));
-      if (conflicts.length) return { content: JSON.stringify({ code: "scope_conflict", error: "Declared write paths overlap active children. Wait or assign disjoint paths; this is coordination, not a sandbox.", ids: conflicts.map(([id]) => id) }), isError: true };
-      if (deps.delegationModels) sourceId = await deps.delegationModels.resolve(model, sourceId, env.signal);
+        throw new ForgeError(
+          "tool",
+          "This host does not provide agent worktrees.",
+        );
+      if (
+        isolation === "worktree" &&
+        !deps.childContextFactory &&
+        !deps.childToolFactory
+      )
+        throw new ForgeError(
+          "tool",
+          "This host cannot construct tools for an isolated child workspace.",
+        );
+      const conflicts =
+        isolation === "worktree"
+          ? []
+          : [...children.entries()].filter(
+              ([, child]) =>
+                child.active &&
+                child.isolation !== "worktree" &&
+                child.writePaths.some((a) =>
+                  writePaths.some((b) => overlaps(a, b)),
+                ),
+            );
+      if (conflicts.length)
+        return {
+          content: JSON.stringify({
+            code: "scope_conflict",
+            error:
+              "Declared write paths overlap active children. Wait or assign disjoint paths; this is coordination, not a sandbox.",
+            ids: conflicts.map(([id]) => id),
+          }),
+          isError: true,
+        };
+      if (deps.delegationModels)
+        sourceId = await deps.delegationModels.resolve(
+          model,
+          sourceId,
+          env.signal,
+        );
       deps.rootBudget?.checkAdmission();
       check(env.signal);
-      const child = await deps.store.create({ workspace: snapshot.workspace, title: parsed.task.slice(0, 256), model,
-        ...(sourceId ? { providerSourceId: sourceId } : {}) });
-      await deps.store.save({ ...child, parentSessionId: input.sessionId, agentTask: parsed.task,
-        ...(profile ? { agentProfile: profile, agentProfileId: profile.id, agentProfileName: profile.name } : {}),
+      const child = await deps.store.create({
+        workspace: snapshot.workspace,
+        title: parsed.task.slice(0, 256),
+        model,
+        ...(sourceId ? { providerSourceId: sourceId } : {}),
+      });
+      await deps.store.save({
+        ...child,
+        parentSessionId: input.sessionId,
+        agentTask: parsed.task,
+        ...(profile
+          ? {
+              agentProfile: profile,
+              agentProfileId: profile.id,
+              agentProfileName: profile.name,
+            }
+          : {}),
         ...(parsed.ownership ? { ownership: parsed.ownership } : {}),
-        ...(parsed.writePaths ? { writePaths } : {}), permissionCeiling: permission });
+        ...(parsed.writePaths ? { writePaths } : {}),
+        permissionCeiling: permission,
+      });
       let childWorkspace = child.workspace;
       if (isolation === "worktree" && deps.agentWorktrees) {
         try {
           deps.rootBudget?.checkAdmission();
           check(env.signal);
-          const isolated = await deps.agentWorktrees.create({ workspace: snapshot.workspace, sessionId: child.id, signal: env.signal });
+          const isolated = await deps.agentWorktrees.create({
+            workspace: snapshot.workspace,
+            sessionId: child.id,
+            signal: env.signal,
+          });
           childWorkspace = isolated.workspace;
           const { workspace: _workspace, ...agentWorktree } = isolated;
-          await deps.store.save({ ...await deps.store.get(child.id), workspace: childWorkspace, agentWorktree });
+          await deps.store.save({
+            ...(await deps.store.get(child.id)),
+            workspace: childWorkspace,
+            agentWorktree,
+          });
         } catch (error) {
-          await deps.store.save({ ...await deps.store.get(child.id), status: env.signal.aborted ? "cancelled" : "failed" });
+          await deps.store.save({
+            ...(await deps.store.get(child.id)),
+            status: env.signal.aborted ? "cancelled" : "failed",
+          });
           throw error;
         }
       }
       const controller = new AbortController();
       const operation: ChildOperation = {
-        controller, work: Promise.resolve(child), model: child.model, active: true,
-        acceptingMessages: true, delivered: false, writePaths, isolation, messages: [],
+        controller,
+        work: Promise.resolve(child),
+        model: child.model,
+        active: true,
+        acceptingMessages: true,
+        delivered: false,
+        writePaths,
+        isolation,
+        messages: [],
       };
       // Reserve before any child code runs; release the active slot only after cleanup settles.
       children.set(child.id, operation);
-      operation.work = Promise.resolve().then(() => env.runChild({
-        sessionId: child.id, model: child.model,
-        prompt: `${parsed.task}\nOwnership: ${parsed.ownership ?? "unspecified"}`,
-        permission, ...(input.mode ? { mode: input.mode } : {}),
-        ...(sourceId ? { providerSourceId: sourceId } : {}),
-      }, env.approveChild(child.id), AbortSignal.any([env.signal, controller.signal]), {
-        getPermission: () => env.permission,
-        drainSteering(final = false) {
-          if (final && operation.messages.length === 0) operation.acceptingMessages = false;
-          return operation.messages.splice(0);
-        },
-      })).then(result => {
-        operation.result = result;
-        return result;
-      }, async error => {
-        operation.executionError = true;
-        // Persist failures outside the child loop too (construction/disposal/lock
-        // failures). A completed model answer is not successful resource cleanup.
-        try {
-          const release = await deps.store.acquire(child.id);
+      operation.work = Promise.resolve()
+        .then(() =>
+          env.runChild(
+            {
+              sessionId: child.id,
+              model: child.model,
+              prompt: `${parsed.task}\nOwnership: ${parsed.ownership ?? "unspecified"}`,
+              permission,
+              ...(input.mode ? { mode: input.mode } : {}),
+              ...(sourceId ? { providerSourceId: sourceId } : {}),
+            },
+            env.approveChild(child.id),
+            AbortSignal.any([env.signal, controller.signal]),
+            {
+              getPermission: () => env.permission,
+              drainSteering(final = false) {
+                if (final && operation.messages.length === 0)
+                  operation.acceptingMessages = false;
+                return operation.messages.splice(0);
+              },
+            },
+          ),
+        )
+        .then(
+          (result) => {
+            operation.result = result;
+            return result;
+          },
+          async (error) => {
+            operation.executionError = true;
+            // Persist failures outside the child loop too (construction/disposal/lock
+            // failures). A completed model answer is not successful resource cleanup.
+            try {
+              const release = await deps.store.acquire(child.id);
+              try {
+                const stored = await deps.store.get(child.id);
+                const timestamp = deps.now?.() ?? new Date().toISOString();
+                const failed: SessionSnapshot = {
+                  ...stored,
+                  updatedAt: timestamp,
+                  status:
+                    env.signal.aborted || controller.signal.aborted
+                      ? "cancelled"
+                      : "failed",
+                  events: [
+                    ...stored.events,
+                    {
+                      type: "error",
+                      sessionId: child.id,
+                      timestamp,
+                      error: {
+                        code: "tool",
+                        message:
+                          "Child execution or cleanup failed; inspect effects before proceeding.",
+                        retryable: false,
+                      },
+                    },
+                  ],
+                };
+                await deps.store.save(failed);
+                operation.result = failed;
+              } finally {
+                await release();
+              }
+            } catch {
+              /* Original failure remains visible; never replay uncertain effects. */
+            }
+            throw error;
+          },
+        )
+        .finally(() => {
+          operation.active = false;
+          operation.acceptingMessages = false;
           try {
-            const stored = await deps.store.get(child.id);
-            const timestamp = deps.now?.() ?? new Date().toISOString();
-            const failed: SessionSnapshot = { ...stored, updatedAt: timestamp,
-              status: env.signal.aborted || controller.signal.aborted ? "cancelled" : "failed",
-              events: [...stored.events, { type: "error", sessionId: child.id, timestamp,
-                error: { code: "tool", message: "Child execution or cleanup failed; inspect effects before proceeding.", retryable: false } }],
-            };
-            await deps.store.save(failed);
-            operation.result = failed;
-          } finally { await release(); }
-        } catch { /* Original failure remains visible; never replay uncertain effects. */ }
-        throw error;
-      }).finally(() => {
-        operation.active = false;
-        operation.acceptingMessages = false;
-        try { env.onSettled?.(child.id, operation); } catch { /* Display is not transactional. */ }
-      });
+            env.onSettled?.(child.id, operation);
+          } catch {
+            /* Display is not transactional. */
+          }
+        });
       void operation.work.catch(() => undefined);
       deps.onChildOperation?.(child.id, controller, operation.work);
-      return output({ childSessionId: child.id, model: child.model, workspace: childWorkspace, isolation, permission,
+      return output({
+        childSessionId: child.id,
+        model: child.model,
+        workspace: childWorkspace,
+        isolation,
+        permission,
         ...(sourceId ? { providerSourceId: sourceId } : {}),
-        ...(profile ? { profile: agentProfileSummary(profile) } : {}), declaredWritePathCount: writePaths.length,
-        warning: isolation === "worktree"
-          ? "Separate checkout of committed HEAD; parent uncommitted files are not copied. Changes are retained here for inspection and merge."
-          : "Shared workspace. Declared paths only prevent overlapping assignments; commands and file writes are not sandboxed by ownership." });
+        ...(profile ? { profile: agentProfileSummary(profile) } : {}),
+        declaredWritePathCount: writePaths.length,
+        warning:
+          isolation === "worktree"
+            ? "Separate checkout of committed HEAD; parent uncommitted files are not copied. Changes are retained here for inspection and merge."
+            : "Shared workspace. Declared paths only prevent overlapping assignments; commands and file writes are not sandboxed by ownership.",
+      });
     }
     case "list_agents": {
       const { offset, limit, currentRun } = listArgs.parse(args);
-      const all = (await deps.store.list()).filter(child => child.parentSessionId === input.sessionId && (!currentRun || children.has(child.id)));
+      const all = (await deps.store.list()).filter(
+        (child) =>
+          child.parentSessionId === input.sessionId &&
+          (!currentRun || children.has(child.id)),
+      );
       const agents: unknown[] = [];
       let next = offset;
       for (const item of all.slice(offset, offset + limit)) {
         const operation = children.get(item.id);
-        const details = operation?.result ?? await deps.store.get(item.id);
-        const question = env.advisor?.pending().find(request => request.childSessionId === item.id);
-        const entry = { ...item, currentRun: !!operation, active: operation?.active ?? false,
-          ...(question ? { activity: "awaiting_advisor", advisorRequestId: question.id } : {}),
-          ownership: details.ownership?.slice(0, 512), ownershipTruncated: (details.ownership?.length ?? 0) > 512,
-          writePaths: details.writePaths?.slice(0, 8), writePathsTruncated: (details.writePaths?.length ?? 0) > 8,
-          controllable: !!operation?.active, handled: !!operation?.resolution || handled(env, details) };
-        if (Buffer.byteLength(JSON.stringify([...agents, entry]), "utf8") > RESULT_BYTES - 1024) break;
-        agents.push(entry); next++;
+        const details = operation?.result ?? (await deps.store.get(item.id));
+        const question = env.advisor
+          ?.pending()
+          .find((request) => request.childSessionId === item.id);
+        const entry = {
+          ...item,
+          currentRun: !!operation,
+          active: operation?.active ?? false,
+          ...(question
+            ? { activity: "awaiting_advisor", advisorRequestId: question.id }
+            : {}),
+          ownership: details.ownership?.slice(0, 512),
+          ownershipTruncated: (details.ownership?.length ?? 0) > 512,
+          writePaths: details.writePaths?.slice(0, 8),
+          writePathsTruncated: (details.writePaths?.length ?? 0) > 8,
+          controllable: !!operation?.active,
+          handled: !!operation?.resolution || handled(env, details),
+        };
+        if (
+          Buffer.byteLength(JSON.stringify([...agents, entry]), "utf8") >
+          RESULT_BYTES - 1024
+        )
+          break;
+        agents.push(entry);
+        next++;
       }
-      return output({ agents, total: all.length, offset, nextOffset: next < all.length ? next : null, truncated: next < all.length });
+      return output({
+        agents,
+        total: all.length,
+        offset,
+        nextOffset: next < all.length ? next : null,
+        truncated: next < all.length,
+      });
     }
     case "wait_agents": {
       const parsed = waitArgs.parse(args);
-      const ids = [...new Set(parsed.ids ?? [...children.entries()]
-        .filter(([, child]) => !child.delivered)
-        .slice(0, MAX_AGENT_REPORTS)
-        .map(([id]) => id))];
+      const ids = [
+        ...new Set(
+          parsed.ids ??
+            [...children.entries()]
+              .filter(([, child]) => !child.delivered)
+              .slice(0, MAX_AGENT_REPORTS)
+              .map(([id]) => id),
+        ),
+      ];
       const history = new Map<string, SessionSnapshot>();
       const errors = new Map<string, string>();
-      for (const id of ids) if (!children.has(id)) {
-        try { history.set(id, await ownedSnapshot(env, id)); }
-        catch (error) {
-          if (!(error instanceof ForgeError) || error.code !== "invalid_input") throw error;
-          errors.set(id, "Unknown child of this parent session.");
+      for (const id of ids)
+        if (!children.has(id)) {
+          try {
+            history.set(id, await ownedSnapshot(env, id));
+          } catch (error) {
+            if (
+              !(error instanceof ForgeError) ||
+              error.code !== "invalid_input"
+            )
+              throw error;
+            errors.set(id, "Unknown child of this parent session.");
+          }
         }
-      }
-      const ready = (id: string) => errors.has(id) || history.has(id) || !children.get(id)?.active;
-      const pending = ids.filter(id => !ready(id)).map(id => children.get(id)!.work.catch(() => undefined));
+      const ready = (id: string) =>
+        errors.has(id) || history.has(id) || !children.get(id)?.active;
+      const pending = ids
+        .filter((id) => !ready(id))
+        .map((id) => children.get(id)!.work.catch(() => undefined));
       if (pending.length && !(parsed.mode === "any" && ids.some(ready))) {
         const waiting = new AbortController();
-        const pause = pauseUntil(parsed.mode === "any" ? Promise.race(pending) : Promise.all(pending),
-          AbortSignal.any([env.signal, waiting.signal]), parsed.timeout_ms);
+        const pause = pauseUntil(
+          parsed.mode === "any" ? Promise.race(pending) : Promise.all(pending),
+          AbortSignal.any([env.signal, waiting.signal]),
+          parsed.timeout_ms,
+        );
         try {
           if (env.advisor) await env.advisor.wait(pause, env.signal);
           else await pause;
@@ -383,41 +806,85 @@ export async function executeAgentOperation(name: string, args: Record<string, u
       }
       check(env.signal);
       const questions = env.advisor?.pending() ?? [];
-      if (questions.length) return output({ reason: "advisor", requests: questions.slice(0, 1), pendingCount: questions.length,
-        waitingIds: ids, instruction: "Answer this request with answer_advisor, then continue waiting. No child result was marked delivered." });
+      if (questions.length)
+        return output({
+          reason: "advisor",
+          requests: questions.slice(0, 1),
+          pendingCount: questions.length,
+          waitingIds: ids,
+          instruction:
+            "Answer this request with answer_advisor, then continue waiting. No child result was marked delivered.",
+        });
       const report = (id: string, limit: number) => {
         const child = children.get(id);
         if (child) return childReport(id, child, limit);
         const stored = history.get(id);
-        if (stored) return { ...agentSummary(stored, limit), currentRun: false, active: false, controllable: false, handled: handled(env, stored),
-          ...(!isAgentTerminal(stored.status) ? { warning: "Not owned by this run; persisted status may be stale. No execution was resumed." } : {}) };
+        if (stored)
+          return {
+            ...agentSummary(stored, limit),
+            currentRun: false,
+            active: false,
+            controllable: false,
+            handled: handled(env, stored),
+            ...(!isAgentTerminal(stored.status)
+              ? {
+                  warning:
+                    "Not owned by this run; persisted status may be stale. No execution was resumed.",
+                }
+              : {}),
+          };
         return { id, error: errors.get(id) };
       };
-      const page = parsed.ids === undefined ? boundedReportPage(ids, report)
-        : { items: ids, content: boundedReports(ids, report) };
-      for (const id of page.items) { const child = children.get(id); if (child && !child.active) child.delivered = true; }
+      const page =
+        parsed.ids === undefined
+          ? boundedReportPage(ids, report)
+          : { items: ids, content: boundedReports(ids, report) };
+      for (const id of page.items) {
+        const child = children.get(id);
+        if (child && !child.active) child.delivered = true;
+      }
       return { content: page.content, isError: false };
     }
     case "get_agent_result": {
       const { id, offset, limit } = resultArgs.parse(args);
       const operation = children.get(id);
-      const child = operation?.result ?? await ownedSnapshot(env, id);
+      const child = operation?.result ?? (await ownedSnapshot(env, id));
       const text = agentResultText(child);
       const end = Math.min(text.length, offset + limit);
-      return output({ id, status: operation?.executionError ? "failed" : child.status, model: child.model,
-        workspace: child.workspace, ...(child.agentWorktree ? { worktree: child.agentWorktree } : {}),
-        content: text.slice(offset, end), offset, totalChars: text.length, nextOffset: end < text.length ? end : null,
-        truncated: end < text.length, currentRun: !!operation, active: operation?.active ?? false,
+      return output({
+        id,
+        status: operation?.executionError ? "failed" : child.status,
+        model: child.model,
+        workspace: child.workspace,
+        ...(child.agentWorktree ? { worktree: child.agentWorktree } : {}),
+        content: text.slice(offset, end),
+        offset,
+        totalChars: text.length,
+        nextOffset: end < text.length ? end : null,
+        truncated: end < text.length,
+        currentRun: !!operation,
+        active: operation?.active ?? false,
         handled: !!operation?.resolution || handled(env, child),
-        errors: agentSummary(child, 0).errors, usage: operation?.usage ?? agentSummary(child, 0).usage,
-        usageComplete: operation?.usageComplete ?? agentSummary(child, 0).usageComplete ?? false,
-        ownership: child.ownership?.slice(0, 512), ownershipTruncated: (child.ownership?.length ?? 0) > 512,
-        writePaths: child.writePaths?.slice(0, 8), writePathsTruncated: (child.writePaths?.length ?? 0) > 8 });
+        errors: agentSummary(child, 0).errors,
+        usage: operation?.usage ?? agentSummary(child, 0).usage,
+        usageComplete:
+          operation?.usageComplete ??
+          agentSummary(child, 0).usageComplete ??
+          false,
+        ownership: child.ownership?.slice(0, 512),
+        ownershipTruncated: (child.ownership?.length ?? 0) > 512,
+        writePaths: child.writePaths?.slice(0, 8),
+        writePathsTruncated: (child.writePaths?.length ?? 0) > 8,
+      });
     }
     case "cancel_agent": {
       const { id } = idArgs.parse(args);
       const child = children.get(id);
-      if (!child) throw new ForgeError("invalid_input", "Child is not controlled by this run; historical sessions cannot be cancelled here.");
+      if (!child)
+        throw new ForgeError(
+          "invalid_input",
+          "Child is not controlled by this run; historical sessions cannot be cancelled here.",
+        );
       child.acceptingMessages = false;
       child.controller.abort();
       await env.advisor?.cancelChild(id);
@@ -429,24 +896,59 @@ export async function executeAgentOperation(name: string, args: Record<string, u
     case "send_agent_message": {
       const { id, message } = messageArgs.parse(args);
       const child = children.get(id);
-      if (!child?.active || !child.acceptingMessages || child.controller.signal.aborted)
-        throw new ForgeError("invalid_input", "Child is not accepting messages in this run; no task was restarted.");
-      if (child.messages.length >= 8) throw new ForgeError("budget", "Child steering queue is full; wait for it to consume pending messages.");
+      if (
+        !child?.active ||
+        !child.acceptingMessages ||
+        child.controller.signal.aborted
+      )
+        throw new ForgeError(
+          "invalid_input",
+          "Child is not accepting messages in this run; no task was restarted.",
+        );
+      if (child.messages.length >= 8)
+        throw new ForgeError(
+          "budget",
+          "Child steering queue is full; wait for it to consume pending messages.",
+        );
       child.messages.push(message);
-      return output({ id, queued: true, pendingMessages: child.messages.length });
+      return output({
+        id,
+        queued: true,
+        pendingMessages: child.messages.length,
+      });
     }
     case "resolve_agent": {
       const { id, resolution } = resolveArgs.parse(args);
       const operation = children.get(id);
-      if (operation?.active) throw new ForgeError("busy", "Wait for the child and inspect its effects before resolving its outcome.");
-      const child = operation?.result ?? await ownedSnapshot(env, id);
+      if (operation?.active)
+        throw new ForgeError(
+          "busy",
+          "Wait for the child and inspect its effects before resolving its outcome.",
+        );
+      const child = operation?.result ?? (await ownedSnapshot(env, id));
       if (!isAgentTerminal(child.status) && !operation?.executionError)
-        throw new ForgeError("busy", "Only settled child outcomes can be resolved; persisted running state may be stale.");
-      if (!env.saveResolution) throw new ForgeError("internal", "Resolution persistence is unavailable.");
+        throw new ForgeError(
+          "busy",
+          "Only settled child outcomes can be resolved; persisted running state may be stale.",
+        );
+      if (!env.saveResolution)
+        throw new ForgeError(
+          "internal",
+          "Resolution persistence is unavailable.",
+        );
       await env.saveResolution(id, child.updatedAt, resolution);
-      if (operation) { operation.resolution = resolution; operation.delivered = true; }
-      return output({ id, status: operation?.executionError ? "failed" : child.status, handled: true, resolution });
+      if (operation) {
+        operation.resolution = resolution;
+        operation.delivered = true;
+      }
+      return output({
+        id,
+        status: operation?.executionError ? "failed" : child.status,
+        handled: true,
+        resolution,
+      });
     }
-    default: throw new ForgeError("invalid_input", "Unknown agent operation.");
+    default:
+      throw new ForgeError("invalid_input", "Unknown agent operation.");
   }
 }

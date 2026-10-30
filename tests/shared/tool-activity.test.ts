@@ -55,9 +55,10 @@ describe("tool activity description", () => {
       ),
     ).toEqual({ name: "command_task", target: "等待完成 · #aa118abe" });
 
-    expect(
-      toolActivity(call("command_task", { action: "list" })),
-    ).toEqual({ name: "command_task", target: "任务列表" });
+    expect(toolActivity(call("command_task", { action: "list" }))).toEqual({
+      name: "command_task",
+      target: "任务列表",
+    });
   });
 
   it("returns the redacted command and cwd for command tools only", () => {

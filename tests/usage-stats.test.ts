@@ -13,7 +13,10 @@ import {
 const sessionId = (value: string) => sessionIdSchema.parse(value);
 // A schema-complete request-basis context sample; only the token fields matter here.
 const requestContext = (
-  tokens: Pick<ContextUsage, "promptTokens" | "completionTokens" | "cachedPromptTokens">,
+  tokens: Pick<
+    ContextUsage,
+    "promptTokens" | "completionTokens" | "cachedPromptTokens"
+  >,
 ): ContextUsage => ({
   windowTokens: null,
   usedTokens: tokens.promptTokens ?? 0,
@@ -23,7 +26,9 @@ const requestContext = (
   ...tokens,
 });
 
-function createMockSnapshot(overrides: Partial<SessionSnapshot> = {}): SessionSnapshot {
+function createMockSnapshot(
+  overrides: Partial<SessionSnapshot> = {},
+): SessionSnapshot {
   return {
     version: 1,
     id: sessionId("00000000-0000-0000-0000-000000000001"),
@@ -173,12 +178,16 @@ describe("usage-stats", () => {
         if (id === snap1.id) return snap1;
         throw new Error("Not found");
       },
-      create: async () => { throw new Error("not implemented"); },
+      create: async () => {
+        throw new Error("not implemented");
+      },
       save: async () => {},
       acquire: async () => async () => {},
     };
 
-    const service = createUsageStatsService(store, { getPrices: async () => new Map() });
+    const service = createUsageStatsService(store, {
+      getPrices: async () => new Map(),
+    });
     const stats1 = await service.getUsageStats();
     expect(stats1.totalSessions).toBe(1);
     expect(stats1.totalTokens).toBe(125);

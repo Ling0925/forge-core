@@ -35,16 +35,20 @@ it("runs readonly without tools when a home-shaped workspace contains managed st
                 {
                   id: turns === 1 ? "read" : "edit",
                   type: "function",
-                  function: turns === 1
-                    ? { name: "read_file", arguments: JSON.stringify({ path: "ordinary.txt" }) }
-                    : {
-                        name: "edit_file",
-                        arguments: JSON.stringify({
-                          path: "ordinary.txt",
-                          old_text: "before",
-                          new_text: "after",
-                        }),
-                      },
+                  function:
+                    turns === 1
+                      ? {
+                          name: "read_file",
+                          arguments: JSON.stringify({ path: "ordinary.txt" }),
+                        }
+                      : {
+                          name: "edit_file",
+                          arguments: JSON.stringify({
+                            path: "ordinary.txt",
+                            old_text: "before",
+                            new_text: "after",
+                          }),
+                        },
                 },
               ],
             }

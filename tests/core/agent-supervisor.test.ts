@@ -86,7 +86,11 @@ describe("child supervision boundaries", () => {
     const supervisor = fixture();
     for (let i = 0; i < 65; i++) {
       const operation = child();
-      operation.result = { ...snapshot, workspace: `/${"界".repeat(4000)}`, model: `fixture-${i}` };
+      operation.result = {
+        ...snapshot,
+        workspace: `/${"界".repeat(4000)}`,
+        model: `fixture-${i}`,
+      };
       supervisor.native.children.set(`child-${i}`, operation);
     }
     const delivered = new Set<string>();
@@ -103,7 +107,9 @@ describe("child supervision boundaries", () => {
         delivered.add(report.model);
       }
       page.commitDelivery();
-      expect(supervisor.operations().filter(item => item.delivered)).toHaveLength(delivered.size);
+      expect(
+        supervisor.operations().filter((item) => item.delivered),
+      ).toHaveLength(delivered.size);
     }
     expect(delivered.size).toBe(65);
   });

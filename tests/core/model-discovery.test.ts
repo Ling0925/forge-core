@@ -15,7 +15,10 @@ const tools = {
   execute: async () => ({ content: "", isError: false }),
   dispose: async () => {},
 };
-async function fixture(listModels: ModelProvider["listModels"], delegationModels?: AgentRuntimeDependencies["delegationModels"]) {
+async function fixture(
+  listModels: ModelProvider["listModels"],
+  delegationModels?: AgentRuntimeDependencies["delegationModels"],
+) {
   const dir = await mkdtemp(join(tmpdir(), "forge-model-discovery-"));
   const store = await openSessionStore(dir);
   const snapshot = await store.create({
@@ -183,27 +186,56 @@ it("reports discovery failure without exposing endpoint/provider exception detai
   }
 });
 it("pages source-qualified models within the same byte bound and reports partial discovery", async () => {
-  const models = Array.from({ length: 80 }, (_, i) => ({ id: `exact/${i}/${"界".repeat(200)}`, providerSourceId: i % 2 ? "b" : "a" }));
+  const models = Array.from({ length: 80 }, (_, i) => ({
+    id: `exact/${i}/${"界".repeat(200)}`,
+    providerSourceId: i % 2 ? "b" : "a",
+  }));
   let filtered: string | undefined;
-  const f = await fixture(async () => { throw Error("parent-only discovery must not run"); }, {
-    list: async (_signal, sourceId) => { filtered = sourceId; return { models: sourceId ? models.filter(model => model.providerSourceId === sourceId) : models,
-      unavailableSourceIds: ["offline"] }; },
-    resolve: async () => undefined,
-  });
+  const f = await fixture(
+    async () => {
+      throw Error("parent-only discovery must not run");
+    },
+    {
+      list: async (_signal, sourceId) => {
+        filtered = sourceId;
+        return {
+          models: sourceId
+            ? models.filter((model) => model.providerSourceId === sourceId)
+            : models,
+          unavailableSourceIds: ["offline"],
+        };
+      },
+      resolve: async () => undefined,
+    },
+  );
   try {
     const first = await f.invoke({ limit: 100 });
     const page = JSON.parse(first.content);
     expect(first.isError).toBe(false);
     expect(Buffer.byteLength(first.content)).toBeLessThanOrEqual(32768);
-    expect(page).toMatchObject({ partial: true, unavailableSourceIds: ["offline"], unavailableSourceCount: 1 });
+    expect(page).toMatchObject({
+      partial: true,
+      unavailableSourceIds: ["offline"],
+      unavailableSourceCount: 1,
+    });
     expect(page.models).toEqual(models.slice(0, page.returned));
-    expect(page.ids).toEqual(page.models.map((model: { id: string }) => model.id));
+    expect(page.ids).toEqual(
+      page.models.map((model: { id: string }) => model.id),
+    );
     expect(page.nextOffset).toBe(page.returned);
-    expect(JSON.parse((await f.invoke({ offset: page.nextOffset, limit: 1 })).content).models).toEqual([models[page.nextOffset]]);
-    const scoped = JSON.parse((await f.invoke({ providerSourceId: "b", limit: 1 })).content);
+    expect(
+      JSON.parse(
+        (await f.invoke({ offset: page.nextOffset, limit: 1 })).content,
+      ).models,
+    ).toEqual([models[page.nextOffset]]);
+    const scoped = JSON.parse(
+      (await f.invoke({ providerSourceId: "b", limit: 1 })).content,
+    );
     expect(filtered).toBe("b");
     expect(scoped.models).toEqual([models[1]]);
-  } finally { await rm(f.dir, { recursive: true, force: true }); }
+  } finally {
+    await rm(f.dir, { recursive: true, force: true });
+  }
 });
 
 it("settles cancellation even with an uncooperative provider and denies pre-aborted discovery", async () => {

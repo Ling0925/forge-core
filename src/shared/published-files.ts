@@ -11,40 +11,73 @@ export const PUBLISHED_SESSION_MAX_FILES = 128;
 export const PUBLISHED_PREVIEW_MAX_BYTES = 1024 * 1024;
 export const PUBLISHED_HTML_PREVIEW_MAX_BYTES = HTML_PREVIEW_MAX_BYTES;
 export const publishedFileIdSchema = z.string().uuid();
-export const publishedFileNameSchema = z.string().trim().min(1).max(200)
-  .refine(name => name !== "." && name !== ".." && !/[\\/\x00-\x1f\x7f]/.test(name), "Expected a plain file name");
-export const publishedFileSchema = z.object({
-  id: publishedFileIdSchema,
-  name: publishedFileNameSchema,
-  mimeType: z.string().min(1).max(128),
-  size: z.number().int().min(0).max(PUBLISHED_FILE_MAX_BYTES),
-  sha256: z.string().regex(/^[a-f0-9]{64}$/),
-  createdAt: z.string().datetime(),
-  previewKind: z.enum(["text", "html", "image", "none"]),
-  description: z.string().trim().min(1).max(1000).optional(),
-}).strict().readonly();
+export const publishedFileNameSchema = z
+  .string()
+  .trim()
+  .min(1)
+  .max(200)
+  .refine(
+    (name) => name !== "." && name !== ".." && !/[\\/\x00-\x1f\x7f]/.test(name),
+    "Expected a plain file name",
+  );
+export const publishedFileSchema = z
+  .object({
+    id: publishedFileIdSchema,
+    name: publishedFileNameSchema,
+    mimeType: z.string().min(1).max(128),
+    size: z.number().int().min(0).max(PUBLISHED_FILE_MAX_BYTES),
+    sha256: z.string().regex(/^[a-f0-9]{64}$/),
+    createdAt: z.string().datetime(),
+    previewKind: z.enum(["text", "html", "image", "none"]),
+    description: z.string().trim().min(1).max(1000).optional(),
+  })
+  .strict()
+  .readonly();
 export type PublishedFile = z.infer<typeof publishedFileSchema>;
-export const publishedFilesSchema = z.array(publishedFileSchema).max(16).readonly();
-export const publishedFileResponseSchema = z.object({
-  file: publishedFileSchema,
-  base64: z.string().max(PUBLISHED_FILE_MAX_BASE64_BYTES)
-    .refine(value => value.length % 4 === 0 && /^[A-Za-z0-9+/]*={0,2}$/.test(value), "Expected base64 bytes"),
-}).strict().readonly();
+export const publishedFilesSchema = z
+  .array(publishedFileSchema)
+  .max(16)
+  .readonly();
+export const publishedFileResponseSchema = z
+  .object({
+    file: publishedFileSchema,
+    base64: z
+      .string()
+      .max(PUBLISHED_FILE_MAX_BASE64_BYTES)
+      .refine(
+        (value) =>
+          value.length % 4 === 0 && /^[A-Za-z0-9+/]*={0,2}$/.test(value),
+        "Expected base64 bytes",
+      ),
+  })
+  .strict()
+  .readonly();
 export type PublishedFileResponse = z.infer<typeof publishedFileResponseSchema>;
 
 /** Shared by host authorization and both live/restored client timelines. */
-const publishingTools: ReadonlySet<string> = new Set(["publish_file", "browser_screenshot", "officecli_preview"]);
+const publishingTools: ReadonlySet<string> = new Set([
+  "publish_file",
+  "browser_screenshot",
+  "officecli_preview",
+]);
 export function publishesPublishedFiles(toolName: string): boolean {
   return publishingTools.has(toolName);
 }
 
 /** Only successful host-owned publication tools carry deliverable files. */
-export function collectPublishedFiles(messages: readonly {
-  readonly role: string;
-  readonly content: string | null;
-  readonly tool_calls?: readonly { readonly id: string; readonly function: { readonly name: string } }[] | undefined;
-  readonly tool_call_id?: string | undefined;
-}[]): readonly PublishedFile[] {
+export function collectPublishedFiles(
+  messages: readonly {
+    readonly role: string;
+    readonly content: string | null;
+    readonly tool_calls?:
+      | readonly {
+          readonly id: string;
+          readonly function: { readonly name: string };
+        }[]
+      | undefined;
+    readonly tool_call_id?: string | undefined;
+  }[],
+): readonly PublishedFile[] {
   const calls = new Set<string>();
   const files = new Map<string, PublishedFile>();
   for (const message of messages) {
@@ -53,11 +86,20 @@ export function collectPublishedFiles(messages: readonly {
       for (const call of message.tool_calls ?? [])
         if (publishesPublishedFiles(call.function.name)) calls.add(call.id);
     } else if (message.role === "user") calls.clear();
-    else if (message.role === "tool" && message.tool_call_id && calls.delete(message.tool_call_id)) {
+    else if (
+      message.role === "tool" &&
+      message.tool_call_id &&
+      calls.delete(message.tool_call_id)
+    ) {
       try {
-        const result = z.object({ isError: z.literal(false), files: publishedFilesSchema }).passthrough().parse(JSON.parse(message.content ?? ""));
+        const result = z
+          .object({ isError: z.literal(false), files: publishedFilesSchema })
+          .passthrough()
+          .parse(JSON.parse(message.content ?? ""));
         for (const file of result.files) files.set(file.id, file);
-      } catch { /* Legacy, failed and unrelated results are not attachments. */ }
+      } catch {
+        /* Legacy, failed and unrelated results are not attachments. */
+      }
     }
   }
   return [...files.values()];

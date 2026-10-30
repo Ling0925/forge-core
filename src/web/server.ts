@@ -33,7 +33,11 @@ import type { SessionSnapshot } from "../shared/schemas";
 import { paginateSession } from "../shared/session-page";
 import { workspaceBrowseRequestSchema } from "../shared/workspaces";
 import { openDeviceAuthorization } from "../store/devices";
-import { coreBuildDiagnostics, applyBuildHeaders, BUILD_HEADERS } from "./build-info";
+import {
+  BUILD_HEADERS,
+  applyBuildHeaders,
+  coreBuildDiagnostics,
+} from "./build-info";
 import {
   HtmlPreviewStore,
   PreviewFileError,
@@ -435,7 +439,8 @@ export async function createWebHost(
     ): Promise<void> => {
       if (protectedRequest && status < 400 && !(await authorized())) {
         target.removeHeader("X-Forge-Snapshot");
-        for (const name of Object.values(BUILD_HEADERS)) target.removeHeader(name);
+        for (const name of Object.values(BUILD_HEADERS))
+          target.removeHeader(name);
         return writeJson(target, 401, {
           error: "Device authorization required",
         });
@@ -467,7 +472,9 @@ export async function createWebHost(
       if (!trustedLan) {
         device = await authenticate(request);
         if (!(await authorized()))
-          return json(response, 401, { error: "Device authorization required" });
+          return json(response, 401, {
+            error: "Device authorization required",
+          });
       }
       const snapshot = await coreBuildDiagnostics.snapshot();
       applyBuildHeaders(response, snapshot);
@@ -655,7 +662,9 @@ export async function createWebHost(
           return json(response, 403, { error: "Desktop-only operation" });
         let authorizedSnapshot: SessionSnapshot | undefined;
         if (restrictWorkspace) {
-          const sessionIdOf = (): Parameters<HarnessService["getSession"]>[0] | undefined => {
+          const sessionIdOf = ():
+            | Parameters<HarnessService["getSession"]>[0]
+            | undefined => {
             if (rpc.method === "startRun") return rpc.input.sessionId;
             if (rpc.method === "enqueueInput") return rpc.input.input.sessionId;
             // Browser control carries its session in `input`; a top-level-only

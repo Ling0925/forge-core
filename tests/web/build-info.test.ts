@@ -1,11 +1,11 @@
 import { mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
 import { request } from "node:http";
 import { join } from "node:path";
-import { testScratch } from "../fixtures/scratch";
 import { afterEach, describe, expect, it } from "vitest";
 import type { RuntimeHost } from "../../src/shared/runtime-host";
 import { buildStatus, readDiskBuildInfo } from "../../src/web/build-info";
 import { createWebHost } from "../../src/web/server";
+import { testScratch } from "../fixtures/scratch";
 
 // Task scratch space outside the OS temp directory; see tests/fixtures/scratch.ts.
 const SCRATCH = testScratch("cross-provider-fixes", "version");

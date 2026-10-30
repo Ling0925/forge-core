@@ -92,14 +92,22 @@ describe("settings and resume contracts", () => {
     { browserAllowedOrigins: [] },
     { browserExecutablePath: "/usr/bin/chromium" },
     { browserExecutablePath: "" },
-  ])("rejects retired global browser settings %j", settings => {
+  ])("rejects retired global browser settings %j", (settings) => {
     expect(defaultPublicSettings).not.toHaveProperty("browserAllowedOrigins");
     expect(defaultPublicSettings).not.toHaveProperty("browserExecutablePath");
     expect(configureInputSchema.safeParse({ settings }).success).toBe(false);
-    expect(publicSettingsSchema.safeParse({ ...defaultPublicSettings, ...settings }).success).toBe(false);
-    expect(providerConfigSchema.safeParse({
-      baseUrl: "https://example.invalid", apiKey: "k", requestTimeoutMs: 1000, ...settings,
-    }).success).toBe(false);
+    expect(
+      publicSettingsSchema.safeParse({ ...defaultPublicSettings, ...settings })
+        .success,
+    ).toBe(false);
+    expect(
+      providerConfigSchema.safeParse({
+        baseUrl: "https://example.invalid",
+        apiKey: "k",
+        requestTimeoutMs: 1000,
+        ...settings,
+      }).success,
+    ).toBe(false);
   });
 
   it("accepts an optional nonempty resume model override", () => {

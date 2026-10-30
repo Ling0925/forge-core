@@ -9,7 +9,10 @@ afterEach(async () => {
 });
 
 async function fixture(
-  handler: (body: unknown, response: import("node:http").ServerResponse) => void,
+  handler: (
+    body: unknown,
+    response: import("node:http").ServerResponse,
+  ) => void,
 ) {
   const server = createServer(async (request, response) => {
     let raw = "";
@@ -21,7 +24,9 @@ async function fixture(
   const address = server.address();
   if (!address || typeof address === "string") throw new Error("no address");
   cleanups.push(async () => {
-    const closed = new Promise<void>((resolve) => server.close(() => resolve()));
+    const closed = new Promise<void>((resolve) =>
+      server.close(() => resolve()),
+    );
     server.closeAllConnections();
     await closed;
   });
@@ -84,7 +89,9 @@ it("delivers non-streaming fallback reasoning_content without adding it to conte
       response.statusCode = 400;
       response.setHeader("content-type", "application/json");
       response.end(
-        JSON.stringify({ error: { message: "Streaming is not supported", param: "stream" } }),
+        JSON.stringify({
+          error: { message: "Streaming is not supported", param: "stream" },
+        }),
       );
       return;
     }
@@ -93,7 +100,11 @@ it("delivers non-streaming fallback reasoning_content without adding it to conte
       JSON.stringify({
         choices: [
           {
-            message: { role: "assistant", content: "answer", reasoning_content: "thought" },
+            message: {
+              role: "assistant",
+              content: "answer",
+              reasoning_content: "thought",
+            },
             finish_reason: "stop",
           },
         ],

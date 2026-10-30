@@ -1,4 +1,3 @@
-import { defineTool } from "../shared/tool-definition";
 import { spawn } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import { constants } from "node:fs";
@@ -7,11 +6,14 @@ import { homedir } from "node:os";
 import { delimiter, dirname, isAbsolute, join, relative, sep } from "node:path";
 import { TextDecoder } from "node:util";
 import { z } from "zod";
+import {
+  containsSensitiveText,
+  isSensitivePath,
+} from "../shared/content-safety";
 import type { LocalToolRegistry, ToolContext } from "../shared/contracts";
-import { ForgeError, formatValidationError } from "../shared/errors";
-import { noArgumentFields } from "../shared/tool-input";
-import { containsSensitiveText, isSensitivePath } from "../shared/content-safety";
 import { createDiffPatch } from "../shared/diff";
+import { ForgeError, formatValidationError } from "../shared/errors";
+import { MAX_EDITABLE_FILE_BYTES as FILE_LIMIT } from "../shared/file-limits";
 import type {
   FileChange,
   JsonValue,
@@ -19,12 +21,18 @@ import type {
   ToolDefinition,
   ToolResult,
 } from "../shared/schemas";
+import { defineTool } from "../shared/tool-definition";
+import { noArgumentFields } from "../shared/tool-input";
 import type { CheckpointStore } from "../store/checkpoints";
-import { gitInspect } from "./git";
-import { createLineMatcher, globMatcher, pageEntries, relativeQueryPath } from "./file-query";
-import { WorkspacePathError, createWorkspacePathGuard } from "./path-guard";
 import { createCommandOutputStore } from "./command-output";
-import { MAX_EDITABLE_FILE_BYTES as FILE_LIMIT } from "../shared/file-limits";
+import {
+  createLineMatcher,
+  globMatcher,
+  pageEntries,
+  relativeQueryPath,
+} from "./file-query";
+import { gitInspect } from "./git";
+import { WorkspacePathError, createWorkspacePathGuard } from "./path-guard";
 
 const CACHE_LIMIT = 16 * 1024 * 1024;
 const RESULT_LIMIT = 128 * 1024;
@@ -124,10 +132,15 @@ const argumentsSchema = z.discriminatedUnion("tool", [
     .readonly()
     .unwrap(),
   commandSchema.unwrap(),
-  z.object({ tool: z.literal("read_command_output"), id: z.string().uuid(),
-    stream: z.enum(["stdout", "stderr"]).default("stdout"),
-    offset: z.number().int().min(0).default(0), limit: z.number().int().min(1).max(12000).default(12000),
-  }).strict(),
+  z
+    .object({
+      tool: z.literal("read_command_output"),
+      id: z.string().uuid(),
+      stream: z.enum(["stdout", "stderr"]).default("stdout"),
+      offset: z.number().int().min(0).default(0),
+      limit: z.number().int().min(1).max(12000).default(12000),
+    })
+    .strict(),
   z.object({ tool: z.literal("git_status"), ...noArgumentFields }).strict(),
   z.object({ tool: z.literal("git_diff"), ...noArgumentFields }).strict(),
   z.object({ tool: z.literal("git_log"), ...noArgumentFields }).strict(),
@@ -167,25 +180,39 @@ const fileBoundaries =
   "Workspace-relative only; no symlinks or sensitive files (.env*, credentials, private keys, .ssh, .config, .git). Files at most 16 MiB; generate large files in small chunks. ";
 const policies = `${fileBoundaries}Readonly forbids mutations and commands. `;
 const writePolicies = `${fileBoundaries}Readonly forbids mutations. `;
-const toolDescriptions: Readonly<Record<z.infer<typeof argumentsSchema>["tool"], string>> = {
-  "git_status": "Read-only repository status for the workspace root. Sensitive paths omitted; secrets redacted; no shell execution. Outside a Git work tree returns repository:false with a note; a nested workspace is rejected with an explicit repository-root requirement.",
-  "git_diff": "Read-only unstaged repository diff for the workspace root. Sensitive paths omitted; secrets redacted; no shell execution. Outside a Git work tree returns repository:false with a note; a nested workspace is rejected with an explicit repository-root requirement.",
-  "git_log": "Read-only recent repository log for the workspace root. Secrets redacted; no shell execution. Outside a Git work tree returns repository:false with a note; a nested workspace is rejected with an explicit repository-root requirement; a repository with no commits yet returns an empty log.",
-  "list_files": `${policies}List paginated entries; optional root-relative glob (*, **, ?). Bounded traversal (1000 entries, 8 levels); dependency/build/cache directories excluded. scan_truncated marks incomplete traversal, truncated remaining page results.`,
-  "read_file": `${policies}Numbered UTF-8 pages with zero-based offset, SHA-256 version, byte size, inclusive end_line and cache status. Use offset with limit, where limit is 1-200 lines and defaults to 100; limit above 200 is rejected (e.g. read limit 200, then continue from next_offset). Matching if_version returns unchanged:true without content or new write authority. A nonempty page authorizes write/edit in this run; own successful writes refresh that version, external changes require a new read. Binary rejected; output bounded.`,
-  "write_file": `Default tool for creating files or replacing complete content. No append or expected_bytes input; use append_file for chunks and edit_file for targeted edits. Overwriting requires read_file of the current version in this run; new files need no read. Own successful writes refresh read authority. Unchanged content is a no-op. Returns size_bytes and a bounded display diff patch. Atomic writes use restorable checkpoints when a checkpoint store is configured; restore uses checkpoints, not the patch. Create missing parents with make_directory. ${writePolicies}`,
-  "append_file": `Append a small chunk (prefer <=16000 characters). Pass expected_bytes from the last successful write/read, or 0 for a new file. A mismatched byte size fails without appending; never blindly replay a chunk. Existing files require read_file in this run or a successful own write. Returns size_bytes for the next chunk and a bounded display diff patch. Atomic writes use restorable checkpoints when a checkpoint store is configured; restore uses checkpoints, not the patch. Create missing parents with make_directory. ${writePolicies}`,
-  "edit_file": `Default tool for targeted file edits instead of command scripts. Atomically replace literal old_text (nonempty); exactly one occurrence is required unless replace_all is true. Authority is a nonempty read_file page of this file in this run (never with if_version); your own successful writes refresh it. Any other change to the file invalidates it, including your own command side effects (builds, formatters, codegen, git), other agents sharing the workspace, checkpoint restores and new runs; read_file again before editing. A file-changed failure is deterministic: never retry the same call, read the current content and re-apply the edit to what it now says. Identical replacement is a no-op. Edits use restorable checkpoints when a checkpoint store is configured; the bounded display diff patch is separate. ${writePolicies}`,
-  "make_directory": `${policies}Create directories recursively without traversing symlinks. Existing directories are accepted.`,
-  "run_command": "Run builds, tests, git and package managers with explicit argv (no implicit shell). For authored files use write_file/edit_file; command effects are not checkpointed. Readonly denied; workspace requests per-call approval under the host policy. NOT an OS sandbox; cwd is guarded. Minimal environment; HOME is the host user's home. Choose and pass timeout_ms: maximum 30 minutes (1800000 ms), no default; allow enough time for builds/tests. Output never terminates a command: private logs retain up to 16 MiB/command and 128 MiB/run, then stop capture. Results show 12000 characters/stream; read_command_output pages the redacted log during this run. Encoded result cap 128 KiB. Cancellation waits for process close.",
-  "read_command_output": "Read a completed command's redacted log without rerunning it. IDs belong to this session/run; logs expire at run end. Offset and limit are UTF-16 characters, not bytes. Readonly permitted.",
-  "search_files": `${policies}Literal search by default; optional bounded regex, root-relative glob (*, **, ?), context and pagination. Modes return line matches, files or per-file matching-line counts in matches. limit is 1-100 per page (default 100; above 100 is rejected, continue with next_offset) and context_lines is 0-3 (default 0; above 3 is rejected, use read_file for more context). Traversal capped at 1000 entries/8 levels; binary/oversize/sensitive files skipped. scan_truncated marks incomplete scan, truncated remaining page results.`,
+const toolDescriptions: Readonly<
+  Record<z.infer<typeof argumentsSchema>["tool"], string>
+> = {
+  git_status:
+    "Read-only repository status for the workspace root. Sensitive paths omitted; secrets redacted; no shell execution. Outside a Git work tree returns repository:false with a note; a nested workspace is rejected with an explicit repository-root requirement.",
+  git_diff:
+    "Read-only unstaged repository diff for the workspace root. Sensitive paths omitted; secrets redacted; no shell execution. Outside a Git work tree returns repository:false with a note; a nested workspace is rejected with an explicit repository-root requirement.",
+  git_log:
+    "Read-only recent repository log for the workspace root. Secrets redacted; no shell execution. Outside a Git work tree returns repository:false with a note; a nested workspace is rejected with an explicit repository-root requirement; a repository with no commits yet returns an empty log.",
+  list_files: `${policies}List paginated entries; optional root-relative glob (*, **, ?). Bounded traversal (1000 entries, 8 levels); dependency/build/cache directories excluded. scan_truncated marks incomplete traversal, truncated remaining page results.`,
+  read_file: `${policies}Numbered UTF-8 pages with zero-based offset, SHA-256 version, byte size, inclusive end_line and cache status. Use offset with limit, where limit is 1-200 lines and defaults to 100; limit above 200 is rejected (e.g. read limit 200, then continue from next_offset). Matching if_version returns unchanged:true without content or new write authority. A nonempty page authorizes write/edit in this run; own successful writes refresh that version, external changes require a new read. Binary rejected; output bounded.`,
+  write_file: `Default tool for creating files or replacing complete content. No append or expected_bytes input; use append_file for chunks and edit_file for targeted edits. Overwriting requires read_file of the current version in this run; new files need no read. Own successful writes refresh read authority. Unchanged content is a no-op. Returns size_bytes and a bounded display diff patch. Atomic writes use restorable checkpoints when a checkpoint store is configured; restore uses checkpoints, not the patch. Create missing parents with make_directory. ${writePolicies}`,
+  append_file: `Append a small chunk (prefer <=16000 characters). Pass expected_bytes from the last successful write/read, or 0 for a new file. A mismatched byte size fails without appending; never blindly replay a chunk. Existing files require read_file in this run or a successful own write. Returns size_bytes for the next chunk and a bounded display diff patch. Atomic writes use restorable checkpoints when a checkpoint store is configured; restore uses checkpoints, not the patch. Create missing parents with make_directory. ${writePolicies}`,
+  edit_file: `Default tool for targeted file edits instead of command scripts. Atomically replace literal old_text (nonempty); exactly one occurrence is required unless replace_all is true. Authority is a nonempty read_file page of this file in this run (never with if_version); your own successful writes refresh it. Any other change to the file invalidates it, including your own command side effects (builds, formatters, codegen, git), other agents sharing the workspace, checkpoint restores and new runs; read_file again before editing. A file-changed failure is deterministic: never retry the same call, read the current content and re-apply the edit to what it now says. Identical replacement is a no-op. Edits use restorable checkpoints when a checkpoint store is configured; the bounded display diff patch is separate. ${writePolicies}`,
+  make_directory: `${policies}Create directories recursively without traversing symlinks. Existing directories are accepted.`,
+  run_command:
+    "Run builds, tests, git and package managers with explicit argv (no implicit shell). For authored files use write_file/edit_file; command effects are not checkpointed. Readonly denied; workspace requests per-call approval under the host policy. NOT an OS sandbox; cwd is guarded. Minimal environment; HOME is the host user's home. Choose and pass timeout_ms: maximum 30 minutes (1800000 ms), no default; allow enough time for builds/tests. Output never terminates a command: private logs retain up to 16 MiB/command and 128 MiB/run, then stop capture. Results show 12000 characters/stream; read_command_output pages the redacted log during this run. Encoded result cap 128 KiB. Cancellation waits for process close.",
+  read_command_output:
+    "Read a completed command's redacted log without rerunning it. IDs belong to this session/run; logs expire at run end. Offset and limit are UTF-16 characters, not bytes. Readonly permitted.",
+  search_files: `${policies}Literal search by default; optional bounded regex, root-relative glob (*, **, ?), context and pagination. Modes return line matches, files or per-file matching-line counts in matches. limit is 1-100 per page (default 100; above 100 is rejected, continue with next_offset) and context_lines is 0-3 (default 0; above 3 is rejected, use read_file for more context). Traversal capped at 1000 entries/8 levels; binary/oversize/sensitive files skipped. scan_truncated marks incomplete scan, truncated remaining page results.`,
 };
-const definitions: readonly ToolDefinition[] = argumentsSchema.options.map(schema => {
-  const { tool, ...fields } = schema.shape;
-  const name = tool.value;
-  return defineTool(name, toolDescriptions[name], z.object(fields).strict(), name === "write_file" ? ["append", "expected_bytes"] : []);
-});
+const definitions: readonly ToolDefinition[] = argumentsSchema.options.map(
+  (schema) => {
+    const { tool, ...fields } = schema.shape;
+    const name = tool.value;
+    return defineTool(
+      name,
+      toolDescriptions[name],
+      z.object(fields).strict(),
+      name === "write_file" ? ["append", "expected_bytes"] : [],
+    );
+  },
+);
 
 function fail(message: string, code: "tool" | "invalid_input" = "tool"): never {
   throw new ForgeError(code, message);
@@ -308,9 +335,13 @@ export async function createLocalToolRegistry(
   function requireRead(sessionId: string, path: string, stamp: string): void {
     const receipt = readReceipts.get(receiptKey(sessionId, path));
     if (receipt === undefined)
-      fail("Read the current file with read_file in this run before writing or editing. Previous-run reads do not carry write authority. Omit if_version so content is returned.");
+      fail(
+        "Read the current file with read_file in this run before writing or editing. Previous-run reads do not carry write authority. Omit if_version so content is returned.",
+      );
     if (receipt !== stamp)
-      fail("File changed since read_file in this run. Retrying the same call cannot succeed. Read the current file again without if_version, then re-apply the edit against the fresh content.");
+      fail(
+        "File changed since read_file in this run. Retrying the same call cannot succeed. Read the current file again without if_version, then re-apply the edit against the fresh content.",
+      );
   }
   let cacheBytes = 0;
   let disposal: Promise<void> | undefined;
@@ -326,8 +357,14 @@ export async function createLocalToolRegistry(
   }
   function safeText(text: string): void {
     if (Buffer.byteLength(text, "utf8") > FILE_LIMIT)
-      fail("File exceeds the 16 MiB ceiling. Split it into separate files; retrying the same content cannot succeed.");
-    if (text.includes("\0") || containsKnown(text) || containsSensitiveText(text))
+      fail(
+        "File exceeds the 16 MiB ceiling. Split it into separate files; retrying the same content cannot succeed.",
+      );
+    if (
+      text.includes("\0") ||
+      containsKnown(text) ||
+      containsSensitiveText(text)
+    )
       fail("Binary or sensitive content is not permitted.");
   }
   const commandOutput = createCommandOutputStore(redact);
@@ -396,7 +433,8 @@ export async function createLocalToolRegistry(
     const info = await lstat(path);
     if (!info.isFile() || info.isSymbolicLink())
       fail("Expected a regular non-symlink file.");
-    if (info.size > FILE_LIMIT) fail("File exceeds the 16 MiB ceiling. Split it into separate files.");
+    if (info.size > FILE_LIMIT)
+      fail("File exceeds the 16 MiB ceiling. Split it into separate files.");
     const stamp = signature(info);
     const cached = cache.get(path);
     if (cached?.signature === stamp) {
@@ -423,7 +461,8 @@ export async function createLocalToolRegistry(
         if (chunk.bytesRead === 0) break;
         length += chunk.bytesRead;
       }
-      if (length > FILE_LIMIT) fail("File exceeds the 16 MiB ceiling. Split it into separate files.");
+      if (length > FILE_LIMIT)
+        fail("File exceeds the 16 MiB ceiling. Split it into separate files.");
       if (signature(await handle.stat()) !== stamp)
         fail("File changed while reading; retry.");
       let text: string;
@@ -442,7 +481,8 @@ export async function createLocalToolRegistry(
     }
   }
   async function read(relativePath: string, signal: AbortSignal) {
-    if (isSensitivePath(relativePath)) fail("Sensitive paths are not permitted.");
+    if (isSensitivePath(relativePath))
+      fail("Sensitive paths are not permitted.");
     const path = await guard.resolveRead(relativePath);
     targetName(path);
     return { path, ...(await readTarget(path, signal)) };
@@ -469,7 +509,8 @@ export async function createLocalToolRegistry(
     sessionId?: string,
   ): Promise<readonly FileChange[]> {
     safeText(text);
-    if (isSensitivePath(relativePath)) fail("Sensitive paths are not permitted.");
+    if (isSensitivePath(relativePath))
+      fail("Sensitive paths are not permitted.");
     const path = await guard.resolveWrite(relativePath);
     const name = targetName(path);
     const parent = dirname(path);
@@ -551,8 +592,12 @@ export async function createLocalToolRegistry(
       if (sessionId) {
         const current = await lstat(path);
         const key = receiptKey(sessionId, path);
-        if (current.ino === written.ino && current.dev === written.dev &&
-            current.size === written.size && current.mtimeMs === written.mtimeMs) {
+        if (
+          current.ino === written.ino &&
+          current.dev === written.dev &&
+          current.size === written.size &&
+          current.mtimeMs === written.mtimeMs
+        ) {
           readReceipts.set(key, signature(current));
         } else readReceipts.delete(key);
       }
@@ -571,13 +616,19 @@ export async function createLocalToolRegistry(
       await checkpoint?.release();
     }
   }
-  async function serializedFile<T>(path: string, sessionId: string, action: () => Promise<T>): Promise<T> {
+  async function serializedFile<T>(
+    path: string,
+    sessionId: string,
+    action: () => Promise<T>,
+  ): Promise<T> {
     const resolved = await guard.resolveWrite(path);
     const key = receiptKey(sessionId, resolved);
     const admitted = readReceipts.get(key);
     return serialized(async () => {
       if (readReceipts.get(key) !== admitted)
-        fail("File changed while this edit was queued; read_file again before editing.");
+        fail(
+          "File changed while this edit was queued; read_file again before editing.",
+        );
       return action();
     });
   }
@@ -586,7 +637,8 @@ export async function createLocalToolRegistry(
     signal: AbortSignal,
   ): Promise<string> {
     check(signal);
-    if (isSensitivePath(relativePath)) fail("Sensitive paths are not permitted.");
+    if (isSensitivePath(relativePath))
+      fail("Sensitive paths are not permitted.");
     if (relativePath.includes("\\") && sep !== "\\")
       fail("Backslash paths are not supported.");
     // The guard parses the entire lexical spelling before inspecting any entry.
@@ -633,7 +685,8 @@ export async function createLocalToolRegistry(
       truncated: boolean;
     }>
   > {
-    if (isSensitivePath(relativePath)) fail("Sensitive paths are not permitted.");
+    if (isSensitivePath(relativePath))
+      fail("Sensitive paths are not permitted.");
     const start = await guard.resolveRead(relativePath);
     targetName(start);
     const entries: {
@@ -779,15 +832,27 @@ export async function createLocalToolRegistry(
         kill();
       }, args.timeout_ms);
       child.once("spawn", () => {
-        try { context.onCommandStarted?.(); } catch { /* Observers cannot fail execution. */ }
+        try {
+          context.onCommandStarted?.();
+        } catch {
+          /* Observers cannot fail execution. */
+        }
       });
       child.stdout.on("data", (chunk: Buffer) => {
         log.capture("stdout", chunk);
-        try { context.onCommandOutput?.("stdout", chunk.toString("utf8")); } catch { /* Observer only. */ }
+        try {
+          context.onCommandOutput?.("stdout", chunk.toString("utf8"));
+        } catch {
+          /* Observer only. */
+        }
       });
       child.stderr.on("data", (chunk: Buffer) => {
         log.capture("stderr", chunk);
-        try { context.onCommandOutput?.("stderr", chunk.toString("utf8")); } catch { /* Observer only. */ }
+        try {
+          context.onCommandOutput?.("stderr", chunk.toString("utf8"));
+        } catch {
+          /* Observer only. */
+        }
       });
       child.on("error", () => {
         spawnFailed = true;
@@ -798,21 +863,41 @@ export async function createLocalToolRegistry(
         // Descendants may have detached their output but remain in our group.
         kill();
         if (cancelled || signal.aborted) {
-          void log.discard().then(() => reject(new ForgeError("cancelled", "Tool execution cancelled.")), reject);
+          void log
+            .discard()
+            .then(
+              () =>
+                reject(
+                  new ForgeError("cancelled", "Tool execution cancelled."),
+                ),
+              reject,
+            );
           return;
         }
         void log.finish().then((output) => {
           let out = output.stdout;
           let err = output.stderr;
           let previewTruncated = output.preview_truncated;
-          const encode = () => result({ ...output, stdout: out, stderr: err,
-            preview_truncated: previewTruncated, exit_code: exitCode, signal: exitSignal,
-            duration_ms: Date.now() - started, timed_out: timedOut, spawn_failed: spawnFailed,
-          }, timedOut || spawnFailed || exitCode !== 0);
+          const encode = () =>
+            result(
+              {
+                ...output,
+                stdout: out,
+                stderr: err,
+                preview_truncated: previewTruncated,
+                exit_code: exitCode,
+                signal: exitSignal,
+                duration_ms: Date.now() - started,
+                timed_out: timedOut,
+                spawn_failed: spawnFailed,
+              },
+              timedOut || spawnFailed || exitCode !== 0,
+            );
           let encoded = encode();
           while (Buffer.byteLength(encoded.content, "utf8") >= RESULT_LIMIT) {
             previewTruncated = true;
-            if (out.length >= err.length) out = out.slice(0, Math.floor(out.length / 2));
+            if (out.length >= err.length)
+              out = out.slice(0, Math.floor(out.length / 2));
             else err = err.slice(0, Math.floor(err.length / 2));
             encoded = encode();
           }
@@ -857,20 +942,38 @@ export async function createLocalToolRegistry(
         fail("Readonly permission forbids this tool.");
       switch (args.tool) {
         case "read_command_output":
-          return result(await commandOutput.read(context.sessionId, args.id, args.stream, args.offset, args.limit));
+          return result(
+            await commandOutput.read(
+              context.sessionId,
+              args.id,
+              args.stream,
+              args.offset,
+              args.limit,
+            ),
+          );
         case "read_file": {
           const file = await read(args.path, signal);
           const lines = file.text.split("\n");
           const version = createHash("sha256").update(file.text).digest("hex");
-          if (args.if_version !== undefined && /^[a-f\d]{64}$/i.test(args.if_version) &&
-              args.if_version.toLowerCase() === version) {
+          if (
+            args.if_version !== undefined &&
+            /^[a-f\d]{64}$/i.test(args.if_version) &&
+            args.if_version.toLowerCase() === version
+          ) {
             check(signal);
             // A SHA is not proof that this session has seen a model-visible page.
             return result({
-              path: targetName(file.path), version, unchanged: true,
-              size_bytes: Buffer.byteLength(file.text, "utf8"), lines_returned: 0,
-              offset: args.offset, end_line: null, next_offset: null,
-              total_lines: lines.length, truncated: false, partial_line: false,
+              path: targetName(file.path),
+              version,
+              unchanged: true,
+              size_bytes: Buffer.byteLength(file.text, "utf8"),
+              lines_returned: 0,
+              offset: args.offset,
+              end_line: null,
+              next_offset: null,
+              total_lines: lines.length,
+              truncated: false,
+              partial_line: false,
               cache_hit: file.cacheHit,
             });
           }
@@ -923,8 +1026,9 @@ export async function createLocalToolRegistry(
           const accept = globMatcher(args.glob);
           const listing = await walk(args.path, args.recursive, signal);
           const root = targetName(await guard.resolveRead(args.path));
-          const filtered = listing.entries.filter(entry =>
-            accept(relativeQueryPath(root, entry.path))).sort((a, b) => a.path.localeCompare(b.path));
+          const filtered = listing.entries
+            .filter((entry) => accept(relativeQueryPath(root, entry.path)))
+            .sort((a, b) => a.path.localeCompare(b.path));
           return result({
             ...pageEntries(filtered, args.offset, args.limit),
             scan_truncated: listing.truncated,
@@ -932,63 +1036,91 @@ export async function createLocalToolRegistry(
         }
         case "append_file":
         case "write_file":
-          return await serializedFile(args.path, context.sessionId, async () => {
-            let content = args.content;
-            if (args.tool === "append_file" || args.append) {
-              if (args.expected_bytes === undefined)
-                fail("Append requires expected_bytes from the last write/read (0 for a new file); do not blindly replay an append.", "invalid_input");
-              let previous = "";
-              try { previous = (await read(args.path, signal)).text; }
-              catch (error) {
-                if (!(error instanceof WorkspacePathError && error.code === "MISSING") && errorCode(error) !== "ENOENT") throw error;
+          return await serializedFile(
+            args.path,
+            context.sessionId,
+            async () => {
+              let content = args.content;
+              if (args.tool === "append_file" || args.append) {
+                if (args.expected_bytes === undefined)
+                  fail(
+                    "Append requires expected_bytes from the last write/read (0 for a new file); do not blindly replay an append.",
+                    "invalid_input",
+                  );
+                let previous = "";
+                try {
+                  previous = (await read(args.path, signal)).text;
+                } catch (error) {
+                  if (
+                    !(
+                      error instanceof WorkspacePathError &&
+                      error.code === "MISSING"
+                    ) &&
+                    errorCode(error) !== "ENOENT"
+                  )
+                    throw error;
+                }
+                if (Buffer.byteLength(previous, "utf8") !== args.expected_bytes)
+                  fail(
+                    "Append offset differs from current file size; inspect with read_file before continuing. No content was appended.",
+                  );
+                content = previous + args.content;
+              } else if (args.expected_bytes !== undefined) {
+                fail(
+                  "write_file replacement does not accept expected_bytes. Remove it, or use append_file with expected_bytes to append a chunk.",
+                  "invalid_input",
+                );
               }
-              if (Buffer.byteLength(previous, "utf8") !== args.expected_bytes)
-                fail("Append offset differs from current file size; inspect with read_file before continuing. No content was appended.");
-              content = previous + args.content;
-            } else if (args.expected_bytes !== undefined) {
-              fail("write_file replacement does not accept expected_bytes. Remove it, or use append_file with expected_bytes to append a chunk.", "invalid_input");
-            }
-            const changes = await commit(
-              args.path,
-              content,
-              signal,
-              undefined,
-              call.id,
-              context.sessionId,
-            );
-            return result(
-              { written: changes.length > 0, unchanged: changes.length === 0, size_bytes: Buffer.byteLength(content, "utf8") },
-              false,
-              changes,
-            );
-          });
+              const changes = await commit(
+                args.path,
+                content,
+                signal,
+                undefined,
+                call.id,
+                context.sessionId,
+              );
+              return result(
+                {
+                  written: changes.length > 0,
+                  unchanged: changes.length === 0,
+                  size_bytes: Buffer.byteLength(content, "utf8"),
+                },
+                false,
+                changes,
+              );
+            },
+          );
         case "edit_file":
-          return await serializedFile(args.path, context.sessionId, async () => {
-            const original = await read(args.path, signal);
-            requireRead(context.sessionId, original.path, original.stamp);
-            const pieces = original.text.split(args.old_text);
-            const count = pieces.length - 1;
-            if (count === 0) fail("old_text was not found.");
-            if (!args.replace_all && count !== 1)
-              fail("old_text is ambiguous; use replace_all explicitly.");
-            const changes = await commit(
-              args.path,
-              pieces.join(args.new_text),
-              signal,
-              original.stamp,
-              call.id,
-              context.sessionId,
-            );
-            return result(
-              {
-                edited: changes.length > 0,
-                unchanged: changes.length === 0,
-                replacements: changes.length > 0 ? count : 0,
-              },
-              false,
-              changes,
-            );
-          });
+          return await serializedFile(
+            args.path,
+            context.sessionId,
+            async () => {
+              const original = await read(args.path, signal);
+              requireRead(context.sessionId, original.path, original.stamp);
+              const pieces = original.text.split(args.old_text);
+              const count = pieces.length - 1;
+              if (count === 0) fail("old_text was not found.");
+              if (!args.replace_all && count !== 1)
+                fail("old_text is ambiguous; use replace_all explicitly.");
+              const changes = await commit(
+                args.path,
+                pieces.join(args.new_text),
+                signal,
+                original.stamp,
+                call.id,
+                context.sessionId,
+              );
+              return result(
+                {
+                  edited: changes.length > 0,
+                  unchanged: changes.length === 0,
+                  replacements: changes.length > 0 ? count : 0,
+                },
+                false,
+                changes,
+              );
+            },
+          );
         case "make_directory":
           return await serialized(async () =>
             result({
@@ -1014,9 +1146,19 @@ export async function createLocalToolRegistry(
           const accept = globMatcher(args.glob);
           const listing = await walk(args.path, true, signal);
           const root = targetName(await guard.resolveRead(args.path));
-          const candidates = listing.entries.filter(entry => entry.kind === "file" &&
-            accept(relativeQueryPath(root, entry.path))).sort((a, b) => a.path.localeCompare(b.path));
-          const matcher = createLineMatcher(args.query, args.regex, args.case_sensitive, signal);
+          const candidates = listing.entries
+            .filter(
+              (entry) =>
+                entry.kind === "file" &&
+                accept(relativeQueryPath(root, entry.path)),
+            )
+            .sort((a, b) => a.path.localeCompare(b.path));
+          const matcher = createLineMatcher(
+            args.query,
+            args.regex,
+            args.case_sensitive,
+            signal,
+          );
           const matches: JsonValue[] = [];
           let seen = 0;
           let length = 0;
@@ -1027,36 +1169,70 @@ export async function createLocalToolRegistry(
             for (const [fileIndex, entry] of candidates.entries()) {
               check(signal);
               let text: string;
-              try { text = (await read(entry.path, signal)).text; }
-              catch (error: unknown) {
-                if (error instanceof ForgeError && error.code === "cancelled") throw error;
+              try {
+                text = (await read(entry.path, signal)).text;
+              } catch (error: unknown) {
+                if (error instanceof ForgeError && error.code === "cancelled")
+                  throw error;
                 skippedFiles += 1;
                 continue;
               }
               const content = args.mode === "content";
-              const found = await matcher.find(text, content ? Math.max(0, args.offset - seen) : 0,
-                content ? args.limit - matches.length + 1 : args.mode === "files" ? 1 : 0,
-                args.mode === "files");
+              const found = await matcher.find(
+                text,
+                content ? Math.max(0, args.offset - seen) : 0,
+                content
+                  ? args.limit - matches.length + 1
+                  : args.mode === "files"
+                    ? 1
+                    : 0,
+                args.mode === "files",
+              );
               const lines = content ? text.split("\n") : [];
-              const values: JsonValue[] = content ? found.hits.map(({ index, column }) => {
-                const line = lines[index] ?? "";
-                const start = Math.max(0, column - 80);
-                return {
-                  path: entry.path, line: index + 1, column: column + 1,
-                  excerpt: line.slice(start, column + 240),
-                  excerpt_truncated: start > 0 || column + 240 < line.length,
-                  ...(args.context_lines === 0 ? {} : {
-                    context: lines.slice(Math.max(0, index - args.context_lines), index + args.context_lines + 1)
-                      .map((value, offset) => ({ line: Math.max(0, index - args.context_lines) + offset + 1,
-                        text: value.slice(0, 320), truncated: value.length > 320 })),
-                  }),
-                };
-              }) : found.count > 0 ? [args.mode === "files" ? { path: entry.path }
-                : { path: entry.path, count: found.count }] : [];
+              const values: JsonValue[] = content
+                ? found.hits.map(({ index, column }) => {
+                    const line = lines[index] ?? "";
+                    const start = Math.max(0, column - 80);
+                    return {
+                      path: entry.path,
+                      line: index + 1,
+                      column: column + 1,
+                      excerpt: line.slice(start, column + 240),
+                      excerpt_truncated:
+                        start > 0 || column + 240 < line.length,
+                      ...(args.context_lines === 0
+                        ? {}
+                        : {
+                            context: lines
+                              .slice(
+                                Math.max(0, index - args.context_lines),
+                                index + args.context_lines + 1,
+                              )
+                              .map((value, offset) => ({
+                                line:
+                                  Math.max(0, index - args.context_lines) +
+                                  offset +
+                                  1,
+                                text: value.slice(0, 320),
+                                truncated: value.length > 320,
+                              })),
+                          }),
+                    };
+                  })
+                : found.count > 0
+                  ? [
+                      args.mode === "files"
+                        ? { path: entry.path }
+                        : { path: entry.path, count: found.count },
+                    ]
+                  : [];
               if (content) seen += found.count;
               for (const value of values) {
                 if (!content && seen++ < args.offset) continue;
-                if (matches.length >= args.limit || length + JSON.stringify(value).length > 90000) {
+                if (
+                  matches.length >= args.limit ||
+                  length + JSON.stringify(value).length > 90000
+                ) {
                   more = true;
                   break;
                 }
@@ -1064,14 +1240,23 @@ export async function createLocalToolRegistry(
                 matches.push(value);
               }
               if (more) {
-                scanTruncated ||= !found.complete || fileIndex < candidates.length - 1;
+                scanTruncated ||=
+                  !found.complete || fileIndex < candidates.length - 1;
                 break;
               }
             }
-          } finally { await matcher.dispose(); }
-          return result({ matches, mode: args.mode, offset: args.offset,
+          } finally {
+            await matcher.dispose();
+          }
+          return result({
+            matches,
+            mode: args.mode,
+            offset: args.offset,
             next_offset: more ? args.offset + matches.length : null,
-            truncated: more, scan_truncated: scanTruncated, skipped_files: skippedFiles });
+            truncated: more,
+            scan_truncated: scanTruncated,
+            skipped_files: skippedFiles,
+          });
         }
         default: {
           const unreachable: never = args;
@@ -1081,9 +1266,22 @@ export async function createLocalToolRegistry(
     } catch (error: unknown) {
       check(signal);
       if (error instanceof z.ZodError)
-        return result({ code: "invalid_input", error: redact(argumentGuidance(call.function.name, error)) }, true);
+        return result(
+          {
+            code: "invalid_input",
+            error: redact(argumentGuidance(call.function.name, error)),
+          },
+          true,
+        );
       if (error instanceof SyntaxError)
-        return result({ code: "invalid_input", error: "Tool arguments must be valid JSON. Fix the JSON syntax before retrying." }, true);
+        return result(
+          {
+            code: "invalid_input",
+            error:
+              "Tool arguments must be valid JSON. Fix the JSON syntax before retrying.",
+          },
+          true,
+        );
       if (error instanceof ForgeError) {
         if (error.code === "cancelled") throw error;
         return result({ code: error.code, error: redact(error.message) }, true);
@@ -1106,7 +1304,16 @@ export async function createLocalToolRegistry(
   }
   return Object.freeze({
     definitions,
-    isConcurrencySafe: (call: ToolCall) => ["read_file", "list_files", "search_files", "read_command_output", "git_status", "git_diff", "git_log"].includes(call.function.name),
+    isConcurrencySafe: (call: ToolCall) =>
+      [
+        "read_file",
+        "list_files",
+        "search_files",
+        "read_command_output",
+        "git_status",
+        "git_diff",
+        "git_log",
+      ].includes(call.function.name),
     execute(call: ToolCall, context: ToolContext): Promise<ToolResult> {
       const task = executeInner(call, context);
       active.add(task);

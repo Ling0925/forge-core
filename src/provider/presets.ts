@@ -60,11 +60,12 @@ const region = (
   ...(keysUrl ? { keysUrl } : {}),
 });
 
-const bedrockEndpoints = (location: string): ProviderEndpoints => endpoints(
-  `https://bedrock-runtime.${location}.amazonaws.com/openai/v1`,
-  `https://bedrock-runtime.${location}.amazonaws.com/openai/v1`,
-  `https://bedrock-runtime.${location}.amazonaws.com/anthropic`,
-);
+const bedrockEndpoints = (location: string): ProviderEndpoints =>
+  endpoints(
+    `https://bedrock-runtime.${location}.amazonaws.com/openai/v1`,
+    `https://bedrock-runtime.${location}.amazonaws.com/openai/v1`,
+    `https://bedrock-runtime.${location}.amazonaws.com/anthropic`,
+  );
 
 /**
  * The independent-provider starter set. It intentionally mirrors Magpie's
@@ -245,23 +246,60 @@ export const providerPresets: readonly ProviderPreset[] = [
     noKey: true,
   },
   {
-    id: "google", name: "Google Gemini", kind: "vendor",
-    endpoints: endpoints("https://generativelanguage.googleapis.com/v1beta/openai", undefined, undefined, "https://generativelanguage.googleapis.com/v1beta"),
-    website: "https://aistudio.google.com", keysUrl: "https://aistudio.google.com/apikey",
+    id: "google",
+    name: "Google Gemini",
+    kind: "vendor",
+    endpoints: endpoints(
+      "https://generativelanguage.googleapis.com/v1beta/openai",
+      undefined,
+      undefined,
+      "https://generativelanguage.googleapis.com/v1beta",
+    ),
+    website: "https://aistudio.google.com",
+    keysUrl: "https://aistudio.google.com/apikey",
   },
   {
-    id: "google-vertex", name: "Google Vertex AI", kind: "vendor",
-    endpoints: endpoints(undefined, undefined, undefined, "https://aiplatform.googleapis.com"),
-    website: "https://docs.cloud.google.com/gemini-enterprise-agent-platform/models",
+    id: "google-vertex",
+    name: "Google Vertex AI",
+    kind: "vendor",
+    endpoints: endpoints(
+      undefined,
+      undefined,
+      undefined,
+      "https://aiplatform.googleapis.com",
+    ),
+    website:
+      "https://docs.cloud.google.com/gemini-enterprise-agent-platform/models",
   },
   {
-    id: "azure", name: "Azure OpenAI", kind: "vendor", endpoints: {},
-    website: "https://ai.azure.com", keysUrl: "https://portal.azure.com/#view/Microsoft_Azure_ProjectOxford/CognitiveServicesHub/~/OpenAI",
+    id: "azure",
+    name: "Azure OpenAI",
+    kind: "vendor",
+    endpoints: {},
+    website: "https://ai.azure.com",
+    keysUrl:
+      "https://portal.azure.com/#view/Microsoft_Azure_ProjectOxford/CognitiveServicesHub/~/OpenAI",
   },
   {
-    id: "bedrock", name: "Amazon Bedrock", kind: "vendor", endpoints: bedrockEndpoints("us-east-1"),
-    regionLabel: "Region", regions: ["us-east-1", "us-east-2", "us-west-2", "eu-central-1", "eu-west-1", "eu-west-3", "ap-northeast-1", "ap-southeast-1", "ap-southeast-2", "ap-south-1"].map(id => region(id, id, bedrockEndpoints(id))),
-    website: "https://aws.amazon.com/bedrock/", keysUrl: "https://console.aws.amazon.com/bedrock/home#/api-keys",
+    id: "bedrock",
+    name: "Amazon Bedrock",
+    kind: "vendor",
+    endpoints: bedrockEndpoints("us-east-1"),
+    regionLabel: "Region",
+    regions: [
+      "us-east-1",
+      "us-east-2",
+      "us-west-2",
+      "eu-central-1",
+      "eu-west-1",
+      "eu-west-3",
+      "ap-northeast-1",
+      "ap-southeast-1",
+      "ap-southeast-2",
+      "ap-south-1",
+    ].map((id) => region(id, id, bedrockEndpoints(id))),
+    website: "https://aws.amazon.com/bedrock/",
+    keysUrl: "https://console.aws.amazon.com/bedrock/home#/api-keys",
   },
   {
     id: "custom",
@@ -273,17 +311,41 @@ export const providerPresets: readonly ProviderPreset[] = [
 
 // Fixed Magpie 2374ffe reference, not a live availability or quota claim.
 export const bedrockReferenceCatalog: ModelCatalog = [
-  "global.anthropic.claude-opus-5-5", "global.anthropic.claude-sonnet-5-5", "global.anthropic.claude-sonnet-5", "global.anthropic.claude-opus-5",
-  "global.anthropic.claude-fable-5-1", "global.anthropic.claude-opus-4-8", "global.anthropic.claude-opus-4-7", "global.anthropic.claude-haiku-4-5-20251001-v1:0",
-  "global.openai.gpt-6-astra", "global.openai.gpt-6-sol", "global.openai.gpt-6-luna", "openai.gpt-oss-120b-1:0", "openai.gpt-oss-20b-1:0",
-  "qwen.qwen3-coder-480b-a35b-v1:0", "deepseek.v3.2", "moonshotai.kimi-k2.5", "zai.glm-5", "minimax.minimax-m2.5",
-].map(id => ({ id, contextWindowTokens: null,
-  protocols: [id.startsWith("global.anthropic.") ? "anthropic" : id.startsWith("global.openai.") ? "responses" : "chat-completions"],
+  "global.anthropic.claude-opus-5-5",
+  "global.anthropic.claude-sonnet-5-5",
+  "global.anthropic.claude-sonnet-5",
+  "global.anthropic.claude-opus-5",
+  "global.anthropic.claude-fable-5-1",
+  "global.anthropic.claude-opus-4-8",
+  "global.anthropic.claude-opus-4-7",
+  "global.anthropic.claude-haiku-4-5-20251001-v1:0",
+  "global.openai.gpt-6-astra",
+  "global.openai.gpt-6-sol",
+  "global.openai.gpt-6-luna",
+  "openai.gpt-oss-120b-1:0",
+  "openai.gpt-oss-20b-1:0",
+  "qwen.qwen3-coder-480b-a35b-v1:0",
+  "deepseek.v3.2",
+  "moonshotai.kimi-k2.5",
+  "zai.glm-5",
+  "minimax.minimax-m2.5",
+].map((id) => ({
+  id,
+  contextWindowTokens: null,
+  protocols: [
+    id.startsWith("global.anthropic.")
+      ? "anthropic"
+      : id.startsWith("global.openai.")
+        ? "responses"
+        : "chat-completions",
+  ],
   provenance: { id: "reference", protocols: "reference" },
 }));
 
 export function findProviderPreset(id: string): ProviderPreset | undefined {
-  return providerPresets.find((preset) => preset.id === id.trim().toLowerCase());
+  return providerPresets.find(
+    (preset) => preset.id === id.trim().toLowerCase(),
+  );
 }
 
 /**

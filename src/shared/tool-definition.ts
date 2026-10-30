@@ -1,7 +1,11 @@
 import type { z } from "zod";
 import { zodToJsonSchema } from "zod-to-json-schema";
 import { ForgeError } from "./errors";
-import { jsonObjectSchema, toolDefinitionSchema, type ToolDefinition } from "./schemas";
+import {
+  type ToolDefinition,
+  jsonObjectSchema,
+  toolDefinitionSchema,
+} from "./schemas";
 
 /** Derive the provider contract from the executable input schema. Refinements
  * remain runtime checks; omitted fields are explicitly legacy-only inputs. */
@@ -12,7 +16,9 @@ export function defineTool(
   legacyFields: readonly string[] = [],
 ): ToolDefinition {
   const { $schema: _dialect, ...generated } = zodToJsonSchema(input, {
-    target: "jsonSchema7", $refStrategy: "none", effectStrategy: "input",
+    target: "jsonSchema7",
+    $refStrategy: "none",
+    effectStrategy: "input",
   });
   const parameters = jsonObjectSchema.parse(generated);
   if (parameters.type !== "object")
@@ -22,12 +28,18 @@ export function defineTool(
   return toolDefinitionSchema.parse({
     type: "function",
     function: {
-      name, description,
+      name,
+      description,
       parameters: {
         ...parameters,
-        properties: Object.fromEntries(Object.entries(properties).filter(([key]) => !omitted.has(key))),
+        properties: Object.fromEntries(
+          Object.entries(properties).filter(([key]) => !omitted.has(key)),
+        ),
         required: Array.isArray(parameters.required)
-          ? parameters.required.filter(key => typeof key === "string" && !omitted.has(key)) : [],
+          ? parameters.required.filter(
+              (key) => typeof key === "string" && !omitted.has(key),
+            )
+          : [],
       },
     },
   });

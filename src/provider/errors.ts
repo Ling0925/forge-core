@@ -22,7 +22,9 @@ export class ProviderError extends ForgeError {
   ) {
     super(
       "provider",
-      classification === "protocol" || classification === "http" || classification === "upstream"
+      classification === "protocol" ||
+        classification === "http" ||
+        classification === "upstream"
         ? `${message} [${classification}${status === undefined ? "" : ` HTTP ${status}`}]${reason === undefined ? "" : ` (${reason})`}`
         : message,
       retryable,
@@ -34,18 +36,37 @@ export class ProviderError extends ForgeError {
   }
 }
 
-const diagnosticStages = ["json_response", "sse_event", "transport_body", "output_text", "tool_arguments", "model_catalog", "response_metadata"] as const;
-export type ProviderStage = typeof diagnosticStages[number];
-export type ProviderDiagnostic = Readonly<{ stage: ProviderStage; observed?: number; limit?: number;
-  unit?: "bytes" | "utf16_code_units" | "nesting_depth" | "items" }>;
+const diagnosticStages = [
+  "json_response",
+  "sse_event",
+  "transport_body",
+  "output_text",
+  "tool_arguments",
+  "model_catalog",
+  "response_metadata",
+] as const;
+export type ProviderStage = (typeof diagnosticStages)[number];
+export type ProviderDiagnostic = Readonly<{
+  stage: ProviderStage;
+  observed?: number;
+  limit?: number;
+  unit?: "bytes" | "utf16_code_units" | "nesting_depth" | "items";
+}>;
 function diagnosticText(detail?: ProviderDiagnostic): string {
   if (!detail || !diagnosticStages.includes(detail.stage)) return "";
   const fields: string[] = [`stage=${detail.stage}`];
   for (const key of ["observed", "limit"] as const) {
     const value = detail[key];
-    if (Number.isSafeInteger(value) && value! >= 0) fields.push(`${key}=${value}`);
+    if (Number.isSafeInteger(value) && value! >= 0)
+      fields.push(`${key}=${value}`);
   }
-  if (detail.unit && ["bytes", "utf16_code_units", "nesting_depth", "items"].includes(detail.unit)) fields.push(`unit=${detail.unit}`);
+  if (
+    detail.unit &&
+    ["bytes", "utf16_code_units", "nesting_depth", "items"].includes(
+      detail.unit,
+    )
+  )
+    fields.push(`unit=${detail.unit}`);
   return ` [${fields.join("; ")}]`;
 }
 

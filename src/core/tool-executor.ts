@@ -15,7 +15,11 @@ import { nativeDefinitions } from "./agents";
 import { withCancellation } from "./cancellation";
 import { toToolHookOutcome } from "./tool-hooks";
 
-const roleDenied = (): ToolResult => ({ content: "Agent role policy denies this tool. Guidance and approval cannot widen the role's tool policy.", isError: true });
+const roleDenied = (): ToolResult => ({
+  content:
+    "Agent role policy denies this tool. Guidance and approval cannot widen the role's tool policy.",
+  isError: true,
+});
 
 const readonlyToolNames = new Set([
   "list_files",
@@ -47,8 +51,17 @@ export function planReadBatch(
   const batch: ToolCall[] = [];
   for (const candidate of calls.slice(index, index + 4)) {
     if (options.allowTool) {
-      try { if (!options.allowTool(candidate.function.name, JSON.parse(candidate.function.arguments))) break; }
-      catch { break; }
+      try {
+        if (
+          !options.allowTool(
+            candidate.function.name,
+            JSON.parse(candidate.function.arguments),
+          )
+        )
+          break;
+      } catch {
+        break;
+      }
     }
     if (
       options.hasHooks ||
@@ -81,7 +94,11 @@ export function executeReadBatch(
     calls.map(async (call) => {
       if (options.allowTool) {
         let args: unknown;
-        try { args = JSON.parse(call.function.arguments); } catch { return invalidToolInput(new SyntaxError("Invalid tool arguments")); }
+        try {
+          args = JSON.parse(call.function.arguments);
+        } catch {
+          return invalidToolInput(new SyntaxError("Invalid tool arguments"));
+        }
         if (!options.allowTool(call.function.name, args)) return roleDenied();
       }
       const result = toolResultSchema.parse(
@@ -141,8 +158,15 @@ export async function executeToolCall(options: ToolExecution): Promise<{
   // Deny before hooks/approvals can start work, including forged native calls.
   if (options.allowTool) {
     let args: unknown;
-    try { args = JSON.parse(call.function.arguments); } catch { return { result: invalidToolInput(new SyntaxError("Invalid tool arguments")) }; }
-    if (!options.allowTool(call.function.name, args)) return { result: roleDenied() };
+    try {
+      args = JSON.parse(call.function.arguments);
+    } catch {
+      return {
+        result: invalidToolInput(new SyntaxError("Invalid tool arguments")),
+      };
+    }
+    if (!options.allowTool(call.function.name, args))
+      return { result: roleDenied() };
   }
   let acceptingEvents = true;
   let requested = false;

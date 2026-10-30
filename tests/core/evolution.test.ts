@@ -46,7 +46,13 @@ describe("core evolution", () => {
       listModels: async () => [],
       complete: async (messages, _tools, options) => {
         if (options.model === "child" && childTurns++ === 0)
-          return { message: { role: "assistant", content: null, tool_calls: [call("child-read", "read_file", { path: "a.ts" })] } };
+          return {
+            message: {
+              role: "assistant",
+              content: null,
+              tool_calls: [call("child-read", "read_file", { path: "a.ts" })],
+            },
+          };
         if (options.model === "child")
           return {
             message: {
@@ -113,8 +119,19 @@ describe("core evolution", () => {
       expect(
         persisted.messages.filter((m) => m.role === "assistant").at(-1),
       ).toEqual(finalMessage);
-      expect(persisted.events.some(e => e.type === "agent_update" && e.currentTool?.name === "read_file" && e.currentTool.target === "a.ts")).toBe(true);
-      expect(persisted.events.some(e => e.type === "tool_started" && e.call.id === "child-read")).toBe(false);
+      expect(
+        persisted.events.some(
+          (e) =>
+            e.type === "agent_update" &&
+            e.currentTool?.name === "read_file" &&
+            e.currentTool.target === "a.ts",
+        ),
+      ).toBe(true);
+      expect(
+        persisted.events.some(
+          (e) => e.type === "tool_started" && e.call.id === "child-read",
+        ),
+      ).toBe(false);
       const completed = persisted.events.filter(
         (e) => e.type === "agent_update" && e.status === "completed",
       );

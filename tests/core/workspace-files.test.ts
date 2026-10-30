@@ -2,7 +2,10 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { listWorkspaceDirectory, readWorkspaceFilePreview } from "../../src/core/workspace-files";
+import {
+  listWorkspaceDirectory,
+  readWorkspaceFilePreview,
+} from "../../src/core/workspace-files";
 
 describe("workspace file content safety", () => {
   let workspace = "";
@@ -18,8 +21,9 @@ describe("workspace file content safety", () => {
     await writeFile(join(workspace, "notes.txt"), "ordinary notes");
     const listing = await listWorkspaceDirectory(workspace);
     expect(listing.entries.map((entry) => entry.name)).toEqual(["notes.txt"]);
-    await expect(readWorkspaceFilePreview(workspace, "credentials.json"))
-      .rejects.toMatchObject({ code: "tool" });
+    await expect(
+      readWorkspaceFilePreview(workspace, "credentials.json"),
+    ).rejects.toMatchObject({ code: "tool" });
   });
 
   it("withholds secret-shaped content while retaining ordinary file metadata", async () => {
@@ -27,7 +31,9 @@ describe("workspace file content safety", () => {
     await writeFile(join(workspace, "notes.txt"), content);
     const preview = await readWorkspaceFilePreview(workspace, "notes.txt");
     expect(preview).toMatchObject({
-      content: "[敏感内容已隐藏]", path: "notes.txt", binary: false,
+      content: "[敏感内容已隐藏]",
+      path: "notes.txt",
+      binary: false,
       sizeBytes: Buffer.byteLength(content),
     });
   });

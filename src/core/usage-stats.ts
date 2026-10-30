@@ -18,10 +18,24 @@ import {
   providerRequestKey,
   summarizeCacheUsage,
 } from "../shared/usage-metrics";
-import { createModelPricingService, estimateAggregateCostUsd, estimateRequestCostUsd, findModelPrice, normalizePricingModelId, type ModelPrice, type ModelPrices, type ModelPricingService } from "./model-pricing";
+import {
+  type ModelPrice,
+  type ModelPrices,
+  type ModelPricingService,
+  createModelPricingService,
+  estimateAggregateCostUsd,
+  estimateRequestCostUsd,
+  findModelPrice,
+  normalizePricingModelId,
+} from "./model-pricing";
 
-type TokenUsageStat = Pick<SessionUsageStat, "promptTokens" | "completionTokens" | "cachedTokens" | "totalTokens">;
-type MutableTokenUsage = { -readonly [K in keyof TokenUsageStat]: TokenUsageStat[K] };
+type TokenUsageStat = Pick<
+  SessionUsageStat,
+  "promptTokens" | "completionTokens" | "cachedTokens" | "totalTokens"
+>;
+type MutableTokenUsage = {
+  -readonly [K in keyof TokenUsageStat]: TokenUsageStat[K];
+};
 
 interface SessionUsageEntry extends TokenUsageStat {
   readonly model: string;
@@ -42,7 +56,9 @@ const tokenUsage = (usage?: Usage): MutableTokenUsage => ({
   totalTokens: (usage?.promptTokens ?? 0) + (usage?.completionTokens ?? 0),
 });
 
-const sumTokenUsage = (entries: readonly TokenUsageStat[]): MutableTokenUsage => {
+const sumTokenUsage = (
+  entries: readonly TokenUsageStat[],
+): MutableTokenUsage => {
   const total = tokenUsage();
   for (const entry of entries) {
     total.promptTokens += entry.promptTokens;
@@ -170,7 +186,9 @@ export function routeUsageStats(
 }
 
 /** Collapse start/result events into individual requests, not route totals. */
-export function sessionRequestRecords(snapshot: SessionSnapshot): readonly UsageRequest[] {
+export function sessionRequestRecords(
+  snapshot: SessionSnapshot,
+): readonly UsageRequest[] {
   const records: UsageRequest[] = [];
   const pending = new Map<string, number>();
   for (const [index, event] of snapshot.events.entries()) {
@@ -191,16 +209,24 @@ export function sessionRequestRecords(snapshot: SessionSnapshot): readonly Usage
       ...(event.step === undefined ? {} : { step: event.step }),
       sourceId: selection.sourceId,
       model: selection.model,
-      ...(selection.reasoningEffort === undefined ? {} : { reasoningEffort: selection.reasoningEffort }),
+      ...(selection.reasoningEffort === undefined
+        ? {}
+        : { reasoningEffort: selection.reasoningEffort }),
       apiMode: selection.apiMode,
-      ...(selection.credentialId === undefined ? {} : { credentialId: selection.credentialId }),
-      ...(selection.groupId === undefined ? {} : { groupId: selection.groupId }),
+      ...(selection.credentialId === undefined
+        ? {}
+        : { credentialId: selection.credentialId }),
+      ...(selection.groupId === undefined
+        ? {}
+        : { groupId: selection.groupId }),
       attempt: selection.attempt,
       reason: selection.reason,
       timestamp: selection.timestamp,
       outcome: selection.outcome === "started" ? "unknown" : selection.outcome,
       ...(selection.usage === undefined ? {} : { usage: selection.usage }),
-      ...(selection.errorCode === undefined ? {} : { errorCode: selection.errorCode }),
+      ...(selection.errorCode === undefined
+        ? {}
+        : { errorCode: selection.errorCode }),
     };
     if (selection.outcome === "started") {
       pending.set(key, records.length);
@@ -208,17 +234,30 @@ export function sessionRequestRecords(snapshot: SessionSnapshot): readonly Usage
       continue;
     }
     const pendingIndex = pending.get(key);
-    const started = pendingIndex === undefined ? undefined : records[pendingIndex];
-    const durationMs = started?.startedAt === undefined
-      ? Number.NaN
-      : Date.parse(selection.timestamp) - Date.parse(started.startedAt);
+    const started =
+      pendingIndex === undefined ? undefined : records[pendingIndex];
+    const durationMs =
+      started?.startedAt === undefined
+        ? Number.NaN
+        : Date.parse(selection.timestamp) - Date.parse(started.startedAt);
     // End-to-end output throughput: includes request latency, not a fabricated
     // streaming-only rate (historical events do not record first-token time).
-    const tokensPerSecond = outputTokensPerSecond(selection.usage?.completionTokens, durationMs);
+    const tokensPerSecond = outputTokensPerSecond(
+      selection.usage?.completionTokens,
+      durationMs,
+    );
     const completed: UsageRequest = {
-      ...(started?.reasoningEffort === undefined ? {} : { reasoningEffort: started.reasoningEffort }),
+      ...(started?.reasoningEffort === undefined
+        ? {}
+        : { reasoningEffort: started.reasoningEffort }),
       ...record,
-      ...(started ? { id: started.id, timestamp: started.timestamp, startedAt: started.startedAt } : {}),
+      ...(started
+        ? {
+            id: started.id,
+            timestamp: started.timestamp,
+            startedAt: started.startedAt,
+          }
+        : {}),
       finishedAt: selection.timestamp,
       ...(Number.isFinite(durationMs) && durationMs >= 0 ? { durationMs } : {}),
       ...(tokensPerSecond === undefined ? {} : { tokensPerSecond }),
@@ -258,25 +297,30 @@ export function computeSessionUsage(
   snapshot: SessionSnapshot,
 ): ComputedSessionUsage {
   const requests = sessionRequestRecords(snapshot);
-  const requestsByEvent = new Map(requests.map(request => [request.id, request]));
+  const requestsByEvent = new Map(
+    requests.map((request) => [request.id, request]),
+  );
   const runStats: SessionRunStat[] = [];
-  let current: {
-    model: string;
-    timestamp: string;
-    requests: UsageRequest[];
-    context: MutableTokenUsage;
-  } | undefined;
+  let current:
+    | {
+        model: string;
+        timestamp: string;
+        requests: UsageRequest[];
+        context: MutableTokenUsage;
+      }
+    | undefined;
 
-  const ensureRun = (timestamp?: string) => current ??= {
-    model: snapshot.model,
-    timestamp: timestamp ?? snapshot.updatedAt,
-    requests: [],
-    context: tokenUsage(),
-  };
+  const ensureRun = (timestamp?: string) =>
+    (current ??= {
+      model: snapshot.model,
+      timestamp: timestamp ?? snapshot.updatedAt,
+      requests: [],
+      context: tokenUsage(),
+    });
   const finishRun = (usage?: Usage, timestamp?: string) => {
     if (!current) return;
     const reported = usage ? tokenUsage(usage) : current.context;
-    const entries: SessionUsageEntry[] = current.requests.map(request => ({
+    const entries: SessionUsageEntry[] = current.requests.map((request) => ({
       model: request.model,
       timestamp: request.timestamp,
       requestId: request.id,
@@ -284,12 +328,17 @@ export function computeSessionUsage(
     }));
     // context_usage and run_finished repeat successful request usage. Retain only
     // their uncovered remainder; failed attempts with reported usage are separate.
-    const covered = sumTokenUsage(current.requests
-      .filter(request => request.outcome === "succeeded")
-      .map(request => tokenUsage(request.usage)));
+    const covered = sumTokenUsage(
+      current.requests
+        .filter((request) => request.outcome === "succeeded")
+        .map((request) => tokenUsage(request.usage)),
+    );
     const remainder = {
       promptTokens: Math.max(0, reported.promptTokens - covered.promptTokens),
-      completionTokens: Math.max(0, reported.completionTokens - covered.completionTokens),
+      completionTokens: Math.max(
+        0,
+        reported.completionTokens - covered.completionTokens,
+      ),
       cachedTokens: Math.max(0, reported.cachedTokens - covered.cachedTokens),
     };
     const remainderTotal = remainder.promptTokens + remainder.completionTokens;
@@ -344,8 +393,13 @@ export function computeSessionUsage(
     runCount: runStats.length,
   };
 
-  return { stat, runStats, routing: routeUsageStats(snapshot.events), requests,
-    cacheRecords: cacheUsageRecords(snapshot.events) };
+  return {
+    stat,
+    runStats,
+    routing: routeUsageStats(snapshot.events),
+    requests,
+    cacheRecords: cacheUsageRecords(snapshot.events),
+  };
 }
 
 export function aggregateRouteUsageStats(
@@ -377,29 +431,56 @@ export function aggregateUsageStats(
   filter?: UsageFilter,
   prices?: ModelPrices,
 ): UsageStatsDto {
-  const cutoff = filter?.days ? Date.now() - filter.days * 86_400_000 : undefined;
-  const inPeriod = (timestamp: string) => cutoff === undefined || Date.parse(timestamp) >= cutoff;
+  const cutoff = filter?.days
+    ? Date.now() - filter.days * 86_400_000
+    : undefined;
+  const inPeriod = (timestamp: string) =>
+    cutoff === undefined || Date.parse(timestamp) >= cutoff;
   const filtered = computedList
-    .filter(item => !filter?.workspace || item.stat.workspace === filter.workspace)
-    .map(item => {
-      const runStats = item.runStats.map(run => {
-        const entries = run.entries.filter(entry => inPeriod(entry.timestamp));
-        return { ...run, entries, ...sumTokenUsage(entries) };
-      }).filter(run => run.entries.length > 0);
-      return { ...item, runStats, stat: {
-        ...item.stat, ...sumTokenUsage(runStats), runCount: runStats.length,
-      } };
+    .filter(
+      (item) => !filter?.workspace || item.stat.workspace === filter.workspace,
+    )
+    .map((item) => {
+      const runStats = item.runStats
+        .map((run) => {
+          const entries = run.entries.filter((entry) =>
+            inPeriod(entry.timestamp),
+          );
+          return { ...run, entries, ...sumTokenUsage(entries) };
+        })
+        .filter((run) => run.entries.length > 0);
+      return {
+        ...item,
+        runStats,
+        stat: {
+          ...item.stat,
+          ...sumTokenUsage(runStats),
+          runCount: runStats.length,
+        },
+      };
     })
-    .filter(item => cutoff === undefined || item.runStats.length > 0);
+    .filter((item) => cutoff === undefined || item.runStats.length > 0);
 
-  const requests = filtered.flatMap(item => item.requests).filter(request =>
-    inPeriod(request.timestamp),
-  ).sort((a, b) => b.timestamp.localeCompare(a.timestamp) || a.id.localeCompare(b.id)).map(request => {
-    // Truncate IDs only for price lookup, never for accounting buckets.
-    const estimatedCostUsd = prices && estimateRequestCostUsd(request.usage, findModelPrice(prices, request.model));
-    return estimatedCostUsd === undefined ? request : { ...request, estimatedCostUsd };
-  });
-  const requestById = new Map(requests.map(request => [request.id, request]));
+  const requests = filtered
+    .flatMap((item) => item.requests)
+    .filter((request) => inPeriod(request.timestamp))
+    .sort(
+      (a, b) =>
+        b.timestamp.localeCompare(a.timestamp) || a.id.localeCompare(b.id),
+    )
+    .map((request) => {
+      // Truncate IDs only for price lookup, never for accounting buckets.
+      const estimatedCostUsd =
+        prices &&
+        estimateRequestCostUsd(
+          request.usage,
+          findModelPrice(prices, request.model),
+        );
+      return estimatedCostUsd === undefined
+        ? request
+        : { ...request, estimatedCostUsd };
+    });
+  const requestById = new Map(requests.map((request) => [request.id, request]));
 
   let totalPromptTokens = 0;
   let totalCompletionTokens = 0;
@@ -411,12 +492,13 @@ export function aggregateUsageStats(
     aggregateEstimatedCostUsd?: number;
     costIncomplete: boolean;
   };
-  type ModelTotals = MutableTokenUsage & CostTotals & {
-    runCount: number;
-    sessionCount: number;
-    requestCount: number;
-    pricedRequestCount: number;
-  };
+  type ModelTotals = MutableTokenUsage &
+    CostTotals & {
+      runCount: number;
+      sessionCount: number;
+      requestCount: number;
+      pricedRequestCount: number;
+    };
   type DailyTotals = MutableTokenUsage & CostTotals & { runCount: number };
   const modelMap = new Map<string, ModelTotals>();
   const dailyMap = new Map<string, DailyTotals>();
@@ -434,7 +516,12 @@ export function aggregateUsageStats(
       const runDates = new Set<string>();
       for (const entry of run.entries) {
         const m: ModelTotals = modelMap.get(entry.model) ?? {
-          ...tokenUsage(), runCount: 0, sessionCount: 0, requestCount: 0, pricedRequestCount: 0, costIncomplete: false,
+          ...tokenUsage(),
+          runCount: 0,
+          sessionCount: 0,
+          requestCount: 0,
+          pricedRequestCount: 0,
+          costIncomplete: false,
         };
         m.promptTokens += entry.promptTokens;
         m.completionTokens += entry.completionTokens;
@@ -448,7 +535,11 @@ export function aggregateUsageStats(
         modelMap.set(entry.model, m);
 
         const date = entry.timestamp.slice(0, 10);
-        const d: DailyTotals = dailyMap.get(date) ?? { ...tokenUsage(), runCount: 0, costIncomplete: false };
+        const d: DailyTotals = dailyMap.get(date) ?? {
+          ...tokenUsage(),
+          runCount: 0,
+          costIncomplete: false,
+        };
         d.promptTokens += entry.promptTokens;
         d.completionTokens += entry.completionTokens;
         d.cachedTokens += entry.cachedTokens;
@@ -460,17 +551,29 @@ export function aggregateUsageStats(
         // Entries already exclude request-covered usage. Estimate only that
         // historical remainder; do not duplicate requests or invent request rows.
         const aggregate = entry.requestId === undefined;
-        const estimatedCostUsd = entry.requestId !== undefined
-          ? requestById.get(entry.requestId)?.estimatedCostUsd
-          : (prices && entry.totalTokens > 0 ? estimateAggregateCostUsd({
-            promptTokens: entry.promptTokens, completionTokens: entry.completionTokens,
-            cachedPromptTokens: entry.cachedTokens, totalTokens: entry.totalTokens,
-          }, findModelPrice(prices, entry.model)) : undefined);
-        if (!aggregate && estimatedCostUsd !== undefined) m.pricedRequestCount += 1;
+        const estimatedCostUsd =
+          entry.requestId !== undefined
+            ? requestById.get(entry.requestId)?.estimatedCostUsd
+            : prices && entry.totalTokens > 0
+              ? estimateAggregateCostUsd(
+                  {
+                    promptTokens: entry.promptTokens,
+                    completionTokens: entry.completionTokens,
+                    cachedPromptTokens: entry.cachedTokens,
+                    totalTokens: entry.totalTokens,
+                  },
+                  findModelPrice(prices, entry.model),
+                )
+              : undefined;
+        if (!aggregate && estimatedCostUsd !== undefined)
+          m.pricedRequestCount += 1;
         for (const target of [m, d]) {
           if (estimatedCostUsd !== undefined) {
-            target.estimatedCostUsd = (target.estimatedCostUsd ?? 0) + estimatedCostUsd;
-            if (aggregate) target.aggregateEstimatedCostUsd = (target.aggregateEstimatedCostUsd ?? 0) + estimatedCostUsd;
+            target.estimatedCostUsd =
+              (target.estimatedCostUsd ?? 0) + estimatedCostUsd;
+            if (aggregate)
+              target.aggregateEstimatedCostUsd =
+                (target.aggregateEstimatedCostUsd ?? 0) + estimatedCostUsd;
           } else if (!aggregate || entry.totalTokens > 0) {
             target.costIncomplete = true;
           }

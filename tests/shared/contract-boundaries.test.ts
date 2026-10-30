@@ -115,7 +115,16 @@ describe("neutral contract ownership", () => {
   });
 
   it("keeps the core independent of all application adapters", async () => {
-    for (const folder of ["core", "host", "web", "provider", "store", "tools", "context", "mcp"])
+    for (const folder of [
+      "core",
+      "host",
+      "web",
+      "provider",
+      "store",
+      "tools",
+      "context",
+      "mcp",
+    ])
       for (const file of await sources(resolve(root, "src", folder))) {
         expect(
           imports(await readFile(file, "utf8")).filter((path) =>
@@ -125,7 +134,9 @@ describe("neutral contract ownership", () => {
         ).toEqual([]);
       }
     const entries = await readdir(resolve(root, "src"));
-    expect(entries.filter(name => ["cli", "renderer", "desktop"].includes(name))).toEqual([]);
+    expect(
+      entries.filter((name) => ["cli", "renderer", "desktop"].includes(name)),
+    ).toEqual([]);
     const neutral = await import("../../src/host/runtime");
     expect(neutral.createRuntimeHub).toBeTypeOf("function");
   });

@@ -33,11 +33,30 @@ export interface TaskDetail {
 /** Read-only observation must not mark results delivered to the model. */
 export interface CommandTaskAccess {
   list(sessionId: SessionId): readonly TaskView[];
-  read(sessionId: SessionId, id: string, offset: number, limit: number): TaskDetail | undefined;
+  read(
+    sessionId: SessionId,
+    id: string,
+    offset: number,
+    limit: number,
+  ): TaskDetail | undefined;
   stop(sessionId: SessionId, id: string): Promise<boolean>;
 }
 export interface TaskService {
-  listTasks(parentId: SessionId, offset?: number, limit?: number): Promise<TaskPage>;
-  getTask(parentId: SessionId, kind: TaskView["kind"], id: string, offset?: number, limit?: number): Promise<TaskDetail>;
-  stopTask(parentId: SessionId, kind: TaskView["kind"], id: string): Promise<boolean>;
+  listTasks(
+    parentId: SessionId,
+    offset?: number,
+    limit?: number,
+  ): Promise<TaskPage>;
+  getTask(
+    parentId: SessionId,
+    kind: TaskView["kind"],
+    id: string,
+    offset?: number,
+    limit?: number,
+  ): Promise<TaskDetail>;
+  stopTask(
+    parentId: SessionId,
+    kind: TaskView["kind"],
+    id: string,
+  ): Promise<boolean>;
 }

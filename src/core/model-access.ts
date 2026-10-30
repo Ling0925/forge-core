@@ -1,95 +1,196 @@
 import { createHash, randomUUID } from "node:crypto";
-import { createVertexAuth, normalizeAzureBase, type VertexAuth } from "../provider/cloud";
-import { createRequestOptions } from "../provider/request-options";
 import { createAccountService } from "../provider/accounts";
 import type { AccountFetch } from "../provider/accounts/types";
-import { createCachedProviderFactory } from "../provider/catalog-cache";
 import { catalogFromIds, mergeCatalog } from "../provider/catalog";
-import { parseMagpieImport, type MagpieImportResult } from "../provider/import-magpie";
+import { createCachedProviderFactory } from "../provider/catalog-cache";
+import {
+  type VertexAuth,
+  createVertexAuth,
+  normalizeAzureBase,
+} from "../provider/cloud";
+import {
+  type MagpieImportResult,
+  parseMagpieImport,
+} from "../provider/import-magpie";
 import { bedrockReferenceCatalog, providerPresets } from "../provider/presets";
-import type { ModelProvider, ProviderFactory, SettingsStore } from "../shared/contracts";
-import type { RouteGroup, RouteMember } from "../shared/model-access";
+import { createRequestOptions } from "../provider/request-options";
 import type { RouteQuota, RouteRequest } from "../provider/routing";
+import type {
+  ModelProvider,
+  ProviderFactory,
+  SettingsStore,
+} from "../shared/contracts";
 import { ForgeError } from "../shared/errors";
-import { modelAccessRequestSchema, modelAccessResultSchema, type CredentialInput, type ModelAccessRequest, type ModelAccessResult } from "../shared/model-access";
-import { accountProtocolCompatible, modelProtocol, modelProtocolOverride } from "../shared/model-protocol";
-import { modelCatalogSchema, type ModelCatalog } from "../shared/model-catalog";
-import { providerConfigSchema, type ProviderConfig, type PublicProviderSource } from "../shared/schemas";
-import { modelCatalogCacheKey, type ModelCatalogStore } from "../store/model-catalog";
+import type { RouteGroup, RouteMember } from "../shared/model-access";
+import {
+  type CredentialInput,
+  type ModelAccessRequest,
+  type ModelAccessResult,
+  modelAccessRequestSchema,
+  modelAccessResultSchema,
+} from "../shared/model-access";
+import { type ModelCatalog, modelCatalogSchema } from "../shared/model-catalog";
+import {
+  accountProtocolCompatible,
+  modelProtocol,
+  modelProtocolOverride,
+} from "../shared/model-protocol";
+import {
+  type ProviderConfig,
+  type PublicProviderSource,
+  providerConfigSchema,
+} from "../shared/schemas";
+import {
+  type ModelCatalogStore,
+  modelCatalogCacheKey,
+} from "../store/model-catalog";
 
 const cancelled = () => new ForgeError("cancelled", "模型接入操作已取消。");
-const checkSignal = (signal: AbortSignal) => { if (signal.aborted) throw cancelled(); };
-const publicFailure = (error: unknown) => error instanceof ForgeError
-  ? `请求失败（${error.code}），请检查服务配置。` : "服务请求失败，请检查连接或账号状态。";
-const credentialProjection = (source: PublicProviderSource): CredentialInput[] => source.credentials?.map(({ id, label, enabled, type, protocol }) => ({ id, label, enabled, type, ...(protocol ? { protocol } : {}) }))
-  ?? [{ id: "default", label: "Default", enabled: true, type: "api-key" }];
-const sourceFields = ({ hasApiKey: _key, credentials: _credentials, connection: _connection, revision: _revision, ...source }: PublicProviderSource) => source;
-type SelectionValidator = (config: ProviderConfig, source: PublicProviderSource | undefined, model: string | undefined) => void;
+const checkSignal = (signal: AbortSignal) => {
+  if (signal.aborted) throw cancelled();
+};
+const publicFailure = (error: unknown) =>
+  error instanceof ForgeError
+    ? `请求失败（${error.code}），请检查服务配置。`
+    : "服务请求失败，请检查连接或账号状态。";
+const credentialProjection = (
+  source: PublicProviderSource,
+): CredentialInput[] =>
+  source.credentials?.map(({ id, label, enabled, type, protocol }) => ({
+    id,
+    label,
+    enabled,
+    type,
+    ...(protocol ? { protocol } : {}),
+  })) ?? [{ id: "default", label: "Default", enabled: true, type: "api-key" }];
+const sourceFields = ({
+  hasApiKey: _key,
+  credentials: _credentials,
+  connection: _connection,
+  revision: _revision,
+  ...source
+}: PublicProviderSource) => source;
+type SelectionValidator = (
+  config: ProviderConfig,
+  source: PublicProviderSource | undefined,
+  model: string | undefined,
+) => void;
 
-function modelMetadata(upstream: ModelCatalog, source?: PublicProviderSource): ModelCatalog {
+function modelMetadata(
+  upstream: ModelCatalog,
+  source?: PublicProviderSource,
+): ModelCatalog {
   const selection = source?.modelSelection;
-  const user = new Map((selection?.manual ?? []).map(entry => [entry.id, entry]));
+  const user = new Map(
+    (selection?.manual ?? []).map((entry) => [entry.id, entry]),
+  );
   for (const [id, override] of Object.entries(selection?.overrides ?? {})) {
     // apiMode routes requests; it is not a catalog capability or persisted entry field.
     const { apiMode: _apiMode, ...metadata } = override;
     const entry = { ...user.get(id), ...metadata, id };
-    user.set(id, { ...entry, contextWindowTokens: entry.contextWindowTokens ?? null });
+    user.set(id, {
+      ...entry,
+      contextWindowTokens: entry.contextWindowTokens ?? null,
+    });
   }
   return mergeCatalog([], upstream, [...user.values()]);
 }
 
-export function applyModelSelection(upstream: ModelCatalog, source?: PublicProviderSource): ModelCatalog {
+export function applyModelSelection(
+  upstream: ModelCatalog,
+  source?: PublicProviderSource,
+): ModelCatalog {
   const selection = source?.modelSelection;
   const merged = modelMetadata(upstream, source);
   if (selection?.mode === "none") return [];
-  if (selection?.mode === "selected") return merged.filter(entry => selection.models?.includes(entry.id));
+  if (selection?.mode === "selected")
+    return merged.filter((entry) => selection.models?.includes(entry.id));
   return merged;
 }
 
-function selectedMetadata(models: ModelCatalog, model: string, actualModel: string) {
-  const selected = models.find(entry => entry.id === model);
-  const actual = models.find(entry => entry.id === actualModel);
+function selectedMetadata(
+  models: ModelCatalog,
+  model: string,
+  actualModel: string,
+) {
+  const selected = models.find((entry) => entry.id === model);
+  const actual = models.find((entry) => entry.id === actualModel);
   if (!actual || actualModel === model) return selected;
   // An alias may override only some fields; retain the wire model's other metadata.
-  return mergeCatalog([], [...(selected ? [selected] : []), { ...actual, id: model }])[0];
+  return mergeCatalog(
+    [],
+    [...(selected ? [selected] : []), { ...actual, id: model }],
+  )[0];
 }
 
-function modelRequestConfig(config: ProviderConfig, source: PublicProviderSource | undefined, model?: string): ProviderConfig {
+function modelRequestConfig(
+  config: ProviderConfig,
+  source: PublicProviderSource | undefined,
+  model?: string,
+): ProviderConfig {
   if (model === undefined) return config;
   const overrides = source?.modelSelection?.overrides;
   const selected = overrides?.[model];
   const actualModel = source?.modelAliases?.[model];
-  const actual = actualModel === undefined ? undefined : overrides?.[actualModel];
+  const actual =
+    actualModel === undefined ? undefined : overrides?.[actualModel];
   // Only explicit request overrides apply here, not upstream capability metadata.
   // Null/omitted limits inherit; "default" explicitly suppresses a global effort.
-  const reasoningEffort = selected?.reasoningEffort ?? actual?.reasoningEffort ?? config.reasoningEffort;
-  const maxOutputTokens = selected?.maxOutputTokens ?? actual?.maxOutputTokens ?? config.maxOutputTokens;
-  if (reasoningEffort === config.reasoningEffort && maxOutputTokens === config.maxOutputTokens) return config;
-  return providerConfigSchema.parse({ ...config, reasoningEffort, maxOutputTokens });
+  const reasoningEffort =
+    selected?.reasoningEffort ??
+    actual?.reasoningEffort ??
+    config.reasoningEffort;
+  const maxOutputTokens =
+    selected?.maxOutputTokens ??
+    actual?.maxOutputTokens ??
+    config.maxOutputTokens;
+  if (
+    reasoningEffort === config.reasoningEffort &&
+    maxOutputTokens === config.maxOutputTokens
+  )
+    return config;
+  return providerConfigSchema.parse({
+    ...config,
+    reasoningEffort,
+    maxOutputTokens,
+  });
 }
 
 /** Host-owned setup operations. Private imports, tokens and request parameters never cross RPC. */
-export function createModelAccessService(options: Readonly<{
-  settingsStore: SettingsStore;
-  catalogStore: ModelCatalogStore;
-  providerFactory: ProviderFactory;
-  signal: AbortSignal;
-  accountFetch?: AccountFetch;
-  cloudFetch?: typeof globalThis.fetch;
-}>) {
+export function createModelAccessService(
+  options: Readonly<{
+    settingsStore: SettingsStore;
+    catalogStore: ModelCatalogStore;
+    providerFactory: ProviderFactory;
+    signal: AbortSignal;
+    accountFetch?: AccountFetch;
+    cloudFetch?: typeof globalThis.fetch;
+  }>,
+) {
   const { settingsStore, catalogStore } = options;
   const previews = new Map<string, MagpieImportResult>();
   const tests = new Map<string, AbortController>();
   const vertexHandles = new Map<string, { key: string; auth: VertexAuth }>();
   function vertexAuth(config: ProviderConfig): VertexAuth {
     const slot = JSON.stringify([config.sourceId, config.credentialId]);
-    const key = createHash("sha256").update(JSON.stringify([config.vertex, config.requestTimeoutMs, config.proxyUrl])).digest("hex");
+    const key = createHash("sha256")
+      .update(
+        JSON.stringify([
+          config.vertex,
+          config.requestTimeoutMs,
+          config.proxyUrl,
+        ]),
+      )
+      .digest("hex");
     const previous = vertexHandles.get(slot);
     if (previous?.key === key) return previous.auth;
     previous?.auth.dispose();
     const transport = createRequestOptions(config);
     const fetch = options.cloudFetch ?? transport.fetch;
-    const auth = createVertexAuth(config.vertex!, { ...(fetch ? { fetch } : {}), requestTimeoutMs: config.requestTimeoutMs });
+    const auth = createVertexAuth(config.vertex!, {
+      ...(fetch ? { fetch } : {}),
+      requestTimeoutMs: config.requestTimeoutMs,
+    });
     vertexHandles.set(slot, { key, auth });
     return auth;
   }
@@ -102,122 +203,279 @@ export function createModelAccessService(options: Readonly<{
       checkSignal(options.signal);
       const source = await findSource(sourceId);
       const credentialId = `account-${randomUUID()}`;
-      await settingsStore.update({ source: { type: "save", source: sourceFields(source), expectedRevision: source.revision,
-        credentials: [...credentialProjection(source), { id: credentialId, label, type: "account", enabled: true, account: tokens }] } });
+      await settingsStore.update({
+        source: {
+          type: "save",
+          source: sourceFields(source),
+          expectedRevision: source.revision,
+          credentials: [
+            ...credentialProjection(source),
+            {
+              id: credentialId,
+              label,
+              type: "account",
+              enabled: true,
+              account: tokens,
+            },
+          ],
+        },
+      });
       return { credentialId };
     },
   });
-  function createProvider(config: ProviderConfig, source?: PublicProviderSource): ModelProvider {
+  function createProvider(
+    config: ProviderConfig,
+    source?: PublicProviderSource,
+  ): ModelProvider {
     if (config.vertex) {
       const auth = vertexAuth(config);
       return {
         apiMode: "gemini",
-        listModelCatalog: signal => auth.listModelCatalog(signal),
-        listModels: async signal => (await auth.listModelCatalog(signal)).map(model => model.id),
+        listModelCatalog: (signal) => auth.listModelCatalog(signal),
+        listModels: async (signal) =>
+          (await auth.listModelCatalog(signal)).map((model) => model.id),
         async complete(messages, definitions, request) {
           const access = await auth.resolve(request.signal);
-          const raw = options.providerFactory(providerConfigSchema.parse({ ...config, ...access }));
+          const raw = options.providerFactory(
+            providerConfigSchema.parse({ ...config, ...access }),
+          );
           return raw.complete(messages, definitions, request);
         },
       };
     }
     const raw = options.providerFactory(config);
-    if (source?.preset === "bedrock") return { ...raw,
-      listModelCatalog: async signal => { if (signal) checkSignal(signal); return bedrockReferenceCatalog; },
-      listModels: async signal => { if (signal) checkSignal(signal); return bedrockReferenceCatalog.map(model => model.id); },
-    };
+    if (source?.preset === "bedrock")
+      return {
+        ...raw,
+        listModelCatalog: async (signal) => {
+          if (signal) checkSignal(signal);
+          return bedrockReferenceCatalog;
+        },
+        listModels: async (signal) => {
+          if (signal) checkSignal(signal);
+          return bedrockReferenceCatalog.map((model) => model.id);
+        },
+      };
     if (!config.account) return raw;
     const account = config.account;
-    const listModelCatalog = async (signal?: AbortSignal) => modelCatalogSchema.parse((await accounts.listModels(account, { signal })).map(model => ({
-      id: model.id, contextWindowTokens: model.contextWindowTokens ?? null,
-      ...(model.displayName ? { displayName: model.displayName } : {}), protocols: model.protocols,
-      ...(model.inputModalities ? { inputModalities: model.inputModalities } : {}),
-      ...(model.reasoningEfforts ? { reasoningEfforts: model.reasoningEfforts } : {}),
-      ...(model.vision === undefined ? {} : { vision: model.vision }),
-    })));
-    return { ...raw, listModelCatalog, listModels: async signal => (await listModelCatalog(signal)).map(model => model.id) };
+    const listModelCatalog = async (signal?: AbortSignal) =>
+      modelCatalogSchema.parse(
+        (await accounts.listModels(account, { signal })).map((model) => ({
+          id: model.id,
+          contextWindowTokens: model.contextWindowTokens ?? null,
+          ...(model.displayName ? { displayName: model.displayName } : {}),
+          protocols: model.protocols,
+          ...(model.inputModalities
+            ? { inputModalities: model.inputModalities }
+            : {}),
+          ...(model.reasoningEfforts
+            ? { reasoningEfforts: model.reasoningEfforts }
+            : {}),
+          ...(model.vision === undefined ? {} : { vision: model.vision }),
+        })),
+      );
+    return {
+      ...raw,
+      listModelCatalog,
+      listModels: async (signal) =>
+        (await listModelCatalog(signal)).map((model) => model.id),
+    };
   }
   async function findSource(id: string): Promise<PublicProviderSource> {
-    const source = (await settingsStore.getPublic()).providerSources?.find(item => item.id === id);
+    const source = (await settingsStore.getPublic()).providerSources?.find(
+      (item) => item.id === id,
+    );
     if (!source) throw new ForgeError("not_found", "未找到该模型来源。");
     return source;
   }
-  const snapshot = async (sourceId?: string, credentialId?: string, model?: string) => settingsStore.getProviderSnapshot
-    ? settingsStore.getProviderSnapshot(sourceId, credentialId, model)
-    : { config: await settingsStore.getProviderConfig(sourceId, credentialId, model), ...(sourceId ? { source: await findSource(sourceId) } : {}) };
-  async function loadSnapshot(sourceId: string | undefined, credentialId: string | undefined, signal: AbortSignal,
-    model?: string, validate?: (config: ProviderConfig, source: PublicProviderSource | undefined) => void) {
+  const snapshot = async (
+    sourceId?: string,
+    credentialId?: string,
+    model?: string,
+  ) =>
+    settingsStore.getProviderSnapshot
+      ? settingsStore.getProviderSnapshot(sourceId, credentialId, model)
+      : {
+          config: await settingsStore.getProviderConfig(
+            sourceId,
+            credentialId,
+            model,
+          ),
+          ...(sourceId ? { source: await findSource(sourceId) } : {}),
+        };
+  async function loadSnapshot(
+    sourceId: string | undefined,
+    credentialId: string | undefined,
+    signal: AbortSignal,
+    model?: string,
+    validate?: (
+      config: ProviderConfig,
+      source: PublicProviderSource | undefined,
+    ) => void,
+  ) {
     checkSignal(signal);
     let current = await snapshot(sourceId, credentialId, model);
     validate?.(current.config, current.source);
     const config = current.config;
-    if (config.account && config.sourceId && config.credentialId && settingsStore.refreshAccount) {
-      await settingsStore.refreshAccount(config.sourceId, config.credentialId, tokens => accounts.refresh(tokens, signal), model);
+    if (
+      config.account &&
+      config.sourceId &&
+      config.credentialId &&
+      settingsStore.refreshAccount
+    ) {
+      await settingsStore.refreshAccount(
+        config.sourceId,
+        config.credentialId,
+        (tokens) => accounts.refresh(tokens, signal),
+        model,
+      );
       current = await snapshot(config.sourceId, config.credentialId, model);
       validate?.(current.config, current.source);
     }
     checkSignal(signal);
     return current;
   }
-  async function loadConfig(sourceId: string | undefined, credentialId: string | undefined, signal: AbortSignal): Promise<ProviderConfig> {
+  async function loadConfig(
+    sourceId: string | undefined,
+    credentialId: string | undefined,
+    signal: AbortSignal,
+  ): Promise<ProviderConfig> {
     return (await loadSnapshot(sourceId, credentialId, signal)).config;
   }
-  async function resolveProvider(sourceId?: string, credentialId?: string, signal = options.signal, model?: string, validate?: SelectionValidator) {
-    const current = await loadSnapshot(sourceId, credentialId, signal, model, validate ? (config, source) => validate(config, source, model) : undefined);
+  async function resolveProvider(
+    sourceId?: string,
+    credentialId?: string,
+    signal = options.signal,
+    model?: string,
+    validate?: SelectionValidator,
+  ) {
+    const current = await loadSnapshot(
+      sourceId,
+      credentialId,
+      signal,
+      model,
+      validate
+        ? (config, source) => validate(config, source, model)
+        : undefined,
+    );
     let { config } = current;
     const { source } = current;
-    const selectedModel = model === undefined ? undefined : source?.modelAliases?.[model] ?? model;
+    const selectedModel =
+      model === undefined
+        ? undefined
+        : (source?.modelAliases?.[model] ?? model);
     const requestedProtocol = modelProtocolOverride(source, model);
     sourceId = source?.id ?? sourceId;
     if (config.vertex) {
       if (requestedProtocol !== undefined && requestedProtocol !== "gemini")
-        throw new ForgeError("invalid_input", `Vertex 来源固定使用 gemini 协议，不能${model === undefined ? "" : `为模型 ${model} `}覆盖为 ${requestedProtocol}。`);
-      config = providerConfigSchema.parse({ ...config, baseUrl: vertexAuth(config).baseUrl, apiMode: "gemini", auth: { type: "bearer" } });
+        throw new ForgeError(
+          "invalid_input",
+          `Vertex 来源固定使用 gemini 协议，不能${model === undefined ? "" : `为模型 ${model} `}覆盖为 ${requestedProtocol}。`,
+        );
+      config = providerConfigSchema.parse({
+        ...config,
+        baseUrl: vertexAuth(config).baseUrl,
+        apiMode: "gemini",
+        auth: { type: "bearer" },
+      });
     } else if (source?.preset === "azure") {
-      config = providerConfigSchema.parse({ ...config, baseUrl: normalizeAzureBase(config.baseUrl) ?? config.baseUrl,
-        auth: config.auth && config.auth.type !== "auto" ? config.auth : { type: "header", header: "api-key" } });
-    } else if (source?.preset === "bedrock" && (!config.auth || config.auth.type === "auto")) {
-      config = providerConfigSchema.parse({ ...config, auth: { type: "bearer" } });
+      config = providerConfigSchema.parse({
+        ...config,
+        baseUrl: normalizeAzureBase(config.baseUrl) ?? config.baseUrl,
+        auth:
+          config.auth && config.auth.type !== "auto"
+            ? config.auth
+            : { type: "header", header: "api-key" },
+      });
+    } else if (
+      source?.preset === "bedrock" &&
+      (!config.auth || config.auth.type === "auto")
+    ) {
+      config = providerConfigSchema.parse({
+        ...config,
+        auth: { type: "bearer" },
+      });
     }
     if (config.account && !config.vertex) {
-      const account = await accounts.providerConfig(config.account, selectedModel, signal);
+      const account = await accounts.providerConfig(
+        config.account,
+        selectedModel,
+        signal,
+      );
       // Account platforms own the per-model adapter choice. Compare the selected
       // adapter and, when the account advertises this model's protocols, require
       // the override to be one of them; equality of the default mode alone is
       // not enough for Copilot models with different adapters.
       if (!accountProtocolCompatible(requestedProtocol, account))
-        throw new ForgeError("invalid_input", `${account.platform === "codex" ? "Codex 账号" : "账号"}为${model === undefined ? "此模型" : `模型 ${model}`}选择 ${account.apiMode} 协议，不能覆盖为 ${requestedProtocol}。`);
-      config = providerConfigSchema.parse({ ...config, baseUrl: account.baseUrl, apiKey: account.apiKey, apiMode: account.apiMode,
-        headers: { ...account.headers, ...config.headers }, extraBody: { ...account.extraBody, ...config.extraBody } });
+        throw new ForgeError(
+          "invalid_input",
+          `${account.platform === "codex" ? "Codex 账号" : "账号"}为${model === undefined ? "此模型" : `模型 ${model}`}选择 ${account.apiMode} 协议，不能覆盖为 ${requestedProtocol}。`,
+        );
+      config = providerConfigSchema.parse({
+        ...config,
+        baseUrl: account.baseUrl,
+        apiKey: account.apiKey,
+        apiMode: account.apiMode,
+        headers: { ...account.headers, ...config.headers },
+        extraBody: { ...account.extraBody, ...config.extraBody },
+      });
     }
     checkSignal(signal);
     config = modelRequestConfig(config, source, model);
-    const cached = createCachedProviderFactory(catalogStore, current => createProvider(current, source))(config, sourceId);
-    const upstreamCatalog = async (requestSignal?: AbortSignal, refresh?: boolean): Promise<ModelCatalog> => cached.listModelCatalog
-      ? await cached.listModelCatalog(requestSignal, refresh) : catalogFromIds(await cached.listModels(requestSignal, refresh));
-    const catalog = async (requestSignal?: AbortSignal, refresh?: boolean) => applyModelSelection(await upstreamCatalog(requestSignal, refresh), source);
+    const cached = createCachedProviderFactory(catalogStore, (current) =>
+      createProvider(current, source),
+    )(config, sourceId);
+    const upstreamCatalog = async (
+      requestSignal?: AbortSignal,
+      refresh?: boolean,
+    ): Promise<ModelCatalog> =>
+      cached.listModelCatalog
+        ? await cached.listModelCatalog(requestSignal, refresh)
+        : catalogFromIds(await cached.listModels(requestSignal, refresh));
+    const catalog = async (requestSignal?: AbortSignal, refresh?: boolean) =>
+      applyModelSelection(
+        await upstreamCatalog(requestSignal, refresh),
+        source,
+      );
     // Settings discovery needs every catalog model even when selection hides
     // some from the composer; local metadata still merges, visibility does not.
-    const catalogUnfiltered = async (requestSignal?: AbortSignal, refresh?: boolean) => modelMetadata(await upstreamCatalog(requestSignal, refresh), source);
+    const catalogUnfiltered = async (
+      requestSignal?: AbortSignal,
+      refresh?: boolean,
+    ) => modelMetadata(await upstreamCatalog(requestSignal, refresh), source);
     const localMetadata = modelMetadata([], source);
     const provider: ModelProvider = {
       ...cached,
-      listModels: async (requestSignal, refresh) => (await catalog(requestSignal, refresh)).map(entry => entry.id),
+      listModels: async (requestSignal, refresh) =>
+        (await catalog(requestSignal, refresh)).map((entry) => entry.id),
       listModelCatalog: catalog,
       async getModelContextWindow(id, requestSignal) {
         if (requestSignal) checkSignal(requestSignal);
         // Compaction may ask using the bound wire ID rather than its selected alias.
-        const requested = id === selectedModel && model !== undefined ? model : id;
+        const requested =
+          id === selectedModel && model !== undefined ? model : id;
         const actual = source?.modelAliases?.[requested] ?? requested;
-        const configured = selectedMetadata(localMetadata, requested, actual)?.contextWindowTokens;
+        const configured = selectedMetadata(
+          localMetadata,
+          requested,
+          actual,
+        )?.contextWindowTokens;
         if (configured != null) return configured;
         // Discovery filtering is not a capability filter for an explicit selection.
         if (cached.listModelCatalog) {
-          const models = modelMetadata(await cached.listModelCatalog(requestSignal), source);
-          return selectedMetadata(models, requested, actual)?.contextWindowTokens ?? null;
+          const models = modelMetadata(
+            await cached.listModelCatalog(requestSignal),
+            source,
+          );
+          return (
+            selectedMetadata(models, requested, actual)?.contextWindowTokens ??
+            null
+          );
         }
         // Preserve an injected host's independent context-window lookup.
-        return await cached.getModelContextWindow?.(actual, requestSignal) ?? null;
+        return (
+          (await cached.getModelContextWindow?.(actual, requestSignal)) ?? null
+        );
       },
       async complete(messages, definitions, request) {
         const requested = model ?? request.model;
@@ -225,55 +483,156 @@ export function createModelAccessService(options: Readonly<{
         // different protocol together with its endpoint/credential. Account and
         // Vertex adapters also need their per-model compatibility checks even
         // when the requested override equals the source's default protocol.
-        if (model === undefined && source && (config.account || config.vertex || modelProtocol(source, requested) !== (config.apiMode ?? "chat-completions"))) {
-          const bound = await resolveProvider(sourceId, credentialId, AbortSignal.any([request.signal, options.signal]), requested, validate);
+        if (
+          model === undefined &&
+          source &&
+          (config.account ||
+            config.vertex ||
+            modelProtocol(source, requested) !==
+              (config.apiMode ?? "chat-completions"))
+        ) {
+          const bound = await resolveProvider(
+            sourceId,
+            credentialId,
+            AbortSignal.any([request.signal, options.signal]),
+            requested,
+            validate,
+          );
           return bound.provider.complete(messages, definitions, request);
         }
-        const actual = selectedModel ?? source?.modelAliases?.[requested] ?? requested;
+        const actual =
+          selectedModel ?? source?.modelAliases?.[requested] ?? requested;
         // Unbound providers (e.g. inherited child models) resolve at request time.
-        const requestConfig = model === undefined ? modelRequestConfig(config, source, requested) : config;
-        const selection = { sourceId: sourceId ?? "environment", model: actual, apiMode: requestConfig.apiMode ?? "chat-completions" as const,
-          reasoningEffort: requestConfig.reasoningEffort ?? "default" as const,
-          ...(requestConfig.credentialId ? { credentialId: requestConfig.credentialId } : {}), attempt: request.attempt ?? 0, reason: "direct" };
-        request.onAttempt?.({ ...selection, outcome: "started", timestamp: new Date().toISOString() });
+        const requestConfig =
+          model === undefined
+            ? modelRequestConfig(config, source, requested)
+            : config;
+        const selection = {
+          sourceId: sourceId ?? "environment",
+          model: actual,
+          apiMode: requestConfig.apiMode ?? ("chat-completions" as const),
+          reasoningEffort:
+            requestConfig.reasoningEffort ?? ("default" as const),
+          ...(requestConfig.credentialId
+            ? { credentialId: requestConfig.credentialId }
+            : {}),
+          attempt: request.attempt ?? 0,
+          reason: "direct",
+        };
+        request.onAttempt?.({
+          ...selection,
+          outcome: "started",
+          timestamp: new Date().toISOString(),
+        });
         try {
-          const inference = requestConfig === config ? cached : createProvider(requestConfig, source);
-          const response = await inference.complete(messages, definitions, { ...request, model: actual });
-          request.onAttempt?.({ ...selection, outcome: "succeeded", timestamp: new Date().toISOString(), ...(response.usage ? { usage: response.usage } : {}) });
+          const inference =
+            requestConfig === config
+              ? cached
+              : createProvider(requestConfig, source);
+          const response = await inference.complete(messages, definitions, {
+            ...request,
+            model: actual,
+          });
+          request.onAttempt?.({
+            ...selection,
+            outcome: "succeeded",
+            timestamp: new Date().toISOString(),
+            ...(response.usage ? { usage: response.usage } : {}),
+          });
           return response;
         } catch (error) {
-          request.onAttempt?.({ ...selection, outcome: "failed", timestamp: new Date().toISOString(), ...(error instanceof ForgeError ? { errorCode: error.code } : {}) });
+          request.onAttempt?.({
+            ...selection,
+            outcome: "failed",
+            timestamp: new Date().toISOString(),
+            ...(error instanceof ForgeError ? { errorCode: error.code } : {}),
+          });
           throw error;
         }
       },
     };
-    return { config, provider, source, catalogUnfiltered, ...(selectedModel ? { actualModel: selectedModel } : {}) };
+    return {
+      config,
+      provider,
+      source,
+      catalogUnfiltered,
+      ...(selectedModel ? { actualModel: selectedModel } : {}),
+    };
   }
-  async function prepareRoute(group: RouteGroup, signal: AbortSignal, validate?: SelectionValidator) {
-    const key = (member: RouteMember) => JSON.stringify([member.sourceId, member.model, member.credentialId]);
-    const resolved = new Map<string, Awaited<ReturnType<typeof resolveProvider>>>();
+  async function prepareRoute(
+    group: RouteGroup,
+    signal: AbortSignal,
+    validate?: SelectionValidator,
+  ) {
+    const key = (member: RouteMember) =>
+      JSON.stringify([member.sourceId, member.model, member.credentialId]);
+    const resolved = new Map<
+      string,
+      Awaited<ReturnType<typeof resolveProvider>>
+    >();
     const quotas = new Map<string, RouteQuota>();
     const metadata = new Map<string, ModelCatalog[number]>();
     let firstFailure: unknown;
     for (const member of group.members) {
       if (member.enabled === false) continue;
       try {
-        const current = await resolveProvider(member.sourceId, member.credentialId, signal, member.model, validate);
+        const current = await resolveProvider(
+          member.sourceId,
+          member.credentialId,
+          signal,
+          member.model,
+          validate,
+        );
         resolved.set(key(member), current);
-        const cached = await catalogStore.inspect(modelCatalogCacheKey(current.config, member.sourceId));
-        const reference = current.config.vertex ? await vertexAuth(current.config).listModelCatalog(signal) : current.source?.preset === "bedrock" ? bedrockReferenceCatalog : [];
+        const cached = await catalogStore.inspect(
+          modelCatalogCacheKey(current.config, member.sourceId),
+        );
+        const reference = current.config.vertex
+          ? await vertexAuth(current.config).listModelCatalog(signal)
+          : current.source?.preset === "bedrock"
+            ? bedrockReferenceCatalog
+            : [];
         const source = current.source;
         const models = modelMetadata(cached?.models ?? reference, source);
-        const model = selectedMetadata(models, member.model, current.actualModel ?? member.model);
+        const model = selectedMetadata(
+          models,
+          member.model,
+          current.actualModel ?? member.model,
+        );
         if (model) metadata.set(key(member), model);
-        if ((group.strategy === "smart" || group.strategy === "pace") && current.config.account && current.config.credentialId) {
+        if (
+          (group.strategy === "smart" || group.strategy === "pace") &&
+          current.config.account &&
+          current.config.credentialId
+        ) {
           try {
-            const quota = await accounts.readQuota(member.sourceId, current.config.credentialId, signal);
-            const windows = quota.windows.filter(window => !window.unlimited && window.remaining !== null && window.limit !== null && window.limit > 0);
-            windows.sort((a, b) => a.remaining! / a.limit! - b.remaining! / b.limit!);
+            const quota = await accounts.readQuota(
+              member.sourceId,
+              current.config.credentialId,
+              signal,
+            );
+            const windows = quota.windows.filter(
+              (window) =>
+                !window.unlimited &&
+                window.remaining !== null &&
+                window.limit !== null &&
+                window.limit > 0,
+            );
+            windows.sort(
+              (a, b) => a.remaining! / a.limit! - b.remaining! / b.limit!,
+            );
             const window = windows[0];
-            if (window) quotas.set(key(member), { remaining: window.remaining!, limit: window.limit!, ...(window.resetAt === null ? {} : { resetsAt: window.resetAt }) });
-          } catch { checkSignal(signal); /* Unknown allowance stays unknown. */ }
+            if (window)
+              quotas.set(key(member), {
+                remaining: window.remaining!,
+                limit: window.limit!,
+                ...(window.resetAt === null
+                  ? {}
+                  : { resetsAt: window.resetAt }),
+              });
+          } catch {
+            checkSignal(signal); /* Unknown allowance stays unknown. */
+          }
         }
       } catch (error) {
         checkSignal(signal);
@@ -281,52 +640,89 @@ export function createModelAccessService(options: Readonly<{
       }
     }
     const base = resolved.values().next().value;
-    if (!base) throw firstFailure instanceof ForgeError ? firstFailure : new ForgeError("provider", publicFailure(firstFailure));
-    const modes = [...resolved.values()].map(item => item.config.apiMode ?? "chat-completions");
-    const windows = [...metadata.values()].flatMap(model => model.contextWindowTokens ? [model.contextWindowTokens] : []);
+    if (!base)
+      throw firstFailure instanceof ForgeError
+        ? firstFailure
+        : new ForgeError("provider", publicFailure(firstFailure));
+    const modes = [...resolved.values()].map(
+      (item) => item.config.apiMode ?? "chat-completions",
+    );
+    const windows = [...metadata.values()].flatMap((model) =>
+      model.contextWindowTokens ? [model.contextWindowTokens] : [],
+    );
     return {
       base,
-      ...(modes.every(mode => mode === modes[0]) ? { apiMode: modes[0] } : {}),
+      ...(modes.every((mode) => mode === modes[0])
+        ? { apiMode: modes[0] }
+        : {}),
       mayUseWebSearch: modes.includes("responses"),
       contextWindow: windows.length ? Math.min(...windows) : null,
       quota: (member: RouteMember) => quotas.get(key(member)),
       exclude: (member: RouteMember, request: RouteRequest) => {
         if (!resolved.has(key(member))) return "credential-unavailable";
         const model = metadata.get(key(member));
-        const mode = resolved.get(key(member))!.config.apiMode ?? "chat-completions";
-        if (model?.protocols && !model.protocols.includes(mode)) return "protocol-unsupported";
-        if (request.hasImages && model?.vision === false) return "vision-unsupported";
-        if (request.hasTools && model?.tools === false) return "tools-unsupported";
+        const mode =
+          resolved.get(key(member))!.config.apiMode ?? "chat-completions";
+        if (model?.protocols && !model.protocols.includes(mode))
+          return "protocol-unsupported";
+        if (request.hasImages && model?.vision === false)
+          return "vision-unsupported";
+        if (request.hasTools && model?.tools === false)
+          return "tools-unsupported";
         return undefined;
       },
     };
   }
-  async function handle(raw: ModelAccessRequest, callerSignal?: AbortSignal): Promise<ModelAccessResult> {
+  async function handle(
+    raw: ModelAccessRequest,
+    callerSignal?: AbortSignal,
+  ): Promise<ModelAccessResult> {
     const input = modelAccessRequestSchema.parse(raw);
-    const signal = callerSignal ? AbortSignal.any([callerSignal, options.signal]) : options.signal;
+    const signal = callerSignal
+      ? AbortSignal.any([callerSignal, options.signal])
+      : options.signal;
     checkSignal(signal);
     switch (input.type) {
-      case "presets": return { type: input.type, presets: providerPresets };
+      case "presets":
+        return { type: input.type, presets: providerPresets };
       case "catalog": {
-        const { config, provider, source, catalogUnfiltered } = await resolveProvider(input.sourceId, input.credentialId, signal);
+        const { config, provider, source, catalogUnfiltered } =
+          await resolveProvider(input.sourceId, input.credentialId, signal);
         const key = modelCatalogCacheKey(config, input.sourceId);
         try {
-          const models = input.includeUnselected ? await catalogUnfiltered(signal, input.refresh)
+          const models = input.includeUnselected
+            ? await catalogUnfiltered(signal, input.refresh)
             : await provider.listModelCatalog!(signal, input.refresh);
           const snapshot = await catalogStore.inspect(key);
-          return { type: input.type, sourceId: input.sourceId, models, stale: false, ...(snapshot ? { fetchedAt: snapshot.fetchedAt } : {}) };
+          return {
+            type: input.type,
+            sourceId: input.sourceId,
+            models,
+            stale: false,
+            ...(snapshot ? { fetchedAt: snapshot.fetchedAt } : {}),
+          };
         } catch (error) {
           checkSignal(signal);
           const previous = await catalogStore.inspect(key);
           if (!previous) throw error;
-          const models = input.includeUnselected ? modelMetadata(previous.models, source) : applyModelSelection(previous.models, source);
-          return { type: input.type, sourceId: input.sourceId, models, stale: true, fetchedAt: previous.fetchedAt, error: publicFailure(error) };
+          const models = input.includeUnselected
+            ? modelMetadata(previous.models, source)
+            : applyModelSelection(previous.models, source);
+          return {
+            type: input.type,
+            sourceId: input.sourceId,
+            models,
+            stale: true,
+            fetchedAt: previous.fetchedAt,
+            error: publicFailure(error),
+          };
         }
       }
       case "test": {
         const controller = new AbortController();
         const requestId = input.requestId ?? randomUUID();
-        if (tests.has(requestId)) throw new ForgeError("busy", "此测试仍在进行。");
+        if (tests.has(requestId))
+          throw new ForgeError("busy", "此测试仍在进行。");
         tests.set(requestId, controller);
         const testSignal = AbortSignal.any([signal, controller.signal]);
         const started = Date.now();
@@ -335,66 +731,170 @@ export function createModelAccessService(options: Readonly<{
           // same effective model/protocol the composer would use, including a
           // source-default model override.
           const configured = await findSource(input.sourceId);
-          const testModel = input.kind === "catalog" ? undefined : input.model ?? (configured.model || undefined);
-          const { config, provider, source } = await resolveProvider(input.sourceId, input.credentialId, testSignal, testModel);
-          const model = input.kind === "inference" ? testModel : input.model ?? source?.model;
-          if (input.kind === "catalog") await provider.listModelCatalog!(testSignal, true);
+          const testModel =
+            input.kind === "catalog"
+              ? undefined
+              : (input.model ?? (configured.model || undefined));
+          const { config, provider, source } = await resolveProvider(
+            input.sourceId,
+            input.credentialId,
+            testSignal,
+            testModel,
+          );
+          const model =
+            input.kind === "inference"
+              ? testModel
+              : (input.model ?? source?.model);
+          if (input.kind === "catalog")
+            await provider.listModelCatalog!(testSignal, true);
           else {
-            if (!model) throw new ForgeError("invalid_input", "请选择测试模型。");
+            if (!model)
+              throw new ForgeError("invalid_input", "请选择测试模型。");
             const selected = modelRequestConfig(config, source, model);
-            const thinking = selected.apiMode === "anthropic" && selected.reasoningEffort !== undefined
-              && selected.reasoningEffort !== "default" && selected.reasoningEffort !== "none";
+            const thinking =
+              selected.apiMode === "anthropic" &&
+              selected.reasoningEffort !== undefined &&
+              selected.reasoningEffort !== "default" &&
+              selected.reasoningEffort !== "none";
             // Exercise explicit limits unchanged. A synthetic 64-token cap would
             // make otherwise valid Anthropic thinking configurations fail locally.
-            const minimal = createProvider({ ...selected, maxOutputTokens: selected.maxOutputTokens ?? (thinking ? 8192 : 64) }, source);
-            await minimal.complete([{ role: "user", content: "Reply with OK." }], [], { model: source?.modelAliases?.[model] ?? model, signal: testSignal, onText: () => {} });
+            const minimal = createProvider(
+              {
+                ...selected,
+                maxOutputTokens:
+                  selected.maxOutputTokens ?? (thinking ? 8192 : 64),
+              },
+              source,
+            );
+            await minimal.complete(
+              [{ role: "user", content: "Reply with OK." }],
+              [],
+              {
+                model: source?.modelAliases?.[model] ?? model,
+                signal: testSignal,
+                onText: () => {},
+              },
+            );
           }
           checkSignal(testSignal);
-          return { type: input.type, sourceId: input.sourceId, kind: input.kind, ok: true, latencyMs: Date.now() - started, ...(model ? { model } : {}) };
+          return {
+            type: input.type,
+            sourceId: input.sourceId,
+            kind: input.kind,
+            ok: true,
+            latencyMs: Date.now() - started,
+            ...(model ? { model } : {}),
+          };
         } catch (error) {
           if (testSignal.aborted) throw cancelled();
-          return { type: input.type, sourceId: input.sourceId, kind: input.kind, ok: false, latencyMs: Date.now() - started, error: publicFailure(error) };
-        } finally { tests.delete(requestId); }
+          return {
+            type: input.type,
+            sourceId: input.sourceId,
+            kind: input.kind,
+            ok: false,
+            latencyMs: Date.now() - started,
+            error: publicFailure(error),
+          };
+        } finally {
+          tests.delete(requestId);
+        }
       }
       case "cancel": {
-        const controller = tests.get(input.requestId); controller?.abort();
+        const controller = tests.get(input.requestId);
+        controller?.abort();
         return { type: input.type, cancelled: !!controller };
       }
       case "import-preview": {
         const parsed = parseMagpieImport(input.text);
         const previewId = randomUUID();
-        const existing = (await settingsStore.getPublic()).providerSources ?? [];
+        const existing =
+          (await settingsStore.getPublic()).providerSources ?? [];
         // Never infer permission to overwrite a source from an imported identifier.
-        const candidates = parsed.candidates.filter(candidate => !existing.some(source => source.id === candidate.save.source.id));
-        const warnings = [...parsed.warnings, ...(candidates.length === parsed.candidates.length ? [] : ["已有同 ID 的来源未加入导入列表。"] )];
+        const candidates = parsed.candidates.filter(
+          (candidate) =>
+            !existing.some((source) => source.id === candidate.save.source.id),
+        );
+        const warnings = [
+          ...parsed.warnings,
+          ...(candidates.length === parsed.candidates.length
+            ? []
+            : ["已有同 ID 的来源未加入导入列表。"]),
+        ];
         previews.set(previewId, { candidates, warnings });
-        return { type: input.type, previewId, warnings, sources: candidates.map(({ save, warnings }) => ({
-          id: save.source.id, label: save.source.label, baseUrl: save.source.baseUrl, model: save.source.model,
-          ...(save.source.apiMode ? { apiMode: save.source.apiMode } : {}), credentialCount: save.credentials?.length ?? (save.apiKey ? 1 : 0), warnings,
-        })) };
+        return {
+          type: input.type,
+          previewId,
+          warnings,
+          sources: candidates.map(({ save, warnings }) => ({
+            id: save.source.id,
+            label: save.source.label,
+            baseUrl: save.source.baseUrl,
+            model: save.source.model,
+            ...(save.source.apiMode ? { apiMode: save.source.apiMode } : {}),
+            credentialCount: save.credentials?.length ?? (save.apiKey ? 1 : 0),
+            warnings,
+          })),
+        };
       }
       case "import-apply": {
         const preview = previews.get(input.previewId);
-        if (!preview) throw new ForgeError("not_found", "导入预览已失效，请重新预览。");
+        if (!preview)
+          throw new ForgeError("not_found", "导入预览已失效，请重新预览。");
         const ids = new Set(input.sourceIds);
-        const selected = preview.candidates.filter(candidate => ids.has(candidate.save.source.id));
-        if (selected.length !== ids.size) throw new ForgeError("invalid_input", "所选来源不在此预览中。");
+        const selected = preview.candidates.filter((candidate) =>
+          ids.has(candidate.save.source.id),
+        );
+        if (selected.length !== ids.size)
+          throw new ForgeError("invalid_input", "所选来源不在此预览中。");
         previews.delete(input.previewId);
         // expectedRevision:0 makes a concurrent create a conflict, not an overwrite.
-        await settingsStore.update({ sources: selected.map(candidate => ({ ...candidate.save, expectedRevision: 0 })) });
-        return { type: input.type, applied: selected.map(candidate => candidate.save.source.id) };
+        await settingsStore.update({
+          sources: selected.map((candidate) => ({
+            ...candidate.save,
+            expectedRevision: 0,
+          })),
+        });
+        return {
+          type: input.type,
+          applied: selected.map((candidate) => candidate.save.source.id),
+        };
       }
       case "login-start":
         await findSource(input.sourceId);
-        return { type: input.type, login: await accounts.startLogin({ platform: input.platform, sourceId: input.sourceId, ...(input.label ? { label: input.label } : {}), signal }) };
-      case "login-poll": return { type: input.type, login: await accounts.pollLogin(input.loginId) };
-      case "login-cancel": return { type: input.type, login: accounts.cancelLogin(input.loginId) };
-      case "quota": return { type: input.type, quota: await accounts.readQuota(input.sourceId, input.credentialId, signal) };
+        return {
+          type: input.type,
+          login: await accounts.startLogin({
+            platform: input.platform,
+            sourceId: input.sourceId,
+            ...(input.label ? { label: input.label } : {}),
+            signal,
+          }),
+        };
+      case "login-poll":
+        return {
+          type: input.type,
+          login: await accounts.pollLogin(input.loginId),
+        };
+      case "login-cancel":
+        return { type: input.type, login: accounts.cancelLogin(input.loginId) };
+      case "quota":
+        return {
+          type: input.type,
+          quota: await accounts.readQuota(
+            input.sourceId,
+            input.credentialId,
+            signal,
+          ),
+        };
     }
   }
   return {
-    resolveProvider, prepareRoute,
-    async request(input: ModelAccessRequest, signal?: AbortSignal): Promise<ModelAccessResult> {
+    resolveProvider,
+    prepareRoute,
+    async request(
+      input: ModelAccessRequest,
+      signal?: AbortSignal,
+    ): Promise<ModelAccessResult> {
       return modelAccessResultSchema.parse(await handle(input, signal));
     },
     async dispose() {

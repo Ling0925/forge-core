@@ -1,19 +1,16 @@
 import { createHash } from "node:crypto";
 import { ForgeError } from "../shared/errors";
 import {
-  credentialInputSchema,
   type CredentialInput,
+  credentialInputSchema,
 } from "../shared/model-access";
 import {
-  jsonObjectSchema,
-  providerSourceOperationSchema,
   type JsonValue,
   type ProviderSourceOperation,
+  jsonObjectSchema,
+  providerSourceOperationSchema,
 } from "../shared/schemas";
-import type {
-  ProviderEndpoints,
-  ProviderPreset,
-} from "./presets";
+import type { ProviderEndpoints, ProviderPreset } from "./presets";
 import { findProviderPreset, presetEndpoints } from "./presets";
 import { extraBodyReserved } from "./request-options";
 
@@ -48,7 +45,13 @@ const protocolFor: Readonly<Record<string, Protocol>> = {
   anthropic: "anthropic",
   gemini: "gemini",
 };
-const routingValues = new Set<Routing>(["order", "rotate", "usage", "smart", "pace"]);
+const routingValues = new Set<Routing>([
+  "order",
+  "rotate",
+  "usage",
+  "smart",
+  "pace",
+]);
 const maxKeyLength = 16384;
 
 function object(value: unknown): RecordValue | undefined {
@@ -92,7 +95,11 @@ function label(value: string, fallback: string): string {
   return [...chosen].slice(0, 80).join("") || fallback;
 }
 
-function endpoint(value: unknown, name: string, warnings: string[]): string | undefined {
+function endpoint(
+  value: unknown,
+  name: string,
+  warnings: string[],
+): string | undefined {
   if (value === undefined || value === null || value === "") return undefined;
   if (typeof value !== "string") {
     warnings.push(`${name} endpoint is not a string and was ignored.`);
@@ -107,7 +114,9 @@ function endpoint(value: unknown, name: string, warnings: string[]): string | un
       parsed.search ||
       parsed.hash
     ) {
-      warnings.push(`${name} endpoint must be an HTTP(S) base URL without credentials, query, or fragment; it was ignored.`);
+      warnings.push(
+        `${name} endpoint must be an HTTP(S) base URL without credentials, query, or fragment; it was ignored.`,
+      );
       return undefined;
     }
     return parsed.toString().replace(/\/+$/, "");
@@ -117,7 +126,10 @@ function endpoint(value: unknown, name: string, warnings: string[]): string | un
   }
 }
 
-function explicitEndpoints(raw: RecordValue, warnings: string[]): ProviderEndpoints {
+function explicitEndpoints(
+  raw: RecordValue,
+  warnings: string[],
+): ProviderEndpoints {
   const chat = endpoint(raw.chat, "Chat", warnings);
   const responses = endpoint(raw.responses, "Responses", warnings);
   const anthropic = endpoint(raw.anthropic, "Anthropic", warnings);
@@ -134,13 +146,24 @@ function primaryEndpoint(
   endpoints: ProviderEndpoints,
   raw: RecordValue,
 ): { baseUrl: string; apiMode: Protocol } | undefined {
-  const requested = typeof raw.baseAPI === "string" ? protocolFor[raw.baseAPI.toLowerCase()] : undefined;
-  if (requested && endpoints[requested]) return { baseUrl: endpoints[requested]!, apiMode: requested };
-  const order: readonly Protocol[] = ["chat-completions", "responses", "anthropic", "gemini"];
+  const requested =
+    typeof raw.baseAPI === "string"
+      ? protocolFor[raw.baseAPI.toLowerCase()]
+      : undefined;
+  if (requested && endpoints[requested])
+    return { baseUrl: endpoints[requested]!, apiMode: requested };
+  const order: readonly Protocol[] = [
+    "chat-completions",
+    "responses",
+    "anthropic",
+    "gemini",
+  ];
   const explicitBase = endpoint(raw.baseUrl, "Base", []);
   if (explicitBase) {
     const requestedMode =
-      typeof raw.apiMode === "string" ? protocolFor[raw.apiMode.toLowerCase()] : undefined;
+      typeof raw.apiMode === "string"
+        ? protocolFor[raw.apiMode.toLowerCase()]
+        : undefined;
     const matchingMode = order.find((mode) => endpoints[mode] === explicitBase);
     return {
       baseUrl: explicitBase,
@@ -167,11 +190,14 @@ function models(raw: RecordValue): {
     return {
       selection: { mode: "all" },
       model: "",
-      warning: "Magpie models is not an array; the source was left as all models.",
+      warning:
+        "Magpie models is not an array; the source was left as all models.",
     };
   }
   const ids = value
-    .filter((entry): entry is string => typeof entry === "string" && entry.length > 0)
+    .filter(
+      (entry): entry is string => typeof entry === "string" && entry.length > 0,
+    )
     .map((entry) => entry.trim())
     .filter(Boolean);
   if (!ids.length) return { selection: { mode: "none" }, model: "" };
@@ -181,7 +207,10 @@ function models(raw: RecordValue): {
   };
 }
 
-function modelAliases(raw: RecordValue, warnings: string[]): Record<string, string> | undefined {
+function modelAliases(
+  raw: RecordValue,
+  warnings: string[],
+): Record<string, string> | undefined {
   if (raw.modelAliases === undefined) return undefined;
   const source = object(raw.modelAliases);
   if (!source) {
@@ -190,11 +219,15 @@ function modelAliases(raw: RecordValue, warnings: string[]): Record<string, stri
   }
   const out: Record<string, string> = {};
   for (const [name, alias] of Object.entries(source))
-    if (name.trim() && typeof alias === "string" && alias.trim()) out[name] = alias.trim();
+    if (name.trim() && typeof alias === "string" && alias.trim())
+      out[name] = alias.trim();
   return Object.keys(out).length ? out : undefined;
 }
 
-function headers(raw: RecordValue, warnings: string[]): Record<string, string> | undefined {
+function headers(
+  raw: RecordValue,
+  warnings: string[],
+): Record<string, string> | undefined {
   if (raw.headers === undefined) return undefined;
   const source = object(raw.headers);
   if (!source) {
@@ -203,8 +236,13 @@ function headers(raw: RecordValue, warnings: string[]): Record<string, string> |
   }
   const out: Record<string, string> = {};
   const reserved = new Set([
-    "host", "content-length", "connection", "transfer-encoding",
-    "upgrade", "trailer", "te",
+    "host",
+    "content-length",
+    "connection",
+    "transfer-encoding",
+    "upgrade",
+    "trailer",
+    "te",
   ]);
   for (const [name, value] of Object.entries(source)) {
     if (
@@ -213,7 +251,9 @@ function headers(raw: RecordValue, warnings: string[]): Record<string, string> |
       reserved.has(name.toLowerCase()) ||
       /[\r\n\0]/.test(value)
     ) {
-      warnings.push(`header ${name || "(unnamed)"} is invalid and was ignored.`);
+      warnings.push(
+        `header ${name || "(unnamed)"} is invalid and was ignored.`,
+      );
       continue;
     }
     out[name] = value;
@@ -221,7 +261,10 @@ function headers(raw: RecordValue, warnings: string[]): Record<string, string> |
   return Object.keys(out).length ? out : undefined;
 }
 
-function extraBody(raw: RecordValue, warnings: string[]): Record<string, JsonValue> | undefined {
+function extraBody(
+  raw: RecordValue,
+  warnings: string[],
+): Record<string, JsonValue> | undefined {
   if (raw.extraBody === undefined) return undefined;
   const source = object(raw.extraBody);
   if (!source) {
@@ -234,7 +277,9 @@ function extraBody(raw: RecordValue, warnings: string[]): Record<string, JsonVal
     const forced = key.trim().startsWith("!");
     const name = (forced ? key.trim().slice(1) : key.trim()).trim();
     if (!name || extraBodyReserved.has(name) || seen.has(name)) {
-      warnings.push(`extraBody field ${name || "(unnamed)"} is reserved or repeated and was ignored.`);
+      warnings.push(
+        `extraBody field ${name || "(unnamed)"} is reserved or repeated and was ignored.`,
+      );
       continue;
     }
     seen.add(name);
@@ -243,14 +288,22 @@ function extraBody(raw: RecordValue, warnings: string[]): Record<string, JsonVal
   if (!Object.keys(out).length) return undefined;
   const parsed = jsonObjectSchema.safeParse(out);
   if (!parsed.success) {
-    warnings.push("extraBody contains values that are not JSON and was ignored.");
+    warnings.push(
+      "extraBody contains values that are not JSON and was ignored.",
+    );
     return undefined;
   }
   return { ...parsed.data };
 }
 
 function proxy(value: unknown, warnings: string[]): string | undefined {
-  if (value === undefined || value === null || value === "" || value === "direct") return undefined;
+  if (
+    value === undefined ||
+    value === null ||
+    value === "" ||
+    value === "direct"
+  )
+    return undefined;
   if (typeof value !== "string") {
     warnings.push("proxy is not a string and was ignored.");
     return undefined;
@@ -273,8 +326,11 @@ function auth(raw: RecordValue, warnings: string[]): Auth | undefined {
   if (explicit) {
     const type = explicit.type;
     if (
-      type === "auto" || type === "bearer" || type === "api-key" ||
-      type === "none" || type === "header"
+      type === "auto" ||
+      type === "bearer" ||
+      type === "api-key" ||
+      type === "none" ||
+      type === "header"
     ) {
       if (type === "header" && typeof explicit.header !== "string") {
         warnings.push("auth type header needs a header name and was ignored.");
@@ -285,7 +341,9 @@ function auth(raw: RecordValue, warnings: string[]): Auth | undefined {
         ...(type === "header" && typeof explicit.header === "string"
           ? { header: explicit.header }
           : {}),
-        ...(typeof explicit.prefix === "string" ? { prefix: explicit.prefix } : {}),
+        ...(typeof explicit.prefix === "string"
+          ? { prefix: explicit.prefix }
+          : {}),
       };
     }
     warnings.push("auth.type is unknown and was ignored.");
@@ -317,7 +375,10 @@ function credential(
   });
 }
 
-function credentials(raw: RecordValue, warnings: string[]): {
+function credentials(
+  raw: RecordValue,
+  warnings: string[],
+): {
   credentials: CredentialInput[];
   activeCredentialId?: string;
 } {
@@ -335,7 +396,8 @@ function credentials(raw: RecordValue, warnings: string[]): {
     warnings.push("The primary key is not a string and was ignored.");
 
   if (raw.keys !== undefined) {
-    if (!Array.isArray(raw.keys)) warnings.push("keys is not an array and was ignored.");
+    if (!Array.isArray(raw.keys))
+      warnings.push("keys is not an array and was ignored.");
     else {
       raw.keys.forEach((value, index) => {
         const key = object(value);
@@ -348,9 +410,13 @@ function credentials(raw: RecordValue, warnings: string[]): {
           return;
         }
         const protocol =
-          typeof key.protocol === "string" ? protocolFor[key.protocol.toLowerCase()] : undefined;
+          typeof key.protocol === "string"
+            ? protocolFor[key.protocol.toLowerCase()]
+            : undefined;
         if (key.protocol !== undefined && !protocol)
-          warnings.push(`Key ${index + 1} has an unknown protocol and was imported without one.`);
+          warnings.push(
+            `Key ${index + 1} has an unknown protocol and was imported without one.`,
+          );
         const parsed = credential(
           key.key,
           text(key.name),
@@ -358,7 +424,8 @@ function credentials(raw: RecordValue, warnings: string[]): {
           key.off !== true,
           protocol,
         );
-        if (!parsed) warnings.push(`Key ${index + 1} is invalid and was ignored.`);
+        if (!parsed)
+          warnings.push(`Key ${index + 1} is invalid and was ignored.`);
         else push(parsed);
       });
     }
@@ -370,12 +437,17 @@ function credentials(raw: RecordValue, warnings: string[]): {
   };
 }
 
-function sourceFrom(raw: RecordValue, usedIds: Set<string>): {
-  save: SourceSave;
-  label: string;
-  ref: string;
-  warnings: string[];
-} | { warnings: string[] } {
+function sourceFrom(
+  raw: RecordValue,
+  usedIds: Set<string>,
+):
+  | {
+      save: SourceSave;
+      label: string;
+      ref: string;
+      warnings: string[];
+    }
+  | { warnings: string[] } {
   const warnings: string[] = [];
   const rawId = text(raw.id) ?? text(raw.name) ?? "imported";
   const sourceId = uniqueId(slug(rawId), usedIds);
@@ -384,15 +456,21 @@ function sourceFrom(raw: RecordValue, usedIds: Set<string>): {
   let preset: ProviderPreset | undefined;
   if (presetId) {
     preset = findProviderPreset(presetId);
-    if (!preset) warnings.push(`Unknown preset ${presetId}; explicit endpoints were used.`);
+    if (!preset)
+      warnings.push(
+        `Unknown preset ${presetId}; explicit endpoints were used.`,
+      );
   }
   const regionId = text(raw.region);
   const presetValues =
-    preset && (!regionId || preset.regions?.some((entry) => entry.id === regionId))
+    preset &&
+    (!regionId || preset.regions?.some((entry) => entry.id === regionId))
       ? presetEndpoints(preset.id, regionId)
       : undefined;
   if (regionId && preset && !presetValues)
-    warnings.push(`Unknown region ${regionId}; the preset's default endpoints were used.`);
+    warnings.push(
+      `Unknown region ${regionId}; the preset's default endpoints were used.`,
+    );
   const endpoints: ProviderEndpoints = {
     ...(presetValues ?? {}),
     ...explicitEndpoints(raw, warnings),
@@ -424,9 +502,13 @@ function sourceFrom(raw: RecordValue, usedIds: Set<string>): {
         ? true
         : undefined;
   if (raw.account !== undefined)
-    warnings.push("Magpie account credentials are not imported from text; configure the account sign-in separately.");
+    warnings.push(
+      "Magpie account credentials are not imported from text; configure the account sign-in separately.",
+    );
   if (raw.only !== undefined)
-    warnings.push("Magpie only= prefix filtering is not imported; modelSelection follows models instead.");
+    warnings.push(
+      "Magpie only= prefix filtering is not imported; modelSelection follows models instead.",
+    );
 
   const connection: Connection = {
     ...(authValue ? { auth: authValue } : {}),
@@ -446,14 +528,18 @@ function sourceFrom(raw: RecordValue, usedIds: Set<string>): {
     ...(aliases ? { modelAliases: aliases } : {}),
     ...(routingValue ? { credentialRouting: routingValue } : {}),
     ...(sticky === undefined ? {} : { sticky }),
-    ...(keys.activeCredentialId ? { activeCredentialId: keys.activeCredentialId } : {}),
+    ...(keys.activeCredentialId
+      ? { activeCredentialId: keys.activeCredentialId }
+      : {}),
   };
   const save = providerSourceOperationSchema.parse({
     type: "save",
     source,
     // Keep the legacy single-key field for old hosts; credentials remain the
     // authoritative multi-key representation.
-    ...(keys.credentials[0]?.apiKey ? { apiKey: keys.credentials[0].apiKey } : {}),
+    ...(keys.credentials[0]?.apiKey
+      ? { apiKey: keys.credentials[0].apiKey }
+      : {}),
     ...(keys.credentials.length ? { credentials: keys.credentials } : {}),
     ...(Object.keys(connection).length ? { connection } : {}),
   }) as SourceSave;
@@ -463,14 +549,23 @@ function sourceFrom(raw: RecordValue, usedIds: Set<string>): {
 function rawProviderFromLink(link: URL): RecordValue {
   if (
     link.protocol !== "magpie:" ||
-    (link.hostname !== "import" && link.pathname.replace(/^\/+/, "") !== "import")
+    (link.hostname !== "import" &&
+      link.pathname.replace(/^\/+/, "") !== "import")
   )
-    throw new ForgeError("invalid_input", "The text is not a magpie://import link.", false);
+    throw new ForgeError(
+      "invalid_input",
+      "The text is not a magpie://import link.",
+      false,
+    );
   const params = link.searchParams;
   const get = (name: string): string | undefined => text(params.get(name));
   const modelsPresent = params.has("models");
   const models = modelsPresent
-    ? params.get("models")?.split(",").map((entry) => entry.trim()).filter(Boolean) ?? []
+    ? (params
+        .get("models")
+        ?.split(",")
+        .map((entry) => entry.trim())
+        .filter(Boolean) ?? [])
     : undefined;
   return {
     ...(get("id") ? { id: get("id") } : {}),
@@ -496,7 +591,11 @@ function rawProviderFromLink(link: URL): RecordValue {
 export function parseMagpieImport(textInput: string): MagpieImportResult {
   const input = textInput.trim().replace(/^\uFEFF/, "");
   if (!input)
-    throw new ForgeError("invalid_input", "Paste Magpie provider JSON or an import link.", false);
+    throw new ForgeError(
+      "invalid_input",
+      "Paste Magpie provider JSON or an import link.",
+      false,
+    );
 
   let documents: RecordValue[];
   if (input.toLowerCase().startsWith("magpie:")) {
@@ -504,7 +603,11 @@ export function parseMagpieImport(textInput: string): MagpieImportResult {
     try {
       link = new URL(input);
     } catch {
-      throw new ForgeError("invalid_input", "The Magpie import link is invalid.", false);
+      throw new ForgeError(
+        "invalid_input",
+        "The Magpie import link is invalid.",
+        false,
+      );
     }
     documents = [rawProviderFromLink(link)];
   } else {
@@ -519,11 +622,17 @@ export function parseMagpieImport(textInput: string): MagpieImportResult {
       );
     }
     if (Array.isArray(parsed)) {
-      documents = parsed.filter((entry): entry is RecordValue => object(entry) !== undefined);
+      documents = parsed.filter(
+        (entry): entry is RecordValue => object(entry) !== undefined,
+      );
     } else {
       const wrapper = object(parsed);
       if (!wrapper)
-        throw new ForgeError("invalid_input", "The import JSON has no provider objects.", false);
+        throw new ForgeError(
+          "invalid_input",
+          "The import JSON has no provider objects.",
+          false,
+        );
       if (Array.isArray(wrapper.providers)) {
         documents = wrapper.providers.filter(
           (entry): entry is RecordValue => object(entry) !== undefined,
@@ -536,7 +645,11 @@ export function parseMagpieImport(textInput: string): MagpieImportResult {
     }
   }
   if (!documents.length)
-    throw new ForgeError("invalid_input", "The import text contains no providers.", false);
+    throw new ForgeError(
+      "invalid_input",
+      "The import text contains no providers.",
+      false,
+    );
 
   const warnings: string[] = [];
   const candidates: MagpieImportCandidate[] = [];
@@ -544,7 +657,10 @@ export function parseMagpieImport(textInput: string): MagpieImportResult {
   for (const document of documents) {
     const parsed = sourceFrom(document, usedIds);
     if (!("save" in parsed)) {
-      warnings.push(...parsed.warnings, `${text(document.name) ?? "An entry"} was skipped.`);
+      warnings.push(
+        ...parsed.warnings,
+        `${text(document.name) ?? "An entry"} was skipped.`,
+      );
       continue;
     }
     warnings.push(...parsed.warnings);

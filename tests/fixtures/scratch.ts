@@ -2,7 +2,9 @@ import { existsSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-const repositoryRoot = resolve(fileURLToPath(new URL("../..", import.meta.url)));
+const repositoryRoot = resolve(
+  fileURLToPath(new URL("../..", import.meta.url)),
+);
 
 /**
  * Test scratch space that never falls back to the OS temp directory.

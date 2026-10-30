@@ -2,8 +2,11 @@ import { constants } from "node:fs";
 import { lstat, open, opendir } from "node:fs/promises";
 import { dirname, join, relative, sep } from "node:path";
 import { TextDecoder } from "node:util";
+import {
+  containsSensitiveText,
+  isSensitivePath,
+} from "../shared/content-safety";
 import { ForgeError } from "../shared/errors";
-import { containsSensitiveText, isSensitivePath } from "../shared/content-safety";
 import type {
   WorkspaceDirectoryListingDto,
   WorkspaceFileEntryDto,
@@ -14,12 +17,7 @@ import { createWorkspacePathGuard } from "../tools/path-guard";
 const MAX_DIRECTORY_ENTRIES = 500;
 const MAX_PREVIEW_BYTES = 64 * 1024;
 
-const IGNORED_DIRECTORY_NAMES = new Set([
-  ".git",
-  ".build",
-  ".cache",
-  ".vite",
-]);
+const IGNORED_DIRECTORY_NAMES = new Set([".git", ".build", ".cache", ".vite"]);
 
 export interface WorkspaceFileOptions {
   readonly protectedRoots?: readonly string[];
@@ -48,7 +46,8 @@ export async function listWorkspaceDirectory(
   relativePath = ".",
   options: WorkspaceFileOptions = {},
 ): Promise<WorkspaceDirectoryListingDto> {
-  const normalizedInput = relativePath.trim() === "" ? "." : relativePath.trim();
+  const normalizedInput =
+    relativePath.trim() === "" ? "." : relativePath.trim();
   if (isSensitivePath(normalizedInput)) {
     throw new ForgeError("tool", "不允许访问敏感路径。");
   }
@@ -58,8 +57,7 @@ export async function listWorkspaceDirectory(
     options.protectedRoots,
   );
   const target = await guard.resolveRead(normalizedInput);
-  const safeRelative =
-    relative(guard.root, target).split(sep).join("/") || ".";
+  const safeRelative = relative(guard.root, target).split(sep).join("/") || ".";
   if (
     isSensitivePath(safeRelative) ||
     secrets.some((secret) => safeRelative.includes(secret))
@@ -149,8 +147,7 @@ export async function readWorkspaceFilePreview(
     options.protectedRoots,
   );
   const target = await guard.resolveRead(normalizedInput);
-  const safeRelative =
-    relative(guard.root, target).split(sep).join("/") || ".";
+  const safeRelative = relative(guard.root, target).split(sep).join("/") || ".";
   if (
     safeRelative === "." ||
     isSensitivePath(safeRelative) ||
@@ -173,12 +170,7 @@ export async function readWorkspaceFilePreview(
     const buffer = Buffer.alloc(toRead);
     let offset = 0;
     while (offset < toRead) {
-      const chunk = await handle.read(
-        buffer,
-        offset,
-        toRead - offset,
-        offset,
-      );
+      const chunk = await handle.read(buffer, offset, toRead - offset, offset);
       if (chunk.bytesRead === 0) break;
       offset += chunk.bytesRead;
     }

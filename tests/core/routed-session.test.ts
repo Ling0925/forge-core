@@ -85,7 +85,9 @@ function fixture(options: {
     group,
     state: createRouteState(),
     ...(options.apiMode === undefined ? {} : { apiMode: options.apiMode }),
-    mayUseWebSearch: options.providers.some(provider => provider.apiMode === "responses"),
+    mayUseWebSearch: options.providers.some(
+      (provider) => provider.apiMode === "responses",
+    ),
     resolve: (candidate) => {
       const index = members.findIndex(
         (member) => member.sourceId === candidate.sourceId,
@@ -282,7 +284,9 @@ it("does not switch members when the run is cancelled during a routed attempt", 
 
 it("automatically enables search only for Responses members of a mixed-protocol route", async () => {
   const seen: (string | undefined)[] = [];
-  const providers: ModelProvider[] = (["chat-completions", "responses"] as const).map(apiMode => ({
+  const providers: ModelProvider[] = (
+    ["chat-completions", "responses"] as const
+  ).map((apiMode) => ({
     ...providerOf(async (_messages, _tools, request) => {
       seen.push(request.webSearch);
       return answer("done");
@@ -302,10 +306,13 @@ it("automatically enables search only for Responses members of a mixed-protocol 
 it("retains safe non-Responses retries in a mixed route and authorizes search on its Responses member", async () => {
   vi.useFakeTimers();
   const seen: (string | undefined)[] = [];
-  const providers: ModelProvider[] = (["chat-completions", "responses"] as const).map(apiMode => ({
+  const providers: ModelProvider[] = (
+    ["chat-completions", "responses"] as const
+  ).map((apiMode) => ({
     ...providerOf(async (_messages, _tools, request) => {
       seen.push(request.webSearch);
-      if (apiMode === "chat-completions") throw new ProviderError("http", "Rate limited.", true, 429);
+      if (apiMode === "chat-completions")
+        throw new ProviderError("http", "Rate limited.", true, 429);
       return answer("done");
     }),
     apiMode,
@@ -316,37 +323,43 @@ it("retains safe non-Responses retries in a mixed route and authorizes search on
   await running;
   expect(run.snapshot().status).toBe("completed");
   expect(seen).toEqual(["disabled", "live"]);
-  expect(run.events.filter(event => event.type === "provider_retry")).toHaveLength(1);
+  expect(
+    run.events.filter((event) => event.type === "provider_retry"),
+  ).toHaveLength(1);
 });
 
-it.each([true, false])("does not replay a search-enabled routed request (progress received: %s)", async progress => {
-  vi.useFakeTimers();
-  let secondCalls = 0;
-  const first = providerOf(async (_messages, _tools, request) => {
-    expect(request.webSearch).toBe("live");
-    if (progress) request.onWebSearch?.({ id: "search-1", status: "searching" });
-    throw new ProviderError("http", "Rate limited.", true, 429);
-  });
-  const second = providerOf(async () => {
-    secondCalls += 1;
-    return answer("must not run");
-  });
-  const run = fixture({
-    providers: [first, second],
-    apiMode: "responses",
-    approve: async () => true,
-  });
+it.each([true, false])(
+  "does not replay a search-enabled routed request (progress received: %s)",
+  async (progress) => {
+    vi.useFakeTimers();
+    let secondCalls = 0;
+    const first = providerOf(async (_messages, _tools, request) => {
+      expect(request.webSearch).toBe("live");
+      if (progress)
+        request.onWebSearch?.({ id: "search-1", status: "searching" });
+      throw new ProviderError("http", "Rate limited.", true, 429);
+    });
+    const second = providerOf(async () => {
+      secondCalls += 1;
+      return answer("must not run");
+    });
+    const run = fixture({
+      providers: [first, second],
+      apiMode: "responses",
+      approve: async () => true,
+    });
 
-  const running = run.run();
-  await vi.runAllTimersAsync();
-  await running;
+    const running = run.run();
+    await vi.runAllTimersAsync();
+    await running;
 
-  expect(secondCalls).toBe(0);
-  expect(run.snapshot().status).toBe("failed");
-  expect(run.events.some((event) => event.type === "provider_retry")).toBe(
-    false,
-  );
-});
+    expect(secondCalls).toBe(0);
+    expect(run.snapshot().status).toBe("failed");
+    expect(run.events.some((event) => event.type === "provider_retry")).toBe(
+      false,
+    );
+  },
+);
 
 it("spends one shared budget across group members and reports unknown failure cost", async () => {
   vi.useFakeTimers();

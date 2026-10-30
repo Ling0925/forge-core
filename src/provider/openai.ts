@@ -1,17 +1,16 @@
 import OpenAI from "openai";
+import type { ModelCatalog } from "../shared/model-catalog";
 import { createAnthropicProvider } from "./anthropic";
-import { createGeminiProvider } from "./gemini";
-import { normalizeModelCatalog } from "./catalog";
-import { ProviderError, protocol, httpError } from "./errors";
 import { parseProviderJson } from "./bounded-json";
+import { normalizeModelCatalog } from "./catalog";
+import { ProviderError, httpError, protocol } from "./errors";
+import { createGeminiProvider } from "./gemini";
 import { createRequestOptions } from "./request-options";
 import { sdkEvents, withSdkRequest } from "./sdk-transport";
-import type { ModelCatalog } from "../shared/model-catalog";
 export { ProviderError } from "./errors";
 export type { ProviderFailure } from "./errors";
 import { z } from "zod";
 import type { ModelProvider } from "../shared/contracts";
-import { scopeProviderState } from "./state-scope";
 import { ForgeError } from "../shared/errors";
 import {
   messageSchema,
@@ -30,6 +29,7 @@ import type {
 } from "../shared/schemas";
 import { estimateToolCallLines } from "../shared/tool-preview-lines";
 import { createResponsesAdapter } from "./responses";
+import { scopeProviderState } from "./state-scope";
 
 const MAX_TEXT = 2_000_000;
 // Persisted display-only reasoning preview; bounded so a chatty gateway cannot
@@ -151,7 +151,8 @@ const checkFinish = (
   if (new Set(calls.map((call) => call.id)).size !== calls.length)
     throw protocol("invalid_tool_call");
   for (const call of calls) {
-    if (!call.function.arguments.trim()) throw protocol("invalid_tool_call", { stage: "tool_arguments" });
+    if (!call.function.arguments.trim())
+      throw protocol("invalid_tool_call", { stage: "tool_arguments" });
     const args = parseProviderJson(call.function.arguments, "tool_arguments");
     if (args === null || typeof args !== "object" || Array.isArray(args))
       throw protocol("invalid_tool_call", { stage: "tool_arguments" });
@@ -227,7 +228,9 @@ async function readStream(
       return;
     }
     if (done) throw protocol("unexpected_frame");
-    const parsed = chunkSchema.safeParse(parseProviderJson(payload, "sse_event"));
+    const parsed = chunkSchema.safeParse(
+      parseProviderJson(payload, "sse_event"),
+    );
     if (!parsed.success) throw protocol("invalid_chunk");
     const chunk = parsed.data;
     if (chunk.usage) usage = normalizeUsage(chunk.usage);
@@ -246,7 +249,13 @@ async function readStream(
       }
       if (delta.content) {
         text += delta.content;
-        if (text.length > MAX_TEXT) throw protocol("output_limit", { stage: "output_text", observed: text.length, limit: MAX_TEXT, unit: "utf16_code_units" });
+        if (text.length > MAX_TEXT)
+          throw protocol("output_limit", {
+            stage: "output_text",
+            observed: text.length,
+            limit: MAX_TEXT,
+            unit: "utf16_code_units",
+          });
         // Shared event text deltas have a smaller bound than final content.
         for (let start = 0; start < delta.content.length; start += 65536)
           notify(observer, delta.content.slice(start, start + 65536));
@@ -283,7 +292,12 @@ async function readStream(
           arguments: previous.arguments + (part.function?.arguments ?? ""),
         };
         if (next.arguments.length > 1_000_000)
-          throw protocol("output_limit", { stage: "tool_arguments", observed: next.arguments.length, limit: 1_000_000, unit: "utf16_code_units" });
+          throw protocol("output_limit", {
+            stage: "tool_arguments",
+            observed: next.arguments.length,
+            limit: 1_000_000,
+            unit: "utf16_code_units",
+          });
         if (next.id.length > 256 || next.name.length > 64)
           throw protocol("invalid_tool_call");
         calls.set(part.index, next);
@@ -341,7 +355,10 @@ export function createModelProvider(config: ProviderConfig): ModelProvider {
       apiMode: "anthropic",
       complete(messages, tools, options) {
         if (options.webSearch && options.webSearch !== "disabled")
-          throw new ForgeError("invalid_input", "Native web search requires a Responses endpoint and a model supporting web_search; no local-search fallback is used.");
+          throw new ForgeError(
+            "invalid_input",
+            "Native web search requires a Responses endpoint and a model supporting web_search; no local-search fallback is used.",
+          );
         return provider.complete(messages, tools, options);
       },
     };
@@ -405,257 +422,277 @@ export function createModelProvider(config: ProviderConfig): ModelProvider {
     const models = await loadCatalog(signal);
     return models.map((model) => model.id).sort();
   };
-  return scopeProviderState({
-    apiMode: settings.apiMode ?? "chat-completions",
-    listModels,
-    listModelCatalog(signal) {
-      return loadCatalog(signal);
-    },
-    async getModelContextWindow(model, signal) {
-      if (!catalog) await loadCatalog(signal);
-      return windows.get(model) ?? null;
-    },
-    complete: (messages, tools, options) => {
-      const hostedSearch = options.webSearch !== undefined && options.webSearch !== "disabled";
-      if (hostedSearch && settings.apiMode !== "responses")
-        throw new ForgeError("invalid_input", "Native web search requires a Responses endpoint and a model supporting web_search; no local-search fallback is used.");
-      const model = settingsFields.model.safeParse(options.model);
-      const history = z.array(messageSchema).max(100000).safeParse(messages);
-      const definitions = z
-        .array(toolDefinitionSchema)
-        .max(256)
-        .safeParse(tools);
-      if (!model.success || !history.success || !definitions.success)
-        throw new ForgeError(
-          "invalid_input",
-          "Provide a valid model, message history and tool definitions.",
-          false,
-        );
-      return withSdkRequest(
-        settings,
-        { signal: options.signal, idle: true, fetch: requestOptions.fetch },
-        async ({ signal: combined, fetch }) => {
-          const client = clientFor(fetch);
-          if (settings.apiMode === "responses") {
-            const body = requestOptions.applyBody(
-              {
-                ...responses.body(
-                  history.data,
-                  definitions.data,
-                  model.data,
-                  options.webSearch,
-                ),
-                ...(settings.maxOutputTokens
-                  ? { max_output_tokens: settings.maxOutputTokens }
-                  : {}),
-                ...(settings.reasoningEffort &&
-                settings.reasoningEffort !== "default"
-                  ? { reasoning: { effort: settings.reasoningEffort } }
-                  : {}),
-              },
-              options.sessionId,
-            );
-            const response = await client.responses
-              .create(body, {
-                signal: combined,
-                headers: requestOptions.headersFor(body),
-              })
-              .asResponse()
-              .catch((error: unknown) => {
-                if (
-                  hostedSearch &&
-                  error instanceof OpenAI.APIError &&
-                  [400, 404, 422].includes(error.status ?? 0)
-                )
-                  throw new ProviderError(
-                    "http",
-                    "The Responses request with native web_search was rejected. Select an endpoint/model supporting native web_search; Forge will not retry without search or fall back to Bing.",
-                    false,
-                    error.status,
-                  );
+  return scopeProviderState(
+    {
+      apiMode: settings.apiMode ?? "chat-completions",
+      listModels,
+      listModelCatalog(signal) {
+        return loadCatalog(signal);
+      },
+      async getModelContextWindow(model, signal) {
+        if (!catalog) await loadCatalog(signal);
+        return windows.get(model) ?? null;
+      },
+      complete: (messages, tools, options) => {
+        const hostedSearch =
+          options.webSearch !== undefined && options.webSearch !== "disabled";
+        if (hostedSearch && settings.apiMode !== "responses")
+          throw new ForgeError(
+            "invalid_input",
+            "Native web search requires a Responses endpoint and a model supporting web_search; no local-search fallback is used.",
+          );
+        const model = settingsFields.model.safeParse(options.model);
+        const history = z.array(messageSchema).max(100000).safeParse(messages);
+        const definitions = z
+          .array(toolDefinitionSchema)
+          .max(256)
+          .safeParse(tools);
+        if (!model.success || !history.success || !definitions.success)
+          throw new ForgeError(
+            "invalid_input",
+            "Provide a valid model, message history and tool definitions.",
+            false,
+          );
+        return withSdkRequest(
+          settings,
+          { signal: options.signal, idle: true, fetch: requestOptions.fetch },
+          async ({ signal: combined, fetch }) => {
+            const client = clientFor(fetch);
+            if (settings.apiMode === "responses") {
+              const body = requestOptions.applyBody(
+                {
+                  ...responses.body(
+                    history.data,
+                    definitions.data,
+                    model.data,
+                    options.webSearch,
+                  ),
+                  ...(settings.maxOutputTokens
+                    ? { max_output_tokens: settings.maxOutputTokens }
+                    : {}),
+                  ...(settings.reasoningEffort &&
+                  settings.reasoningEffort !== "default"
+                    ? { reasoning: { effort: settings.reasoningEffort } }
+                    : {}),
+                },
+                options.sessionId,
+              );
+              const response = await client.responses
+                .create(body, {
+                  signal: combined,
+                  headers: requestOptions.headersFor(body),
+                })
+                .asResponse()
+                .catch((error: unknown) => {
+                  if (
+                    hostedSearch &&
+                    error instanceof OpenAI.APIError &&
+                    [400, 404, 422].includes(error.status ?? 0)
+                  )
+                    throw new ProviderError(
+                      "http",
+                      "The Responses request with native web_search was rejected. Select an endpoint/model supporting native web_search; Forge will not retry without search or fall back to Bing.",
+                      false,
+                      error.status,
+                    );
+                  throw error;
+                });
+              if (!response.ok) {
+                await response.body?.cancel();
+                throw httpError(response.status);
+              }
+              const contentType = response.headers
+                .get("content-type")
+                ?.split(";")[0]
+                ?.trim()
+                .toLowerCase();
+              if (
+                contentType !== "text/event-stream" &&
+                contentType !== "application/json"
+              ) {
+                await response.body?.cancel();
+                throw protocol();
+              }
+              return responses.read(
+                response,
+                options.onText,
+                model.data,
+                options.onReasoning,
+                options.onToolCall,
+                options.webSearch,
+                options.onWebSearch,
+              );
+            }
+            const request = async (stream: boolean): Promise<Response> => {
+              const body = requestOptions.applyBody(
+                {
+                  model: model.data,
+                  ...(settings.maxOutputTokens
+                    ? { max_completion_tokens: settings.maxOutputTokens }
+                    : {}),
+                  ...(settings.reasoningEffort &&
+                  settings.reasoningEffort !== "default"
+                    ? { reasoning_effort: settings.reasoningEffort }
+                    : {}),
+                  messages: history.data.map(
+                    (
+                      message,
+                    ): OpenAI.Chat.Completions.ChatCompletionMessageParam =>
+                      message.role === "assistant"
+                        ? {
+                            role: message.role,
+                            content: message.content,
+                            ...(message.tool_calls
+                              ? {
+                                  tool_calls: message.tool_calls.map(
+                                    (call) => ({
+                                      ...call,
+                                      function: { ...call.function },
+                                    }),
+                                  ),
+                                }
+                              : {}),
+                          }
+                        : message.role === "tool"
+                          ? {
+                              role: "tool",
+                              content: message.content,
+                              tool_call_id: message.tool_call_id,
+                            }
+                          : message.role === "system"
+                            ? { role: "system", content: message.content }
+                            : {
+                                role: "user",
+                                content: message.images?.length
+                                  ? [
+                                      ...(message.content
+                                        ? [
+                                            {
+                                              type: "text" as const,
+                                              text: message.content,
+                                            },
+                                          ]
+                                        : []),
+                                      ...message.images.map((image) => ({
+                                        type: "image_url" as const,
+                                        image_url: { url: image.dataUrl },
+                                      })),
+                                    ]
+                                  : message.content,
+                              },
+                  ),
+                  ...(definitions.data.length
+                    ? {
+                        tools: definitions.data.map((tool) => ({
+                          ...tool,
+                          function: { ...tool.function, strict: false },
+                        })),
+                      }
+                    : {}),
+                  stream,
+                  // Ask spec-compliant gateways to report usage in the stream; without
+                  // this the footer never receives a real cache rate during a run.
+                  ...(stream
+                    ? { stream_options: { include_usage: true } }
+                    : {}),
+                },
+                options.sessionId,
+              );
+              return client.chat.completions
+                .create(body, {
+                  signal: combined,
+                  headers: requestOptions.headersFor(body),
+                })
+                .asResponse();
+            };
+            let response: Response;
+            try {
+              response = await request(true);
+            } catch (error) {
+              if (
+                !(error instanceof OpenAI.APIError) ||
+                (error.status !== 400 && error.status !== 422)
+              )
                 throw error;
+              const parsed = unsupportedSchema.safeParse({
+                error: error.error,
               });
+              if (
+                !parsed.success ||
+                !/\bstream(?:ing)?\b/i.test(parsed.data.error.message) ||
+                !/not supported|unsupported|does not support/i.test(
+                  parsed.data.error.message,
+                )
+              )
+                throw error;
+              response = await request(false);
+            }
             if (!response.ok) {
               await response.body?.cancel();
               throw httpError(response.status);
             }
-            const contentType = response.headers.get("content-type")?.split(";")[0]?.trim().toLowerCase();
-            if (contentType !== "text/event-stream" && contentType !== "application/json") {
+            const contentType = response.headers
+              .get("content-type")
+              ?.split(";")[0]
+              ?.trim()
+              .toLowerCase();
+            if (contentType === "text/event-stream")
+              return readStream(
+                response,
+                options.onText,
+                options.onReasoning,
+                options.onToolCall,
+              );
+            if (contentType !== "application/json") {
               await response.body?.cancel();
               throw protocol();
             }
-            return responses.read(
-              response,
-              options.onText,
-              model.data,
-              options.onReasoning,
-              options.onToolCall,
-              options.webSearch,
-              options.onWebSearch,
+            const parsed = jsonResponseSchema.safeParse(
+              parseProviderJson(await readText(response)),
             );
-          }
-          const request = async (stream: boolean): Promise<Response> => {
-            const body = requestOptions.applyBody(
-              {
-                model: model.data,
-                ...(settings.maxOutputTokens
-                  ? { max_completion_tokens: settings.maxOutputTokens }
-                  : {}),
-                ...(settings.reasoningEffort &&
-                settings.reasoningEffort !== "default"
-                  ? { reasoning_effort: settings.reasoningEffort }
-                  : {}),
-                messages: history.data.map(
-                  (
-                    message,
-                  ): OpenAI.Chat.Completions.ChatCompletionMessageParam =>
-                    message.role === "assistant"
-                      ? {
-                          role: message.role,
-                          content: message.content,
-                          ...(message.tool_calls
-                            ? {
-                                tool_calls: message.tool_calls.map((call) => ({
-                                  ...call,
-                                  function: { ...call.function },
-                                })),
-                              }
-                            : {}),
-                        }
-                      : message.role === "tool"
-                        ? {
-                            role: "tool",
-                            content: message.content,
-                            tool_call_id: message.tool_call_id,
-                          }
-                        : message.role === "system"
-                          ? { role: "system", content: message.content }
-                          : {
-                              role: "user",
-                              content: message.images?.length
-                                ? [
-                                    ...(message.content
-                                      ? [
-                                          {
-                                            type: "text" as const,
-                                            text: message.content,
-                                          },
-                                        ]
-                                      : []),
-                                    ...message.images.map((image) => ({
-                                      type: "image_url" as const,
-                                      image_url: { url: image.dataUrl },
-                                    })),
-                                  ]
-                                : message.content,
-                            },
-                ),
-                ...(definitions.data.length
-                  ? {
-                      tools: definitions.data.map((tool) => ({
-                        ...tool,
-                        function: { ...tool.function, strict: false },
-                      })),
-                    }
-                  : {}),
-                stream,
-                // Ask spec-compliant gateways to report usage in the stream; without
-                // this the footer never receives a real cache rate during a run.
-                ...(stream ? { stream_options: { include_usage: true } } : {}),
+            if (!parsed.success) throw protocol();
+            const choice = parsed.data.choices[0];
+            if (!choice) throw protocol();
+            const text = choice.message.content ?? "";
+            const calls = choice.message.tool_calls ?? [];
+            checkFinish(choice.finish_reason, calls, text);
+            // A non-streaming response has no intermediate frames, so announce the
+            // validated complete metadata once, still without raw arguments.
+            if (options.onToolCall)
+              for (const [index, call] of calls.entries())
+                notifyToolCall(
+                  options.onToolCall,
+                  index,
+                  call.function.name,
+                  call.function.arguments.length,
+                  call.function.arguments,
+                );
+            const reasoningRaw = choice.message.reasoning_content;
+            const reasoning = reasoningRaw
+              ? reasoningRaw.slice(0, MAX_REASONING)
+              : "";
+            if (reasoning)
+              for (let start = 0; start < reasoning.length; start += 65536)
+                notify(
+                  options.onReasoning ?? (() => {}),
+                  reasoning.slice(start, start + 65536),
+                );
+            for (let start = 0; start < text.length; start += 65536)
+              notify(options.onText, text.slice(start, start + 65536));
+            const usage = normalizeUsage(parsed.data.usage);
+            return providerResponseSchema.parse({
+              message: {
+                role: "assistant",
+                content: text || null,
+                ...(reasoning ? { reasoning } : {}),
+                ...(calls.length ? { tool_calls: calls } : {}),
               },
-              options.sessionId,
-            );
-            return client.chat.completions
-              .create(body, {
-                signal: combined,
-                headers: requestOptions.headersFor(body),
-              })
-              .asResponse();
-          };
-          let response: Response;
-          try {
-            response = await request(true);
-          } catch (error) {
-            if (
-              !(error instanceof OpenAI.APIError) ||
-              (error.status !== 400 && error.status !== 422)
-            )
-              throw error;
-            const parsed = unsupportedSchema.safeParse({ error: error.error });
-            if (
-              !parsed.success ||
-              !/\bstream(?:ing)?\b/i.test(parsed.data.error.message) ||
-              !/not supported|unsupported|does not support/i.test(
-                parsed.data.error.message,
-              )
-            )
-              throw error;
-            response = await request(false);
-          }
-          if (!response.ok) {
-            await response.body?.cancel();
-            throw httpError(response.status);
-          }
-          const contentType = response.headers
-            .get("content-type")
-            ?.split(";")[0]
-            ?.trim()
-            .toLowerCase();
-          if (contentType === "text/event-stream")
-            return readStream(
-              response,
-              options.onText,
-              options.onReasoning,
-              options.onToolCall,
-            );
-          if (contentType !== "application/json") {
-            await response.body?.cancel();
-            throw protocol();
-          }
-          const parsed = jsonResponseSchema.safeParse(
-            parseProviderJson(await readText(response)),
-          );
-          if (!parsed.success) throw protocol();
-          const choice = parsed.data.choices[0];
-          if (!choice) throw protocol();
-          const text = choice.message.content ?? "";
-          const calls = choice.message.tool_calls ?? [];
-          checkFinish(choice.finish_reason, calls, text);
-          // A non-streaming response has no intermediate frames, so announce the
-          // validated complete metadata once, still without raw arguments.
-          if (options.onToolCall)
-            for (const [index, call] of calls.entries())
-              notifyToolCall(
-                options.onToolCall,
-                index,
-                call.function.name,
-                call.function.arguments.length,
-                call.function.arguments,
-              );
-          const reasoningRaw = choice.message.reasoning_content;
-          const reasoning = reasoningRaw
-            ? reasoningRaw.slice(0, MAX_REASONING)
-            : "";
-          if (reasoning)
-            for (let start = 0; start < reasoning.length; start += 65536)
-              notify(
-                options.onReasoning ?? (() => {}),
-                reasoning.slice(start, start + 65536),
-              );
-          for (let start = 0; start < text.length; start += 65536)
-            notify(options.onText, text.slice(start, start + 65536));
-          const usage = normalizeUsage(parsed.data.usage);
-          return providerResponseSchema.parse({
-            message: {
-              role: "assistant",
-              content: text || null,
-              ...(reasoning ? { reasoning } : {}),
-              ...(calls.length ? { tool_calls: calls } : {}),
-            },
-            ...(usage ? { usage } : {}),
-          });
-        },
-      );
+              ...(usage ? { usage } : {}),
+            });
+          },
+        );
+      },
     },
-  }, settings);
+    settings,
+  );
 }

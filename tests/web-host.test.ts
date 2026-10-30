@@ -186,21 +186,50 @@ describe("Web host with default personal LAN direct access", () => {
     const { url, directory, service, login } = await setup();
     const authA = await login();
     const authB = await login();
-    const rpc = async (auth: Record<string, string>, data: object) => fetch(`${url}/api/rpc`, {
-      method: "POST", headers: auth, body: JSON.stringify({ id: randomUUID(), ...data }),
+    const rpc = async (auth: Record<string, string>, data: object) =>
+      fetch(`${url}/api/rpc`, {
+        method: "POST",
+        headers: auth,
+        body: JSON.stringify({ id: randomUUID(), ...data }),
+      });
+    const other = await service.createSession({
+      workspace: tmpdir(),
+      title: "Other",
     });
-    const other = await service.createSession({ workspace: tmpdir(), title: "Other" });
-    const rejected = await rpc(authA, { method: "enqueueInput", input: { inputId: randomUUID(), input: { sessionId: other.id, prompt: "outside" } } });
+    const rejected = await rpc(authA, {
+      method: "enqueueInput",
+      input: {
+        inputId: randomUUID(),
+        input: { sessionId: other.id, prompt: "outside" },
+      },
+    });
     expect(rejected.status).toBe(403);
-    const session = await service.createSession({ workspace: directory, title: "Durable" });
+    const session = await service.createSession({
+      workspace: directory,
+      title: "Durable",
+    });
     const inputId = randomUUID();
-    const accepted = await rpc(authA, { method: "enqueueInput", input: { inputId, input: { sessionId: session.id, prompt: "work" } } });
+    const accepted = await rpc(authA, {
+      method: "enqueueInput",
+      input: { inputId, input: { sessionId: session.id, prompt: "work" } },
+    });
     expect(accepted.status).toBe(200);
-    expect(await accepted.json()).toMatchObject({ ok: true, result: { inputId } });
+    expect(await accepted.json()).toMatchObject({
+      ok: true,
+      result: { inputId },
+    });
     // Neither page opens an event lease or sends another startRun request.
     await vi.waitFor(async () => {
-      const observed = await rpc(authB, { method: "listInputs", sessionId: session.id });
-      expect(await observed.json()).toMatchObject({ ok: true, result: { items: [{ inputId, state: "consumed", outcome: "completed" }] } });
+      const observed = await rpc(authB, {
+        method: "listInputs",
+        sessionId: session.id,
+      });
+      expect(await observed.json()).toMatchObject({
+        ok: true,
+        result: {
+          items: [{ inputId, state: "consumed", outcome: "completed" }],
+        },
+      });
     });
   });
 
@@ -209,20 +238,40 @@ describe("Web host with default personal LAN direct access", () => {
     const auth = await login();
     await connectEvents(url, auth);
     const rpc = async (data: object) => {
-      const response = await fetch(`${url}/api/rpc`, { method: "POST", headers: auth, body: JSON.stringify({ id: randomUUID(), ...data }) });
+      const response = await fetch(`${url}/api/rpc`, {
+        method: "POST",
+        headers: auth,
+        body: JSON.stringify({ id: randomUUID(), ...data }),
+      });
       expect(response.status).toBe(200);
       return response.json();
     };
-    const created = await rpc({ method: "createSession", input: { workspace: directory } });
+    const created = await rpc({
+      method: "createSession",
+      input: { workspace: directory },
+    });
     const bytes = Buffer.alloc(900000);
     Buffer.from(image.dataUrl.split(",")[1] ?? "", "base64").copy(bytes);
-    const attachment = { name: "large.png", dataUrl: `data:image/png;base64,${bytes.toString("base64")}` };
-    const started = await rpc({ method: "startRun", input: { sessionId: created.result.id, prompt: "", images: [attachment] } });
+    const attachment = {
+      name: "large.png",
+      dataUrl: `data:image/png;base64,${bytes.toString("base64")}`,
+    };
+    const started = await rpc({
+      method: "startRun",
+      input: { sessionId: created.result.id, prompt: "", images: [attachment] },
+    });
     expect(started.ok).toBe(true);
     await vi.waitFor(async () => {
-      const saved = await rpc({ method: "getSession", sessionId: created.result.id });
+      const saved = await rpc({
+        method: "getSession",
+        sessionId: created.result.id,
+      });
       expect(saved.result.status).toBe("completed");
-      expect(saved.result.messages).toContainEqual({ role: "user", content: "", images: [attachment] });
+      expect(saved.result.messages).toContainEqual({
+        role: "user",
+        content: "",
+        images: [attachment],
+      });
     });
     const listed = await rpc({ method: "listSessions" });
     expect(JSON.stringify(listed)).not.toContain("data:image/");
@@ -321,7 +370,8 @@ describe("Web host with default personal LAN direct access", () => {
     const stream = await connectEvents(url, auth);
     const rpc = async (data: object) => {
       const response = await fetch(`${url}/api/rpc`, {
-        method: "POST", headers: auth,
+        method: "POST",
+        headers: auth,
         body: JSON.stringify({ id: randomUUID(), ...data }),
       });
       expect(response.status).toBe(200);
@@ -330,13 +380,39 @@ describe("Web host with default personal LAN direct access", () => {
       return result.result;
     };
     await rpc({ method: "createSession", input: { workspace: directory } });
-    const session = await rpc({ method: "createSession", input: { workspace: other, model: "test-model" } });
+    const session = await rpc({
+      method: "createSession",
+      input: { workspace: other, model: "test-model" },
+    });
     const listed = await rpc({ method: "listSessions" });
-    expect(listed.map((item: { workspace: string }) => item.workspace).sort()).toEqual([directory, other].sort());
-    expect(await rpc({ method: "getSession", sessionId: session.id })).toMatchObject({ workspace: other });
-    expect(await rpc({ method: "renameSession", sessionId: session.id, title: "Other project" })).toMatchObject({ title: "Other project" });
-    await rpc({ method: "startRun", input: { sessionId: session.id, prompt: "fixture", permission: "readonly" } });
-    await expect.poll(() => stream.received.find(item => item.event.type === "run_finished")?.event).toMatchObject({ status: "completed" });
+    expect(
+      listed.map((item: { workspace: string }) => item.workspace).sort(),
+    ).toEqual([directory, other].sort());
+    expect(
+      await rpc({ method: "getSession", sessionId: session.id }),
+    ).toMatchObject({ workspace: other });
+    expect(
+      await rpc({
+        method: "renameSession",
+        sessionId: session.id,
+        title: "Other project",
+      }),
+    ).toMatchObject({ title: "Other project" });
+    await rpc({
+      method: "startRun",
+      input: {
+        sessionId: session.id,
+        prompt: "fixture",
+        permission: "readonly",
+      },
+    });
+    await expect
+      .poll(
+        () =>
+          stream.received.find((item) => item.event.type === "run_finished")
+            ?.event,
+      )
+      .toMatchObject({ status: "completed" });
   });
 
   it("writes a real workspace file through the shared runtime and Web event pipe", async () => {
@@ -378,11 +454,19 @@ describe("Web host with default personal LAN direct access", () => {
     )?.event;
     if (approval?.type !== "approval_requested")
       throw new Error("Missing approval");
-    const handshake = await (await fetch(`${url}/api/connect`, {
-      method: "POST", headers: auth, body: "{}",
-    })).json();
+    const handshake = await (
+      await fetch(`${url}/api/connect`, {
+        method: "POST",
+        headers: auth,
+        body: "{}",
+      })
+    ).json();
     const recovery = z.array(runEventSchema).parse(handshake.recovery);
-    expect(recovery.filter((item) => item.event.type === "approval_requested").map((item) => item.event)).toEqual([expect.objectContaining({ request: approval.request })]);
+    expect(
+      recovery
+        .filter((item) => item.event.type === "approval_requested")
+        .map((item) => item.event),
+    ).toEqual([expect.objectContaining({ request: approval.request })]);
     auth = { ...auth, "X-Forge-Client": handshake.clientId };
     stream = await connectEvents(url, auth, handshake.cursor);
     await rpc({
@@ -408,9 +492,13 @@ describe("Web host with default personal LAN direct access", () => {
     expect(await readFile(join(directory, "web-fixture.txt"), "utf8")).toBe(
       "written through Web RPC",
     );
-    const completed = await (await fetch(`${url}/api/connect`, {
-      method: "POST", headers: auth, body: "{}",
-    })).json();
+    const completed = await (
+      await fetch(`${url}/api/connect`, {
+        method: "POST",
+        headers: auth,
+        body: "{}",
+      })
+    ).json();
     expect(completed.recovery).toEqual([]);
   });
 
@@ -429,12 +517,15 @@ describe("Web host with default personal LAN direct access", () => {
     expect((await poll(auth, 0)).status).toBe(426);
     await expect(connectEvents(url, auth, -1)).rejects.toThrow();
     await expect(connectEvents(url, auth, 100)).rejects.toThrow();
-    await expect(connectEvents(url, { ...auth, "X-Forge-Client": randomUUID() })).rejects.toThrow();
+    await expect(
+      connectEvents(url, { ...auth, "X-Forge-Client": randomUUID() }),
+    ).rejects.toThrow();
     const stream = await connectEvents(url, auth);
     expect(stream.cursors).toEqual([0]);
     expect(oldStream.ws.readyState).toBe(WebSocket.OPEN);
     const oldPage = await fetch(`${url}/api/rpc`, {
-      method: "POST", headers: oldAuth,
+      method: "POST",
+      headers: oldAuth,
       body: JSON.stringify({ id: randomUUID(), method: "getSettings" }),
     });
     expect(oldPage.status).toBe(200);
@@ -453,27 +544,59 @@ describe("Web host with default personal LAN direct access", () => {
     const other = await connectEvents(url, otherAuth);
     const rpc = async (headers: Record<string, string>, input: object) => {
       const response = await fetch(`${url}/api/rpc`, {
-        method: "POST", headers, body: JSON.stringify(input),
+        method: "POST",
+        headers,
+        body: JSON.stringify(input),
       });
       expect(response.status).toBe(200);
       const result = await response.json();
       expect(result.ok).toBe(true);
       return result;
     };
-    const session = await rpc(auth, { id: randomUUID(), method: "createSession", input: { workspace: directory, model: "test-model" } });
-    const run = await rpc(auth, { id: randomUUID(), method: "startRun", input: { sessionId: session.result.id, prompt: "wait for cancellation", permission: "readonly" } });
+    const session = await rpc(auth, {
+      id: randomUUID(),
+      method: "createSession",
+      input: { workspace: directory, model: "test-model" },
+    });
+    const run = await rpc(auth, {
+      id: randomUUID(),
+      method: "startRun",
+      input: {
+        sessionId: session.result.id,
+        prompt: "wait for cancellation",
+        permission: "readonly",
+      },
+    });
     for (const stream of [background, other]) {
-      await expect.poll(() => stream.received.some(item => item.event.type === "text_delta")).toBe(true);
+      await expect
+        .poll(() =>
+          stream.received.some((item) => item.event.type === "text_delta"),
+        )
+        .toBe(true);
     }
     const cursor = background.cursors.at(-1);
     if (cursor === undefined) throw new Error("Missing background cursor");
     background.ws.terminate();
     await expect.poll(() => background.ws.readyState).toBe(WebSocket.CLOSED);
-    await rpc(otherAuth, { id: randomUUID(), method: "cancelRun", runId: run.result.runId });
-    await expect.poll(() => other.received.some(item => item.event.type === "run_finished")).toBe(true);
+    await rpc(otherAuth, {
+      id: randomUUID(),
+      method: "cancelRun",
+      runId: run.result.runId,
+    });
+    await expect
+      .poll(() =>
+        other.received.some((item) => item.event.type === "run_finished"),
+      )
+      .toBe(true);
     const resumed = await connectEvents(url, auth, cursor);
-    await expect.poll(() => resumed.received.some(item => item.event.type === "run_finished")).toBe(true);
-    expect(resumed.received.some(item => item.event.type === "text_delta")).toBe(false);
+    await expect
+      .poll(() =>
+        resumed.received.some((item) => item.event.type === "run_finished"),
+      )
+      .toBe(true);
+    expect(
+      resumed.received.some((item) => item.event.type === "text_delta"),
+    ).toBe(false);
     expect(other.ws.readyState).toBe(WebSocket.OPEN);
   });
 
@@ -601,21 +724,50 @@ describe("Web host with default personal LAN direct access", () => {
       )
       .toBe("running");
     await new Promise((done) => setTimeout(done, 1200));
-    const handshake = await (await fetch(`${url}/api/connect`, {
-      method: "POST", headers: auth, body: "{}",
-    })).json();
+    const handshake = await (
+      await fetch(`${url}/api/connect`, {
+        method: "POST",
+        headers: auth,
+        body: "{}",
+      })
+    ).json();
     const recovery = z.array(runEventSchema).parse(handshake.recovery);
-    expect(recovery.some((item) => item.runId === started.result.runId && item.event.type === "run_started")).toBe(true);
-    expect(recovery.some((item) => item.event.type === "text_delta" && item.event.text === "fixture response")).toBe(true);
+    expect(
+      recovery.some(
+        (item) =>
+          item.runId === started.result.runId &&
+          item.event.type === "run_started",
+      ),
+    ).toBe(true);
+    expect(
+      recovery.some(
+        (item) =>
+          item.event.type === "text_delta" &&
+          item.event.text === "fixture response",
+      ),
+    ).toBe(true);
     const nextAuth = { ...auth, "X-Forge-Client": handshake.clientId };
     const resumed = await connectEvents(url, nextAuth, handshake.cursor);
-    expect((await rpc({ id: randomUUID(), method: "getSettings" })).status).toBe(200);
+    expect(
+      (await rpc({ id: randomUUID(), method: "getSettings" })).status,
+    ).toBe(200);
     const cancelled = await fetch(`${url}/api/rpc`, {
-      method: "POST", headers: nextAuth,
-      body: JSON.stringify({ id: randomUUID(), method: "cancelRun", runId: started.result.runId }),
+      method: "POST",
+      headers: nextAuth,
+      body: JSON.stringify({
+        id: randomUUID(),
+        method: "cancelRun",
+        runId: started.result.runId,
+      }),
     });
     expect((await cancelled.json()).ok).toBe(true);
-    await expect.poll(() => resumed.received.find((item) => item.event.type === "run_finished")?.event).toMatchObject({ status: "cancelled" });
+    await expect
+      .poll(
+        () =>
+          resumed.received.find((item) => item.event.type === "run_finished")
+            ?.event,
+      )
+      .toMatchObject({ status: "cancelled" });
   });
 
   it("serves sandboxed HTML previews for inline code and workspace files only", async () => {
@@ -638,7 +790,9 @@ describe("Web host with default personal LAN direct access", () => {
     // allowance that the workbench itself never grants.
     const document = await fetch(`${url}${inlineUrl}`, { headers: auth });
     expect(document.status).toBe(200);
-    expect(document.headers.get("content-type")).toBe("text/html; charset=utf-8");
+    expect(document.headers.get("content-type")).toBe(
+      "text/html; charset=utf-8",
+    );
     expect(document.headers.get("content-security-policy")).toContain(
       "default-src 'none'",
     );
@@ -656,14 +810,36 @@ describe("Web host with default personal LAN direct access", () => {
     const office = await post("/api/preview", { html: officeHtml });
     expect(office.status).toBe(200);
     const officeUrl = (await office.json()).url as string;
-    expect(await (await fetch(`${url}${officeUrl}`, { headers: auth })).text()).toBe(officeHtml);
+    expect(
+      await (await fetch(`${url}${officeUrl}`, { headers: auth })).text(),
+    ).toBe(officeHtml);
     // Enforce UTF-8 bytes rather than JS characters (3 Mi characters > 8 MiB).
-    expect((await post("/api/preview", { html: "中".repeat(3 * 1024 * 1024) })).status).toBe(400);
+    expect(
+      (await post("/api/preview", { html: "中".repeat(3 * 1024 * 1024) }))
+        .status,
+    ).toBe(400);
 
     // Preview documents also work without a login cookie or page connection id.
-    expect((await fetch(`${url}${inlineUrl}`, { headers: { Host: auth.Host } })).status).toBe(200);
-    expect((await fetch(`${url}/preview/document?id=${"0".repeat(48)}`, { headers: auth })).status).toBe(404);
-    expect((await post("/api/preview", { html: "x" }, { ...auth, Origin: "http://evil.invalid" })).status).toBe(403);
+    expect(
+      (await fetch(`${url}${inlineUrl}`, { headers: { Host: auth.Host } }))
+        .status,
+    ).toBe(200);
+    expect(
+      (
+        await fetch(`${url}/preview/document?id=${"0".repeat(48)}`, {
+          headers: auth,
+        })
+      ).status,
+    ).toBe(404);
+    expect(
+      (
+        await post(
+          "/api/preview",
+          { html: "x" },
+          { ...auth, Origin: "http://evil.invalid" },
+        )
+      ).status,
+    ).toBe(403);
 
     // A workspace HTML file is read through the path guard, never from outside it.
     await writeFile(join(directory, "page.html"), "<p id=file>from disk</p>");
@@ -671,11 +847,18 @@ describe("Web host with default personal LAN direct access", () => {
     const file = await post("/api/preview/file", { path: "page.html" });
     expect(file.status).toBe(200);
     const fileUrl = (await file.json()).url as string;
-    expect(await (await fetch(`${url}${fileUrl}`, { headers: auth })).text()).toBe(
-      "<p id=file>from disk</p>",
-    );
-    for (const path of ["notes.txt", "../outside.html", ".env.html", ".git/x.html"])
-      expect((await post("/api/preview/file", { path })).status).toBeGreaterThanOrEqual(403);
+    expect(
+      await (await fetch(`${url}${fileUrl}`, { headers: auth })).text(),
+    ).toBe("<p id=file>from disk</p>");
+    for (const path of [
+      "notes.txt",
+      "../outside.html",
+      ".env.html",
+      ".git/x.html",
+    ])
+      expect(
+        (await post("/api/preview/file", { path })).status,
+      ).toBeGreaterThanOrEqual(403);
   });
 
   it("browses server directories only on multi-workspace hosts after page/origin checks", async () => {
@@ -706,9 +889,7 @@ describe("Web host with default personal LAN direct access", () => {
       });
     // The page connection is required before any listing happens.
     expect(
-      (
-        await browse({}, { ...auth, "X-Forge-Client": randomUUID() })
-      ).status,
+      (await browse({}, { ...auth, "X-Forge-Client": randomUUID() })).status,
     ).toBe(410);
     expect((await browse({}, { ...restricted.headers })).status).toBe(410);
     // Cross-origin requests stay refused.
@@ -731,9 +912,9 @@ describe("Web host with default personal LAN direct access", () => {
     ).toBe(true);
     expect(JSON.stringify(listing)).not.toContain("notes.txt");
     expect(listing.truncated).toBe(false);
-    expect(
-      typeof listing.parent === "string" || listing.parent === null,
-    ).toBe(true);
+    expect(typeof listing.parent === "string" || listing.parent === null).toBe(
+      true,
+    );
     // An explicit absolute path is browsed; invalid input is a 400.
     const nested = await browse({ path: join(directory, "alpha") });
     expect(nested.status).toBe(200);

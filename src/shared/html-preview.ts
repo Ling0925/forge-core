@@ -40,8 +40,16 @@ export function isHtmlLanguage(language: string): boolean {
 }
 
 export const htmlPreviewRequestSchema = z
-  .object({ html: z.string().max(HTML_PREVIEW_MAX_BYTES)
-    .refine(html => new TextEncoder().encode(html).byteLength <= HTML_PREVIEW_MAX_BYTES, "HTML exceeds the preview byte limit.") })
+  .object({
+    html: z
+      .string()
+      .max(HTML_PREVIEW_MAX_BYTES)
+      .refine(
+        (html) =>
+          new TextEncoder().encode(html).byteLength <= HTML_PREVIEW_MAX_BYTES,
+        "HTML exceeds the preview byte limit.",
+      ),
+  })
   .strict()
   .readonly();
 export type HtmlPreviewRequest = z.infer<typeof htmlPreviewRequestSchema>;

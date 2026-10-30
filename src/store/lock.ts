@@ -16,14 +16,18 @@ export async function fileLock(
   signal?: AbortSignal,
 ): Promise<() => Promise<void>> {
   if (signal?.aborted) throw cancelled();
-  if (process.platform !== "linux" && process.platform !== "darwin") throw storageError();
+  if (process.platform !== "linux" && process.platform !== "darwin")
+    throw storageError();
   // macOS has flock(2), but no system flock(1). A tiny ABI-independent helper
   // uses the same inherited-descriptor contract as util-linux. Packagers may
   // place it outside an application archive and supply an absolute path.
-  const helper = process.platform === "darwin"
-    ? process.env.FORGE_FLOCK_EXECUTABLE ?? fileURLToPath(new URL("../native/forge-flock", import.meta.url))
-    : "flock";
-  if (process.platform === "darwin" && !isAbsolute(helper)) throw storageError();
+  const helper =
+    process.platform === "darwin"
+      ? (process.env.FORGE_FLOCK_EXECUTABLE ??
+        fileURLToPath(new URL("../native/forge-flock", import.meta.url)))
+      : "flock";
+  if (process.platform === "darwin" && !isAbsolute(helper))
+    throw storageError();
   await checkEntry(path);
   let handle: FileHandle;
   try {
@@ -40,9 +44,13 @@ export async function fileLock(
     const info = await handle.stat();
     if (!info.isFile() || (info.mode & 0o777) !== 0o600) throw storageError();
     if (signal?.aborted) throw cancelled();
-    const child = spawn(helper, process.platform === "darwin" ? [] : ["-n", "-E", "75", "3"], {
-      stdio: ["ignore", "ignore", "ignore", handle.fd],
-    });
+    const child = spawn(
+      helper,
+      process.platform === "darwin" ? [] : ["-n", "-E", "75", "3"],
+      {
+        stdio: ["ignore", "ignore", "ignore", handle.fd],
+      },
+    );
     const result = await new Promise<"ok" | "busy" | "error" | "cancelled">(
       (resolve) => {
         let settled = false;

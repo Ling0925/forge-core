@@ -5,7 +5,10 @@ import {
   type WorkspaceDirectoryPage,
   isAbsoluteWorkspacePath,
 } from "../shared/workspaces";
-import { containsPath, createProtectedRootMatcher } from "../tools/protected-roots";
+import {
+  containsPath,
+  createProtectedRootMatcher,
+} from "../tools/protected-roots";
 
 /** At most this many directory entries are inspected while answering one page. */
 export const WORKSPACE_SCAN_LIMIT = 2000;
@@ -148,7 +151,12 @@ export async function browseWorkspaceDirectory(
       // `Dirent` is lstat-based, so a symlink is never reported as a directory.
       if (!entry.isDirectory() || entry.name.startsWith(".")) continue;
       const child = join(canonical, entry.name);
-      if (entry.name.length > 255 || !isAbsoluteWorkspacePath(child) || !browsable(child)) continue;
+      if (
+        entry.name.length > 255 ||
+        !isAbsoluteWorkspacePath(child) ||
+        !browsable(child)
+      )
+        continue;
       if (directories.length >= WORKSPACE_DIRECTORY_LIMIT) {
         truncated = true;
         break;

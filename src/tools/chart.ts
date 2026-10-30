@@ -1,12 +1,12 @@
 import { z } from "zod";
-import { defineTool } from "../shared/tool-definition";
 import {
+  type ChartValidation,
   chartFence,
   validateChartSpec,
-  type ChartValidation,
 } from "../shared/chart-spec";
 import type { LocalToolRegistry } from "../shared/contracts";
 import type { ToolCall, ToolResult } from "../shared/schemas";
+import { defineTool } from "../shared/tool-definition";
 
 export const RENDER_CHART_TOOL_NAME = "render_chart";
 
@@ -54,10 +54,13 @@ export function createChartToolRegistry(): LocalToolRegistry {
     definitions: [definition],
     isConcurrencySafe: (call) => call.function.name === RENDER_CHART_TOOL_NAME,
     async execute(call: ToolCall): Promise<ToolResult> {
-      if (disposed) return encode({ error: "Chart tool registry is disposed." }, true);
+      if (disposed)
+        return encode({ error: "Chart tool registry is disposed." }, true);
       let spec: unknown;
       try {
-        const parsed = specArgumentsSchema.parse(JSON.parse(call.function.arguments || "{}"));
+        const parsed = specArgumentsSchema.parse(
+          JSON.parse(call.function.arguments || "{}"),
+        );
         spec = parsed.spec;
       } catch {
         return encode(

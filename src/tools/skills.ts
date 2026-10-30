@@ -9,8 +9,8 @@ import {
 } from "../context/project-context";
 import type { LocalToolRegistry, ToolContext } from "../shared/contracts";
 import { ForgeError } from "../shared/errors";
-import { invalidToolInput, recoverToolInputError } from "../shared/tool-input";
 import type { JsonValue, ToolCall, ToolResult } from "../shared/schemas";
+import { invalidToolInput, recoverToolInputError } from "../shared/tool-input";
 
 export interface SkillToolOptions {
   readonly context: ProjectContextService;
@@ -40,8 +40,13 @@ export function createSkillTool(
     if (disposed) {
       throw new ForgeError("internal", "Skill tool disposed.");
     }
-    const input = z.record(z.unknown()).parse(JSON.parse(call.function.arguments || "{}"));
-    if ("tool" in input) return invalidToolInput("tool is not an accepted argument; use the declared parameters.");
+    const input = z
+      .record(z.unknown())
+      .parse(JSON.parse(call.function.arguments || "{}"));
+    if ("tool" in input)
+      return invalidToolInput(
+        "tool is not an accepted argument; use the declared parameters.",
+      );
     if (call.function.name === CONTEXT_INSTRUCTION_TOOL_NAME) {
       const args = contextPathArgumentsSchema.safeParse({
         tool: call.function.name,
@@ -84,7 +89,9 @@ export function createSkillTool(
         });
       } catch (error) {
         if (error instanceof ForgeError && error.code === "invalid_input") {
-          return invalidToolInput("Unknown skill. Use an ID from the discovered skill catalog.");
+          return invalidToolInput(
+            "Unknown skill. Use an ID from the discovered skill catalog.",
+          );
         }
         throw error;
       }
@@ -95,8 +102,9 @@ export function createSkillTool(
   return {
     definitions: bundle.definitions,
     async execute(call, context) {
-      try { return await perform(call, context); }
-      catch (error) {
+      try {
+        return await perform(call, context);
+      } catch (error) {
         const invalid = recoverToolInputError(error);
         if (invalid) return invalid;
         throw error;

@@ -169,11 +169,19 @@ describe("original local tools", () => {
       replace_all: true,
     });
     expect(edit.changes?.[0]?.patch).toMatchObject({
-      status: "complete", added: 2, removed: 2,
-      hunks: [{ lines: [
-        { op: "delete", text: "same\n" }, { op: "delete", text: "same" },
-        { op: "insert", text: "new\n" }, { op: "insert", text: "new" },
-      ] }],
+      status: "complete",
+      added: 2,
+      removed: 2,
+      hunks: [
+        {
+          lines: [
+            { op: "delete", text: "same\n" },
+            { op: "delete", text: "same" },
+            { op: "insert", text: "new\n" },
+            { op: "insert", text: "new" },
+          ],
+        },
+      ],
     });
     expect(edit.changes?.[0]).not.toHaveProperty("before");
     expect(edit.changes?.[0]).not.toHaveProperty("after");
@@ -310,7 +318,10 @@ describe("original local tools", () => {
       ["write_file", { path: "a", content: "no" }],
       ["edit_file", { path: "a", old_text: "x", new_text: "y" }],
       ["make_directory", { path: "a" }],
-      ["run_command", { argv: [process.execPath, "-e", "process.exit(0)"], timeout_ms: 3000 }],
+      [
+        "run_command",
+        { argv: [process.execPath, "-e", "process.exit(0)"], timeout_ms: 3000 },
+      ],
     ] as const)
       expect((await execute(name, args, "readonly")).isError).toBe(true);
     expect(approvals).toBe(0);
@@ -330,7 +341,12 @@ describe("original local tools", () => {
 
   it("preserves host HOME, filters keys/tokens/proxies and resolves host Node via PATH", async () => {
     const home = await mkdtemp(join(tmpdir(), "forge-command-home-"));
-    const names = ["FORGE_TEST_API_KEY", "FORGE_TEST_TOKEN", "HTTPS_PROXY", "HOME"];
+    const names = [
+      "FORGE_TEST_API_KEY",
+      "FORGE_TEST_TOKEN",
+      "HTTPS_PROXY",
+      "HOME",
+    ];
     const old = names.map((name) => process.env[name]);
     try {
       for (const name of names) process.env[name] = "nonsecret-fixture";
@@ -378,9 +394,7 @@ describe("original local tools", () => {
     expect(output(escaped).truncated).toBe(false);
     expect(output(escaped).preview_truncated).toBe(true);
     expect(Buffer.byteLength(escaped.content)).toBeLessThan(131072);
-    const noisy = await node(
-      "process.stdout.write('x'.repeat(100000))",
-    );
+    const noisy = await node("process.stdout.write('x'.repeat(100000))");
     expect(noisy.isError).toBe(false);
     expect(output(noisy).truncated).toBe(false);
     expect(output(noisy).preview_truncated).toBe(true);

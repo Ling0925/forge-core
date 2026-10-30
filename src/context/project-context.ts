@@ -21,8 +21,11 @@ import { constants, type BigIntStats, type Dirent, type Stats } from "node:fs";
 import { lstat, open, readdir, realpath } from "node:fs/promises";
 import { isAbsolute, join, relative, resolve, sep } from "node:path";
 import { z } from "zod";
+import {
+  containsSensitiveText,
+  isSensitivePath,
+} from "../shared/content-safety";
 import { ForgeError } from "../shared/errors";
-import { containsSensitiveText, isSensitivePath } from "../shared/content-safety";
 import type { ToolDefinition } from "../shared/schemas";
 import { defineTool } from "../shared/tool-definition";
 import { createProtectedRootMatcher } from "../tools/protected-roots";

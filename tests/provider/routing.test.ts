@@ -258,13 +258,29 @@ describe("routed provider", () => {
     new ProviderError("network", "Disconnected.", true),
     new ProviderError("timeout", "Timed out.", true),
     new ProviderError("http", "Server failed.", true, 503),
-    new ProviderError("protocol", "Missing finish.", true, undefined, "missing_finish"),
-  ])("does not infer non-execution from an empty reply: %s", async error => {
-    const fixture = routed({ strategy: "order", members: [member("src-a", "model-a"), member("src-b", "model-b")],
-      providers: [providerOf(async () => { throw error; }), providerOf(async () => answer("must not run"))] });
+    new ProviderError(
+      "protocol",
+      "Missing finish.",
+      true,
+      undefined,
+      "missing_finish",
+    ),
+  ])("does not infer non-execution from an empty reply: %s", async (error) => {
+    const fixture = routed({
+      strategy: "order",
+      members: [member("src-a", "model-a"), member("src-b", "model-b")],
+      providers: [
+        providerOf(async () => {
+          throw error;
+        }),
+        providerOf(async () => answer("must not run")),
+      ],
+    });
     await expect(fixture.run()).rejects.toBe(error);
     expect(fixture.control.mayRetry("session-1")).toBe(false);
-    await expect(fixture.run({ attempt: 1 })).rejects.toMatchObject({ code: "provider" });
+    await expect(fixture.run({ attempt: 1 })).rejects.toMatchObject({
+      code: "provider",
+    });
     expect(fixture.served).toHaveLength(1);
   });
 

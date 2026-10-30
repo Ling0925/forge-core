@@ -18,7 +18,10 @@ it.each([
   "ollama",
   "lmstudio",
   "custom",
-  "google", "google-vertex", "azure", "bedrock",
+  "google",
+  "google-vertex",
+  "azure",
+  "bedrock",
 ])("ships the %s preset", (id) => {
   const preset = findProviderPreset(id);
   expect(preset?.id).toBe(id);
@@ -38,11 +41,18 @@ it("describes only public fields: no secret, sponsored placement or editor note"
     "keysUrl",
     "noKey",
   ]);
-  const regionFields = new Set(["id", "name", "endpoints", "website", "keysUrl"]);
+  const regionFields = new Set([
+    "id",
+    "name",
+    "endpoints",
+    "website",
+    "keysUrl",
+  ]);
   for (const preset of providerPresets) {
     for (const key of Object.keys(preset)) expect(presetFields).toContain(key);
     for (const region of preset.regions ?? [])
-      for (const key of Object.keys(region)) expect(regionFields).toContain(key);
+      for (const key of Object.keys(region))
+        expect(regionFields).toContain(key);
   }
 });
 
@@ -71,9 +81,10 @@ it("uses absolute HTTP(S) endpoints for known protocols and keeps several protoc
 
 it("keeps regions as separate endpoint sets instead of one guessed endpoint", () => {
   const moonshot = findProviderPreset("moonshot");
-  expect(
-    moonshot?.regions?.map((region) => region.id).sort(),
-  ).toEqual(["cn", "global"]);
+  expect(moonshot?.regions?.map((region) => region.id).sort()).toEqual([
+    "cn",
+    "global",
+  ]);
   expect(presetEndpoints("moonshot", "cn")?.["chat-completions"]).toBe(
     "https://api.moonshot.cn/v1",
   );

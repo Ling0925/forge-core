@@ -2,8 +2,8 @@ import { once } from "node:events";
 import { createServer } from "node:http";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { afterEach, describe, expect, it } from "vitest";
-import { createModelProvider } from "../../src/provider/openai";
 import { nativeDefinitions } from "../../src/core/agents";
+import { createModelProvider } from "../../src/provider/openai";
 import type { ModelProvider } from "../../src/shared/contracts";
 import { image } from "../fixtures/image";
 
@@ -66,12 +66,22 @@ describe("original HTTP provider", () => {
       received = JSON.parse(body);
       json(response, success);
     });
-    const tools = nativeDefinitions.filter(tool => ["create_plan", "update_plan"].includes(tool.function.name));
+    const tools = nativeDefinitions.filter((tool) =>
+      ["create_plan", "update_plan"].includes(tool.function.name),
+    );
     await provider.complete([{ role: "user", content: "Plan a task" }], tools, {
-      model: "fixture", signal: new AbortController().signal, onText: () => {},
+      model: "fixture",
+      signal: new AbortController().signal,
+      onText: () => {},
     });
-    expect(received).toMatchObject({ tools: tools.map(tool => ({ ...tool, function: { ...tool.function, strict: false } })) });
-    for (const tool of tools) expect(tool.function).not.toHaveProperty("strict");
+    expect(received).toMatchObject({
+      tools: tools.map((tool) => ({
+        ...tool,
+        function: { ...tool.function, strict: false },
+      })),
+    });
+    for (const tool of tools)
+      expect(tool.function).not.toHaveProperty("strict");
   });
   it("sends images as native Chat Completions content parts and keeps text-only messages unchanged", async () => {
     let received: unknown;
@@ -82,12 +92,35 @@ describe("original HTTP provider", () => {
       response.setHeader("content-type", "text/event-stream");
       response.end(`${event({ content: "seen" }, "stop")}data: [DONE]\n\n`);
     });
-    await provider.complete([{ role: "user", content: "old" }, { role: "user", content: "", images: [image] }, { role: "user", content: "describe", images: [image] }], [], { model: "vision", signal: new AbortController().signal, onText: () => {} });
-    expect(received).toMatchObject({ messages: [
-      { role: "user", content: "old" },
-      { role: "user", content: [{ type: "image_url", image_url: { url: image.dataUrl } }] },
-      { role: "user", content: [{ type: "text", text: "describe" }, { type: "image_url", image_url: { url: image.dataUrl } }] },
-    ] });
+    await provider.complete(
+      [
+        { role: "user", content: "old" },
+        { role: "user", content: "", images: [image] },
+        { role: "user", content: "describe", images: [image] },
+      ],
+      [],
+      {
+        model: "vision",
+        signal: new AbortController().signal,
+        onText: () => {},
+      },
+    );
+    expect(received).toMatchObject({
+      messages: [
+        { role: "user", content: "old" },
+        {
+          role: "user",
+          content: [{ type: "image_url", image_url: { url: image.dataUrl } }],
+        },
+        {
+          role: "user",
+          content: [
+            { type: "text", text: "describe" },
+            { type: "image_url", image_url: { url: image.dataUrl } },
+          ],
+        },
+      ],
+    });
     expect(JSON.stringify(received)).not.toContain(image.name);
   });
   it.each([
@@ -95,17 +128,30 @@ describe("original HTTP provider", () => {
     [event({ content: "partial" }), "missing_finish"],
     ['data: {"choices":', "unterminated_event"],
     ['data: {"choices":[{"index":1,"delta":{}}]}\n\n', "invalid_chunk"],
-  ])("reports a safe structural reason for an incomplete stream %#", async (wire, reason) => {
-    const provider = await fixture((_request, response) => {
-      response.setHeader("content-type", "text/event-stream"); response.end(wire);
-    });
-    await expect(complete(provider)).rejects.toMatchObject({ classification: "protocol", reason });
-  });
+  ])(
+    "reports a safe structural reason for an incomplete stream %#",
+    async (wire, reason) => {
+      const provider = await fixture((_request, response) => {
+        response.setHeader("content-type", "text/event-stream");
+        response.end(wire);
+      });
+      await expect(complete(provider)).rejects.toMatchObject({
+        classification: "protocol",
+        reason,
+      });
+    },
+  );
   it("reads context-window metadata and caches a loaded catalog without inventing unknown limits", async () => {
     let calls = 0;
     const provider = await fixture((_request, response) => {
       calls++;
-      json(response, { data: [{ id: "alias", context_length: 32768 }, { id: "other", context_window: 64000 }, { id: "bad", max_model_len: -5 }] });
+      json(response, {
+        data: [
+          { id: "alias", context_length: 32768 },
+          { id: "other", context_window: 64000 },
+          { id: "bad", max_model_len: -5 },
+        ],
+      });
     });
     expect(await provider.getModelContextWindow!("alias")).toBe(32768);
     expect(await provider.getModelContextWindow!("other")).toBe(64000);
@@ -117,18 +163,27 @@ describe("original HTTP provider", () => {
     let calls = 0;
     const provider = await fixture((_request, response) => {
       calls++;
-      json(response, { data: [
-        { id: "input-window", max_input_tokens: 1000000 },
-        { id: "nested-window", top_provider: { context_length: 524288 } },
-        { id: "string-window", context_window: "64000" },
-        { id: "invalid-window", context_length: "300K", top_provider: false, max_output_tokens: 8192 },
-      ] });
+      json(response, {
+        data: [
+          { id: "input-window", max_input_tokens: 1000000 },
+          { id: "nested-window", top_provider: { context_length: 524288 } },
+          { id: "string-window", context_window: "64000" },
+          {
+            id: "invalid-window",
+            context_length: "300K",
+            top_provider: false,
+            max_output_tokens: 8192,
+          },
+        ],
+      });
     });
     expect(await provider.getModelContextWindow!("input-window")).toBe(1000000);
     expect(await provider.getModelContextWindow!("nested-window")).toBe(524288);
     expect(await provider.getModelContextWindow!("string-window")).toBe(64000);
     expect(await provider.getModelContextWindow!("invalid-window")).toBeNull();
-    expect(await provider.getModelContextWindow!("alias/input-window")).toBeNull();
+    expect(
+      await provider.getModelContextWindow!("alias/input-window"),
+    ).toBeNull();
     expect(calls).toBe(1);
   });
   it("joins paths, sends optional auth, deduplicates stable model IDs", async () => {

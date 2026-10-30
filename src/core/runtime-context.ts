@@ -19,7 +19,10 @@ export const CONTEXT_SCALE_FLOOR = 1.25;
 /** Restore the latest valid request measurement, not a median that can hide a
  * newly oversized input. Model changes and compaction invalidate older pairs.
  * Billing totals and generated/reasoning output are never used for calibration. */
-export function seedContextScale(events: readonly AgentEvent[], model?: string): number {
+export function seedContextScale(
+  events: readonly AgentEvent[],
+  model?: string,
+): number {
   let scale = CONTEXT_SCALE_FLOOR;
   let currentModel: string | undefined;
   let estimated: Extract<AgentEvent, { type: "context_usage" }> | undefined;
@@ -35,22 +38,43 @@ export function seedContextScale(events: readonly AgentEvent[], model?: string):
       estimated = undefined;
       continue;
     }
-    if (reported.type === "run_finished" || reported.type === "step_finished" || reported.type === "error") {
+    if (
+      reported.type === "run_finished" ||
+      reported.type === "step_finished" ||
+      reported.type === "error"
+    ) {
       estimated = undefined;
       continue;
     }
-    if (reported.type !== "context_usage" || (model !== undefined && currentModel !== undefined && model !== currentModel)) continue;
+    if (
+      reported.type !== "context_usage" ||
+      (model !== undefined &&
+        currentModel !== undefined &&
+        model !== currentModel)
+    )
+      continue;
     if (reported.usage.basis === "projected") {
       estimated = reported;
       continue;
     }
     if (!estimated) continue;
     const estimatedTokens = estimated.usage.usedTokens;
-    const sameStep = (estimated.turn === undefined || reported.turn === undefined || estimated.turn === reported.turn)
-      && (estimated.step === undefined || reported.step === undefined || estimated.step === reported.step);
+    const sameStep =
+      (estimated.turn === undefined ||
+        reported.turn === undefined ||
+        estimated.turn === reported.turn) &&
+      (estimated.step === undefined ||
+        reported.step === undefined ||
+        estimated.step === reported.step);
     estimated = undefined;
     const reportedTokens = reported.usage.promptTokens;
-    if (!sameStep || estimatedTokens <= 0 || reportedTokens === undefined || reportedTokens <= 0) continue;
+    if (
+      !sameStep ||
+      estimatedTokens <= 0 ||
+      reportedTokens === undefined ||
+      reportedTokens <= 0
+    )
+      continue;
     scale = Math.max(CONTEXT_SCALE_FLOOR, reportedTokens / estimatedTokens);
   }
   return scale;
@@ -59,7 +83,8 @@ export function seedContextScale(events: readonly AgentEvent[], model?: string):
 export const compactContext = (
   messages: readonly Message[],
   budget: number,
-  size: (messages: readonly Message[]) => number = messages => JSON.stringify(messages).length,
+  size: (messages: readonly Message[]) => number = (messages) =>
+    JSON.stringify(messages).length,
 ): Readonly<{
   messages: readonly Message[];
   beforeChars: number;

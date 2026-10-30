@@ -36,8 +36,8 @@ it("maps Magpie's models field to all, none and selected without touching slashe
 });
 
 it("takes endpoints from the preset and region, and lets explicit endpoints win", () => {
-  const moonshot = first({ preset: "moonshot", region: "cn", key: "sk-ms" }).save
-    .source;
+  const moonshot = first({ preset: "moonshot", region: "cn", key: "sk-ms" })
+    .save.source;
   expect(moonshot.preset).toBe("moonshot");
   expect(moonshot.baseUrl).toBe("https://api.moonshot.cn/v1");
   expect(moonshot.apiMode).toBe("chat-completions");
@@ -68,13 +68,19 @@ it("chooses the endpoint named by baseAPI and keeps a custom provider without a 
   expect(relay.baseUrl).toBe("https://relay.example.com/anthropic");
   expect(relay.preset).toBeUndefined();
 
-  const warned = parse({ preset: "unknown-vendor", chat: "https://x.example.com" });
+  const warned = parse({
+    preset: "unknown-vendor",
+    chat: "https://x.example.com",
+  });
   expect(warned.warnings.join(" ")).toContain("Unknown preset unknown-vendor");
   expect(warned.candidates[0]?.save.source.preset).toBeUndefined();
 });
 
 it("skips a provider without any HTTP(S) endpoint instead of inventing one", () => {
-  const parsed = parse([{ name: "Nowhere", key: "sk-x" }, { name: "Still nowhere" }]);
+  const parsed = parse([
+    { name: "Nowhere", key: "sk-x" },
+    { name: "Still nowhere" },
+  ]);
   expect(parsed.candidates).toHaveLength(0);
   expect(parsed.warnings).toEqual([
     "No HTTP(S) endpoint was found; the provider was skipped.",
@@ -115,12 +121,16 @@ it("imports keys as isolated credentials, keeping disabled entries and the first
 
 it("maps Magpie's authHeader spelling and forwards explicit auth/headers/extraBody/proxy", () => {
   const base = "https://api.example.com/v1";
-  expect(first({ chat: base, key: "k", authHeader: "x-api-key" }).save.connection?.auth)
-    .toEqual({ type: "api-key" });
-  expect(first({ chat: base, key: "k", authHeader: "bearer" }).save.connection?.auth)
-    .toEqual({ type: "bearer" });
-  expect(first({ chat: base, key: "k", authHeader: "both" }).save.connection?.auth)
-    .toEqual({ type: "auto" });
+  expect(
+    first({ chat: base, key: "k", authHeader: "x-api-key" }).save.connection
+      ?.auth,
+  ).toEqual({ type: "api-key" });
+  expect(
+    first({ chat: base, key: "k", authHeader: "bearer" }).save.connection?.auth,
+  ).toEqual({ type: "bearer" });
+  expect(
+    first({ chat: base, key: "k", authHeader: "both" }).save.connection?.auth,
+  ).toEqual({ type: "auto" });
   expect(
     first({
       chat: base,
@@ -133,7 +143,12 @@ it("maps Magpie's authHeader spelling and forwards explicit auth/headers/extraBo
     chat: base,
     key: "k",
     headers: { "x-org": "acme", "bad header": "v", Host: "evil" },
-    extraBody: { temperature: 0.4, model: "other", stream: false, "!tools": [] },
+    extraBody: {
+      temperature: 0.4,
+      model: "other",
+      stream: false,
+      "!tools": [],
+    },
     proxy: "http://127.0.0.1:7890",
   });
   expect(connection.save.connection?.headers).toEqual({ "x-org": "acme" });

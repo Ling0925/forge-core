@@ -12,7 +12,7 @@ export function sessionPlans(snapshot: PlanState): readonly TaskPlan[] {
   const plans = (snapshot.plans ?? []).map(identified);
   if (snapshot.plan) {
     const current = identified(snapshot.plan);
-    const index = plans.findIndex(plan => plan.id === current.id);
+    const index = plans.findIndex((plan) => plan.id === current.id);
     if (index < 0) plans.push(current);
     else plans[index] = current;
   }
@@ -20,12 +20,16 @@ export function sessionPlans(snapshot: PlanState): readonly TaskPlan[] {
 }
 
 /** The same immutable upsert is used by the runtime and live-event clients. */
-export function recordPlan(snapshot: PlanState, plan: TaskPlan): {
-  plan: TaskPlan; plans: readonly TaskPlan[];
+export function recordPlan(
+  snapshot: PlanState,
+  plan: TaskPlan,
+): {
+  plan: TaskPlan;
+  plans: readonly TaskPlan[];
 } {
   const current = identified(plan);
   const plans = [...sessionPlans(snapshot)];
-  const index = plans.findIndex(item => item.id === current.id);
+  const index = plans.findIndex((item) => item.id === current.id);
   if (index < 0) plans.push(current);
   else plans[index] = current;
   // Preserve the old event payload in the compatibility projection; only the

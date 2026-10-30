@@ -3,9 +3,9 @@ import { createServer } from "node:http";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { afterEach, expect, it, vi } from "vitest";
 import { createModelProvider } from "../../src/provider/openai";
+import { isRetryableProviderFailure } from "../../src/shared/errors";
 import type { ProviderConfig, ToolCallPreview } from "../../src/shared/schemas";
 import { image } from "../fixtures/image";
-import { isRetryableProviderFailure } from "../../src/shared/errors";
 
 const cleanups: (() => Promise<void>)[] = [];
 afterEach(async () => {
@@ -236,20 +236,26 @@ it("uses native SDK routes/auth, system/images/tools and reported cache usage", 
   });
 });
 
-it.each([1024, 8192, 32768])("sends native max effort with adaptive thinking at %i output tokens", async (maxOutputTokens) => {
-  let received: unknown;
-  const provider = await fixture(async (req, res) => {
-    received = await body(req);
-    reply(res, wire({ thinking: true }));
-  }, { reasoningEffort: "max", maxOutputTokens });
-  await provider.complete([{ role: "user", content: "test" }], [], options());
-  expect(received).toMatchObject({
-    max_tokens: maxOutputTokens,
-    thinking: { type: "adaptive" },
-    output_config: { effort: "max" },
-  });
-  expect(received).not.toHaveProperty("thinking.budget_tokens");
-});
+it.each([1024, 8192, 32768])(
+  "sends native max effort with adaptive thinking at %i output tokens",
+  async (maxOutputTokens) => {
+    let received: unknown;
+    const provider = await fixture(
+      async (req, res) => {
+        received = await body(req);
+        reply(res, wire({ thinking: true }));
+      },
+      { reasoningEffort: "max", maxOutputTokens },
+    );
+    await provider.complete([{ role: "user", content: "test" }], [], options());
+    expect(received).toMatchObject({
+      max_tokens: maxOutputTokens,
+      thinking: { type: "adaptive" },
+      output_config: { effort: "max" },
+    });
+    expect(received).not.toHaveProperty("thinking.budget_tokens");
+  },
+);
 
 it("resumes signed thinking with tools only for the matching endpoint/model", async () => {
   const requests: unknown[] = [];
@@ -367,12 +373,19 @@ it("keeps native model context windows across paginated catalog reads", async ()
     requests++;
     const secondPage = req.url?.includes("after_id=large");
     res.setHeader("content-type", "application/json");
-    res.end(JSON.stringify({
-      data: secondPage
-        ? [{ id: "small", max_input_tokens: "64000" }, { id: "unknown", max_output_tokens: 8192 }]
-        : [{ id: "large", max_input_tokens: 1000000 }],
-      has_more: !secondPage, first_id: secondPage ? "small" : "large", last_id: secondPage ? "unknown" : "large",
-    }));
+    res.end(
+      JSON.stringify({
+        data: secondPage
+          ? [
+              { id: "small", max_input_tokens: "64000" },
+              { id: "unknown", max_output_tokens: 8192 },
+            ]
+          : [{ id: "large", max_input_tokens: 1000000 }],
+        has_more: !secondPage,
+        first_id: secondPage ? "small" : "large",
+        last_id: secondPage ? "unknown" : "large",
+      }),
+    );
   });
   expect(await provider.getModelContextWindow?.("large")).toBe(1000000);
   expect(await provider.getModelContextWindow?.("small")).toBe(64000);
@@ -554,37 +567,72 @@ it("estimates write_file lines from cumulative input_json_delta fragments", asyn
 });
 
 it.each([
-  { missing: false, tool: false }, { missing: true, tool: false },
-  { missing: false, tool: true }, { missing: true, tool: true },
-])("accepts unsigned compatibility thinking without replaying it ($missing, $tool)", async ({ missing, tool }) => {
-  const requests: unknown[] = [];
-  let unsigned = wire({ thinking: true, tool }).replace(sse({
-    type: "content_block_delta", index: 0, delta: { type: "signature_delta", signature: "opaque-signature" },
-  }), "");
-  if (missing) unsigned = unsigned.replace(',"signature":""', "");
-  const provider = await fixture(async (req, res) => {
-    requests.push(await body(req));
-    reply(res, requests.length === 1 ? unsigned : wire());
-  });
-  const thoughts: string[] = [];
-  const first = await provider.complete([{ role: "user", content: "read" }], [], { ...options(), onReasoning: text => thoughts.push(text) });
-  expect(thoughts.join("")).toBe("consider");
-  expect(first.message.reasoning).toBe("consider");
-  expect(first.message.providerState).toBeUndefined();
-  const generationId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
-  await provider.complete([{ role: "user", content: "read" }, { ...first.message, generationId },
-    ...(tool ? [{ role: "tool" as const, tool_call_id: "tool_1", content: "result" }] : [])], [], options());
-  const request = JSON.stringify(requests[1]);
-  expect(request).not.toContain("thinking");
-  expect(request).not.toContain("signature");
-  expect(request).not.toContain("consider");
-  expect(request).not.toContain(generationId);
-  expect(request).toContain(tool ? "tool_use" : "hello");
-});
+  { missing: false, tool: false },
+  { missing: true, tool: false },
+  { missing: false, tool: true },
+  { missing: true, tool: true },
+])(
+  "accepts unsigned compatibility thinking without replaying it ($missing, $tool)",
+  async ({ missing, tool }) => {
+    const requests: unknown[] = [];
+    let unsigned = wire({ thinking: true, tool }).replace(
+      sse({
+        type: "content_block_delta",
+        index: 0,
+        delta: { type: "signature_delta", signature: "opaque-signature" },
+      }),
+      "",
+    );
+    if (missing) unsigned = unsigned.replace(',"signature":""', "");
+    const provider = await fixture(async (req, res) => {
+      requests.push(await body(req));
+      reply(res, requests.length === 1 ? unsigned : wire());
+    });
+    const thoughts: string[] = [];
+    const first = await provider.complete(
+      [{ role: "user", content: "read" }],
+      [],
+      { ...options(), onReasoning: (text) => thoughts.push(text) },
+    );
+    expect(thoughts.join("")).toBe("consider");
+    expect(first.message.reasoning).toBe("consider");
+    expect(first.message.providerState).toBeUndefined();
+    const generationId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+    await provider.complete(
+      [
+        { role: "user", content: "read" },
+        { ...first.message, generationId },
+        ...(tool
+          ? [
+              {
+                role: "tool" as const,
+                tool_call_id: "tool_1",
+                content: "result",
+              },
+            ]
+          : []),
+      ],
+      [],
+      options(),
+    );
+    const request = JSON.stringify(requests[1]);
+    expect(request).not.toContain("thinking");
+    expect(request).not.toContain("signature");
+    expect(request).not.toContain("consider");
+    expect(request).not.toContain(generationId);
+    expect(request).toContain(tool ? "tool_use" : "hello");
+  },
+);
 
 it("accepts empty tool argument deltas but keeps the initial input object authoritative", async () => {
-  const provider = await fixture((_req, res) => reply(res, wire({ tool: true, args: "" })));
-  const result = await provider.complete([{ role: "user", content: "no arguments" }], [], options());
+  const provider = await fixture((_req, res) =>
+    reply(res, wire({ tool: true, args: "" })),
+  );
+  const result = await provider.complete(
+    [{ role: "user", content: "no arguments" }],
+    [],
+    options(),
+  );
   expect(result.message.tool_calls?.[0]?.function.arguments).toBe("{}");
 });
 
@@ -645,73 +693,168 @@ it("accepts omitted final usage without reporting the initial token counters as 
   expect(result.usage).toBeUndefined();
 });
 
-it.each([false, true])("preserves the answer and input count for a null usage delta (tool=%s)", async tool => {
-  const provider = await fixture((_req, res) => reply(res, wire({
-    tool, usage: { input_tokens: null, output_tokens: 4 },
-  })));
-  const text: string[] = [];
-  const result = await provider.complete([{ role: "user", content: "go" }], [], {
-    ...options(), onText: value => text.push(value),
-  });
-  if (tool) {
-    expect(result.message.tool_calls).toEqual([{
-      id: "tool_1", type: "function", function: { name: "read_file", arguments: '{"path":"a"}' },
-    }]);
-  } else {
-    expect(result.message.content).toBe("hello");
-    expect(text.join("")).toBe("hello");
-  }
-  expect(result.usage).toEqual({ promptTokens: 15, completionTokens: 4, totalTokens: 19, cachedPromptTokens: 3 });
-});
+it.each([false, true])(
+  "preserves the answer and input count for a null usage delta (tool=%s)",
+  async (tool) => {
+    const provider = await fixture((_req, res) =>
+      reply(
+        res,
+        wire({
+          tool,
+          usage: { input_tokens: null, output_tokens: 4 },
+        }),
+      ),
+    );
+    const text: string[] = [];
+    const result = await provider.complete(
+      [{ role: "user", content: "go" }],
+      [],
+      {
+        ...options(),
+        onText: (value) => text.push(value),
+      },
+    );
+    if (tool) {
+      expect(result.message.tool_calls).toEqual([
+        {
+          id: "tool_1",
+          type: "function",
+          function: { name: "read_file", arguments: '{"path":"a"}' },
+        },
+      ]);
+    } else {
+      expect(result.message.content).toBe("hello");
+      expect(text.join("")).toBe("hello");
+    }
+    expect(result.usage).toEqual({
+      promptTokens: 15,
+      completionTokens: 4,
+      totalTokens: 19,
+      cachedPromptTokens: 3,
+    });
+  },
+);
 
 it("keeps initial cache counters when a delta reports null instead of updated counts", async () => {
-  const provider = await fixture((_req, res) => reply(res, wire({
-    usage: { output_tokens: 4, cache_creation_input_tokens: null, cache_read_input_tokens: null },
-  })));
-  const result = await provider.complete([{ role: "user", content: "go" }], [], options());
-  expect(result.usage).toEqual({ promptTokens: 15, completionTokens: 4, totalTokens: 19, cachedPromptTokens: 3 });
-});
-
-it.each([0, 6])("keeps the latest numeric usage update (%s), including zero, across later nulls", async count => {
-  const stream = wire({ terminal: false, usage: {
-    input_tokens: count, output_tokens: count, cache_creation_input_tokens: count, cache_read_input_tokens: count,
-  } }) + sse({
-    type: "message_delta", delta: { stop_reason: null },
-    usage: { input_tokens: null, cache_creation_input_tokens: null, cache_read_input_tokens: null },
-  }) + sse({ type: "message_stop" });
-  const provider = await fixture((_req, res) => reply(res, stream));
-  const result = await provider.complete([{ role: "user", content: "go" }], [], options());
+  const provider = await fixture((_req, res) =>
+    reply(
+      res,
+      wire({
+        usage: {
+          output_tokens: 4,
+          cache_creation_input_tokens: null,
+          cache_read_input_tokens: null,
+        },
+      }),
+    ),
+  );
+  const result = await provider.complete(
+    [{ role: "user", content: "go" }],
+    [],
+    options(),
+  );
   expect(result.usage).toEqual({
-    promptTokens: count * 3, completionTokens: count, totalTokens: count * 4, cachedPromptTokens: count,
+    promptTokens: 15,
+    completionTokens: 4,
+    totalTokens: 19,
+    cachedPromptTokens: 3,
   });
 });
 
+it.each([0, 6])(
+  "keeps the latest numeric usage update (%s), including zero, across later nulls",
+  async (count) => {
+    const stream =
+      wire({
+        terminal: false,
+        usage: {
+          input_tokens: count,
+          output_tokens: count,
+          cache_creation_input_tokens: count,
+          cache_read_input_tokens: count,
+        },
+      }) +
+      sse({
+        type: "message_delta",
+        delta: { stop_reason: null },
+        usage: {
+          input_tokens: null,
+          cache_creation_input_tokens: null,
+          cache_read_input_tokens: null,
+        },
+      }) +
+      sse({ type: "message_stop" });
+    const provider = await fixture((_req, res) => reply(res, stream));
+    const result = await provider.complete(
+      [{ role: "user", content: "go" }],
+      [],
+      options(),
+    );
+    expect(result.usage).toEqual({
+      promptTokens: count * 3,
+      completionTokens: count,
+      totalTokens: count * 4,
+      cachedPromptTokens: count,
+    });
+  },
+);
+
 it.each([
-  ...["input_tokens", "output_tokens", "cache_creation_input_tokens", "cache_read_input_tokens"]
-    .flatMap(key => [-1, 1.5, "4"].map(value => ({ output_tokens: 4, [key]: value }))),
+  ...[
+    "input_tokens",
+    "output_tokens",
+    "cache_creation_input_tokens",
+    "cache_read_input_tokens",
+  ].flatMap((key) =>
+    [-1, 1.5, "4"].map((value) => ({ output_tokens: 4, [key]: value })),
+  ),
   { output_tokens: null },
-])("still rejects malformed usage counters in deltas %#", async usage => {
+])("still rejects malformed usage counters in deltas %#", async (usage) => {
   const provider = await fixture((_req, res) => reply(res, wire({ usage })));
-  const work = provider.complete([{ role: "user", content: "go" }], [], options());
-  await expect(work).rejects.toMatchObject({ classification: "protocol", reason: "invalid_chunk", retryable: false });
+  const work = provider.complete(
+    [{ role: "user", content: "go" }],
+    [],
+    options(),
+  );
+  await expect(work).rejects.toMatchObject({
+    classification: "protocol",
+    reason: "invalid_chunk",
+    retryable: false,
+  });
   await expect(work).rejects.toThrow("Anthropic usage validation failed");
 });
 
 it("keeps usage unknown when no input total precedes a null input delta", async () => {
-  const stream = wire({ usage: { input_tokens: null, output_tokens: 4 } })
-    .replace(sse(messageStart()), sse(messageStart({ output_tokens: 0 })));
+  const stream = wire({
+    usage: { input_tokens: null, output_tokens: 4 },
+  }).replace(sse(messageStart()), sse(messageStart({ output_tokens: 0 })));
   const provider = await fixture((_req, res) => reply(res, stream));
-  const result = await provider.complete([{ role: "user", content: "go" }], [], options());
+  const result = await provider.complete(
+    [{ role: "user", content: "go" }],
+    [],
+    options(),
+  );
   expect(result.message.content).toBe("hello");
   expect(result.usage).toBeUndefined();
 });
 
-it.each(["input_tokens", "output_tokens"])("does not allow null %s in message_start", async key => {
-  const stream = wire().replace(`"${key}":${key === "input_tokens" ? 10 : 0}`, `"${key}":null`);
-  const provider = await fixture((_req, res) => reply(res, stream));
-  await expect(provider.complete([{ role: "user", content: "go" }], [], options()))
-    .rejects.toMatchObject({ classification: "protocol", reason: "invalid_chunk", retryable: false });
-});
+it.each(["input_tokens", "output_tokens"])(
+  "does not allow null %s in message_start",
+  async (key) => {
+    const stream = wire().replace(
+      `"${key}":${key === "input_tokens" ? 10 : 0}`,
+      `"${key}":null`,
+    );
+    const provider = await fixture((_req, res) => reply(res, stream));
+    await expect(
+      provider.complete([{ role: "user", content: "go" }], [], options()),
+    ).rejects.toMatchObject({
+      classification: "protocol",
+      reason: "invalid_chunk",
+      retryable: false,
+    });
+  },
+);
 
 it("accepts legal SSE whose frames omit the event name", async () => {
   const events: Record<string, unknown>[] = [
@@ -810,90 +953,236 @@ it("ignores ping keepalives before and after the message", async () => {
 
 it("shows initial thinking/text blocks and preserves signed context", async () => {
   const content = wire({ thinking: true })
-    .replace('"thinking":"","signature":""', '"thinking":"initial ","signature":""')
+    .replace(
+      '"thinking":"","signature":""',
+      '"thinking":"initial ","signature":""',
+    )
     .replace('"type":"text","text":""', '"type":"text","text":"prefix "');
   const provider = await fixture((_req, res) => reply(res, content));
-  const thoughts: string[] = []; const text: string[] = [];
-  const result = await provider.complete([{ role: "user", content: "go" }], [], {
-    ...options(), onReasoning: value => thoughts.push(value), onText: value => text.push(value),
-  });
+  const thoughts: string[] = [];
+  const text: string[] = [];
+  const result = await provider.complete(
+    [{ role: "user", content: "go" }],
+    [],
+    {
+      ...options(),
+      onReasoning: (value) => thoughts.push(value),
+      onText: (value) => text.push(value),
+    },
+  );
   expect(thoughts.join("")).toBe("initial consider");
   expect(text.join("")).toBe("prefix hello");
-  expect(result.message).toMatchObject({ reasoning: "initial consider", content: "prefix hello" });
-  expect(result.message.providerState?.output[0]).toMatchObject({ signature: "opaque-signature", thinking: "initial consider" });
+  expect(result.message).toMatchObject({
+    reasoning: "initial consider",
+    content: "prefix hello",
+  });
+  expect(result.message.providerState?.output[0]).toMatchObject({
+    signature: "opaque-signature",
+    thinking: "initial consider",
+  });
 });
 
 it.each([
-  { body: wire({ tool: true, args: '{"private-sentinel":"unfinished' }), reason: "invalid_tool_call", stage: "tool_input" },
-  { body: wire({ tool: true, args: '[]' }), reason: "invalid_tool_call", stage: "tool_input" },
-  { body: wire({ terminal: false }), reason: "invalid_finish", stage: "stream" },
-  { body: wire().replace(sse({ type: "content_block_stop", index: 0 }), ""), reason: "invalid_finish", stage: "stream" },
-  { body: wire().replace('"input_tokens":10', '"input_tokens":"private-sentinel"'), reason: "invalid_chunk", stage: "usage" },
-  { body: wire().replace('"type":"text","text":""', '"type":"private-sentinel","text":""'), reason: "invalid_chunk", stage: "stream" },
-])("rejects unsafe/incomplete output with static safe diagnostics ($stage/$reason)", async ({ body: response, reason, stage }) => {
-  const provider = await fixture((_req, res) => reply(res, response));
-  const work = provider.complete([{ role: "user", content: "go" }], [], options());
-  await expect(work).rejects.toMatchObject({ classification: "protocol", reason, retryable: false });
-  await expect(work).rejects.toThrow(`Anthropic ${stage} validation failed`);
-  await expect(work).rejects.not.toThrow("private-sentinel");
-  expect(await work.catch(isRetryableProviderFailure)).toBe(false);
-});
+  {
+    body: wire({ tool: true, args: '{"private-sentinel":"unfinished' }),
+    reason: "invalid_tool_call",
+    stage: "tool_input",
+  },
+  {
+    body: wire({ tool: true, args: "[]" }),
+    reason: "invalid_tool_call",
+    stage: "tool_input",
+  },
+  {
+    body: wire({ terminal: false }),
+    reason: "invalid_finish",
+    stage: "stream",
+  },
+  {
+    body: wire().replace(sse({ type: "content_block_stop", index: 0 }), ""),
+    reason: "invalid_finish",
+    stage: "stream",
+  },
+  {
+    body: wire().replace(
+      '"input_tokens":10',
+      '"input_tokens":"private-sentinel"',
+    ),
+    reason: "invalid_chunk",
+    stage: "usage",
+  },
+  {
+    body: wire().replace(
+      '"type":"text","text":""',
+      '"type":"private-sentinel","text":""',
+    ),
+    reason: "invalid_chunk",
+    stage: "stream",
+  },
+])(
+  "rejects unsafe/incomplete output with static safe diagnostics ($stage/$reason)",
+  async ({ body: response, reason, stage }) => {
+    const provider = await fixture((_req, res) => reply(res, response));
+    const work = provider.complete(
+      [{ role: "user", content: "go" }],
+      [],
+      options(),
+    );
+    await expect(work).rejects.toMatchObject({
+      classification: "protocol",
+      reason,
+      retryable: false,
+    });
+    await expect(work).rejects.toThrow(`Anthropic ${stage} validation failed`);
+    await expect(work).rejects.not.toThrow("private-sentinel");
+    expect(await work.catch(isRetryableProviderFailure)).toBe(false);
+  },
+);
 
 it("does not let SDK diagnostics hide a transport framing failure", async () => {
-  const provider = await fixture((_req, res) => reply(res, wire().slice(0, -1)));
-  await expect(provider.complete([{ role: "user", content: "go" }], [], options()))
-    .rejects.toMatchObject({ classification: "protocol", reason: "unterminated_event" });
+  const provider = await fixture((_req, res) =>
+    reply(res, wire().slice(0, -1)),
+  );
+  await expect(
+    provider.complete([{ role: "user", content: "go" }], [], options()),
+  ).rejects.toMatchObject({
+    classification: "protocol",
+    reason: "unterminated_event",
+  });
 });
 
 it("retains signed and redacted context while excluding only unsigned display thoughts", async () => {
   const requests: unknown[] = [];
   const additions = [
-    { type: "content_block_start", index: 1, content_block: { type: "thinking", thinking: "unsigned-only", signature: "" } },
+    {
+      type: "content_block_start",
+      index: 1,
+      content_block: {
+        type: "thinking",
+        thinking: "unsigned-only",
+        signature: "",
+      },
+    },
     { type: "content_block_stop", index: 1 },
-    { type: "content_block_start", index: 2, content_block: { type: "redacted_thinking", data: "opaque-redaction" } },
+    {
+      type: "content_block_start",
+      index: 2,
+      content_block: { type: "redacted_thinking", data: "opaque-redaction" },
+    },
     { type: "content_block_stop", index: 2 },
-  ].map(sse).join("");
-  const signed = wire({ thinking: true, tool: true }).replaceAll('"index":1', '"index":3');
-  const mixed = signed.replace(sse({ type: "content_block_stop", index: 0 }), sse({ type: "content_block_stop", index: 0 }) + additions);
-  const provider = await fixture(async (req, res) => { requests.push(await body(req)); reply(res, requests.length === 1 ? mixed : wire()); });
-  const first = await provider.complete([{ role: "user", content: "go" }], [], options());
+  ]
+    .map(sse)
+    .join("");
+  const signed = wire({ thinking: true, tool: true }).replaceAll(
+    '"index":1',
+    '"index":3',
+  );
+  const mixed = signed.replace(
+    sse({ type: "content_block_stop", index: 0 }),
+    sse({ type: "content_block_stop", index: 0 }) + additions,
+  );
+  const provider = await fixture(async (req, res) => {
+    requests.push(await body(req));
+    reply(res, requests.length === 1 ? mixed : wire());
+  });
+  const first = await provider.complete(
+    [{ role: "user", content: "go" }],
+    [],
+    options(),
+  );
   expect(first.message.reasoning).toBe("considerunsigned-only");
-  expect(first.message.providerState?.output.map(block => block.type)).toEqual(["thinking", "redacted_thinking", "tool_use"]);
-  await provider.complete([{ role: "user", content: "go" }, first.message, { role: "tool", tool_call_id: "tool_1", content: "ok" }], [], options());
+  expect(
+    first.message.providerState?.output.map((block) => block.type),
+  ).toEqual(["thinking", "redacted_thinking", "tool_use"]);
+  await provider.complete(
+    [
+      { role: "user", content: "go" },
+      first.message,
+      { role: "tool", tool_call_id: "tool_1", content: "ok" },
+    ],
+    [],
+    options(),
+  );
   const request = JSON.stringify(requests[1]);
-  expect(request).toContain("opaque-signature"); expect(request).toContain("opaque-redaction");
+  expect(request).toContain("opaque-signature");
+  expect(request).toContain("opaque-redaction");
   expect(request).not.toContain("unsigned-only");
 });
 
-it.each(["message", "type-only"])("accepts compatible SSE event naming %s", async mode => {
-  const stream = mode === "message"
-    ? wire().replace(/event: [^\n]+/g, "event: message")
-    : wire().replace(/data: \{"type":"[^"]+",?/g, "data: {");
-  const provider = await fixture((_request, response) => reply(response, stream));
-  expect((await provider.complete([{ role: "user", content: "hello" }], [], options())).message.content).toBe("hello");
-});
+it.each(["message", "type-only"])(
+  "accepts compatible SSE event naming %s",
+  async (mode) => {
+    const stream =
+      mode === "message"
+        ? wire().replace(/event: [^\n]+/g, "event: message")
+        : wire().replace(/data: \{"type":"[^"]+",?/g, "data: {");
+    const provider = await fixture((_request, response) =>
+      reply(response, stream),
+    );
+    expect(
+      (
+        await provider.complete(
+          [{ role: "user", content: "hello" }],
+          [],
+          options(),
+        )
+      ).message.content,
+    ).toBe("hello");
+  },
+);
 
 it.each([
   wire().replace("event: message_stop", "event: error"),
   wire().replace("event: content_block_delta", "event: ping"),
-  wire({ stop: "max_tokens", terminal: false }) + sse({ type: "message_delta", delta: { stop_reason: "end_turn" } }) + sse({ type: "message_stop" }),
-])("rejects contradictory event identities and finish reasons %#", async stream => {
-  const provider = await fixture((_request, response) => reply(response, stream));
-  await expect(provider.complete([{ role: "user", content: "hello" }], [], options())).rejects.toMatchObject({ classification: "protocol", retryable: false });
-});
+  wire({ stop: "max_tokens", terminal: false }) +
+    sse({ type: "message_delta", delta: { stop_reason: "end_turn" } }) +
+    sse({ type: "message_stop" }),
+])(
+  "rejects contradictory event identities and finish reasons %#",
+  async (stream) => {
+    const provider = await fixture((_request, response) =>
+      reply(response, stream),
+    );
+    await expect(
+      provider.complete([{ role: "user", content: "hello" }], [], options()),
+    ).rejects.toMatchObject({ classification: "protocol", retryable: false });
+  },
+);
 
 it("keeps the finish reason when a final usage-only delta has a null reason", async () => {
-  const stream = wire({ terminal: false }) + sse({ type: "message_delta", delta: { stop_reason: null }, usage: { output_tokens: 7 } }) + sse({ type: "message_stop" });
-  const provider = await fixture((_request, response) => reply(response, stream));
-  const result = await provider.complete([{ role: "user", content: "hello" }], [], options());
+  const stream =
+    wire({ terminal: false }) +
+    sse({
+      type: "message_delta",
+      delta: { stop_reason: null },
+      usage: { output_tokens: 7 },
+    }) +
+    sse({ type: "message_stop" });
+  const provider = await fixture((_request, response) =>
+    reply(response, stream),
+  );
+  const result = await provider.complete(
+    [{ role: "user", content: "hello" }],
+    [],
+    options(),
+  );
   expect(result.message.content).toBe("hello");
   expect(result.usage?.completionTokens).toBe(7);
 });
 
 it("accepts a completed message without usage while keeping usage unknown", async () => {
-  const stream = toolReply({ usage: false }).replace(',"usage":{"input_tokens":10,"output_tokens":0}', "");
-  const provider = await fixture((_request, response) => reply(response, stream));
-  const result = await provider.complete([{ role: "user", content: "hello" }], [], options());
+  const stream = toolReply({ usage: false }).replace(
+    ',"usage":{"input_tokens":10,"output_tokens":0}',
+    "",
+  );
+  const provider = await fixture((_request, response) =>
+    reply(response, stream),
+  );
+  const result = await provider.complete(
+    [{ role: "user", content: "hello" }],
+    [],
+    options(),
+  );
   expect(result.message.tool_calls?.[0]?.function.arguments).toBe("{}");
   expect(result.usage).toBeUndefined();
 });

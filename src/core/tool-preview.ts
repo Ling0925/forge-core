@@ -1,4 +1,4 @@
-import { toolCallPreviewSchema, type ToolCallPreview } from "../shared/schemas";
+import { type ToolCallPreview, toolCallPreviewSchema } from "../shared/schemas";
 
 /** Bounded, display-only snapshots: first sight is immediate, updates are coalesced. */
 export function createToolPreviewStream(

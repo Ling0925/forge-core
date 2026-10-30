@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
-  buildSystemInstructions,
   type PromptContext,
+  buildSystemInstructions,
 } from "../../src/core/prompts";
 import { sessionIdSchema } from "../../src/shared/schemas";
 
@@ -14,12 +14,19 @@ const base: PromptContext = {
 
 describe("system instructions", () => {
   it("does not advertise legacy budgets even when old caller settings provide them", () => {
-    const prompt = buildSystemInstructions({ ...base, rootBudget: { maxToolCalls: 2000, timeoutMs: 7200000 } });
-    expect(prompt).toContain("No cumulative tool-call, child-agent count or root elapsed-time budget.");
+    const prompt = buildSystemInstructions({
+      ...base,
+      rootBudget: { maxToolCalls: 2000, timeoutMs: 7200000 },
+    });
+    expect(prompt).toContain(
+      "No cumulative tool-call, child-agent count or root elapsed-time budget.",
+    );
     expect(prompt).not.toContain("bounded to");
     expect(prompt).not.toContain("Root task shared ceiling");
     expect(prompt).not.toContain("7200000");
-    expect(prompt).toContain("Permission checks, concurrency limits and individual operation timeouts still apply.");
+    expect(prompt).toContain(
+      "Permission checks, concurrency limits and individual operation timeouts still apply.",
+    );
   });
 
   it("preserves project input and produces a deterministic cache prefix", () => {
@@ -30,7 +37,10 @@ describe("system instructions", () => {
     const prompt = buildSystemInstructions(context);
     expect(buildSystemInstructions(context)).toBe(prompt);
     expect(prompt).toContain(context.projectInstructions);
-    const changed = buildSystemInstructions({ ...context, projectInstructions: "PROJECT_SENTINEL_2" });
+    const changed = buildSystemInstructions({
+      ...context,
+      projectInstructions: "PROJECT_SENTINEL_2",
+    });
     expect(changed).not.toContain(context.projectInstructions);
     expect(prompt.slice(0, prompt.indexOf(context.projectInstructions))).toBe(
       changed.slice(0, changed.indexOf("PROJECT_SENTINEL_2")),
@@ -49,12 +59,27 @@ describe("system instructions", () => {
     });
     expect(build).toBe(buildSystemInstructions(base));
     const workspace = JSON.stringify(base.session.workspace);
-    expect(build.slice(0, build.indexOf(workspace))).toBe(plan.slice(0, plan.indexOf(workspace)));
+    expect(build.slice(0, build.indexOf(workspace))).toBe(
+      plan.slice(0, plan.indexOf(workspace)),
+    );
     expect(plan).not.toBe(build);
   });
 
-  it.each(["write_file", "command_task", "read_command_output", "create_plan", "history_search", "spawn_agent", "web_fetch", "publish_file", "project_context"])("includes optional tool guidance only when %s is supplied", toolName => {
-    const supplied = buildSystemInstructions({ ...base, toolNames: [toolName] });
+  it.each([
+    "write_file",
+    "command_task",
+    "read_command_output",
+    "create_plan",
+    "history_search",
+    "spawn_agent",
+    "web_fetch",
+    "publish_file",
+    "project_context",
+  ])("includes optional tool guidance only when %s is supplied", (toolName) => {
+    const supplied = buildSystemInstructions({
+      ...base,
+      toolNames: [toolName],
+    });
     const absent = buildSystemInstructions({ ...base, toolNames: [] });
     expect(supplied).toContain(toolName);
     expect(absent).not.toContain(toolName);
@@ -63,10 +88,17 @@ describe("system instructions", () => {
   it("omits coordinator tool guidance for a child even when the registry contains it", () => {
     const context = { ...base, toolNames: ["spawn_agent"] };
     expect(buildSystemInstructions(context)).toContain("spawn_agent");
-    expect(buildSystemInstructions({ ...context, session: {
-      workspace: base.session.workspace,
-      parentSessionId: sessionIdSchema.parse("22345678-1234-4234-8234-123456789abc"),
-    } })).not.toContain("spawn_agent");
+    expect(
+      buildSystemInstructions({
+        ...context,
+        session: {
+          workspace: base.session.workspace,
+          parentSessionId: sessionIdSchema.parse(
+            "22345678-1234-4234-8234-123456789abc",
+          ),
+        },
+      }),
+    ).not.toContain("spawn_agent");
   });
 
   it("quotes multiline workspace and child scope as data and disallows recursive delegation", () => {
