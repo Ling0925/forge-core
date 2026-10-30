@@ -34,11 +34,22 @@ export function inferSourceId(
 }
 
 /**
- * The one source-priority rule for runs, queued inputs and compaction. An
- * explicit selection (the picked model's source) wins; a session keeps the
- * source it was created with; only when neither exists does the model, and
- * finally the remembered active source, decide. A session's route group
- * applies only while the caller names neither a model nor a source.
+ * The source used when nothing names one: FORGE_* environment overrides take
+ * precedence over the remembered active source, exactly as the settings store
+ * resolves an unspecified source (undefined selects the environment config).
+ */
+export const fallbackSourceId = (
+  settings: Pick<PublicSettings, "environmentOverride" | "activeSourceId">,
+): string | undefined =>
+  settings.environmentOverride ? undefined : settings.activeSourceId;
+
+/**
+ * The one source-priority rule for runs, queued inputs, compaction and queue
+ * bindings. An explicit selection (the picked model's source) wins; a session
+ * keeps the source it was created with; only when neither exists does the
+ * model, and finally fallbackSourceId (environment, then the remembered
+ * active source), decide. A session's route group applies only while the
+ * caller names neither a model nor a source.
  */
 export function selectSessionSource(
   settings: PublicSettings,
@@ -54,7 +65,7 @@ export function selectSessionSource(
       input.providerSourceId ??
       snapshot.providerSourceId ??
       inferSourceId(settings, input.model) ??
-      settings.activeSourceId,
+      fallbackSourceId(settings),
     routeGroupId:
       input.routeGroupId ??
       (input.model !== undefined || input.providerSourceId !== undefined
@@ -89,8 +100,7 @@ export const createProviderSelection = (settingsStore: SettingsStore) => {
   // overrides the provider configuration.
   const defaultSourceId = async (requested: string | undefined) => {
     if (requested !== undefined) return requested;
-    const settings = await settingsStore.getPublic();
-    return settings.environmentOverride ? undefined : settings.activeSourceId;
+    return fallbackSourceId(await settingsStore.getPublic());
   };
   /**
    * The "active" source is only the fallback for callers that name no source.

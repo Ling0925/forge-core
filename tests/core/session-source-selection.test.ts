@@ -73,6 +73,27 @@ describe("selectSessionSource", () => {
   });
 });
 
+describe("FORGE_* environment override", () => {
+  const env = { ...settings, environmentOverride: true } as PublicSettings;
+  it("replaces the remembered active source as the fallback", () => {
+    expect(selectSessionSource(env, {}).providerSourceId).toBeUndefined();
+    expect(
+      selectSessionSource(env, {}, { model: "shared" }).providerSourceId,
+    ).toBeUndefined();
+  });
+  it("still yields to an explicit, pinned or model-identified source", () => {
+    expect(
+      selectSessionSource(env, {}, { providerSourceId: "c" }).providerSourceId,
+    ).toBe("c");
+    expect(
+      selectSessionSource(env, { providerSourceId: "b" }).providerSourceId,
+    ).toBe("b");
+    expect(
+      selectSessionSource(env, {}, { model: "only-a" }).providerSourceId,
+    ).toBe("a");
+  });
+});
+
 describe("findRouteGroup", () => {
   it("returns nothing without an ID and fails on a stale one", () => {
     expect(findRouteGroup(settings, undefined)).toBeUndefined();

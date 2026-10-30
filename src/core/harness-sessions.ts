@@ -9,7 +9,7 @@ import type {
 } from "../shared/schemas";
 import type { openSessionStore } from "../store/sessions";
 import { assertBoundary } from "./context";
-import { inferSourceId } from "./harness-provider-selection";
+import { fallbackSourceId, inferSourceId } from "./harness-provider-selection";
 
 /**
  * Copy a session's history up to a native-call boundary into a new session.
@@ -78,7 +78,7 @@ export const resolveNewSession = async (
     firstMember?.sourceId ??
     input.providerSourceId ??
     inferSourceId(settings, input.model) ??
-    settings.activeSourceId;
+    fallbackSourceId(settings);
   const source = settings.providerSources?.find(
     (candidate) => candidate.id === providerSourceId,
   );
