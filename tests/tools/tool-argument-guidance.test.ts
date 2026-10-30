@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
-import { fileURLToPath } from "node:url";
+import { testScratch } from "../fixtures/scratch";
 import { join } from "node:path";
 import { afterEach, beforeEach, expect, it } from "vitest";
 import type { LocalToolRegistry, ToolContext } from "../../src/shared/contracts";
@@ -11,7 +11,7 @@ let root: string;
 let registry: LocalToolRegistry;
 let context: ToolContext;
 beforeEach(async () => {
-  const base = fileURLToPath(new URL("../../../../.forge/tmp/cross-provider-fixes/tools/", import.meta.url));
+  const base = testScratch("cross-provider-fixes", "tools");
   await mkdir(base, { recursive: true });
   root = await mkdtemp(join(base, "tool-guidance-"));
   registry = await createLocalToolRegistry(root);

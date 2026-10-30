@@ -1,5 +1,5 @@
 import { mkdir, mkdtemp, rm } from "node:fs/promises";
-import { fileURLToPath } from "node:url";
+import { testScratch } from "../fixtures/scratch";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 import { afterEach, expect, it } from "vitest";
@@ -17,7 +17,7 @@ const cleanups: (() => Promise<void>)[] = [];
 afterEach(async () => { await Promise.all(cleanups.splice(0).map(cleanup => cleanup())); });
 const empty: LocalToolRegistry = { definitions: [], execute: async () => ({ content: "ok", isError: false }), dispose: async () => {} };
 async function setup(provider: ModelProvider, tools = empty) {
-  const base = fileURLToPath(new URL("../../../../.forge/tmp/agent-collaboration/", import.meta.url));
+  const base = testScratch("agent-collaboration");
   await mkdir(base, { recursive: true });
   const directory = await mkdtemp(join(base, "runtime-"));
   const store = await openSessionStore(directory);

@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import { link, mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { fileURLToPath } from "node:url";
+import { testScratch } from "../fixtures/scratch";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createPluginHost } from "../../src/plugins/host";
 import type { OfficeCliResult } from "../../src/plugins/builtin/officecli/backend";
@@ -13,7 +13,7 @@ import { approvalRequestSchema, parseSessionId, type Permission } from "../../sr
 
 const cleanup: (() => Promise<unknown>)[] = [];
 afterEach(async () => { for (const action of cleanup.splice(0).reverse()) await action(); });
-const temp = fileURLToPath(new URL("../../../../.forge/tmp/officecli/plugin-tests/", import.meta.url));
+const temp = testScratch("officecli", "plugin-tests");
 const html = "<!doctype html><html><body><h1>Office preview</h1></body></html>";
 const result = (stdout = html): OfficeCliResult => ({ stdout, stderr: "", exitCode: 0, truncated: false });
 const call = (name: string, args: object) => ({ id: randomUUID(), type: "function" as const, function: { name, arguments: JSON.stringify(args) } });

@@ -1,5 +1,5 @@
 import { mkdir, mkdtemp, rm } from "node:fs/promises";
-import { fileURLToPath } from "node:url";
+import { testScratch } from "../fixtures/scratch";
 import { join } from "node:path";
 import { afterEach, expect, it } from "vitest";
 import { agentProfileSchema, agentProfileTemplates, type AgentProfile } from "../../src/shared/agent-profiles";
@@ -20,7 +20,7 @@ const calls = (...tools: ReturnType<typeof call>[]) => ({ message: { role: "assi
 const done = () => ({ message: { role: "assistant" as const, content: "done" } });
 const empty: LocalToolRegistry = { definitions: [], execute: async () => ({ content: "ok", isError: false }), dispose: async () => {} };
 async function fixture(provider: ModelProvider = { listModels: async () => [], complete: async () => done() }) {
-  const base = fileURLToPath(new URL("../../../../.forge/tmp/agent-collaboration/", import.meta.url));
+  const base = testScratch("agent-collaboration");
   await mkdir(base, { recursive: true });
   const directory = await mkdtemp(join(base, "profiles-"));
   const store = await openSessionStore(directory);

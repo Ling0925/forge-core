@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { execFileSync, spawn } from "node:child_process";
 import { once } from "node:events";
+import { existsSync } from "node:fs";
 import { chmod, mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -8,7 +9,12 @@ import test from "node:test";
 import { fileLock } from "../../dist/store/lock.js";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
-const base = resolve(process.env.FORGE_TEST_TMP_DIR ?? join(root, "../../.forge/tmp/posix-lock"));
+// Same scratch order as tests/fixtures/scratch.ts: env, assembly workspace, standalone checkout.
+const assembly = resolve(root, "../../.forge");
+const scratchRoot = process.env.FORGE_TEST_TMP_DIR
+  ? resolve(process.env.FORGE_TEST_TMP_DIR)
+  : existsSync(assembly) ? join(assembly, "tmp") : join(root, ".forge-test-tmp");
+const base = join(scratchRoot, "posix-lock");
 
 test("macOS lock helper keeps a macOS 13 deployment target", { skip: process.platform !== "darwin" }, () => {
   const commands = execFileSync("/usr/bin/otool", ["-l", join(root, "dist/native/forge-flock")], { encoding: "utf8" });

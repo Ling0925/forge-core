@@ -1,6 +1,6 @@
 import { mkdir, mkdtemp, rm } from "node:fs/promises";
 import { join } from "node:path";
-import { fileURLToPath } from "node:url";
+import { testScratch } from "../fixtures/scratch";
 import { expect, it } from "vitest";
 import { createHarness } from "../../src/core/harness";
 import { collectPublishedFiles } from "../../src/shared/published-files";
@@ -9,7 +9,7 @@ import type { ToolDefinition } from "../../src/shared/schemas";
 // Opt-in: no automatic download/installation and no real model or credentials.
 const executablePath = process.env.FORGE_OFFICECLI_EXECUTABLE;
 it.skipIf(!executablePath)("creates, edits, validates and delivers real Word/Excel/PPT HTML through the harness", async () => {
-  const temp = fileURLToPath(new URL("../../../../.forge/tmp/officecli/live-tests/", import.meta.url));
+  const temp = testScratch("officecli", "live-tests");
   await mkdir(temp, { recursive: true });
   const root = await mkdtemp(join(temp, "case-"));
   const workspace = join(root, "workspace");

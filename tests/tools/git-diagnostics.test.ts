@@ -3,7 +3,7 @@ import { randomUUID } from "node:crypto";
 import { lstat, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { fileURLToPath } from "node:url";
+import { testScratch } from "../fixtures/scratch";
 import { afterEach, expect, it } from "vitest";
 import type { ToolContext } from "../../src/shared/contracts";
 import { parseSessionId } from "../../src/shared/schemas";
@@ -41,14 +41,14 @@ function isRepository(path: string): boolean {
  */
 async function nonRepositoryRoot(): Promise<string | undefined> {
   // Read-only repository detection in an existing OS temp directory; never create
-  // or remove fixtures outside the assembly workspace's .forge/tmp directory.
+  // or remove fixtures outside the test scratch root (tests/fixtures/scratch.ts).
   for (const base of [tmpdir(), "/tmp", "/var/tmp"]) {
     if ((await lstat(base).catch(() => undefined))?.isDirectory() && !isRepository(base)) return base;
   }
   return undefined;
 }
 async function newDirectory(name: string): Promise<string> {
-  const base = fileURLToPath(new URL("../../../../.forge/tmp/cross-provider-fixes/tools/", import.meta.url));
+  const base = testScratch("cross-provider-fixes", "tools");
   await mkdir(base, { recursive: true });
   const parent = await mkdtemp(join(base, "git-diagnostics-"));
   roots.push(parent);

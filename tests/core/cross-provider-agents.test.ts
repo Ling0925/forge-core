@@ -1,6 +1,6 @@
 import { mkdir, mkdtemp, rm } from "node:fs/promises";
 import { join } from "node:path";
-import { fileURLToPath } from "node:url";
+import { testScratch } from "../fixtures/scratch";
 import { afterEach, expect, it } from "vitest";
 import { createHarness } from "../../src/core/harness";
 import type { Message, ProviderConfig } from "../../src/shared/schemas";
@@ -13,7 +13,7 @@ const call = (name: string, args = {}) => ({ message: { role: "assistant" as con
 const last = (messages: readonly Message[]) => JSON.parse(JSON.parse(messages.findLast(message => message.role === "tool")!.content!).content);
 
 async function fixture(spawn: Record<string, unknown>, catalogs: Record<string, string[]> = { a: ["parent"], b: ["cn:deepseek-v4.1-flash"] }, discovery = false) {
-  const base = fileURLToPath(new URL("../../../../.forge/tmp/cross-provider-fixes/routing/", import.meta.url));
+  const base = testScratch("cross-provider-fixes", "routing");
   await mkdir(base, { recursive: true });
   const directory = await mkdtemp(join(base, "harness-"));
   cleanups.push(() => rm(directory, { recursive: true, force: true }));

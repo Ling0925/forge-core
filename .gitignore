@@ -21,6 +21,8 @@ coverage/
 .npm/
 node-compile-cache/
 /tmp.*/
+# Test scratch root for standalone checkouts (see tests/fixtures/scratch.ts).
+/.forge-test-tmp/
 /ctx-*/
 playwright-artifacts-*/
 playwright_chromiumdev_profile-*/
