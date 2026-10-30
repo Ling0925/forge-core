@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { stat } from "node:fs/promises";
-import { isAbsolute, join, resolve } from "node:path";
+import { join } from "node:path";
 import { createProjectContext } from "../context/index";
 import { createMcpService } from "../mcp/registry";
 import { createPluginHost } from "../plugins/host";
@@ -35,13 +35,14 @@ import { openSettingsStore } from "../store/settings";
 import { openToolHooksStore } from "../store/tool-hooks";
 import { createAgentWorktreeService } from "./agent-worktrees";
 import { openAsyncTaskService } from "./async-tasks";
-import { assertBoundary, projectSummary } from "./context";
+import { projectSummary } from "./context";
 import { compactSessionSnapshot } from "./harness-compaction";
 import {
   createProviderSelection,
   inferSourceId,
 } from "./harness-provider-selection";
 import { createHarnessRun } from "./harness-run";
+import { forkSessionSnapshot, resolveNewSession } from "./harness-sessions";
 import { createHarnessTitles } from "./harness-titles";
 import { createHarnessTools } from "./harness-tools";
 import { inputPredecessor, openInputQueue } from "./input-queue";
@@ -411,42 +412,7 @@ export const createHarness = async (
       await stopTitle(id);
       const release = await store.acquire(sessionIdSchema.parse(id));
       try {
-        const source = await store.get(id);
-        const end = boundary ?? source.messages.length;
-        assertBoundary(source.messages, end);
-        let contextSummary: SessionSnapshot["contextSummary"];
-        if (source.contextSummary && source.contextSummary.boundary <= end) {
-          try {
-            assertBoundary(source.messages, source.contextSummary.boundary);
-            contextSummary = source.contextSummary;
-          } catch {
-            // Do not propagate stale memory whose boundary splits native calls.
-          }
-        }
-        const fork = await store.create({
-          workspace: source.workspace,
-          title: `Fork: ${source.title}`.slice(0, 256),
-          model: source.model,
-          ...(source.providerSourceId
-            ? { providerSourceId: source.providerSourceId }
-            : {}),
-          ...(source.routeGroupId ? { routeGroupId: source.routeGroupId } : {}),
-        });
-        const next = {
-          ...fork,
-          messages: source.messages.slice(0, end),
-          ...(contextSummary ? { contextSummary } : {}),
-          plan: source.plan,
-          plans: source.plans,
-          permissionCeiling: source.permissionCeiling,
-          parentSessionId: source.parentSessionId,
-          agentTask: source.agentTask,
-          ownership: source.ownership,
-          writePaths: source.writePaths,
-          forkedFrom: id,
-        };
-        await store.save(next);
-        return next;
+        return await forkSessionSnapshot(store, id, boundary);
       } finally {
         await release();
       }
@@ -681,54 +647,8 @@ export const createHarness = async (
       check();
       const input = createSessionInputSchema.parse(raw);
       const settings = await settingsStore.getPublic();
-      // A new session pins the source of the model the user picked, so choosing
-      // a model alone is enough to switch providers.
-      const group = input.routeGroupId
-        ? settings.routeGroups?.find((item) => item.id === input.routeGroupId)
-        : undefined;
-      if (input.routeGroupId && !group)
-        throw new ForgeError("not_found", "未找到所选路由组。");
-      const firstMember = group?.members.find(
-        (member) => member.enabled !== false,
-      );
-      const providerSourceId =
-        firstMember?.sourceId ??
-        input.providerSourceId ??
-        inferSourceId(settings, input.model) ??
-        settings.activeSourceId;
-      const source = settings.providerSources?.find(
-        (candidate) => candidate.id === providerSourceId,
-      );
-      if (providerSourceId && !source)
-        throw new ForgeError(
-          "invalid_input",
-          "The session's provider source is unavailable. Select an existing source explicitly.",
-        );
-      const model =
-        firstMember?.model ?? input.model ?? source?.model ?? settings.model;
-      if (!model)
-        throw new ForgeError(
-          "invalid_input",
-          "Select a model before creating a session.",
-        );
-      const workspace = resolve(input.workspace);
-      if (!isAbsolute(workspace))
-        throw new ForgeError(
-          "invalid_input",
-          "Workspace must be an absolute directory.",
-        );
-      try {
-        if (!(await stat(workspace)).isDirectory())
-          throw new ForgeError(
-            "invalid_input",
-            "Workspace must be an existing directory.",
-          );
-      } catch {
-        throw new ForgeError(
-          "invalid_input",
-          "Workspace must be an existing directory.",
-        );
-      }
+      const { workspace, model, providerSourceId, group } =
+        await resolveNewSession(settings, input);
       check();
       return store.create({
         workspace,
