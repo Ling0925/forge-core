@@ -37,7 +37,8 @@ it("routes an isolated child and its real file tools to the retained worktree wi
   const harness = await createHarness({
     stateDir: home,
     providerFactory: () => ({
-      listModels: async () => [],
+      // Explicit child models route by catalog ownership (8cfef20).
+      listModels: async () => ["parent", "child"],
       complete: async (messages, _definitions, options) => {
         if (options.model === "child") {
           if (++childTurns === 1)

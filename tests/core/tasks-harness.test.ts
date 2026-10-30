@@ -19,7 +19,8 @@ it("shows and stops an owned child but external hosts only observe, without extr
   const parentReady = barrier();
   let turns = 0;
   const provider: ModelProvider = {
-    listModels: async () => [],
+    // Explicit child models route by catalog ownership (8cfef20).
+    listModels: async () => ["root", "child"],
     complete: async (_m, _t, options) => {
       if (options.model === "child") {
         started.release();
