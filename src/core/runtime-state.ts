@@ -39,6 +39,9 @@ export interface RunState {
   acceptingTitle: boolean;
 }
 
+/** A run whose session snapshot has been loaded (true once run() reads it). */
+export type LoadedRunState = RunState & { snapshot: SessionSnapshot };
+
 export const createRunState = (): RunState => ({
   snapshot: undefined,
   canDelegate: false,
