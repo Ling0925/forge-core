@@ -16,6 +16,16 @@ const finish = (hour: number, tokens?: Usage): AgentEvent => ({
   type: "run_finished", sessionId: id, status: "completed", turns: 1, toolCalls: 0,
   timestamp: timestamp(hour), ...(tokens ? { usage: tokens } : {}),
 });
+// Schema-complete request-basis context sample carrying provider token counts.
+const contextUsage = (hour: number, tokens: Usage): AgentEvent => ({
+  type: "context_usage", sessionId: id, timestamp: timestamp(hour),
+  usage: {
+    windowTokens: null, usedTokens: tokens.promptTokens, estimated: false, basis: "request",
+    parts: { instructions: 0, memory: 0, conversation: 0, tools: 0 },
+    promptTokens: tokens.promptTokens, completionTokens: tokens.completionTokens,
+    ...(tokens.cachedPromptTokens === undefined ? {} : { cachedPromptTokens: tokens.cachedPromptTokens }),
+  },
+});
 const attempt = (model: string, hour: number, extra: Partial<ProviderAttempt> = {}): AgentEvent => ({
   type: "provider_attempt", sessionId: id, timestamp: timestamp(hour),
   selection: { model, sourceId: "source", apiMode: "responses", attempt: 1, reason: "direct",
@@ -77,7 +87,7 @@ describe("model consumption accounting", () => {
       attempt("cn:vendor/model-a", 2),
       attempt("relay/vendor/model-a", 3),
       attempt("model-b", 4),
-      { type: "context_usage", sessionId: id, timestamp: timestamp(4), usage: { basis: "request", ...totals } } as AgentEvent,
+      contextUsage(4, totals),
       finish(5, totals),
     ])]).getUsageStats();
     expect(stats.totalTokens).toBe(360); // Not requests + context + run total.
@@ -190,7 +200,7 @@ describe("model consumption accounting", () => {
   it("does not lose an interrupted legacy run when a new model run starts", () => {
     const stats = aggregateUsageStats([computeSessionUsage(snapshot([
       start("model-a", 1),
-      { type: "context_usage", sessionId: id, timestamp: timestamp(2), usage: { basis: "request", ...usage } } as AgentEvent,
+      contextUsage(2, usage),
       start("model-b", 3), attempt("model-b", 4), finish(5, usage),
     ]))]);
     expect(stats.models.map(model => [model.model, model.totalTokens])).toEqual([["model-a", 120], ["model-b", 120]]);

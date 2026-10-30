@@ -71,7 +71,7 @@ describe("automatic title metadata", () => {
   it("persists the first-message fallback before an unresolved title request", async () => {
     const f = fixture();
     let resolve!: (value: Awaited<ReturnType<ModelProvider["complete"]>>) => void;
-    f.provider.complete = vi.fn(() => new Promise(done => { resolve = done; }));
+    f.provider.complete = vi.fn<ModelProvider["complete"]>(() => new Promise(done => { resolve = done; }));
     const work = f.run();
     await vi.waitFor(() => expect(f.provider.complete).toHaveBeenCalledTimes(1));
     expect(f.get()).toMatchObject({ title: "修复登录问题", status: "running", autoTitleAttempted: true });

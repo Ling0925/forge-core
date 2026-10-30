@@ -25,7 +25,7 @@ const fixture = async (complete: ModelProvider["complete"]) => {
   const service = await createHarness({
     stateDir: join(root, "state"),
     providerFactory: () => ({ listModels: async () => [], complete }),
-    toolFactory: () => ({ definitions: [], execute: async () => ({ content: "unused" }), dispose: async () => {} }),
+    toolFactory: () => ({ definitions: [], execute: async () => ({ content: "unused", isError: false }), dispose: async () => {} }),
   });
   cleanups.push(() => service.dispose());
   await service.updateSettings({ apiKey: "fixture-only-key", settings: { baseUrl: "https://provider.example/v1", model: "fixture-model" } });
