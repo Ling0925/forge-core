@@ -1,6 +1,9 @@
 import { expect, it } from "vitest";
 import { readModelContextWindow } from "../../src/provider/context-window";
-import { resolveContextWindow } from "../../src/shared/context-usage";
+import {
+  DEFAULT_CONTEXT_WINDOW_TOKENS,
+  resolveContextWindow,
+} from "../../src/shared/context-usage";
 
 it.each([
   "context_length",
@@ -70,6 +73,19 @@ it("reads nested input limits but never invents a window from output limits or m
     expect(readModelContextWindow(metadata)).toBeNull();
     expect(
       resolveContextWindow("unknown", {}, readModelContextWindow(metadata)),
-    ).toBe(300000);
+    ).toBe(DEFAULT_CONTEXT_WINDOW_TOKENS);
   }
+});
+
+it("resolves windows: per-model setting, reported, known table, configured default, built-in default", () => {
+  expect(DEFAULT_CONTEXT_WINDOW_TOKENS).toBe(128000);
+  const settings = {
+    modelContextWindows: { pinned: 64000 },
+    defaultContextWindowTokens: 300000,
+  };
+  expect(resolveContextWindow("pinned", settings, 1000000)).toBe(64000);
+  expect(resolveContextWindow("gpt-4o", settings, 1000000)).toBe(1000000);
+  expect(resolveContextWindow("o3-mini", settings, null)).toBe(200000);
+  expect(resolveContextWindow("unknown", settings, null)).toBe(300000);
+  expect(resolveContextWindow("unknown", {}, null)).toBe(128000);
 });

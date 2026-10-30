@@ -6,20 +6,36 @@ import type {
   Usage,
 } from "./schemas";
 
+/**
+ * Conservative window for models nobody reports: most current chat models
+ * offer at least 128K, so compaction starts in time instead of overflowing a
+ * smaller model. Override with `defaultContextWindowTokens`, per model with
+ * `modelContextWindows`, or per source via `modelSelection.overrides`.
+ */
+export const DEFAULT_CONTEXT_WINDOW_TOKENS = 128000;
+
 // Exact IDs only. Never infer an unknown alias/version's window from a substring.
+// Values are the vendors' published context windows; providers that report
+// metadata always take precedence over this table.
 const knownWindows: Readonly<Record<string, number>> = {
+  "gpt-4-turbo": 128000,
   "gpt-4o": 128000,
   "gpt-4o-2024-08-06": 128000,
   "gpt-4o-mini": 128000,
   "gpt-4.1": 1047576,
   "gpt-4.1-mini": 1047576,
   "gpt-4.1-nano": 1047576,
+  o1: 200000,
   o3: 200000,
+  "o3-mini": 200000,
   "o4-mini": 200000,
 };
 export function resolveContextWindow(
   model: string,
-  settings: Pick<PublicSettings, "modelContextWindows">,
+  settings: Pick<
+    PublicSettings,
+    "modelContextWindows" | "defaultContextWindowTokens"
+  >,
   reported?: number | null,
 ): number {
   const override = settings.modelContextWindows?.[model];
@@ -27,7 +43,8 @@ export function resolveContextWindow(
     override ??
     reported ??
     (Object.hasOwn(knownWindows, model) ? knownWindows[model] : undefined) ??
-    300000
+    settings.defaultContextWindowTokens ??
+    DEFAULT_CONTEXT_WINDOW_TOKENS
   );
 }
 

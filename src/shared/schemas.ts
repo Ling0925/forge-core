@@ -152,6 +152,14 @@ export const settingsFields = {
     .max(10000000)
     .nullable()
     .optional(),
+  // Window assumed when neither settings, the source's model metadata
+  // (modelSelection.overrides/manual) nor the provider reports one.
+  defaultContextWindowTokens: z
+    .number()
+    .int()
+    .min(4096)
+    .max(10000000)
+    .optional(),
   // Per-model overrides: gateways/aliases need not have the upstream window.
   modelContextWindows: z
     .record(
