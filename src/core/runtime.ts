@@ -42,7 +42,6 @@ import type {
   SessionSnapshot,
   Usage,
 } from "../shared/schemas";
-import type { ToolHookDiagnostic } from "../shared/tool-hooks";
 import { createAdvisorCoordinator } from "./advisor";
 import { DEFAULT_MAX_AGENT_DEPTH, agentDepth } from "./agent-operations";
 import {
@@ -73,6 +72,7 @@ import {
   isHumanTurn,
   seedContextScale,
 } from "./runtime-context";
+import { createRunEvents } from "./runtime-events";
 import { createGenerationStream } from "./runtime-generation";
 import { createRuntimeJournal } from "./runtime-journal";
 import {
@@ -91,12 +91,6 @@ import { createToolFailureGuard } from "./tool-failure-guard";
 import { createToolHookService } from "./tool-hooks";
 import { summarizeWorkingState } from "./working-memory";
 
-type EventBody = {
-  [K in AgentEvent["type"]]: Omit<
-    Extract<AgentEvent, { type: K }>,
-    "sessionId" | "timestamp"
-  >;
-}[AgentEvent["type"]];
 export { withCancellation } from "./cancellation";
 export {
   CONTEXT_SCALE_FLOOR,
@@ -253,86 +247,14 @@ export const createAgentRuntime = (
     const checkToolFailure = createToolFailureGuard();
     const approvalQueue = createApprovalQueue();
     const now = deps.now ?? (() => new Date().toISOString());
-    const notify = (event: AgentEvent): void => {
-      try {
-        onEvent(event);
-      } catch {
-        /* Notifications are not transactional participants. */
-      }
-    };
-    const event = (body: EventBody): void => {
-      if (!run.snapshot)
-        throw new ForgeError("internal", "Session has not loaded.");
-      const event = agentEventSchema.parse({
-        ...(run.turn === undefined ? {} : { turn: run.turn }),
-        ...(run.activeStep === undefined ? {} : { step: run.activeStep }),
-        ...body,
-        sessionId: input.sessionId,
-        timestamp: now(),
-      });
-      run.snapshot = {
-        ...run.snapshot,
-        events: [...run.snapshot.events, event],
-      };
-      notify(event);
-    };
-    const finishGeneration = (
-      status: "completed" | "failed" | "cancelled" | "superseded",
-    ): void => {
-      if (!run.generation || run.generation.finished) return;
-      run.generation.finished = true;
-      event({
-        type: "generation_finished",
-        generationId: run.generation.id,
-        ...(run.generation.step === undefined
-          ? {}
-          : { step: run.generation.step }),
-        status,
-      });
-    };
-    const closeStep = (status: "completed" | "cancelled" | "failed"): void => {
-      if (
-        !run.snapshot ||
-        run.turn === undefined ||
-        run.activeStep === undefined
-      )
-        return;
-      event({
-        type: "step_finished",
-        turn: run.turn,
-        step: run.activeStep,
-        status,
-        messageIndex: run.snapshot.messages.length,
-      });
-      run.steps += 1;
-      run.activeStep = undefined;
-    };
-    const hookDiagnostics = (
-      diagnostics: readonly ToolHookDiagnostic[],
-      toolCallId?: string,
-    ): void => {
-      for (const diagnostic of diagnostics) {
-        if (["failed", "timed_out", "cancelled"].includes(diagnostic.status))
-          run.hookFailed = true;
-        event({
-          type: "tool_hook",
-          diagnostic,
-          ...(toolCallId ? { toolCallId } : {}),
-        });
-      }
-    };
-    // Display-only, never persisted: live reasoning preview is not transcript state.
-    const ephemeral = (body: EventBody): void => {
-      notify(
-        agentEventSchema.parse({
-          ...(run.turn === undefined ? {} : { turn: run.turn }),
-          ...(run.activeStep === undefined ? {} : { step: run.activeStep }),
-          ...body,
-          sessionId: input.sessionId,
-          timestamp: now(),
-        }),
-      );
-    };
+    const {
+      notify,
+      event,
+      finishGeneration,
+      closeStep,
+      hookDiagnostics,
+      ephemeral,
+    } = createRunEvents(run, input.sessionId, onEvent, now);
     const check = (): void => {
       rootBudget.check();
       if (signal.aborted) throw new ForgeError("cancelled", "Run cancelled.");
