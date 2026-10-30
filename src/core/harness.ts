@@ -313,9 +313,10 @@ export const createHarness = async (
                   }),
                 background: async (input, toolContext) => {
                   const current = await store.get(toolContext.sessionId);
-                  const main = current.parentSessionId
-                    ? await store.get(current.parentSessionId)
-                    : current;
+                  // Wake the primary session, also for nested children.
+                  let main = current;
+                  for (let hops = 0; main.parentSessionId && hops < 8; hops++)
+                    main = await store.get(main.parentSessionId);
                   const service = await getAsyncTasks();
                   const levels = [
                     "readonly",

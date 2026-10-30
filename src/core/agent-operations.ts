@@ -28,7 +28,40 @@ import {
 } from "../shared/schemas";
 import { agentProfileSummary } from "./agent-profiles";
 
-export const MAX_ACTIVE_AGENTS = 4;
+/** Default for settings.maxActiveAgents. */
+export const DEFAULT_MAX_ACTIVE_AGENTS = 4;
+/** @deprecated Use DEFAULT_MAX_ACTIVE_AGENTS or settings.maxActiveAgents. */
+export const MAX_ACTIVE_AGENTS = DEFAULT_MAX_ACTIVE_AGENTS;
+/** Default for settings.maxAgentDepth: only the primary agent delegates. */
+export const DEFAULT_MAX_AGENT_DEPTH = 1;
+
+/**
+ * Delegation depth of a session (0 = primary), counted up to `limit`. Parents
+ * are read only when the limit allows nesting; an unreadable or cyclic chain
+ * counts as the limit so it can never widen delegation.
+ */
+export async function agentDepth(
+  snapshot: Pick<SessionSnapshot, "id" | "parentSessionId">,
+  get: (
+    id: SessionSnapshot["id"],
+  ) => Promise<Pick<SessionSnapshot, "id" | "parentSessionId">>,
+  limit: number,
+): Promise<number> {
+  let depth = 0;
+  let parent = snapshot.parentSessionId;
+  const seen = new Set<string>([snapshot.id]);
+  while (parent) {
+    depth++;
+    if (depth >= limit || seen.has(parent)) return Math.max(depth, limit);
+    seen.add(parent);
+    try {
+      parent = (await get(parent)).parentSessionId;
+    } catch {
+      return limit;
+    }
+  }
+  return depth;
+}
 // A report page bound, not a lifetime limit on child creation.
 export const MAX_AGENT_REPORTS = 32;
 const RESULT_BYTES = 65536;
@@ -60,6 +93,8 @@ export interface AgentEnvironment {
   children: Map<string, ChildOperation>;
   advisor?: AdvisorCoordinator;
   toolCallId?: string;
+  /** Whether this session may manage children; defaults to "is the primary agent". */
+  canDelegate?: boolean;
   runChild: (
     input: RunInput,
     approve: ApprovalHandler,
@@ -352,10 +387,12 @@ export async function executeAgentOperation(
 ): Promise<ToolResult> {
   const { children, deps, snapshot, input } = env;
   check(env.signal);
-  if (snapshot.parentSessionId && name !== "advisor")
+  if (!(env.canDelegate ?? !snapshot.parentSessionId) && name !== "advisor")
     throw new ForgeError(
       "invalid_input",
-      "Only the primary agent can manage child tasks or answer advisor requests.",
+      snapshot.parentSessionId
+        ? "This child agent is at the configured maximum agent depth and cannot manage child tasks or answer advisor requests."
+        : "Only the primary agent can manage child tasks or answer advisor requests.",
     );
   switch (name) {
     case "advisor": {
@@ -505,13 +542,15 @@ export async function executeAgentOperation(
         ] ?? "readonly";
       const isolation = parsed.isolation ?? profile?.isolation ?? "shared";
       check(env.signal);
+      const activeLimit =
+        deps.settings.maxActiveAgents ?? DEFAULT_MAX_ACTIVE_AGENTS;
       if (
         [...children.values()].filter((child) => child.active).length >=
-        MAX_ACTIVE_AGENTS
+        activeLimit
       )
         throw new ForgeError(
           "busy",
-          "Four child agents are active; wait for a slot before spawning.",
+          `${activeLimit} child agent${activeLimit === 1 ? " is" : "s are"} active (the configured maximum); wait for a slot before spawning.`,
         );
       const writePaths = [...new Set(parsed.writePaths ?? [])];
       if (isolation === "worktree" && permission === "readonly")

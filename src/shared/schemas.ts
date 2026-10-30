@@ -152,6 +152,13 @@ export const settingsFields = {
     .max(10000000)
     .nullable()
     .optional(),
+  // Subagent limits. Defaults: 4 concurrently active children per parent run,
+  // depth 1 (only the primary agent delegates).
+  maxActiveAgents: z.number().int().min(1).max(32).optional(),
+  maxAgentDepth: z.number().int().min(1).max(4).optional(),
+  // Plans per session. The persisted session contract caps plans at 10000,
+  // so this can only lower the limit.
+  maxSessionPlans: z.number().int().min(1).max(10000).optional(),
   // One deadline for each git process behind git_status/git_diff/git_log.
   // Unset: 30s for status/diff, 10s for probes and log.
   gitInspectionTimeoutMs: z.number().int().min(1000).max(600000).optional(),

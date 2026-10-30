@@ -45,6 +45,7 @@ import type {
 } from "../shared/schemas";
 import type { ToolHookDiagnostic } from "../shared/tool-hooks";
 import { createAdvisorCoordinator } from "./advisor";
+import { DEFAULT_MAX_AGENT_DEPTH, agentDepth } from "./agent-operations";
 import {
   agentAllowsWebSearch,
   assertAgentModel,
@@ -208,6 +209,7 @@ export const createAgentRuntime = (
       throw error;
     }
     let snapshot: SessionSnapshot | undefined;
+    let canDelegate = false;
     const levels = ["readonly", "workspace", "unrestricted"] as const;
     let notificationCap: Permission | undefined;
     const effectivePermission = () => {
@@ -668,9 +670,16 @@ export const createAgentRuntime = (
       snapshot = await journal.read();
       rootBudget.enter(input.sessionId);
       assertAgentModel(snapshot.agentProfile, input);
+      canDelegate =
+        (await agentDepth(
+          snapshot,
+          (id) => deps.store.get(id),
+          deps.settings.maxAgentDepth ?? DEFAULT_MAX_AGENT_DEPTH,
+        )) < (deps.settings.maxAgentDepth ?? DEFAULT_MAX_AGENT_DEPTH);
       const roleDefinitions = nativeDefinitionsFor(
         Boolean(snapshot.parentSessionId),
         Boolean(deps.advisorParent),
+        canDelegate,
       );
       const allowTool = (name: string, args?: unknown) =>
         isAgentToolAllowed(snapshot?.agentProfile, name, args) &&
@@ -699,6 +708,7 @@ export const createAgentRuntime = (
         mode: input.mode,
         projectInstructions: deps.projectInstructions,
         toolNames,
+        canDelegate,
       });
       const project = (state: SessionSnapshot) => {
         const projected = projectSummary(state).map((message, index) =>
@@ -815,6 +825,7 @@ export const createAgentRuntime = (
         mode: input.mode,
         projectInstructions: deps.projectInstructions,
         toolNames,
+        canDelegate,
       });
       if (
         !snapshot.contextSummary &&
@@ -1554,6 +1565,7 @@ export const createAgentRuntime = (
                       },
                       signal,
                       toolCallId: call.id,
+                      canDelegate,
                       ...supervisor.native,
                       saveResolution: async (
                         id,

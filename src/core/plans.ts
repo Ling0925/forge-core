@@ -8,6 +8,9 @@ import {
   taskPlanSchema,
 } from "../shared/schemas";
 
+/** Also the persisted ceiling (sessionSnapshot.plans.max). */
+export const DEFAULT_MAX_SESSION_PLANS = 10000;
+
 const selectionSchema = z
   .object({
     action: z.enum(["create", "update"]).optional(),
@@ -38,13 +41,18 @@ export const planArgumentSchemas = {
 export function createSessionPlan(
   snapshot: Pick<SessionSnapshot, "plan" | "plans">,
   args: Record<string, unknown>,
+  maxPlans: number = DEFAULT_MAX_SESSION_PLANS,
 ): { plan: TaskPlan; plans: readonly TaskPlan[] } {
   const { name, ...content } = createArgs.parse(args);
-  return updateSessionPlan(snapshot, {
-    ...content,
-    title: name,
-    action: "create",
-  });
+  return updateSessionPlan(
+    snapshot,
+    {
+      ...content,
+      title: name,
+      action: "create",
+    },
+    maxPlans,
+  );
 }
 
 /** Missing selectors remain compatible with old models: continue unfinished work,
@@ -52,6 +60,7 @@ export function createSessionPlan(
 export function updateSessionPlan(
   snapshot: Pick<SessionSnapshot, "plan" | "plans">,
   args: Record<string, unknown>,
+  maxPlans: number = DEFAULT_MAX_SESSION_PLANS,
 ): { plan: TaskPlan; plans: readonly TaskPlan[] } {
   const { action: rawAction, planId: rawId, ...content } = args;
   const { action, planId } = selectionSchema.parse({
@@ -89,7 +98,7 @@ export function updateSessionPlan(
     (!action &&
       !planId &&
       previous.steps.every((step) => step.status === "completed"));
-  if (create && plans.length >= 10000)
+  if (create && plans.length >= Math.min(maxPlans, DEFAULT_MAX_SESSION_PLANS))
     throw new ForgeError(
       "budget",
       "Session plan limit reached; start a new session.",

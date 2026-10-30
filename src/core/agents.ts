@@ -75,7 +75,7 @@ export const nativeDefinitions: readonly ToolDefinition[] = [
   {
     name: "spawn_agent",
     description:
-      "Start an independent child, optionally from a configured profileId. Explicit model IDs resolve across all configured provider sources, independent of the parent. Use providerSourceId for duplicate/unlisted model IDs. Omit model and source to inherit the parent's exact selection. Routing errors fail before creating a child; never guess a source or replace the requested model. Profile model/tool policy and permission ceiling are enforced; missing, disabled or revision-conflicting profiles fail before work. Omit isolation to use the profile default (shared without a profile). Otherwise inherits permission. Depth one, four active slots (released after cleanup). No cumulative child count or tool-call budget. Declare disjoint literal writePaths to reject overlapping active assignments; ownership is coordination, NOT a filesystem sandbox. No automatic retry or model fallback.",
+      "Start an independent child, optionally from a configured profileId. Explicit model IDs resolve across all configured provider sources, independent of the parent. Use providerSourceId for duplicate/unlisted model IDs. Omit model and source to inherit the parent's exact selection. Routing errors fail before creating a child; never guess a source or replace the requested model. Profile model/tool policy and permission ceiling are enforced; missing, disabled or revision-conflicting profiles fail before work. Omit isolation to use the profile default (shared without a profile). Otherwise inherits permission. By default depth one (only the primary agent delegates) and four active slots per parent (released after cleanup); hosts may configure both. No cumulative child count or tool-call budget. Declare disjoint literal writePaths to reject overlapping active assignments; ownership is coordination, NOT a filesystem sandbox. No automatic retry or model fallback.",
     input: agentArgumentSchemas.spawn_agent,
   },
   {
@@ -130,12 +130,14 @@ const parentOnly = new Set([
 export function nativeDefinitionsFor(
   isChild: boolean,
   hasAdvisor: boolean,
+  /** A child below settings.maxAgentDepth also manages its own children. */
+  canDelegate = !isChild,
 ): readonly ToolDefinition[] {
   return nativeDefinitions.filter((definition) => {
     const name = definition.function.name;
     return name === "advisor"
       ? isChild && hasAdvisor
-      : !isChild || !parentOnly.has(name);
+      : canDelegate || !parentOnly.has(name);
   });
 }
 export async function executeNative(
@@ -277,8 +279,12 @@ async function executeNativeUnchecked(
     case "update_plan": {
       const { plan } =
         name === "create_plan"
-          ? createSessionPlan(env.snapshot, args)
-          : updateSessionPlan(env.snapshot, args);
+          ? createSessionPlan(env.snapshot, args, deps.settings.maxSessionPlans)
+          : updateSessionPlan(
+              env.snapshot,
+              args,
+              deps.settings.maxSessionPlans,
+            );
       await env.savePlan(plan);
       return output(plan);
     }
