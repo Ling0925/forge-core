@@ -136,10 +136,12 @@ export const settingsFields = {
   model: z.string().trim().min(1).max(256),
   theme: z.enum(["system", "light", "dark"]),
   defaultPermission: permissionSchema,
-  // Deprecated execution budgets: retained only for saved-settings/API compatibility.
-  // Neither these fields nor maxRootToolCalls/rootTimeoutMs limit new runs.
-  maxTurns: z.number().int().min(1).max(1000),
-  maxToolCalls: z.number().int().min(1).max(10000),
+  // Deprecated execution budgets: still accepted and round-tripped for saved
+  // settings and older API clients, but optional with no default, so fresh
+  // settings no longer advertise a limit. Neither these fields nor
+  // maxRootToolCalls/rootTimeoutMs limit runs.
+  maxTurns: z.number().int().min(1).max(1000).optional(),
+  maxToolCalls: z.number().int().min(1).max(10000).optional(),
   maxRootToolCalls: rootToolLimitSchema.optional(),
   rootTimeoutMs: rootTimeoutSchema.optional(),
   requestTimeoutMs: z.number().int().min(1000).max(600000),
@@ -250,8 +252,6 @@ export const defaultPublicSettings: PublicSettings = publicSettingsSchema.parse(
     model: "",
     theme: "system",
     defaultPermission: "workspace",
-    maxTurns: 20,
-    maxToolCalls: 100,
     requestTimeoutMs: 60000,
     contextBudgetChars: 100000,
     hasApiKey: false,

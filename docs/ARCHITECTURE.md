@@ -52,7 +52,7 @@ A run holds the cross-process session lock through its final durable checkpoint.
 
 One accepted user request is one conversation turn. A model generation plus its tools is a step; retries remain within that step, and steering remains in that turn. Old records without step/retry metadata remain readable without fabricated counts.
 
-Deprecated `maxTurns`, `maxToolCalls`, `maxRootToolCalls` and `rootTimeoutMs` fields remain accepted but do not terminate runs. Per-request/tool bounds, cancellation, context budgets and child concurrency/depth limits still apply. Usage counters are observations, not execution limits.
+Deprecated `maxTurns`, `maxToolCalls`, `maxRootToolCalls` and `rootTimeoutMs` fields remain accepted (all optional, no defaults; older saved settings round-trip them) but do not terminate runs. Per-request/tool bounds, cancellation, context budgets and child concurrency/depth limits (`maxActiveAgents`, `maxAgentDepth`) still apply. Usage counters are observations, not execution limits.
 
 Raw history remains retrievable. Context projection and semantic compaction change what is sent to a provider, not the transcript. Cold resume can use a local run-end checkpoint without an additional summary-model call. Forking copies settled history and never executes copied calls.
 
