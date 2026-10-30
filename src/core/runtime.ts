@@ -43,6 +43,7 @@ import {
   requestGeneration,
   resolveHostedSearch,
 } from "./runtime-provider-request";
+import { closeCalls, interruptStaleRun } from "./runtime-recovery";
 import { type LoadedRunState, createRunState } from "./runtime-state";
 import { createRunSteering } from "./runtime-steering";
 import {
@@ -66,33 +67,6 @@ export {
   RETRY_DELAYS_MS,
   retryDelay,
 } from "./runtime-retry";
-
-const closeCalls = (
-  messages: readonly Message[],
-  content: string,
-): readonly Message[] => {
-  const result: Message[] = [];
-  let unresolved: readonly string[] = [];
-  const flush = (): void => {
-    for (const id of unresolved)
-      result.push({
-        role: "tool",
-        tool_call_id: id,
-        content: JSON.stringify({ content, isError: true }),
-      });
-    unresolved = [];
-  };
-  for (const message of messages) {
-    if (message.role !== "tool") flush();
-    result.push(message);
-    if (message.role === "assistant")
-      unresolved = (message.tool_calls ?? []).map((call) => call.id);
-    if (message.role === "tool")
-      unresolved = unresolved.filter((id) => id !== message.tool_call_id);
-  }
-  flush();
-  return result;
-};
 
 export const createAgentRuntime = (
   deps: AgentRuntimeDependencies,
@@ -366,40 +340,8 @@ export const createAgentRuntime = (
       if (
         run.snapshot.status === "running" ||
         run.snapshot.status === "awaiting_approval"
-      ) {
-        const previous = executionTurns(run.snapshot).at(-1);
-        if (
-          previous &&
-          !previous.finish &&
-          previous.events[0]?.type === "run_started" &&
-          previous.events[0].turn !== undefined
-        ) {
-          if (previous.currentStep !== undefined)
-            event({
-              type: "step_finished",
-              turn: previous.turn,
-              step: previous.currentStep,
-              messageIndex: run.snapshot.messages.length,
-              status: "interrupted",
-            });
-          event({
-            type: "run_finished",
-            turn: previous.turn,
-            status: "interrupted",
-            turns: previous.currentStep ?? previous.steps ?? 0,
-            steps:
-              (previous.steps ?? 0) +
-              (previous.currentStep === undefined ? 0 : 1),
-            toolCalls: previous.toolCalls ?? 0,
-            retries: previous.retries ?? 0,
-            messageIndex: run.snapshot.messages.length,
-            usageComplete: false,
-          });
-        }
-        run.snapshot = { ...run.snapshot, status: "interrupted" };
-        event({ type: "state_changed", status: "interrupted" });
-        await save();
-      }
+      )
+        await interruptStaleRun(run as LoadedRunState, event, save);
       check();
       const permission = effectivePermission();
       const {
