@@ -5,6 +5,7 @@ import { expect, it } from "vitest";
 import { projectSummary, summarize } from "../../src/core/context";
 import { createHarness } from "../../src/core/harness";
 import { compactContext } from "../../src/core/runtime";
+import { projectToolContext } from "../../src/core/tool-context";
 import type { ModelProvider } from "../../src/shared/contracts";
 import type { Message } from "../../src/shared/schemas";
 import { openSessionStore } from "../../src/store/sessions";
@@ -17,10 +18,14 @@ it("tags only generated reconciliation and preserves origin through reopen, fork
   await mkdir(workspace);
   let turns = 0;
   const provider: ModelProvider = {
-    listModels: async () => [],
+    // Explicit child models route by catalog ownership (8cfef20).
+    listModels: async () => ["parent", "child"],
     complete: async (messages, _tools, options) => {
       if (options.model === "child")
         return { message: { role: "assistant", content: "child evidence" } };
+      // Automatic titling (09c11ad) shares this provider and is not a run turn.
+      if (messages[0]?.content?.startsWith("Generate only a concise"))
+        return { message: { role: "assistant", content: "title" } };
       if (++turns === 1)
         return {
           message: {
@@ -72,9 +77,11 @@ it("tags only generated reconciliation and preserves origin through reopen, fork
       new AbortController().signal,
     );
     expect(result.status).toBe("completed");
+    // Assistant messages carry a generationId since bea45c4.
     expect(result.messages.at(-1)).toEqual({
       role: "assistant",
       content: "reconciled answer",
+      generationId: expect.any(String),
     });
     const users = result.messages.filter((m) => m.role === "user");
     expect(users).toHaveLength(2);
@@ -85,7 +92,13 @@ it("tags only generated reconciliation and preserves origin through reopen, fork
     expect(persisted.messages).toEqual(result.messages);
     const fork = await service.forkSession(root.id);
     expect((await reopened.get(fork.id)).messages).toEqual(result.messages);
-    expect(projectSummary(fork)).toEqual(result.messages);
+    // Provider projection drops local generation identity (bea45c4).
+    expect(projectSummary(fork)).toEqual(projectToolContext(result.messages));
+    expect(
+      projectSummary(fork).some(
+        (m) => m.role === "assistant" && m.generationId !== undefined,
+      ),
+    ).toBe(false);
     // A summary before the internal record leaves its exact metadata in the projected tail.
     const index = fork.messages.findIndex(
       (m) => m.role === "user" && m.origin === "agent_reconciliation",
