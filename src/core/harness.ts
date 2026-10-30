@@ -33,10 +33,8 @@ import { createAgentWorktreeService } from "./agent-worktrees";
 import { openAsyncTaskService } from "./async-tasks";
 import { projectSummary } from "./context";
 import { compactSessionSnapshot } from "./harness-compaction";
-import {
-  createProviderSelection,
-  inferSourceId,
-} from "./harness-provider-selection";
+import { openHarnessInputQueue } from "./harness-input-queue";
+import { createProviderSelection } from "./harness-provider-selection";
 import {
   createPluginPublishers,
   readSessionPublishedFile,
@@ -45,7 +43,6 @@ import { createHarnessRun } from "./harness-run";
 import { forkSessionSnapshot, resolveNewSession } from "./harness-sessions";
 import { createHarnessTitles } from "./harness-titles";
 import { createHarnessTools } from "./harness-tools";
-import { inputPredecessor, openInputQueue } from "./input-queue";
 import { createModelAccessService } from "./model-access";
 import { createModelPricingService } from "./model-pricing";
 import { openRunMemory } from "./run-memory";
@@ -215,68 +212,13 @@ export const createHarness = async (
     track,
     active,
   });
-  const inputQueue = await openInputQueue({
+  const inputQueue = await openHarnessInputQueue({
     directory,
-    validateSession: async (id) => {
-      await store.get(id);
-    },
-    predecessor: async (id, acknowledge) => {
-      if (!acknowledge) return inputPredecessor(await store.get(id));
-      if (controls.has(id)) throw new QueueAdmissionError();
-      const release = await store.acquire(id);
-      try {
-        return inputPredecessor(await store.get(id));
-      } finally {
-        await release();
-      }
-    },
-    prepare: async (input) => {
-      check();
-      const [snapshot, settings] = await Promise.all([
-        store.get(input.sessionId),
-        settingsStore.getPublic(),
-      ]);
-      const providerSourceId =
-        input.providerSourceId ??
-        snapshot.providerSourceId ??
-        inferSourceId(settings, input.model) ??
-        settings.activeSourceId;
-      const routeGroupId =
-        input.routeGroupId ??
-        (input.model !== undefined || input.providerSourceId !== undefined
-          ? undefined
-          : snapshot.routeGroupId);
-      const model = settingsFields.model.parse(input.model ?? snapshot.model);
-      const providerBinding = await queueProviderBinding(
-        settings,
-        model,
-        providerSourceId,
-        routeGroupId,
-      );
-      const levels = ["readonly", "workspace", "unrestricted"] as const;
-      const permission =
-        levels[
-          Math.min(
-            levels.indexOf(
-              input.mode === "plan"
-                ? "readonly"
-                : (input.permission ?? settings.defaultPermission),
-            ),
-            levels.indexOf(snapshot.permissionCeiling ?? "unrestricted"),
-          )
-        ] ?? "readonly";
-      return {
-        input: {
-          ...input,
-          model,
-          permission,
-          mode: input.mode ?? "build",
-          ...(providerSourceId ? { providerSourceId } : {}),
-          ...(routeGroupId ? { routeGroupId } : {}),
-        },
-        providerBinding,
-      };
-    },
+    store,
+    settingsStore,
+    controls,
+    check,
+    queueProviderBinding,
   });
   const taskService = createTaskService({
     store,

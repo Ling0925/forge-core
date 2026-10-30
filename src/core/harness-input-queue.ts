@@ -1,0 +1,98 @@
+import { QueueAdmissionError } from "../shared/input-queue";
+import { settingsFields } from "../shared/schemas";
+import type { SessionId } from "../shared/schemas";
+import type { openSessionStore } from "../store/sessions";
+import type { openSettingsStore } from "../store/settings";
+import {
+  type createProviderSelection,
+  inferSourceId,
+} from "./harness-provider-selection";
+import { inputPredecessor, openInputQueue } from "./input-queue";
+
+export type HarnessInputQueueDeps = {
+  directory: string;
+  store: Awaited<ReturnType<typeof openSessionStore>>;
+  settingsStore: Awaited<ReturnType<typeof openSettingsStore>>;
+  /** Sessions with an owned run or operation; such a session cannot be acknowledged. */
+  controls: ReadonlyMap<SessionId, unknown>;
+  check: () => void;
+  queueProviderBinding: ReturnType<
+    typeof createProviderSelection
+  >["queueProviderBinding"];
+};
+
+/**
+ * The durable input queue for a harness. Admission pins each queued input to
+ * its resolved model, clamped permission and provider binding.
+ */
+export const openHarnessInputQueue = ({
+  directory,
+  store,
+  settingsStore,
+  controls,
+  check,
+  queueProviderBinding,
+}: HarnessInputQueueDeps) =>
+  openInputQueue({
+    directory,
+    validateSession: async (id) => {
+      await store.get(id);
+    },
+    predecessor: async (id, acknowledge) => {
+      if (!acknowledge) return inputPredecessor(await store.get(id));
+      if (controls.has(id)) throw new QueueAdmissionError();
+      const release = await store.acquire(id);
+      try {
+        return inputPredecessor(await store.get(id));
+      } finally {
+        await release();
+      }
+    },
+    prepare: async (input) => {
+      check();
+      const [snapshot, settings] = await Promise.all([
+        store.get(input.sessionId),
+        settingsStore.getPublic(),
+      ]);
+      const providerSourceId =
+        input.providerSourceId ??
+        snapshot.providerSourceId ??
+        inferSourceId(settings, input.model) ??
+        settings.activeSourceId;
+      const routeGroupId =
+        input.routeGroupId ??
+        (input.model !== undefined || input.providerSourceId !== undefined
+          ? undefined
+          : snapshot.routeGroupId);
+      const model = settingsFields.model.parse(input.model ?? snapshot.model);
+      const providerBinding = await queueProviderBinding(
+        settings,
+        model,
+        providerSourceId,
+        routeGroupId,
+      );
+      const levels = ["readonly", "workspace", "unrestricted"] as const;
+      const permission =
+        levels[
+          Math.min(
+            levels.indexOf(
+              input.mode === "plan"
+                ? "readonly"
+                : (input.permission ?? settings.defaultPermission),
+            ),
+            levels.indexOf(snapshot.permissionCeiling ?? "unrestricted"),
+          )
+        ] ?? "readonly";
+      return {
+        input: {
+          ...input,
+          model,
+          permission,
+          mode: input.mode ?? "build",
+          ...(providerSourceId ? { providerSourceId } : {}),
+          ...(routeGroupId ? { routeGroupId } : {}),
+        },
+        providerBinding,
+      };
+    },
+  });
