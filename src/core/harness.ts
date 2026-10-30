@@ -12,10 +12,6 @@ import { ForgeError } from "../shared/errors";
 import { QueueAdmissionError } from "../shared/input-queue";
 import { browserRequestSchema } from "../shared/plugins";
 import {
-  collectPublishedFiles,
-  publishedFileIdSchema,
-} from "../shared/published-files";
-import {
   configureInputSchema,
   createSessionInputSchema,
   runInputSchema,
@@ -41,6 +37,10 @@ import {
   createProviderSelection,
   inferSourceId,
 } from "./harness-provider-selection";
+import {
+  createPluginPublishers,
+  readSessionPublishedFile,
+} from "./harness-published-files";
 import { createHarnessRun } from "./harness-run";
 import { forkSessionSnapshot, resolveNewSession } from "./harness-sessions";
 import { createHarnessTitles } from "./harness-titles";
@@ -80,44 +80,10 @@ export const createHarness = async (
     | undefined;
   const agentWorktrees = createAgentWorktreeService(directory);
   const publishedFiles = await openPublishedFileStore(directory);
-  const plugins = await createPluginHost(directory, {
-    async publishOfficePreview(sessionId, preview, signal) {
-      return publishedFiles.put(
-        sessionId,
-        Buffer.from(preview.html, "utf8"),
-        {
-          name: preview.name,
-          mimeType: "text/html",
-          previewKind: "html",
-          description: preview.description,
-        },
-        signal,
-      );
-    },
-    async publishImage(sessionId, image, signal) {
-      const bytes = Buffer.from(image.data, "base64");
-      const png = bytes
-        .subarray(0, 8)
-        .equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]));
-      const jpeg = bytes[0] === 255 && bytes[1] === 216 && bytes[2] === 255;
-      if (
-        bytes.toString("base64") !== image.data ||
-        (image.mimeType === "image/png" ? !png : !jpeg)
-      )
-        throw new ForgeError("tool", "Browser returned an invalid screenshot.");
-      return publishedFiles.put(
-        sessionId,
-        bytes,
-        {
-          name: `browser-${Date.now()}.${png ? "png" : "jpg"}`,
-          mimeType: image.mimeType,
-          previewKind: "image",
-          description: "Browser screenshot",
-        },
-        signal,
-      );
-    },
-  });
+  const plugins = await createPluginHost(
+    directory,
+    createPluginPublishers(publishedFiles),
+  );
   const usageStatsService = createUsageStatsService(
     store,
     createModelPricingService({
@@ -625,23 +591,12 @@ export const createHarness = async (
     },
     async getPublishedFile(rawSessionId, rawFileId) {
       check();
-      const session = await store.get(sessionIdSchema.parse(rawSessionId));
-      const fileId = publishedFileIdSchema.parse(rawFileId);
-      const referenced = collectPublishedFiles(session.messages).find(
-        (file) => file.id === fileId,
+      return readSessionPublishedFile(
+        store,
+        publishedFiles,
+        rawSessionId,
+        rawFileId,
       );
-      if (!referenced)
-        throw new ForgeError(
-          "not_found",
-          "This session does not contain that attachment.",
-        );
-      const response = await publishedFiles.get(fileId);
-      if (JSON.stringify(response.file) !== JSON.stringify(referenced))
-        throw new ForgeError(
-          "storage",
-          "Attachment metadata does not match the published snapshot.",
-        );
-      return response;
     },
     async createSession(raw) {
       check();
