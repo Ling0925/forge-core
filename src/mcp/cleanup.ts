@@ -1,4 +1,4 @@
-import type { ChildProcess } from "node:child_process";
+import { type ChildProcess, execFile } from "node:child_process";
 import { readFile, readdir } from "node:fs/promises";
 
 interface Member {
@@ -8,7 +8,7 @@ interface Member {
 }
 
 // Linux /proc start times identify processes independently of recycled PIDs.
-async function members(group: number): Promise<Member[]> {
+async function procMembers(group: number): Promise<Member[]> {
   const entries = await readdir("/proc");
   const found: Member[] = [];
   await Promise.all(
@@ -31,6 +31,52 @@ async function members(group: number): Promise<Member[]> {
   );
   return found;
 }
+/**
+ * Parse `ps -A -o pid= -o pgid= -o stat= -o lstart=` output. `lstart` is last
+ * because it contains spaces; it plays the role of /proc's start time, so a
+ * recycled PID with the same number is not mistaken for an owned member.
+ */
+export function parsePsMembers(output: string, group: number): Member[] {
+  const found: Member[] = [];
+  for (const line of output.split("\n")) {
+    const match = /^\s*(\d+)\s+(\d+)\s+(\S+)\s+(.+?)\s*$/.exec(line);
+    if (!match || Number(match[2]) !== group) continue;
+    const [, pid = "", , stat = "", start = ""] = match;
+    // BSD/macOS stat flags start with the state letter (R, S, T, Z, ...).
+    found.push({ pid: Number(pid), start, state: stat.charAt(0) });
+  }
+  return found;
+}
+
+// macOS/BSD have no /proc; `ps` exposes the same pid/pgid/start identity.
+export function psMembers(group: number): Promise<Member[]> {
+  return new Promise((resolve, reject) => {
+    execFile(
+      "ps",
+      ["-A", "-o", "pid=", "-o", "pgid=", "-o", "stat=", "-o", "lstart="],
+      {
+        env: { ...process.env, LC_ALL: "C" },
+        timeout: 2000,
+        maxBuffer: 8 << 20,
+      },
+      (error, stdout) => {
+        if (error) reject(error);
+        else resolve(parsePsMembers(stdout, group));
+      },
+    );
+  });
+}
+
+/** Process-group cleanup needs POSIX groups and a way to verify membership. */
+export function groupCleanupSupported(
+  platform: NodeJS.Platform = process.platform,
+): boolean {
+  return platform !== "win32";
+}
+
+const members = (group: number) =>
+  process.platform === "linux" ? procMembers(group) : psMembers(group);
+
 const delay = (ms: number) =>
   new Promise<void>((resolve) => setTimeout(resolve, ms));
 
@@ -38,8 +84,8 @@ const delay = (ms: number) =>
 export async function cleanupProcess(child: ChildProcess): Promise<void> {
   const group = child.pid;
   if (!group) return;
-  if (process.platform !== "linux") {
-    // Unverified platforms: direct-child cleanup only, not a tree guarantee.
+  if (!groupCleanupSupported()) {
+    // Windows has no POSIX process groups: direct-child cleanup only.
     child.kill("SIGTERM");
     await delay(2000);
     if (child.exitCode === null && child.signalCode === null)

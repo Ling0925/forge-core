@@ -560,8 +560,8 @@ describe("original runtime", () => {
       .filter((event) => event.usage.basis === "projected");
     expect(usageEvents.length).toBeGreaterThanOrEqual(received.length);
     for (const usageEvent of usageEvents) {
-      expect(usageEvent.usage.windowTokens).toBe(300000);
-      expect(usageEvent.usage.budgetTokens).toBe(240000);
+      expect(usageEvent.usage.windowTokens).toBe(128000);
+      expect(usageEvent.usage.budgetTokens).toBe(102400);
       expect(usageEvent.usage.estimated).toBe(true);
       expect(
         Object.values(usageEvent.usage.parts).reduce(
@@ -1171,13 +1171,33 @@ it("uses a known token window beyond 100k chars and reports its actual trigger",
   );
 });
 
-it.each([
+it.each<{
+  reported: number | null;
+  override: number | undefined;
+  fallback?: number;
+  window: number;
+  budget: number;
+}>([
   { reported: 1000000, override: undefined, window: 1000000, budget: 800000 },
   { reported: 1000000, override: 64000, window: 64000, budget: 51200 },
-  { reported: null, override: undefined, window: 300000, budget: 240000 },
+  { reported: null, override: undefined, window: 128000, budget: 102400 },
+  {
+    reported: null,
+    override: undefined,
+    fallback: 300000,
+    window: 300000,
+    budget: 240000,
+  },
+  {
+    reported: 1000000,
+    override: undefined,
+    fallback: 300000,
+    window: 1000000,
+    budget: 800000,
+  },
 ])(
-  "uses the configured window and reserve, falling back to 300K only when unknown: $window",
-  async ({ reported, override, window, budget }) => {
+  "uses the configured window and reserve, falling back to the default only when unknown: $window",
+  async ({ reported, override, fallback, window, budget }) => {
     let metadataReads = 0;
     const f = fixture(
       {
@@ -1196,6 +1216,9 @@ it.each([
         ...(override === undefined
           ? {}
           : { modelContextWindows: { chosen: override } }),
+        ...(fallback === undefined
+          ? {}
+          : { defaultContextWindowTokens: fallback }),
       },
     });
     const result = await runtime.run(

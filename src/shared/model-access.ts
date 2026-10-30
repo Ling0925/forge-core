@@ -167,6 +167,18 @@ export const vertexConfigSchema = z
     location: z.string().optional(),
     credentials: z.record(z.unknown()).readonly(),
     impersonate: z.string().optional(),
+    /** Explicit model IDs for this location; replaces the built-in reference list. */
+    models: z
+      .array(z.string().trim().min(1).max(256))
+      .max(512)
+      .readonly()
+      .optional(),
+    /**
+     * Opt-in: list Google publisher models from Vertex (v1beta1). The result is
+     * a catalog hint, not a per-location availability guarantee; any failure
+     * falls back to `models` or the reference list.
+     */
+    discoverModels: z.boolean().optional(),
   })
   .strict()
   .readonly();

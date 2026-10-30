@@ -39,3 +39,16 @@ it("keeps deprecated budget settings readable and writable without requiring a m
     await rm(directory, { recursive: true, force: true });
   }
 });
+
+it("no longer defaults the deprecated maxTurns/maxToolCalls budgets", () => {
+  expect(defaultPublicSettings).not.toHaveProperty("maxTurns");
+  expect(defaultPublicSettings).not.toHaveProperty("maxToolCalls");
+  // Older saved settings and API clients that still send them stay valid.
+  expect(
+    publicSettingsSchema.parse({
+      ...defaultPublicSettings,
+      maxTurns: 20,
+      maxToolCalls: 100,
+    }),
+  ).toMatchObject({ maxTurns: 20, maxToolCalls: 100 });
+});

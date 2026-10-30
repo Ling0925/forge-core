@@ -136,10 +136,12 @@ export const settingsFields = {
   model: z.string().trim().min(1).max(256),
   theme: z.enum(["system", "light", "dark"]),
   defaultPermission: permissionSchema,
-  // Deprecated execution budgets: retained only for saved-settings/API compatibility.
-  // Neither these fields nor maxRootToolCalls/rootTimeoutMs limit new runs.
-  maxTurns: z.number().int().min(1).max(1000),
-  maxToolCalls: z.number().int().min(1).max(10000),
+  // Deprecated execution budgets: still accepted and round-tripped for saved
+  // settings and older API clients, but optional with no default, so fresh
+  // settings no longer advertise a limit. Neither these fields nor
+  // maxRootToolCalls/rootTimeoutMs limit runs.
+  maxTurns: z.number().int().min(1).max(1000).optional(),
+  maxToolCalls: z.number().int().min(1).max(10000).optional(),
   maxRootToolCalls: rootToolLimitSchema.optional(),
   rootTimeoutMs: rootTimeoutSchema.optional(),
   requestTimeoutMs: z.number().int().min(1000).max(600000),
@@ -151,6 +153,24 @@ export const settingsFields = {
     .min(4096)
     .max(10000000)
     .nullable()
+    .optional(),
+  // Subagent limits. Defaults: 4 concurrently active children per parent run,
+  // depth 1 (only the primary agent delegates).
+  maxActiveAgents: z.number().int().min(1).max(32).optional(),
+  maxAgentDepth: z.number().int().min(1).max(4).optional(),
+  // Plans per session. The persisted session contract caps plans at 10000,
+  // so this can only lower the limit.
+  maxSessionPlans: z.number().int().min(1).max(10000).optional(),
+  // One deadline for each git process behind git_status/git_diff/git_log.
+  // Unset: 30s for status/diff, 10s for probes and log.
+  gitInspectionTimeoutMs: z.number().int().min(1000).max(600000).optional(),
+  // Window assumed when neither settings, the source's model metadata
+  // (modelSelection.overrides/manual) nor the provider reports one.
+  defaultContextWindowTokens: z
+    .number()
+    .int()
+    .min(4096)
+    .max(10000000)
     .optional(),
   // Per-model overrides: gateways/aliases need not have the upstream window.
   modelContextWindows: z
@@ -232,8 +252,6 @@ export const defaultPublicSettings: PublicSettings = publicSettingsSchema.parse(
     model: "",
     theme: "system",
     defaultPermission: "workspace",
-    maxTurns: 20,
-    maxToolCalls: 100,
     requestTimeoutMs: 60000,
     contextBudgetChars: 100000,
     hasApiKey: false,

@@ -38,6 +38,7 @@ import {
   applyBuildHeaders,
   coreBuildDiagnostics,
 } from "./build-info";
+import { hostAuthority } from "./endpoint";
 import {
   HtmlPreviewStore,
   PreviewFileError,
@@ -148,7 +149,7 @@ export async function createWebHost(
         directory: resolveStateDirectory(options.stateDir),
       })));
   const ownsAuthorization = !trustedLan && options.authorization === undefined;
-  const authority = `${options.host}:${options.port}`;
+  const authority = hostAuthority(options.host, options.port);
   const origin = `http://${authority}`;
   let sequence = 0;
   let bytes = 0;

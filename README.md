@@ -13,7 +13,7 @@ Core 可以作为独立 HTTP/WebSocket 服务运行，也可以作为 TypeScript
 - **本地工作区**：文件搜索与编辑、命令执行、检查点和改动记录；浏览器、LSP 与 MCP 按配置启用。
 - **官方插件**：统一清单、配置、启停和诊断；首个 `browser` 插件接入 agent-browser，支持同会话截图预览与人工接管，默认禁用。见[插件与浏览器](docs/PLUGINS.md)。
 - **持久化上下文**：会话历史、分页读取、上下文压缩、工作记忆与长期记忆。
-- **客户端连接**：HTTP RPC、WebSocket 事件与恢复游标，以及 Linux 本地 Unix socket。
+- **客户端连接**：HTTP RPC、WebSocket 事件与恢复游标，以及 POSIX（Linux、macOS 等）本地 Unix socket。
 
 本仓是 TypeScript/Node 实现，不包含 CLI、React 界面、Electron 或 Android 应用。
 
@@ -49,7 +49,7 @@ node dist/web/serve.js \
 
 - `--workspace PATH`：必填，默认把客户端限制在该工作区。
 - `--multi-workspace`：允许个人工作台切换工作区。
-- `--host IPv4` / `--port PORT`：默认 `127.0.0.1:5173`；只接受具体 IPv4 和 `1024–65535` 端口，不接受 `0.0.0.0`。
+- `--host IP` / `--port PORT`：默认 `127.0.0.1:5173`；接受具体的 IPv4 或 IPv6 地址（如 `::1`、`[::1]`、`fd00::20`）和 `1024–65535` 端口，不接受 `0.0.0.0` / `::` 通配地址、主机名或带 zone 的链路本地地址。IPv6 页面地址形如 `http://[::1]:5175`。
 - `--socket PATH`：给同一个运行时增加本地 attach 入口；使用当前用户拥有的私有目录和绝对 socket 路径。
 - `--renderer PATH`：可选，同时提供已构建的 Web UI；省略时只提供 API。
 
@@ -87,13 +87,15 @@ FORGE_HOME=/absolute/path/to/private-state \
 模型凭据、会话与配置由 Core 管理。测试和实验使用临时状态目录，不复用日常会话。
 
 - `readonly`、`workspace`、`unrestricted` 与 plan/build 模式共同约束工具能力；审批策略不提升权限。命令和外部工具不是操作系统沙箱。
-- 当前命令行 HTTP 入口采用可信局域网直连：**能够访问监听地址的人就能使用工作台能力，不需要配对**。默认回环监听；HTTP 没有加密，不应无保护地暴露到公网。
+- 当前命令行 HTTP 入口采用可信局域网直连：**能够访问监听地址的人就能使用工作台能力，不需要配对**（`trustedLan` 默认开启；只有嵌入方以编程方式传入 `trustedLan: false` 时，才启用设备配对：通过 `/api/pair` 兑换邀请后每个请求都要带设备凭据，命令行没有开关）。默认回环监听；HTTP 没有加密，不应无保护地暴露到公网。
 - 服务校验 Host / Origin；客户端应使用实际监听地址。反向代理需要正确处理这些头与 WebSocket，而不是绕过校验。
 - 发布附件单文件上限为 **50 MiB（52,428,800 字节）**，每会话最多 **128 个、合计 64 MiB**。文本编辑和图片输入使用各自的限制。
 
 ## 模型与 MCP
 
 模型协议由来源或逐模型配置明确选择，不会在协议失败后自动切换到 Chat Completions。适配器支持各协议的流式结果和受支持的完整响应形式；截断响应、冲突工具调用和缺少完成信号仍作为错误处理。用量缺失时保留未知状态，不记成零消耗。兼容性回归位于 [tests/provider](tests/provider)。错误阶段、重试决策和运行构建识别见 [错误诊断](docs/ERROR_DIAGNOSTICS.md)；子代理可独立选择其他供应商，规则见 [跨供应商派发](docs/AGENT_COLLABORATION.md#不带角色的跨供应商模型选择)。
+
+上下文窗口的解析顺序：设置里的 `modelContextWindows[模型]` → 来源的模型元数据（`modelSelection.overrides[模型].contextWindowTokens` 或手动目录）/ 上游报告的值 → 内置的少量已知模型表 → 设置 `defaultContextWindowTokens` → 默认 128K（保守值，未知模型宁可早压缩也不溢出）。
 
 MCP 支持 **stdio、Streamable HTTP、Legacy SSE**。注册不会连接；启用后才允许发现和调用，连接测试会握手并发送 ping。模型通过 `mcp_list_servers` → `mcp_list_tools` → `mcp_call_tool` 发现并使用工具，大目录按 `nextOffset` 分页。
 
@@ -102,6 +104,17 @@ MCP 支持 **stdio、Streamable HTTP、Legacy SSE**。注册不会连接；启�
 只读模式可查询服务器目录，但不能连接或调用；workspace 模式每次发现与调用均需审批。服务器 annotations 不授予权限。调用支持文本、结构化结果、图片、音频与资源块；结果递归脱敏且有大小限制，不自动重发工具调用。
 
 无需外部服务的示例：[examples/mcp/echo-server.mjs](examples/mcp/echo-server.mjs)。
+
+### 可调限制（设置项）
+
+下列设置均为可选，不填即用括号里的默认值：
+
+- `defaultContextWindowTokens`：未知模型的上下文窗口（128000）。
+- `gitInspectionTimeoutMs`：`git_status` / `git_diff` / `git_log` 每个 git 进程的超时（未设置时 status/diff 30 秒，探测与 log 10 秒）。
+- `maxActiveAgents`：每个父运行同时活跃的子 Agent 数（4，范围 1–32）。
+- `maxAgentDepth`：委派深度（1 = 只有主 Agent 能派子任务，最大 4）。
+- `maxSessionPlans`：每个会话的计划数（10000；持久化格式上限也是 10000，只能调低）。
+- Vertex 来源：`vertex.models` 用自己的模型列表替换内置参考列表；`vertex.discoverModels: true` 会调用 Vertex `publishers.models.list` 获取 Gemini 模型，失败时回退到 `models` 或内置列表。
 
 ## 作为包使用
 

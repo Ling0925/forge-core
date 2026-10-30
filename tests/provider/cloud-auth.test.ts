@@ -494,6 +494,110 @@ describe("createVertexAuth", () => {
     expect(fixture.calls).toHaveLength(0);
   });
 
+  it("uses configured Vertex models instead of the reference list", async () => {
+    const fixture = fetchFixture(async () => {
+      throw new Error("network must not be used");
+    });
+    const auth = createVertexAuth(
+      {
+        project: "test-project",
+        location: "europe-west4",
+        credentials: authorizedUserCredentials,
+        models: ["gemini-9-custom", "gemini-2.5-pro", "gemini-9-custom"],
+      },
+      { fetch: fixture.fetch },
+    );
+    const catalog = await auth.listModelCatalog();
+    expect(catalog.map((entry) => entry.id)).toEqual([
+      "gemini-9-custom",
+      "gemini-2.5-pro",
+    ]);
+    for (const entry of catalog)
+      expect(entry.provenance).toEqual({ id: "user" });
+    expect(fixture.calls).toHaveLength(0);
+  });
+
+  it("discovers Vertex publisher models when opted in, paging and filtering", async () => {
+    const fixture = fetchFixture(async (url) => {
+      if (url.startsWith("https://oauth2.googleapis.com"))
+        return tokenResponse("discover-token");
+      const page = new URL(url).searchParams.get("pageToken");
+      return page === "p2"
+        ? jsonResponse({
+            publisherModels: [{ name: "publishers/google/models/gemini-x-2" }],
+          })
+        : jsonResponse({
+            publisherModels: [
+              { name: "publishers/google/models/gemini-x-1" },
+              { name: "publishers/google/models/imagen-4" },
+              { name: 7 },
+            ],
+            nextPageToken: "p2",
+          });
+    });
+    const auth = createVertexAuth(
+      {
+        project: "test-project",
+        credentials: authorizedUserCredentials,
+        discoverModels: true,
+      },
+      { fetch: fixture.fetch },
+    );
+    const catalog = await auth.listModelCatalog();
+    expect(catalog.map((entry) => entry.id)).toEqual([
+      "gemini-x-1",
+      "gemini-x-2",
+    ]);
+    expect(catalog[0]?.provenance).toEqual({ id: "upstream" });
+    const listed = fixture.calls.filter((call) =>
+      call.url.startsWith(
+        "https://aiplatform.googleapis.com/v1beta1/publishers/google/models",
+      ),
+    );
+    expect(listed).toHaveLength(2);
+    expect(new Headers(listed[0]?.init?.headers).get("authorization")).toBe(
+      "Bearer discover-token",
+    );
+  });
+
+  it("falls back to configured or reference models when discovery fails", async () => {
+    const fixture = fetchFixture(async (url) => {
+      if (url.startsWith("https://oauth2.googleapis.com"))
+        return tokenResponse("discover-token");
+      return jsonResponse({ error: "denied" }, 403);
+    });
+    const reference = createVertexAuth(
+      {
+        project: "test-project",
+        location: "europe-west4",
+        credentials: authorizedUserCredentials,
+        discoverModels: true,
+      },
+      { fetch: fixture.fetch },
+    );
+    expect((await reference.listModelCatalog()).map((e) => e.id)).toEqual([
+      "gemini-2.5-pro",
+      "gemini-2.5-flash",
+      "gemini-2.5-flash-lite",
+    ]);
+    const configured = createVertexAuth(
+      {
+        project: "test-project",
+        credentials: authorizedUserCredentials,
+        discoverModels: true,
+        models: ["gemini-own"],
+      },
+      { fetch: fixture.fetch },
+    );
+    expect(await configured.listModelCatalog()).toEqual([
+      {
+        id: "gemini-own",
+        contextWindowTokens: null,
+        provenance: { id: "user" },
+      },
+    ]);
+  });
+
   it("refuses unsafe endpoint configuration and unsupported credentials before requesting a token", async () => {
     const fixture = fetchFixture(async () => tokenResponse("never"));
     const badProject = createVertexAuth(

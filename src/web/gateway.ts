@@ -9,10 +9,15 @@ import {
 } from "node:http";
 import type { Socket } from "node:net";
 import type { Duplex } from "node:stream";
+import {
+  ENDPOINT_REQUIREMENT,
+  canonicalIpHost,
+  hostAuthority,
+  isLoopbackIp,
+  validListenEndpoint,
+} from "./endpoint";
 import { createStaticRenderer } from "./static";
 
-const IPV4 =
-  /^(?:(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)\.){3}(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)$/;
 const HOP_BY_HOP = new Set([
   "connection",
   "keep-alive",
@@ -75,20 +80,6 @@ interface RawHeader {
   readonly value: string | undefined;
 }
 
-function validEndpoint(host: string, port: number): boolean {
-  return (
-    IPV4.test(host) &&
-    host !== "0.0.0.0" &&
-    Number.isInteger(port) &&
-    port >= 1024 &&
-    port <= 65535
-  );
-}
-
-function loopbackIpv4(host: string): boolean {
-  return IPV4.test(host) && host.startsWith("127.");
-}
-
 /**
  * Only a bare loopback HTTP origin is accepted. Credentials, paths, queries and
  * fragments are refused before any request is forwarded, so the gateway cannot
@@ -97,7 +88,7 @@ function loopbackIpv4(host: string): boolean {
 function parseCoreUrl(raw: string, gatewayOrigin: string): CoreTarget {
   const invalid = (): never => {
     throw new Error(
-      "coreUrl must be an http loopback IPv4 origin with an explicit port, and must not contain credentials, a path, query or fragment.",
+      "coreUrl must be an http loopback IPv4 or [::1] origin with an explicit port, and must not contain credentials, a path, query or fragment.",
     );
   };
   if (
@@ -123,7 +114,7 @@ function parseCoreUrl(raw: string, gatewayOrigin: string): CoreTarget {
     url.pathname !== "/" ||
     url.search !== "" ||
     url.hash !== "" ||
-    !loopbackIpv4(url.hostname)
+    !isLoopbackIp(url.hostname)
   )
     invalid();
   // URL parsing can normalize short/octal IPv4 forms and dot segments. Compare
@@ -136,7 +127,8 @@ function parseCoreUrl(raw: string, gatewayOrigin: string): CoreTarget {
     throw new Error("The Web gateway cannot proxy to its own origin.");
   return {
     authority: `${url.hostname}:${port}`,
-    host: url.hostname,
+    // http.request needs the bare address; url.hostname brackets IPv6.
+    host: canonicalIpHost(url.hostname) ?? url.hostname,
     origin,
     port,
   };
@@ -322,12 +314,10 @@ function writeUpgradeRejection(
 export async function createWebGateway(
   options: WebGatewayOptions,
 ): Promise<WebGateway> {
-  if (!validEndpoint(options.host, options.port))
-    throw new Error(
-      "Use one concrete IPv4 address (not 0.0.0.0) and a port between 1024 and 65535.",
-    );
-  const origin = `http://${options.host}:${options.port}`;
-  const authority = `${options.host}:${options.port}`;
+  if (!validListenEndpoint(options.host, options.port))
+    throw new Error(ENDPOINT_REQUIREMENT);
+  const authority = hostAuthority(options.host, options.port);
+  const origin = `http://${authority}`;
   const core = parseCoreUrl(options.coreUrl, origin);
   const renderer = await createStaticRenderer({
     rendererRoot: options.rendererRoot,

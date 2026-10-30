@@ -23,7 +23,14 @@ const CAP = 64 * 1024;
 const FILES_CAP = 1000;
 // Diagnostics are read only to classify a failure; this bound keeps them from growing.
 const DIAGNOSTIC_CAP = 8 * 1024;
-const TIMEOUT_MS = 5000;
+/** Probes (rev-parse) and `log`. */
+export const DEFAULT_GIT_TIMEOUT_MS = 10000;
+/** `status` and `diff` walk the work tree; large repositories need longer. */
+export const DEFAULT_GIT_STATUS_TIMEOUT_MS = 30000;
+export interface GitInspectOptions {
+  /** One deadline for every git process of this inspection; overrides both defaults. */
+  readonly timeoutMs?: number;
+}
 function cancelled(): ForgeError {
   return new ForgeError("cancelled", "Git inspection cancelled.");
 }
@@ -45,7 +52,7 @@ const env = {
 export type GitInspectionOutcome =
   | Readonly<{ kind: "ok"; stdout: Buffer }>
   | Readonly<{ kind: "cancelled" }>
-  | Readonly<{ kind: "timeout" }>
+  | Readonly<{ kind: "timeout"; timeoutMs?: number }>
   | Readonly<{ kind: "output_limit" }>
   | Readonly<{ kind: "unavailable" }>
   | Readonly<{ kind: "exit"; code: number | null; diagnostic: string }>;
@@ -54,6 +61,7 @@ async function run(
   root: string,
   args: string[],
   signal?: AbortSignal,
+  timeoutMs: number = DEFAULT_GIT_TIMEOUT_MS,
 ): Promise<RunOutcome> {
   if (signal?.aborted) return { kind: "cancelled" };
   return new Promise((resolve) => {
@@ -104,7 +112,7 @@ async function run(
         }
       } else child.kill("SIGKILL");
     };
-    const timer = setTimeout(() => kill("timeout"), TIMEOUT_MS);
+    const timer = setTimeout(() => kill("timeout"), timeoutMs);
     const abort = () => kill("cancelled");
     signal?.addEventListener("abort", abort, { once: true });
     if (signal?.aborted) abort();
@@ -133,7 +141,7 @@ async function run(
       signal?.removeEventListener("abort", abort);
       if (reason === "cancelled" || signal?.aborted)
         resolve({ kind: "cancelled" });
-      else if (reason === "timeout") resolve({ kind: "timeout" });
+      else if (reason === "timeout") resolve({ kind: "timeout", timeoutMs });
       else if (reason === "limit") resolve({ kind: "output_limit" });
       else if (spawnFailed) resolve({ kind: "unavailable" });
       else if (code !== 0)
@@ -188,7 +196,7 @@ export function gitFailure(outcome: GitInspectionOutcome): ForgeError {
     case "timeout":
       return new ForgeError(
         "tool",
-        `Git inspection timed out after ${TIMEOUT_MS / 1000} seconds. Use filesystem tools or an explicitly authorized targeted Git command; do not repeat the same inspection call.`,
+        `Git inspection timed out after ${(outcome.timeoutMs ?? DEFAULT_GIT_TIMEOUT_MS) / 1000} seconds. Use filesystem tools or an explicitly authorized targeted Git command; do not repeat the same inspection call.`,
       );
     case "output_limit":
       return new ForgeError(
@@ -288,12 +296,26 @@ export async function gitInspect(
   signal?: AbortSignal,
   redactValues: readonly string[] = [],
   protectedRoots: readonly string[] = [],
+  options: GitInspectOptions = {},
 ): Promise<GitInspection> {
   if (!["status", "diff", "log"].includes(action))
     throw new ForgeError("tool", "Invalid git inspection action.");
+  const configured =
+    typeof options.timeoutMs === "number" &&
+    Number.isFinite(options.timeoutMs) &&
+    options.timeoutMs > 0
+      ? options.timeoutMs
+      : undefined;
+  const probeTimeout = configured ?? DEFAULT_GIT_TIMEOUT_MS;
+  const treeTimeout = configured ?? DEFAULT_GIT_STATUS_TIMEOUT_MS;
   const guard = await createWorkspacePathGuard(workspace, protectedRoots);
   const root = await guard.resolveRead(".");
-  const probe = await run(root, ["rev-parse", "--show-toplevel"], signal);
+  const probe = await run(
+    root,
+    ["rev-parse", "--show-toplevel"],
+    signal,
+    probeTimeout,
+  );
   if (probe.kind !== "ok") {
     // A workspace outside a repository is a normal "nothing to inspect", not a failure
     // to retry. Genuine failures keep their own category instead of this generic text.
@@ -312,6 +334,7 @@ export async function gitInspect(
       root,
       ["rev-parse", "--verify", "--quiet", "HEAD"],
       signal,
+      probeTimeout,
     );
     // Exit code 1 from --verify --quiet means "no such revision" without diagnostics:
     // a repository whose branch has no commits yet has an empty log, not a failure.
@@ -328,6 +351,7 @@ export async function gitInspect(
       root,
       ["log", "-10", "--format=%h %s", "--no-show-signature"],
       signal,
+      probeTimeout,
     );
     if (output.kind !== "ok") throw gitFailure(output);
     const text = output.stdout.toString("utf8");
@@ -355,6 +379,7 @@ export async function gitInspect(
         "--ignore-submodules=all",
       ],
       signal,
+      treeTimeout,
     );
     if (status.kind !== "ok") throw gitFailure(status);
     const data = status.stdout.toString("utf8").split("\0");
@@ -396,6 +421,7 @@ export async function gitInspect(
       "--",
     ],
     signal,
+    treeTimeout,
   );
   if (diffNames.kind !== "ok") throw gitFailure(diffNames);
   const names = diffNames.stdout.toString("utf8").split("\0").filter(Boolean);
@@ -420,6 +446,7 @@ export async function gitInspect(
         name,
       ],
       signal,
+      treeTimeout,
     );
     if (patchResult.kind !== "ok") throw gitFailure(patchResult);
     const patch = patchResult.stdout;

@@ -1,6 +1,6 @@
 import { type ChildProcess, spawn } from "node:child_process";
 import { z } from "zod";
-import { cleanupProcess } from "../mcp/cleanup";
+import { cleanupProcess, groupCleanupSupported } from "../mcp/cleanup";
 import { ForgeError } from "../shared/errors";
 import {
   type AfterToolHookEvent,
@@ -158,10 +158,10 @@ function cleanupOnce(
   if (existing) return existing;
   const pending = (async () => {
     try {
-      // Non-Linux cleanup cannot address a tree and only signals the direct
+      // Without process groups (Windows) cleanup only signals the direct
       // child; once that child has exited there is nothing left to join.
       if (
-        process.platform !== "linux" &&
+        !groupCleanupSupported() &&
         (child.exitCode !== null || child.signalCode !== null)
       ) {
         cleaned.add(child);

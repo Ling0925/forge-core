@@ -4,8 +4,16 @@ import { join } from "node:path";
 import { afterEach, expect, it } from "vitest";
 import {
   type AgentEnvironment,
+  DEFAULT_MAX_ACTIVE_AGENTS,
+  DEFAULT_MAX_AGENT_DEPTH,
+  agentDepth,
   executeAgentOperation,
 } from "../../src/core/agent-operations";
+import { nativeDefinitionsFor } from "../../src/core/agents";
+import {
+  DEFAULT_MAX_SESSION_PLANS,
+  createSessionPlan,
+} from "../../src/core/plans";
 import type { RunControl } from "../../src/shared/contracts";
 import {
   type SessionSnapshot,
@@ -142,6 +150,88 @@ it("enforces four active slots but releases completed slots without deleting his
   ).toHaveLength(4);
   expect(f.env.children.get(fifth)?.active).toBe(true);
   expect((await f.value("list_agents", { currentRun: true })).total).toBe(5);
+});
+
+it("honors a configured maxActiveAgents", async () => {
+  expect(DEFAULT_MAX_ACTIVE_AGENTS).toBe(4);
+  const f = await fixture();
+  f.env.deps = {
+    ...f.env.deps,
+    settings: { ...defaultPublicSettings, maxActiveAgents: 2 },
+  };
+  const first = await f.spawn();
+  await f.spawn();
+  await expect(f.spawn()).rejects.toMatchObject({
+    code: "busy",
+    message: expect.stringContaining("2 child agents are active"),
+  });
+  await f.settle(first);
+  await f.spawn();
+});
+
+it("lets a child delegate only below the configured depth", async () => {
+  expect(DEFAULT_MAX_AGENT_DEPTH).toBe(1);
+  const f = await fixture();
+  const child = { ...f.root, parentSessionId: f.root.id };
+  f.env.snapshot = child;
+  await expect(f.spawn()).rejects.toMatchObject({ code: "invalid_input" });
+  f.env.canDelegate = true;
+  expect(await f.spawn()).toEqual(expect.any(String));
+  f.env.canDelegate = false;
+  f.env.snapshot = f.root;
+  await expect(f.spawn()).rejects.toMatchObject({ code: "invalid_input" });
+});
+
+it("counts delegation depth through parents without reading at the default limit", async () => {
+  const sessions = new Map<string, { id: string; parentSessionId?: string }>([
+    ["root", { id: "root" }],
+    ["a", { id: "a", parentSessionId: "root" }],
+    ["b", { id: "b", parentSessionId: "a" }],
+    ["loop", { id: "loop", parentSessionId: "loop" }],
+  ]);
+  const reads: string[] = [];
+  const get = async (id: string) => {
+    reads.push(id);
+    const found = sessions.get(id);
+    if (!found) throw new Error("missing");
+    return found as never;
+  };
+  const at = (id: string) => sessions.get(id) as never;
+  expect(await agentDepth(at("root"), get, 1)).toBe(0);
+  expect(await agentDepth(at("b"), get, 1)).toBe(1);
+  expect(reads).toEqual([]);
+  expect(await agentDepth(at("b"), get, 4)).toBe(2);
+  expect(await agentDepth(at("a"), get, 4)).toBe(1);
+  expect(await agentDepth(at("loop"), get, 4)).toBe(4);
+  expect(
+    await agentDepth({ id: "x", parentSessionId: "gone" } as never, get, 4),
+  ).toBe(4);
+});
+
+it("exposes child-management tools to a child only when it may delegate", () => {
+  const names = (defs: readonly { function: { name: string } }[]) =>
+    defs.map((item) => item.function.name);
+  expect(names(nativeDefinitionsFor(true, true))).not.toContain("spawn_agent");
+  expect(names(nativeDefinitionsFor(true, true))).toContain("advisor");
+  const nested = names(nativeDefinitionsFor(true, true, true));
+  expect(nested).toContain("spawn_agent");
+  expect(nested).toContain("answer_advisor");
+  expect(nested).toContain("advisor");
+  expect(names(nativeDefinitionsFor(false, false))).toContain("spawn_agent");
+});
+
+it("honors a configured session plan limit within the persisted ceiling", () => {
+  expect(DEFAULT_MAX_SESSION_PLANS).toBe(10000);
+  const plan = { explanation: "e", steps: [{ step: "s", status: "pending" }] };
+  let state: { plans?: readonly never[] } = {};
+  for (let i = 0; i < 2; i++)
+    state = {
+      plans: createSessionPlan(state as never, { name: `p${i}`, ...plan }, 2)
+        .plans as never,
+    };
+  expect(() =>
+    createSessionPlan(state as never, { name: "p3", ...plan }, 2),
+  ).toThrow(expect.objectContaining({ code: "budget" }));
 });
 
 it("allows more than 32 sequential children and pages undelivered results without dropping any", async () => {

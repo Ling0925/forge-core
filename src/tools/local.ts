@@ -297,12 +297,15 @@ export interface LocalToolOptions {
   readonly protectedRoots?: readonly string[];
   readonly redactValues?: readonly string[];
   readonly checkpointStore?: CheckpointStore;
+  /** Overrides the git inspection deadlines (see DEFAULT_GIT_*_TIMEOUT_MS). */
+  readonly gitTimeoutMs?: number;
 }
 const optionsSchema = z
   .object({
     protectedRoots: z.array(z.string()).readonly().optional(),
     redactValues: z.array(z.string()).readonly().optional(),
     checkpointStore: z.custom<CheckpointStore>().optional(),
+    gitTimeoutMs: z.number().int().positive().optional(),
   })
   .strict()
   .readonly();
@@ -1137,6 +1140,9 @@ export async function createLocalToolRegistry(
             signal,
             known,
             options.protectedRoots,
+            options.gitTimeoutMs === undefined
+              ? {}
+              : { timeoutMs: options.gitTimeoutMs },
           );
           return result({ source: "git", ...inspection });
         }

@@ -92,7 +92,10 @@ export interface VertexAuth {
    * publishers/google; the Gemini adapter appends /models/<exact-id>.
    */
   resolve(signal?: AbortSignal): Promise<VertexAccess>;
-  /** Reference models for the configured location; never a network request. */
+  /**
+   * Configured `models`, else (when `discoverModels`) Vertex publisher models,
+   * else reference models for the location. Discovery failures fall back.
+   */
   listModelCatalog(signal?: AbortSignal): Promise<ModelCatalog>;
   /** Forget the token cache and abort token work this handle still owns. */
   dispose(): void;
@@ -280,13 +283,44 @@ function vertexModels(location: string): readonly string[] {
 }
 
 function referenceCatalog(location: string): ModelCatalog {
-  return vertexModels(location).map(
+  return catalogOf(vertexModels(location), "reference");
+}
+
+function catalogOf(
+  ids: readonly string[],
+  provenance: "reference" | "user" | "upstream",
+): ModelCatalog {
+  return [...new Set(ids)].map(
     (id): ModelCatalogEntry => ({
       id,
       contextWindowTokens: null,
-      provenance: { id: "reference" },
+      provenance: { id: provenance },
     }),
   );
+}
+
+const DISCOVERY_PAGE_LIMIT = 10;
+
+/** Gemini model IDs from a publishers.models.list page (`publishers/google/models/<id>`). */
+export function publisherModelIds(record: Readonly<Record<string, unknown>>): {
+  ids: string[];
+  next: string | undefined;
+} {
+  const models = Array.isArray(record.publisherModels)
+    ? record.publisherModels
+    : [];
+  const ids: string[] = [];
+  for (const model of models) {
+    const name = recordOf(model)?.name;
+    if (typeof name !== "string") continue;
+    const id = name.slice(name.lastIndexOf("/") + 1);
+    if (/^gemini-[a-z0-9.-]+$/.test(id)) ids.push(id);
+  }
+  const token = record.nextPageToken;
+  return {
+    ids,
+    next: typeof token === "string" && token !== "" ? token : undefined,
+  };
 }
 
 function expiresInSeconds(value: unknown): number {
@@ -682,6 +716,45 @@ export function createVertexAuth(
     return waitFor(inflight ?? startMint(), signal);
   };
 
+  const configuredModels = (vertex.models ?? []).map((id) => id.trim());
+  const discoverPublisherModels = async (
+    signal: AbortSignal | undefined,
+  ): Promise<string[]> => {
+    const ids: string[] = [];
+    let pageToken: string | undefined;
+    for (let page = 0; page < DISCOVERY_PAGE_LIMIT; page++) {
+      const token = await accessToken(signal);
+      throwIfAborted(signal);
+      const url = new URL(
+        `${vertexRoot(location)}/v1beta1/publishers/google/models`,
+      );
+      url.searchParams.set("pageSize", "100");
+      if (pageToken) url.searchParams.set("pageToken", pageToken);
+      const result = await request(
+        url.href,
+        {
+          method: "GET",
+          headers: {
+            authorization: `Bearer ${token.value}`,
+            "x-goog-user-project": project,
+          },
+        },
+        "Vertex model discovery",
+        async (response) => {
+          if (!response.ok)
+            throw failed("Vertex model discovery was rejected.");
+          return publisherModelIds(
+            await readRecord(response, "Vertex model discovery"),
+          );
+        },
+      );
+      ids.push(...result.ids);
+      pageToken = result.next;
+      if (!pageToken) break;
+    }
+    return ids;
+  };
+
   return {
     get baseUrl() {
       return target();
@@ -701,7 +774,19 @@ export function createVertexAuth(
     async listModelCatalog(signal) {
       throwIfAborted(signal);
       target();
-      return referenceCatalog(location);
+      const fallback = configuredModels.length
+        ? catalogOf(configuredModels, "user")
+        : referenceCatalog(location);
+      if (!vertex.discoverModels) return fallback;
+      try {
+        const discovered = await discoverPublisherModels(signal);
+        return discovered.length
+          ? catalogOf([...configuredModels, ...discovered], "upstream")
+          : fallback;
+      } catch {
+        throwIfAborted(signal);
+        return fallback;
+      }
     },
     dispose() {
       generation += 1;
