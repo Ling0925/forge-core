@@ -7,12 +7,6 @@ import { createPluginHost } from "../plugins/host";
 import { createModelProvider } from "../provider/openai";
 import { createRouteState, createRoutedProvider } from "../provider/routing";
 import type { AsyncTaskService } from "../shared/async-tasks";
-import {
-  budgetUsage,
-  measureContext,
-  resolveContextBudget,
-  resolveContextWindow,
-} from "../shared/context-usage";
 import type {
   HarnessOptions,
   HarnessService,
@@ -49,6 +43,7 @@ import { createAgentWorktreeService } from "./agent-worktrees";
 import { openAsyncTaskService } from "./async-tasks";
 import { assertBoundary, projectSummary } from "./context";
 import { createDelegationModels } from "./delegation-models";
+import { compactSessionSnapshot } from "./harness-compaction";
 import {
   assertProviderEndpoint,
   createProviderSelection,
@@ -63,13 +58,12 @@ import { createModelAccessService } from "./model-access";
 import { createModelPricingService } from "./model-pricing";
 import { createRootRunBudget } from "./run-budget";
 import { openRunMemory } from "./run-memory";
-import { createAgentRuntime, withCancellation } from "./runtime";
+import { createAgentRuntime } from "./runtime";
 import { autoTitle } from "./session-title";
 import { createSessionWriter } from "./session-writer";
 import { resolveStateDirectory } from "./state-directory";
 import { createTaskService } from "./task-service";
 import { createUsageStatsService } from "./usage-stats";
-import { summarizeWorkingState } from "./working-memory";
 import {
   listWorkspaceDirectory,
   readWorkspaceFilePreview,
@@ -402,111 +396,12 @@ export const createHarness = async (
           controller.signal,
           ...(callerSignal ? [callerSignal] : []),
         ]);
-        const settings = await settingsStore.getPublic();
-        const providerSourceId = s.providerSourceId ?? settings.activeSourceId;
-        const group = s.routeGroupId
-          ? settings.routeGroups?.find((item) => item.id === s.routeGroupId)
-          : undefined;
-        if (s.routeGroupId && !group)
-          throw new ForgeError(
-            "not_found",
-            "会话的路由组已不可用，请重新选择。",
-          );
-        const prepared = group
-          ? await modelAccess.prepareRoute(group, signal)
-          : undefined;
-        const resolved =
-          prepared?.base ??
-          (await modelAccess.resolveProvider(
-            providerSourceId,
-            undefined,
-            signal,
-            s.model,
-          ));
-        const { provider } = resolved;
-        const bound =
-          providerSourceId && providerSourceId !== s.providerSourceId
-            ? { ...s, providerSourceId }
-            : s;
-        let reported: number | null = prepared?.contextWindow ?? null;
-        const metadataSignal = AbortSignal.any([
+        return compactSessionSnapshot(
+          { settingsStore, modelAccess },
+          id,
+          s,
           signal,
-          AbortSignal.timeout(2000),
-        ]);
-        try {
-          reported ??= await withCancellation(
-            provider.getModelContextWindow?.(
-              resolved.actualModel ?? s.model,
-              metadataSignal,
-            ) ?? Promise.resolve(null),
-            metadataSignal,
-          );
-        } catch {
-          /* Optional metadata must not prevent compaction. */
-        }
-        const window = resolveContextWindow(s.model, settings, reported);
-        const next = await summarizeWorkingState(
-          bound,
-          provider,
-          signal,
-          s.messages.length,
-          Math.floor(window * 0.8),
         );
-        const last = s.events.at(-1);
-        // Also repair the stale meter on sessions compacted by older versions.
-        if (
-          next === s &&
-          last?.type === "context_usage" &&
-          last.usage.basis === "projected"
-        )
-          return s;
-        const before = projectSummary(s);
-        const after = projectSummary(next);
-        const usage = measureContext(after, window);
-        // Retain the last known tool-definition overhead without opening tool/MCP
-        // services just to render an estimate. Tool results themselves are compacted.
-        const previous = s.events.findLast(
-          (event) =>
-            event.type === "context_usage" && event.usage.basis === "projected",
-        );
-        const toolOverhead =
-          previous?.type === "context_usage"
-            ? Math.max(
-                0,
-                previous.usage.parts.tools -
-                  measureContext(before, window).parts.tools,
-              )
-            : 0;
-        const timestamp = new Date().toISOString();
-        return {
-          ...next,
-          updatedAt: timestamp,
-          events: [
-            ...next.events,
-            {
-              type: "context_compacted",
-              sessionId: id,
-              timestamp,
-              removedMessages: Math.max(0, before.length - after.length),
-              beforeChars: JSON.stringify(before).length,
-              afterChars: JSON.stringify(after).length,
-            },
-            {
-              type: "context_usage",
-              sessionId: id,
-              timestamp,
-              usage: {
-                ...usage,
-                ...budgetUsage(resolveContextBudget(window, settings)),
-                usedTokens: usage.usedTokens + toolOverhead,
-                parts: {
-                  ...usage.parts,
-                  tools: usage.parts.tools + toolOverhead,
-                },
-              },
-            },
-          ],
-        };
       });
       track(id, controller, work);
       return work;
