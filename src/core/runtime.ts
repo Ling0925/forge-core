@@ -9,7 +9,7 @@ import type {
   AgentRuntimeDependencies,
   RunControl,
 } from "../shared/contracts";
-import { ForgeError, toErrorInfo } from "../shared/errors";
+import { ForgeError } from "../shared/errors";
 import { executionTurns } from "../shared/execution";
 import { agentEventSchema, runInputSchema } from "../shared/schemas";
 import type { Message, SessionSnapshot } from "../shared/schemas";
@@ -35,7 +35,11 @@ import {
   resolveHostedSearch,
 } from "./runtime-provider-request";
 import { reconcileQuietStep } from "./runtime-reconciliation";
-import { closeCalls, interruptStaleRun } from "./runtime-recovery";
+import {
+  closeCalls,
+  interruptStaleRun,
+  recordRunFailure,
+} from "./runtime-recovery";
 import { type LoadedRunState, createRunState } from "./runtime-state";
 import { createRunSteering } from "./runtime-steering";
 import { prepareStepContext } from "./runtime-step-context";
@@ -546,47 +550,13 @@ export const createAgentRuntime = (
       }
     } catch (error) {
       if (!run.snapshot) throw error;
-      finishGeneration(signal.aborted ? "cancelled" : "failed");
-      if (run.incompleteText)
-        run.snapshot = {
-          ...run.snapshot,
-          events: [
-            ...run.snapshot.events,
-            agentEventSchema.parse({
-              type: "text_delta",
-              text: run.incompleteText,
-              ...(run.generation ? { generationId: run.generation.id } : {}),
-              ...(run.turn === undefined ? {} : { turn: run.turn }),
-              ...(run.activeStep === undefined ? {} : { step: run.activeStep }),
-              sessionId: input.sessionId,
-              timestamp: now(),
-            }),
-          ],
-        };
-      const safe = signal.aborted
-        ? new ForgeError("cancelled", "Run cancelled.")
-        : error instanceof ForgeError
-          ? error
-          : new ForgeError(
-              run.phase,
-              run.phase === "provider"
-                ? "Model request failed."
-                : run.phase === "tool"
-                  ? "Tool execution failed; inspect effects before retry."
-                  : "Session storage failed.",
-              true,
-            );
-      run.stopReason = safe.code;
-      run.snapshot = {
-        ...run.snapshot,
-        messages: closeCalls(
-          run.snapshot.messages,
-          safe.code === "cancelled"
-            ? "execution cancelled; effects may be uncertain; inspect before retry"
-            : "execution failed; effects may be uncertain; inspect before retry",
-        ),
-      };
-      event({ type: "error", error: toErrorInfo(safe) });
+      const safe = recordRunFailure(run as LoadedRunState, error, {
+        signal,
+        sessionId: input.sessionId,
+        now,
+        finishGeneration,
+        event,
+      });
       return await finish(safe.code === "cancelled" ? "cancelled" : "failed");
     } finally {
       closeSteering();

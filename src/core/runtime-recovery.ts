@@ -1,5 +1,7 @@
+import { ForgeError, toErrorInfo } from "../shared/errors";
 import { executionTurns } from "../shared/execution";
-import type { Message } from "../shared/schemas";
+import { agentEventSchema } from "../shared/schemas";
+import type { Message, SessionId } from "../shared/schemas";
 import type { createRunEvents } from "./runtime-events";
 import type { LoadedRunState } from "./runtime-state";
 
@@ -75,4 +77,71 @@ export const interruptStaleRun = async (
   run.snapshot = { ...run.snapshot, status: "interrupted" };
   event({ type: "state_changed", status: "interrupted" });
   await save();
+};
+
+/**
+ * Turn a run failure into its terminal record: finish the open generation,
+ * keep any partial draft text, attribute non-Forge errors to the failing
+ * phase, close dangling tool calls and emit the error event. Returns the
+ * safe error that decides the terminal status.
+ */
+export const recordRunFailure = (
+  run: LoadedRunState,
+  error: unknown,
+  {
+    signal,
+    sessionId,
+    now,
+    finishGeneration,
+    event,
+  }: {
+    signal: AbortSignal;
+    sessionId: SessionId;
+    now: () => string;
+    finishGeneration: ReturnType<typeof createRunEvents>["finishGeneration"];
+    event: ReturnType<typeof createRunEvents>["event"];
+  },
+): ForgeError => {
+  finishGeneration(signal.aborted ? "cancelled" : "failed");
+  if (run.incompleteText)
+    run.snapshot = {
+      ...run.snapshot,
+      events: [
+        ...run.snapshot.events,
+        agentEventSchema.parse({
+          type: "text_delta",
+          text: run.incompleteText,
+          ...(run.generation ? { generationId: run.generation.id } : {}),
+          ...(run.turn === undefined ? {} : { turn: run.turn }),
+          ...(run.activeStep === undefined ? {} : { step: run.activeStep }),
+          sessionId,
+          timestamp: now(),
+        }),
+      ],
+    };
+  const safe = signal.aborted
+    ? new ForgeError("cancelled", "Run cancelled.")
+    : error instanceof ForgeError
+      ? error
+      : new ForgeError(
+          run.phase,
+          run.phase === "provider"
+            ? "Model request failed."
+            : run.phase === "tool"
+              ? "Tool execution failed; inspect effects before retry."
+              : "Session storage failed.",
+          true,
+        );
+  run.stopReason = safe.code;
+  run.snapshot = {
+    ...run.snapshot,
+    messages: closeCalls(
+      run.snapshot.messages,
+      safe.code === "cancelled"
+        ? "execution cancelled; effects may be uncertain; inspect before retry"
+        : "execution failed; effects may be uncertain; inspect before retry",
+    ),
+  };
+  event({ type: "error", error: toErrorInfo(safe) });
+  return safe;
 };
