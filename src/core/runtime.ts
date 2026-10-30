@@ -27,32 +27,19 @@ import { createRootRunBudget } from "./run-budget";
 import { seedContextScale } from "./runtime-context";
 import { createRunEvents } from "./runtime-events";
 import { createRunFinish } from "./runtime-finish";
-import {
-  type RunPreflightScope,
-  runHarnessPreflight,
-} from "./runtime-harness-preflight";
+import { runHarnessPreflight } from "./runtime-harness-preflight";
 import { createRuntimeJournal } from "./runtime-journal";
 import { createEffectivePermission } from "./runtime-permission";
 import {
-  type RunGenerationScope,
   requestGeneration,
   resolveHostedSearch,
 } from "./runtime-provider-request";
-import {
-  type RunReconcileScope,
-  reconcileQuietStep,
-} from "./runtime-reconciliation";
+import { reconcileQuietStep } from "./runtime-reconciliation";
 import { closeCalls, interruptStaleRun } from "./runtime-recovery";
 import { type LoadedRunState, createRunState } from "./runtime-state";
 import { createRunSteering } from "./runtime-steering";
-import {
-  type RunCompactionScope,
-  prepareStepContext,
-} from "./runtime-step-context";
-import {
-  type RunToolScope,
-  executeResponseToolCalls,
-} from "./runtime-tool-calls";
+import { prepareStepContext } from "./runtime-step-context";
+import { executeResponseToolCalls } from "./runtime-tool-calls";
 import { createModelUsageObserver } from "./runtime-usage";
 import { claimAutoTitle } from "./session-title";
 import { createToolFailureGuard } from "./tool-failure-guard";
@@ -205,56 +192,9 @@ export const createAgentRuntime = (
       hookDiagnostics,
       effectivePermission,
     });
-    const generationScope: RunGenerationScope = {
-      run: run as LoadedRunState,
-      input,
-      deps,
-      signal,
-      rootBudget,
-      approvalQueue,
-      approve,
-      check,
-      save,
-      event,
-      ephemeral,
-      finishGeneration,
-      effectivePermission,
-      drainSteering,
-      drainAdvisor,
-    };
-    const preflightScope: RunPreflightScope = {
-      run: run as LoadedRunState,
-      input,
-      deps,
-      signal,
-      rootBudget,
-      check,
-      save,
-      event,
-      onModelUsage,
-    };
-    const compactionScope: RunCompactionScope = {
-      run: run as LoadedRunState,
-      deps,
-      signal,
-      rootBudget,
-      save,
-      event,
-      onModelUsage,
-    };
-    const reconcileScope: RunReconcileScope = {
-      run: run as LoadedRunState,
-      input,
-      deps,
-      signal,
-      supervisor,
-      check,
-      save,
-      ephemeral,
-      drainAdvisor,
-      drainSteering,
-    };
-    const toolScope: RunToolScope = {
+    // One shared view of this run's collaborators; each extracted helper
+    // takes the subset it needs. The snapshot is loaded before any of them run.
+    const scope = {
       run: run as LoadedRunState,
       input,
       deps,
@@ -271,10 +211,13 @@ export const createAgentRuntime = (
       event,
       ephemeral,
       closeStep,
+      finishGeneration,
       hookDiagnostics,
       effectivePermission,
       onModelUsage,
       checkToolFailure,
+      drainSteering,
+      drainAdvisor,
     };
     try {
       run.snapshot = await journal.read();
@@ -480,8 +423,7 @@ export const createAgentRuntime = (
           "invalid_input",
           "Harness adaptation cannot bypass a configured specialist's tool policy.",
         );
-      if (input.harness)
-        await runHarnessPreflight(preflightScope, input.harness);
+      if (input.harness) await runHarnessPreflight(scope, input.harness);
       let reportedWindow: number | null = null;
       if (!deps.settings.modelContextWindows?.[run.snapshot.model]) {
         const metadataSignal = AbortSignal.any([
@@ -536,20 +478,17 @@ export const createAgentRuntime = (
         await drainSteering();
         await drainAdvisor();
         check();
-        const { context, projectedUsage } = await prepareStepContext(
-          compactionScope,
-          {
-            project,
-            contextSize,
-            calibratedSize,
-            rawLimit,
-            rawTarget,
-            budget,
-            windowTokens,
-            definitions,
-            currentInstructions,
-          },
-        );
+        const { context, projectedUsage } = await prepareStepContext(scope, {
+          project,
+          contextSize,
+          calibratedSize,
+          rawLimit,
+          rawTarget,
+          budget,
+          windowTokens,
+          definitions,
+          currentInstructions,
+        });
         run.phase = "provider";
         run.turns += 1;
         run.activeStep = run.turns;
@@ -560,21 +499,18 @@ export const createAgentRuntime = (
           messageIndex: run.snapshot.messages.length,
         });
         await save();
-        const webSearch = await resolveHostedSearch(generationScope);
-        const { response, previews } = await requestGeneration(
-          generationScope,
-          {
-            webSearch,
-            context,
-            projectedUsage,
-            project,
-            rawLimit,
-            contextSize,
-            windowTokens,
-            budget,
-            definitions,
-          },
-        );
+        const webSearch = await resolveHostedSearch(scope);
+        const { response, previews } = await requestGeneration(scope, {
+          webSearch,
+          context,
+          projectedUsage,
+          project,
+          rawLimit,
+          contextSize,
+          windowTokens,
+          budget,
+          definitions,
+        });
         run.snapshot = {
           ...run.snapshot,
           messages: [...run.snapshot.messages, response.message],
@@ -596,13 +532,12 @@ export const createAgentRuntime = (
           });
         if (calls.length === 0) {
           if (
-            (await reconcileQuietStep(reconcileScope, response, previews)) ===
-            "continue"
+            (await reconcileQuietStep(scope, response, previews)) === "continue"
           )
             continue;
           return await finish("completed");
         }
-        await executeResponseToolCalls(toolScope, {
+        await executeResponseToolCalls(scope, {
           calls,
           response,
           previews,
