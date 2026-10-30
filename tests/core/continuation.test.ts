@@ -57,6 +57,7 @@ it("persists exact assistant continuation and forks child security provenance", 
     expect(result.messages.at(-1)).toEqual({
       role: "assistant",
       content: "done",
+      generationId: expect.any(String),
       providerState: state,
     });
     const store = await openSessionStore(join(dir, "state"));

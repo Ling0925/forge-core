@@ -112,6 +112,8 @@ describe("core evolution", () => {
       const finalMessage = {
         role: "assistant",
         content: "Reconciled parent answer: implementation verified",
+        // Assistant messages carry the persisted generation identity.
+        generationId: expect.any(String),
       };
       expect(result.messages.at(-1)).toEqual(finalMessage);
       const restarted = await openSessionStore(dir);
@@ -149,6 +151,7 @@ describe("core evolution", () => {
       expect(child.messages.at(-1)).toEqual({
         role: "assistant",
         content: "Child verified the implementation",
+        generationId: expect.any(String),
       });
     } finally {
       await rm(dir, { recursive: true, force: true });

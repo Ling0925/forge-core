@@ -344,7 +344,7 @@ describe("plugin bridge dispatch", () => {
       }),
     });
     await expect(bridge.browser(browserStatus)).rejects.toThrow(
-      "Invalid host response.",
+      "Invalid host response for browser: schema_mismatch.",
     );
   });
 });
