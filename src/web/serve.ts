@@ -4,7 +4,11 @@ import { createHarness } from "../core/harness";
 import { createLocalHost } from "../host/local-server";
 import { createRuntimeHub } from "../host/runtime";
 import { coreBuildInfo } from "../shared/build-info";
-import { validLanEndpoint } from "./lan";
+import {
+  ENDPOINT_REQUIREMENT,
+  canonicalIpHost,
+  validListenEndpoint,
+} from "./endpoint";
 import { createWebHost } from "./server";
 
 const args = process.argv.slice(2);
@@ -18,17 +22,17 @@ function argument(name: string, fallback?: string): string | undefined {
 }
 if (args.includes("--help")) {
   console.log(
-    "Forge Core: --host <IPv4> --port <1024..65535> --workspace <directory> [--socket <private Unix socket>] [--renderer <built Web UI directory>] [--multi-workspace]\nDefaults: host 127.0.0.1, port 5173. API-only unless --renderer is supplied. Personal LAN direct access; no device pairing required. HTTP has no transport secrecy.",
+    "Forge Core: --host <IPv4|IPv6> --port <1024..65535> --workspace <directory> [--socket <private Unix socket>] [--renderer <built Web UI directory>] [--multi-workspace]\nDefaults: host 127.0.0.1, port 5173. API-only unless --renderer is supplied. Personal LAN direct access; no device pairing required. HTTP has no transport secrecy.",
   );
 } else {
-  const host = argument("--host") ?? "127.0.0.1";
+  const requestedHost = argument("--host") ?? "127.0.0.1";
   const port = Number(argument("--port", "5173"));
   const workspace = argument("--workspace");
   if (!workspace) throw new Error("Missing --workspace.");
-  if (!validLanEndpoint(host, port))
-    throw new Error(
-      "Use a specific IPv4 address (not 0.0.0.0) and a port between 1024 and 65535.",
-    );
+  if (!validListenEndpoint(requestedHost, port))
+    throw new Error(ENDPOINT_REQUIREMENT);
+  // Canonical bare form: IPv6 is bracketed only in URLs and Host headers.
+  const host = canonicalIpHost(requestedHost) ?? requestedHost;
   const renderer = argument("--renderer");
   const rendererRoot = renderer === undefined ? undefined : resolve(renderer);
   const runtime = createRuntimeHub(await createHarness());

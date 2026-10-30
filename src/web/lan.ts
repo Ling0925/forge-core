@@ -2,6 +2,11 @@ import { realpath } from "node:fs/promises";
 import { resolve } from "node:path";
 import type { DeviceAuthorization } from "../shared/device-authorization";
 import type { RuntimeHost } from "../shared/runtime-host";
+import {
+  ENDPOINT_REQUIREMENT,
+  canonicalIpHost,
+  validListenEndpoint,
+} from "./endpoint";
 import { createWebHost } from "./server";
 
 export interface LanHostOptions {
@@ -9,7 +14,7 @@ export interface LanHostOptions {
   authorization?: DeviceAuthorization;
   stateDir?: string;
   runtime: RuntimeHost;
-  /** A concrete IPv4 literal; `0.0.0.0` is never accepted. */
+  /** A concrete IPv4 or IPv6 literal (`[::1]` or `::1`); wildcards are never accepted. */
   host: string;
   port: number;
   workspace: string;
@@ -61,17 +66,9 @@ export async function shutdownSharedRuntime(options: {
   return clean;
 }
 
-const IPV4 =
-  /^(?:(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)\.){3}(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)$/;
-
+/** @deprecated Use validListenEndpoint; kept for existing importers. */
 export function validLanEndpoint(host: string, port: number): boolean {
-  return (
-    IPV4.test(host) &&
-    host !== "0.0.0.0" &&
-    Number.isInteger(port) &&
-    port >= 1024 &&
-    port <= 65535
-  );
+  return validListenEndpoint(host, port);
 }
 
 /**
@@ -87,15 +84,14 @@ export function validLanEndpoint(host: string, port: number): boolean {
  * `startLanServer` below is the convenience wrapper that binds immediately.
  */
 export async function createLanWebHost(options: LanHostOptions) {
-  if (!validLanEndpoint(options.host, options.port))
-    throw new Error(
-      "Use one concrete IPv4 address (not 0.0.0.0) and a port between 1024 and 65535.",
-    );
+  if (!validListenEndpoint(options.host, options.port))
+    throw new Error(ENDPOINT_REQUIREMENT);
+  const host = canonicalIpHost(options.host) ?? options.host;
   const workspace = await realpath(resolve(options.workspace));
   const web = await createWebHost({
     runtime: options.runtime,
     workspace,
-    host: options.host,
+    host,
     port: options.port,
     rendererRoot: options.rendererRoot,
     restrictWorkspace: options.restrictWorkspace ?? false,
@@ -232,10 +228,14 @@ export async function startLanServer(
         reject(error);
       };
       web.server.once("error", fail);
-      web.server.listen(options.port, options.host, () => {
-        web.server.off("error", fail);
-        done();
-      });
+      web.server.listen(
+        options.port,
+        canonicalIpHost(options.host) ?? options.host,
+        () => {
+          web.server.off("error", fail);
+          done();
+        },
+      );
     });
   } catch (error) {
     try {
