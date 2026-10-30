@@ -28,9 +28,11 @@ import { createDelegationModels } from "./delegation-models";
 import {
   assertProviderEndpoint,
   type createProviderSelection,
+  findRouteGroup,
   inferSourceId,
   queuedSelectionValidator,
   selectRouteGroup,
+  selectSessionSource,
 } from "./harness-provider-selection";
 import type { createHarnessTitles } from "./harness-titles";
 import type { createHarnessTools } from "./harness-tools";
@@ -152,24 +154,12 @@ export const createHarnessRun = (deps: HarnessRunDeps) => {
         );
       }
       rootBudget = createRootRunBudget({ rootSessionId: input.sessionId });
-      // An explicit selection (the picked model's source) wins; a session
-      // keeps the source it was created with; only when neither exists does
-      // the model, and finally the remembered fallback, decide.
-      const providerSourceId =
-        input.providerSourceId ??
-        snapshot.providerSourceId ??
-        inferSourceId(settings, input.model) ??
-        settings.activeSourceId;
-      const routeGroupId =
-        input.routeGroupId ??
-        (input.model !== undefined || input.providerSourceId !== undefined
-          ? undefined
-          : snapshot.routeGroupId);
-      const group = routeGroupId
-        ? settings.routeGroups?.find((item) => item.id === routeGroupId)
-        : undefined;
-      if (routeGroupId && !group)
-        throw new ForgeError("not_found", "会话的路由组已不可用，请重新选择。");
+      const { providerSourceId, routeGroupId } = selectSessionSource(
+        settings,
+        snapshot,
+        input,
+      );
+      const group = findRouteGroup(settings, routeGroupId);
       if (input.harness && routeGroupId)
         throw new ForgeError(
           "invalid_input",

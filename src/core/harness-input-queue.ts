@@ -5,7 +5,7 @@ import type { openSessionStore } from "../store/sessions";
 import type { openSettingsStore } from "../store/settings";
 import {
   type createProviderSelection,
-  inferSourceId,
+  selectSessionSource,
 } from "./harness-provider-selection";
 import { inputPredecessor, openInputQueue } from "./input-queue";
 
@@ -54,16 +54,11 @@ export const openHarnessInputQueue = ({
         store.get(input.sessionId),
         settingsStore.getPublic(),
       ]);
-      const providerSourceId =
-        input.providerSourceId ??
-        snapshot.providerSourceId ??
-        inferSourceId(settings, input.model) ??
-        settings.activeSourceId;
-      const routeGroupId =
-        input.routeGroupId ??
-        (input.model !== undefined || input.providerSourceId !== undefined
-          ? undefined
-          : snapshot.routeGroupId);
+      const { providerSourceId, routeGroupId } = selectSessionSource(
+        settings,
+        snapshot,
+        input,
+      );
       const model = settingsFields.model.parse(input.model ?? snapshot.model);
       const providerBinding = await queueProviderBinding(
         settings,

@@ -4,11 +4,14 @@ import {
   resolveContextBudget,
   resolveContextWindow,
 } from "../shared/context-usage";
-import { ForgeError } from "../shared/errors";
 import type { SessionId, SessionSnapshot } from "../shared/schemas";
 import type { openSettingsStore } from "../store/settings";
 import { withCancellation } from "./cancellation";
 import { projectSummary } from "./context";
+import {
+  findRouteGroup,
+  selectSessionSource,
+} from "./harness-provider-selection";
 import type { createModelAccessService } from "./model-access";
 import { summarizeWorkingState } from "./working-memory";
 
@@ -28,12 +31,10 @@ export const compactSessionSnapshot = async (
   signal: AbortSignal,
 ): Promise<SessionSnapshot> => {
   const settings = await settingsStore.getPublic();
-  const providerSourceId = s.providerSourceId ?? settings.activeSourceId;
-  const group = s.routeGroupId
-    ? settings.routeGroups?.find((item) => item.id === s.routeGroupId)
-    : undefined;
-  if (s.routeGroupId && !group)
-    throw new ForgeError("not_found", "会话的路由组已不可用，请重新选择。");
+  // Compaction names no model or source, so the session's own binding (or
+  // the remembered fallback) decides, exactly as for an input-less run.
+  const { providerSourceId, routeGroupId } = selectSessionSource(settings, s);
+  const group = findRouteGroup(settings, routeGroupId);
   const prepared = group
     ? await modelAccess.prepareRoute(group, signal)
     : undefined;
