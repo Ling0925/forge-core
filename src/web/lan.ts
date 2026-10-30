@@ -10,6 +10,7 @@ import {
 import { createWebHost } from "./server";
 
 export interface LanHostOptions {
+  /** Default true: direct access without pairing. false requires paired devices. */
   trustedLan?: boolean;
   authorization?: DeviceAuthorization;
   stateDir?: string;
@@ -75,7 +76,11 @@ export function validLanEndpoint(host: string, port: number): boolean {
  * LAN hosting for one already-running shared runtime.
  *
  * The listener is only created when this is called, and it is bound to one
- * concrete IPv4 address (no `0.0.0.0`, no hostnames, no TLS; paired device authorization by default).
+ * concrete IPv4 or IPv6 address (no `0.0.0.0`/`::`, no hostnames, no TLS).
+ * Access is trusted-LAN direct by default: anyone who can reach the address
+ * can use the workbench, with no device pairing. Only an embedding host that
+ * passes `trustedLan: false` gets paired device authorization (invite exchange
+ * at /api/pair, then a device credential on every request).
  * Closing the host stops accepting new pages and releases this HTTP host's
  * subscriptions, but never disposes the injected runtime: active runs keep
  * running and remain controllable from the desktop.
