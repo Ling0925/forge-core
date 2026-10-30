@@ -1,7 +1,4 @@
-import {
-  type createRouteState,
-  createRoutedProvider,
-} from "../provider/routing";
+import type { createRouteState } from "../provider/routing";
 import type {
   ApprovalHandler,
   EventSink,
@@ -35,6 +32,7 @@ import {
   selectRouteGroup,
   selectSessionSource,
 } from "./harness-provider-selection";
+import { routedProviderFor } from "./harness-route-provider";
 import type { createHarnessTitles } from "./harness-titles";
 import type { createHarnessTools } from "./harness-tools";
 import { inputPredecessor } from "./input-queue";
@@ -213,26 +211,17 @@ export const createHarnessRun = (deps: HarnessRunDeps) => {
         input.providerSourceId ?? inferSourceId(settings, input.model),
       );
       rootBudget.checkAdmission();
-      const provider =
+      const routed =
         selectedGroup && prepared
-          ? createRoutedProvider({
+          ? routedProviderFor({
               group: selectedGroup,
-              state: routeState,
-              ...(prepared.apiMode ? { apiMode: prepared.apiMode } : {}),
-              mayUseWebSearch: prepared.mayUseWebSearch,
-              contextWindow: prepared.contextWindow,
-              quota: prepared.quota,
-              exclude: prepared.exclude,
-              resolve: (member, requestSignal) =>
-                modelAccess.resolveProvider(
-                  member.sourceId,
-                  member.credentialId,
-                  requestSignal,
-                  member.model,
-                  validateSelection,
-                ),
+              prepared,
+              routeState,
+              modelAccess,
+              validateSelection,
             })
-          : resolved.provider;
+          : undefined;
+      const provider = routed ?? resolved.provider;
       if (signal.aborted) throw new ForgeError("cancelled", "Run cancelled.");
       const built = await buildTools(
         snapshot.workspace,
@@ -253,7 +242,10 @@ export const createHarnessRun = (deps: HarnessRunDeps) => {
           start: (claimed, apply) =>
             startTitle(claimed, apply, {
               signal,
-              provider: resolved.provider,
+              // Titles follow the session's route like its steps do. This
+              // supersedes 6a43589, which sent them to the group's base member
+              // directly, bypassing failover, quota accounting and stickiness.
+              provider: routed?.auxiliary(input.sessionId) ?? resolved.provider,
               secrets: [config.apiKey, config.baseUrl],
               beginUsage: () => budget.beginUsage(input.sessionId),
             }),

@@ -243,6 +243,8 @@ interface SelectionInput {
   readonly request: RouteRequest;
   readonly attempt: number;
   readonly sessionId: string | undefined;
+  /** state.last key whose failed member a retry must avoid. */
+  readonly retryChain: string;
   readonly now: number;
   readonly exclude: RoutedProviderOptions["exclude"];
   readonly quota: RoutedProviderOptions["quota"];
@@ -312,9 +314,7 @@ const selectMember = (input: SelectionInput): Selection => {
   // Attempt > 0 means the runtime is retrying; that is only possible when the
   // previous request never ran, and it must not pick the same member again.
   const failedKey =
-    input.attempt > 0
-      ? input.state.last.get(input.sessionId ?? "")?.key
-      : undefined;
+    input.attempt > 0 ? input.state.last.get(input.retryChain)?.key : undefined;
   const moved =
     failedKey === undefined
       ? healthy
@@ -418,9 +418,28 @@ export const routeRetryControl = (
   (provider as ModelProvider & { readonly routeControl?: RouteRetryControl })
     .routeControl;
 
+/**
+ * Background requests on behalf of a session (auto-title, manual compaction)
+ * at most try this many members, moving on only when a request provably
+ * never ran, as the runtime does for run steps.
+ */
+export const AUXILIARY_ROUTE_ATTEMPTS = 3;
+
+export type RoutedProvider = ModelProvider & {
+  readonly routeControl: RouteRetryControl;
+  /**
+   * The same route for a session's background requests: member selection,
+   * resting/failover, quota and usage accounting, and the session's sticky
+   * member all apply, but these requests keep their own retry chain and never
+   * move the sticky pin, so they cannot change a concurrent run step's retry
+   * decision or which member the run sticks to.
+   */
+  readonly auxiliary: (sessionId: string) => ModelProvider;
+};
+
 export function createRoutedProvider(
   options: RoutedProviderOptions,
-): ModelProvider & { readonly routeControl: RouteRetryControl } {
+): RoutedProvider {
   const { group } = options;
   const state = options.state ?? createRouteState();
   const now = options.now ?? (() => Date.now());
@@ -431,13 +450,17 @@ export function createRoutedProvider(
       state.last.get(sessionId ?? "")?.kind === "unexecuted",
   };
 
-  const complete: ModelProvider["complete"] = async (
-    messages,
-    toolDefinitions,
-    completeOptions,
-  ) => {
+  const send = async (
+    messages: Parameters<ModelProvider["complete"]>[0],
+    toolDefinitions: Parameters<ModelProvider["complete"]>[1],
+    completeOptions: Parameters<ModelProvider["complete"]>[2],
+    auxiliaryFor?: string,
+  ): Promise<ProviderResponse> => {
     const attempt = completeOptions.attempt ?? 0;
-    const chain = completeOptions.sessionId ?? "";
+    const chain =
+      auxiliaryFor === undefined
+        ? (completeOptions.sessionId ?? "")
+        : `auxiliary\u0000${auxiliaryFor}`;
     if (attempt > 0 && state.last.get(chain)?.kind !== "unexecuted")
       throw new ForgeError(
         "provider",
@@ -456,7 +479,8 @@ export function createRoutedProvider(
       state,
       request,
       attempt,
-      sessionId: completeOptions.sessionId,
+      sessionId: auxiliaryFor ?? completeOptions.sessionId,
+      retryChain: chain,
       now: now(),
       exclude: options.exclude,
       quota: options.quota,
@@ -616,7 +640,11 @@ export function createRoutedProvider(
       decayedServedTokens(candidate, at) +
       Math.max(1, response.usage?.totalTokens ?? 0);
     candidate.servedAt = at;
-    if (group.sticky && completeOptions.sessionId !== undefined)
+    if (
+      group.sticky &&
+      auxiliaryFor === undefined &&
+      completeOptions.sessionId !== undefined
+    )
       state.sticky.set(completeOptions.sessionId, selection.key);
     state.last.set(chain, { key: selection.key, kind: "succeeded", at });
     report(
@@ -626,8 +654,10 @@ export function createRoutedProvider(
     );
     return response;
   };
+  const complete: ModelProvider["complete"] = (messages, tools, opts) =>
+    send(messages, tools, opts);
 
-  return {
+  const base = {
     ...(options.apiMode === undefined ? {} : { apiMode: options.apiMode }),
     mayUseWebSearch:
       options.apiMode === "responses" || options.mayUseWebSearch === true,
@@ -642,7 +672,27 @@ export function createRoutedProvider(
           .map((member) => member.model),
       ),
     ],
-    complete,
-    routeControl: control,
   };
+  const members = group.members.filter(
+    (member) => member.enabled !== false,
+  ).length;
+  const auxiliary = (sessionId: string): ModelProvider => ({
+    ...base,
+    complete: async (messages, tools, opts) => {
+      const chain = `auxiliary\u0000${sessionId}`;
+      for (let attempt = 0; ; attempt++) {
+        try {
+          return await send(messages, tools, { ...opts, attempt }, sessionId);
+        } catch (error) {
+          if (
+            attempt + 1 >= Math.min(AUXILIARY_ROUTE_ATTEMPTS, members) ||
+            opts.signal.aborted ||
+            state.last.get(chain)?.kind !== "unexecuted"
+          )
+            throw error;
+        }
+      }
+    },
+  });
+  return { ...base, complete, routeControl: control, auxiliary };
 }
