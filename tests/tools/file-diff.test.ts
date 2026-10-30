@@ -49,10 +49,12 @@ it("captures complete late-file edits for write/edit without inflating model con
       new_text: "LATE_EDIT_MARKER\n",
     });
     expect(edit.result.isError).toBe(false);
+    // 4bbb5b9 replaced truncated before/after previews with a recorded patch.
     expect(edit.result.changes?.[0]).toMatchObject({
-      truncated: true,
       patch: { status: "complete", added: 1, removed: 1 },
     });
+    expect(edit.result.changes?.[0]).not.toHaveProperty("truncated");
+    expect(edit.result.changes?.[0]).not.toHaveProperty("before");
     expect(JSON.stringify(edit.result.changes?.[0]?.patch)).toContain(
       "LATE_EDIT_MARKER",
     );
@@ -98,9 +100,9 @@ it("captures complete late-file edits for write/edit without inflating model con
     });
     expect(created.result.changes?.[0]).toMatchObject({
       kind: "created",
-      before: null,
       patch: { added: 2, removed: 0 },
     });
+    expect(created.result.changes?.[0]).not.toHaveProperty("before");
     const empty = await invoke("write_file", { path: "empty.ts", content: "" });
     expect(empty.result.changes?.[0]).toMatchObject({
       kind: "created",

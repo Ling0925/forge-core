@@ -20,7 +20,6 @@ it("injects instructions and lazy skills and restores selected checkpoint under 
     "---\nname: sample\ndescription: example skill\n---\nLAZY_SKILL_BODY_ONLY",
   );
   await writeFile(join(workspace, "file.txt"), "before");
-  let turns = 0;
   const provider: ModelProvider = {
     listModels: async () => [],
     complete: async (messages, tools) => {
@@ -35,28 +34,31 @@ it("injects instructions and lazy skills and restores selected checkpoint under 
           "update_plan",
         ]),
       );
-      return {
-        message:
-          ++turns === 1
-            ? {
-                role: "assistant",
-                content: null,
-                tool_calls: [
-                  {
-                    id: "edit",
-                    type: "function",
-                    function: {
-                      name: "write_file",
-                      arguments: JSON.stringify({
-                        path: "file.txt",
-                        content: "after",
-                      }),
-                    },
-                  },
-                ],
-              }
-            : { role: "assistant", content: "verified" },
-      };
+      // Respond from the transcript, not a call counter: background title
+      // generation shares this provider. Since d9cee94 an existing file must
+      // be read in the run before it can be written.
+      const last = messages.at(-1);
+      const call = (id: string, name: string, args: object) => ({
+        message: {
+          role: "assistant" as const,
+          content: null,
+          tool_calls: [
+            {
+              id,
+              type: "function" as const,
+              function: { name, arguments: JSON.stringify(args) },
+            },
+          ],
+        },
+      });
+      if (last?.role === "user" && last.content === "edit")
+        return call("read", "read_file", { path: "file.txt" });
+      if (last?.role === "tool" && last.tool_call_id === "read")
+        return call("edit", "write_file", {
+          path: "file.txt",
+          content: "after",
+        });
+      return { message: { role: "assistant", content: "verified" } };
     },
   };
   const service = await createHarness({

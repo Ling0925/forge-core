@@ -177,11 +177,13 @@ describe("independent session plans", () => {
       mode: "build",
       maxToolCalls: 20,
     });
-    expect(prompt).toContain("every new user request");
+    // Wording streamlined in 713fbc8; the contract is the same: continue a
+    // task with update_plan, start a separate plan for unrelated work.
     expect(prompt).toContain("create_plan");
-    expect(prompt).toContain("update_plan");
-    expect(prompt).toContain("never append an unrelated task");
-    expect(prompt).toContain("Simple questions and small edits");
+    expect(prompt).toContain("update_plan and the returned planId");
+    expect(prompt).toContain("Start separate plans for unrelated work");
+    expect(prompt).toContain("preserve history");
+    expect(prompt).toContain("not for every tool sequence");
   });
 
   it("persists multiple plans across runs/reopen/fork and emits identified update results", async () => {

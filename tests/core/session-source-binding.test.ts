@@ -7,6 +7,16 @@ import type { HarnessService } from "../../src/shared/contracts";
 import { openSessionStore } from "../../src/store/sessions";
 
 let directory = "";
+// spawn_agent arguments by triggering user prompt.
+const spawnPrompts = new Map<string, Record<string, unknown>>([
+  // No model/source: the child inherits the parent's exact selection.
+  ["spawn-bound-child", {}],
+  // An explicit model routes by configured ownership (8cfef20), never by the
+  // parent or the globally active source. Unlisted IDs fail before a child
+  // with two or more sources and go to the only source when there is one.
+  ["spawn-declared-child", { model: "child-fixture" }],
+  ["spawn-unlisted-child", { model: "unlisted-fixture" }],
+]);
 let service: HarnessService;
 const requests: {
   baseUrl: string;
@@ -32,7 +42,8 @@ beforeEach(async () => {
             messages.findLast((message) => message.role === "user")?.content ??
             null,
         });
-        if (messages.at(-1)?.content === "spawn-bound-child")
+        const spawn = spawnPrompts.get(String(messages.at(-1)?.content));
+        if (spawn)
           return {
             message: {
               role: "assistant",
@@ -43,10 +54,7 @@ beforeEach(async () => {
                   type: "function",
                   function: {
                     name: "spawn_agent",
-                    arguments: JSON.stringify({
-                      task: "child task",
-                      model: "child-fixture",
-                    }),
+                    arguments: JSON.stringify({ task: "child task", ...spawn }),
                   },
                 },
               ],
@@ -170,7 +178,86 @@ it("inherits the pinned source into independently persisted child sessions", asy
     (item) => item.parentSessionId === parent.id,
   );
   expect(child?.providerSourceId).toBe("a");
+  expect(child?.model).toBe("a-model");
+  expect(
+    requests.find((request) => request.prompt?.startsWith("child task")),
+  ).toMatchObject({
+    baseUrl: "https://a.invalid/v1",
+    apiKey: "fixture-a",
+    model: "a-model",
+  });
+});
+
+it("routes an explicit child model to its declaring source, not the parent's", async () => {
+  await service.updateSettings({
+    source: {
+      type: "save",
+      source: {
+        id: "b",
+        label: "b",
+        baseUrl: "https://b.invalid/v1",
+        model: "b-model",
+        apiMode: "chat-completions",
+        modelSelection: {
+          mode: "selected",
+          models: ["b-model", "child-fixture"],
+        },
+      },
+    },
+  });
+  const parent = await service.createSession({
+    workspace: directory,
+    title: "parent",
+    providerSourceId: "a",
+  });
+  expect((await run(parent.id, "spawn-declared-child")).status).toBe(
+    "completed",
+  );
+  const child = (await service.listSessions()).find(
+    (item) => item.parentSessionId === parent.id,
+  );
+  expect(child).toMatchObject({
+    providerSourceId: "b",
+    model: "child-fixture",
+  });
   expect(
     requests.find((request) => request.model === "child-fixture"),
+  ).toMatchObject({ baseUrl: "https://b.invalid/v1", apiKey: "fixture-b" });
+});
+
+it("refuses an explicit unlisted child model with several sources instead of falling back to the parent source", async () => {
+  const parent = await service.createSession({
+    workspace: directory,
+    title: "parent",
+  });
+  await run(parent.id, "spawn-unlisted-child");
+  expect(
+    (await service.listSessions()).some(
+      (item) => item.parentSessionId === parent.id,
+    ),
+  ).toBe(false);
+  expect(requests.some((request) => request.model === "unlisted-fixture")).toBe(
+    false,
+  );
+});
+
+it("routes an explicit unlisted child model to the only configured source", async () => {
+  await service.updateSettings({ source: { type: "remove", id: "b" } });
+  const parent = await service.createSession({
+    workspace: directory,
+    title: "parent",
+  });
+  expect((await run(parent.id, "spawn-unlisted-child")).status).toBe(
+    "completed",
+  );
+  const child = (await service.listSessions()).find(
+    (item) => item.parentSessionId === parent.id,
+  );
+  expect(child).toMatchObject({
+    providerSourceId: "a",
+    model: "unlisted-fixture",
+  });
+  expect(
+    requests.find((request) => request.model === "unlisted-fixture"),
   ).toMatchObject({ baseUrl: "https://a.invalid/v1", apiKey: "fixture-a" });
 });

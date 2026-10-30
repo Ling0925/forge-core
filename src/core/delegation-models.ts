@@ -135,6 +135,12 @@ export function createDelegationModels(options: {
         ),
       ];
       if (owners.length > 1) throw ambiguous();
+      // With exactly one configured source there is no other owner to guess:
+      // an unlisted or undiscoverable ID (e.g. a local endpoint without
+      // /models) goes to that source unchanged. With two or more sources an
+      // unknown ID still fails and never falls back to the parent provider.
+      const [only] = sources;
+      if (sources.length === 1 && only) return only.id;
       if (catalog.unavailableSourceIds.length)
         throw new ForgeError(
           "invalid_input",

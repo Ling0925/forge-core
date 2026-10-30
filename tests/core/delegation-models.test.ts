@@ -161,3 +161,55 @@ it("keeps environment-only hosts supported and checks cancellation", async () =>
   });
   expect(listModels).toHaveBeenCalledTimes(1);
 });
+
+it("routes an unlisted explicit model to the only configured source", async () => {
+  const single = (listModels: (id?: string) => Promise<readonly string[]>) =>
+    createDelegationModels({
+      getSettings: async () => ({
+        ...defaultPublicSettings,
+        providerSources: [source("local")],
+      }),
+      listModels,
+    });
+  // Catalog listed, model absent.
+  expect(
+    await single(async () => ["local-default"]).resolve(
+      "unlisted",
+      undefined,
+      signal(),
+    ),
+  ).toBe("local");
+  // Endpoint without /models: discovery fails.
+  expect(
+    await single(async () => {
+      throw new Error("404");
+    }).resolve("unlisted", undefined, signal()),
+  ).toBe("local");
+  // An explicit providerSourceId is still honored and validated.
+  const access = single(async () => []);
+  expect(await access.resolve("unlisted", "local", signal())).toBe("local");
+  await expect(access.resolve("unlisted", "other", signal())).rejects.toThrow(
+    "Unknown providerSourceId",
+  );
+});
+
+it("still rejects an unlisted explicit model with two or more sources", async () => {
+  for (const listModels of [
+    async () => ["listed"],
+    async () => {
+      throw new Error("404");
+    },
+  ]) {
+    const access = createDelegationModels({
+      getSettings: async () => ({
+        ...defaultPublicSettings,
+        providerSources: [source("a"), source("b")],
+      }),
+      listModels,
+    });
+    await expect(
+      access.resolve("unlisted", undefined, signal()),
+    ).rejects.toMatchObject({ code: "invalid_input" });
+    expect(await access.resolve("unlisted", "b", signal())).toBe("b");
+  }
+});

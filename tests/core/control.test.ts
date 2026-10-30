@@ -23,7 +23,8 @@ it("targets child without cancelling sibling, then root stop joins remaining wor
   const b = barrier();
   let turns = 0;
   const provider: ModelProvider = {
-    listModels: async () => [],
+    // Explicit child models route by catalog ownership (8cfef20).
+    listModels: async () => ["root", "a", "b"],
     complete: async (_m, _t, o) => {
       if (o.model !== "root") {
         (o.model === "a" ? a : b).release();
