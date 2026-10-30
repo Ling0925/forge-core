@@ -7,6 +7,8 @@ import { afterEach, expect, it } from "vitest";
 import type { ToolContext } from "../../src/shared/contracts";
 import { parseSessionId } from "../../src/shared/schemas";
 import {
+  DEFAULT_GIT_STATUS_TIMEOUT_MS,
+  DEFAULT_GIT_TIMEOUT_MS,
   type GitInspectionOutcome,
   gitFailure,
   gitInspect,
@@ -256,7 +258,7 @@ it.each([
     "cancelled",
     "Git inspection cancelled.",
   ],
-  ["timeout", { kind: "timeout" }, "tool", "timed out after 5 seconds"],
+  ["timeout", { kind: "timeout" }, "tool", "timed out after 10 seconds"],
   ["output_limit", { kind: "output_limit" }, "tool", "64 KiB ceiling"],
   ["unavailable", { kind: "unavailable" }, "tool", "could not start"],
 ] as const)(
@@ -302,5 +304,25 @@ it("does not create repository metadata when reporting a non-repository workspac
   // This probe is entirely read-only, including its assertions.
   await expect(lstat(join(root, ".git"))).rejects.toMatchObject({
     code: "ENOENT",
+  });
+});
+
+it("reports the deadline that actually applied to a timed-out inspection", () => {
+  expect(gitFailure({ kind: "timeout", timeoutMs: 30000 }).message).toContain(
+    "timed out after 30 seconds",
+  );
+  expect(DEFAULT_GIT_TIMEOUT_MS).toBe(10000);
+  expect(DEFAULT_GIT_STATUS_TIMEOUT_MS).toBe(30000);
+});
+
+it("applies a configured git inspection deadline", async () => {
+  const { root } = await repo();
+  // 1 ms cannot fit a git process spawn, so the configured deadline must fire.
+  await expect(
+    gitInspect(root, "status", undefined, [], [], { timeoutMs: 1 }),
+  ).rejects.toMatchObject({ code: "tool", message: /timed out after/ });
+  // The default deadlines are generous enough for a small repository.
+  await expect(gitInspect(root, "status")).resolves.toMatchObject({
+    repository: true,
   });
 });

@@ -152,6 +152,9 @@ export const settingsFields = {
     .max(10000000)
     .nullable()
     .optional(),
+  // One deadline for each git process behind git_status/git_diff/git_log.
+  // Unset: 30s for status/diff, 10s for probes and log.
+  gitInspectionTimeoutMs: z.number().int().min(1000).max(600000).optional(),
   // Window assumed when neither settings, the source's model metadata
   // (modelSelection.overrides/manual) nor the provider reports one.
   defaultContextWindowTokens: z

@@ -113,6 +113,9 @@ const createDefaultTools = async (
     const local = await createLocalToolRegistry(workspace, {
       redactValues: [apiKey],
       protectedRoots: [stateDirectory],
+      ...(settings.gitInspectionTimeoutMs === undefined
+        ? {}
+        : { gitTimeoutMs: settings.gitInspectionTimeoutMs }),
       checkpointStore: await createCheckpointStore(
         workspace,
         checkpointDirectory,
