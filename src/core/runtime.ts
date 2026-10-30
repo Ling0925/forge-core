@@ -1,6 +1,5 @@
 import type { AdvisorCoordinator } from "../shared/agent-coordination";
 import {
-  budgetUsage,
   measureContext,
   resolveContextBudget,
   resolveContextWindow,
@@ -21,15 +20,11 @@ import { createAgentSupervisor } from "./agent-supervisor";
 import { nativeDefinitions, nativeDefinitionsFor } from "./agents";
 import { createApprovalQueue } from "./approval-queue";
 import { withCancellation } from "./cancellation";
-import { projectSummary, summaryBoundary } from "./context";
+import { projectSummary } from "./context";
 import { harnessStrategyMessage } from "./harness-adaptation";
 import { buildSystemInstructions } from "./prompts";
 import { createRootRunBudget } from "./run-budget";
-import {
-  compactContext,
-  isHumanTurn,
-  seedContextScale,
-} from "./runtime-context";
+import { seedContextScale } from "./runtime-context";
 import { createRunEvents } from "./runtime-events";
 import { createRunFinish } from "./runtime-finish";
 import {
@@ -47,6 +42,10 @@ import { closeCalls, interruptStaleRun } from "./runtime-recovery";
 import { type LoadedRunState, createRunState } from "./runtime-state";
 import { createRunSteering } from "./runtime-steering";
 import {
+  type RunCompactionScope,
+  prepareStepContext,
+} from "./runtime-step-context";
+import {
   type RunToolScope,
   executeResponseToolCalls,
 } from "./runtime-tool-calls";
@@ -54,7 +53,6 @@ import { createModelUsageObserver } from "./runtime-usage";
 import { claimAutoTitle } from "./session-title";
 import { createToolFailureGuard } from "./tool-failure-guard";
 import { createToolHookService } from "./tool-hooks";
-import { summarizeWorkingState } from "./working-memory";
 
 export { withCancellation } from "./cancellation";
 export {
@@ -227,6 +225,15 @@ export const createAgentRuntime = (
       signal,
       rootBudget,
       check,
+      save,
+      event,
+      onModelUsage,
+    };
+    const compactionScope: RunCompactionScope = {
+      run: run as LoadedRunState,
+      deps,
+      signal,
+      rootBudget,
       save,
       event,
       onModelUsage,
@@ -513,77 +520,20 @@ export const createAgentRuntime = (
         await drainSteering();
         await drainAdvisor();
         check();
-        const before = project(run.snapshot);
-        if (calibratedSize(before) > budget.limit) {
-          // Search for a boundary in raw-estimate units: that is what the
-          // estimator reports, and the hard trim below uses the same units.
-          let boundary = summaryBoundary(
-            run.snapshot,
-            (messages) =>
-              contextSize(
-                messages.map((m, i) =>
-                  i === 0 && m.role === "system"
-                    ? { role: "system", content: currentInstructions }
-                    : m,
-                ),
-              ),
+        const { context, projectedUsage } = await prepareStepContext(
+          compactionScope,
+          {
+            project,
+            contextSize,
+            calibratedSize,
+            rawLimit,
             rawTarget,
-          );
-          // If three recent turns alone exceed the hard budget, retain fewer
-          // whole turns rather than silently discarding their meaning.
-          if (boundary === null) {
-            const latest = run.snapshot.messages.findLastIndex(isHumanTurn);
-            if (
-              latest > (run.snapshot.contextSummary?.boundary ?? 0) &&
-              run.snapshot.messages
-                .slice(run.snapshot.contextSummary?.boundary ?? 0, latest)
-                .some((m) => m.role !== "system")
-            )
-              boundary = latest;
-          }
-          if (boundary !== null) {
-            rootBudget.checkAdmission();
-            const summarized = await summarizeWorkingState(
-              run.snapshot,
-              deps.provider,
-              signal,
-              boundary,
-              Math.floor(windowTokens * 0.8),
-              onModelUsage,
-            );
-            run.snapshot = {
-              ...run.snapshot,
-              contextSummary: summarized.contextSummary,
-            };
-            await save();
-            event({
-              type: "context_compacted",
-              removedMessages: Math.max(
-                0,
-                before.length - project(run.snapshot).length,
-              ),
-              beforeChars: JSON.stringify(before).length,
-              afterChars: JSON.stringify(project(run.snapshot)).length,
-            });
-          }
-        }
-        const context = compactContext(
-          project(run.snapshot),
-          rawLimit,
-          contextSize,
+            budget,
+            windowTokens,
+            definitions,
+            currentInstructions,
+          },
         );
-        if (context.removedMessages > 0)
-          event({
-            type: "context_compacted",
-            removedMessages: context.removedMessages,
-            beforeChars: context.beforeChars,
-            afterChars: context.afterChars,
-          });
-        const projectedUsage = {
-          ...measureContext(context.messages, windowTokens, definitions),
-          ...budgetUsage(budget),
-        };
-        event({ type: "context_usage", usage: projectedUsage });
         run.phase = "provider";
         run.turns += 1;
         run.activeStep = run.turns;
