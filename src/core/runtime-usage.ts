@@ -1,5 +1,6 @@
 import type { RootRunBudget } from "../shared/run-budget";
 import type { SessionId, Usage } from "../shared/schemas";
+import { addUsage } from "../shared/usage-totals";
 import type { RunState } from "./runtime-state";
 
 /**
@@ -17,16 +18,7 @@ export const createModelUsageObserver = (
       run.auxiliaryUsageComplete = false;
       return;
     }
-    const cached =
-      incoming.cachedPromptTokens === undefined
-        ? run.usage.cachedPromptTokens
-        : (run.usage.cachedPromptTokens ?? 0) + incoming.cachedPromptTokens;
-    run.usage = {
-      promptTokens: run.usage.promptTokens + incoming.promptTokens,
-      completionTokens: run.usage.completionTokens + incoming.completionTokens,
-      totalTokens: run.usage.totalTokens + incoming.totalTokens,
-      ...(cached === undefined ? {} : { cachedPromptTokens: cached }),
-    };
+    run.usage = addUsage(run.usage, incoming);
   };
   return onModelUsage;
 };

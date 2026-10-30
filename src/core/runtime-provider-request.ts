@@ -26,6 +26,7 @@ import type {
   SessionSnapshot,
   ToolDefinition,
 } from "../shared/schemas";
+import { addUsage } from "../shared/usage-totals";
 import { agentAllowsWebSearch } from "./agent-profiles";
 import type { createApprovalQueue } from "./approval-queue";
 import { withCancellation } from "./cancellation";
@@ -314,16 +315,7 @@ export const requestGeneration = async (
         incoming.promptTokens / projectedUsage.usedTokens,
       );
     // Aggregate only provider-reported cache counts; never invent cached usage.
-    const cached =
-      incoming.cachedPromptTokens === undefined
-        ? run.usage.cachedPromptTokens
-        : (run.usage.cachedPromptTokens ?? 0) + incoming.cachedPromptTokens;
-    run.usage = {
-      promptTokens: run.usage.promptTokens + incoming.promptTokens,
-      completionTokens: run.usage.completionTokens + incoming.completionTokens,
-      totalTokens: run.usage.totalTokens + incoming.totalTokens,
-      ...(cached === undefined ? {} : { cachedPromptTokens: cached }),
-    };
+    run.usage = addUsage(run.usage, incoming);
   }
   return { response, previews };
 };
