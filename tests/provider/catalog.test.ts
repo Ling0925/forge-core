@@ -39,7 +39,10 @@ it("reads OpenAI-compatible metadata exactly as reported, converting per-token p
 
 it("reads Anthropic's display name and Gemini's limits, stripping the models/ prefix", () => {
   expect(
-    normalizeModelMetadata({ id: "claude-opus-4-6", display_name: "Claude Opus 4.6" }),
+    normalizeModelMetadata({
+      id: "claude-opus-4-6",
+      display_name: "Claude Opus 4.6",
+    }),
   ).toMatchObject({ id: "claude-opus-4-6", displayName: "Claude Opus 4.6" });
   const gemini = normalizeModelMetadata(
     {
@@ -64,7 +67,10 @@ it("leaves unreported metadata unknown instead of guessing from the model name",
     object: "model",
     max_tokens: 4096,
   });
-  expect(entry).toMatchObject({ id: "some-128k-model", contextWindowTokens: null });
+  expect(entry).toMatchObject({
+    id: "some-128k-model",
+    contextWindowTokens: null,
+  });
   expect(entry?.maxOutputTokens).toBeUndefined();
   expect(entry?.vision).toBeUndefined();
   expect(entry?.tools).toBeUndefined();
@@ -73,10 +79,15 @@ it("leaves unreported metadata unknown instead of guessing from the model name",
 
 it("drops out-of-range numbers and unusable entries", () => {
   expect(
-    normalizeModelMetadata({ id: "m", context_length: 10000001, max_output_tokens: 0 }),
+    normalizeModelMetadata({
+      id: "m",
+      context_length: 10000001,
+      max_output_tokens: 0,
+    }),
   ).toMatchObject({ id: "m", contextWindowTokens: null });
   expect(
-    normalizeModelMetadata({ id: "m", context_length: 10000001 })?.maxOutputTokens,
+    normalizeModelMetadata({ id: "m", context_length: 10000001 })
+      ?.maxOutputTokens,
   ).toBeUndefined();
   for (const raw of [null, {}, { id: "" }, { id: "x".repeat(257) }])
     expect(normalizeModelMetadata(raw)).toBeUndefined();
@@ -89,8 +100,14 @@ it("keeps first-seen order and deduplicates exact IDs, including slashes", () =>
     { id: "model-b" },
     42,
   ]);
-  expect(catalog.map((entry) => entry.id)).toEqual(["vendor/model-a", "model-b"]);
-  expect(catalogFromIds(["a", "a", "b"]).map((entry) => entry.id)).toEqual(["a", "b"]);
+  expect(catalog.map((entry) => entry.id)).toEqual([
+    "vendor/model-a",
+    "model-b",
+  ]);
+  expect(catalogFromIds(["a", "a", "b"]).map((entry) => entry.id)).toEqual([
+    "a",
+    "b",
+  ]);
 });
 
 it("merges per field by user > upstream > reference and never lets a null erase a value", () => {
@@ -130,7 +147,17 @@ it("keeps the reference name under the upstream one and lets user pricing win fi
   const merged = mergeCatalog(
     [{ id: "m", contextWindowTokens: null, pricing: { input: 1, output: 2 } }],
     [{ id: "m", contextWindowTokens: null, pricing: { input: 3 } }],
-    [{ id: "m", contextWindowTokens: null, pricing: { input: 5, currency: "USD" } }],
+    [
+      {
+        id: "m",
+        contextWindowTokens: null,
+        pricing: { input: 5, currency: "USD" },
+      },
+    ],
   );
-  expect(merged[0]?.pricing).toMatchObject({ input: 5, output: 2, currency: "USD" });
+  expect(merged[0]?.pricing).toMatchObject({
+    input: 5,
+    output: 2,
+    currency: "USD",
+  });
 });

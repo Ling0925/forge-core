@@ -157,19 +157,26 @@ describe("unlimited root ledger integration", () => {
     let requests = 0;
     let toolSignal: AbortSignal | undefined;
     let settled = false;
-    const f = fixture({
-      listModels: async () => [],
-      complete: async () => ++requests === 1 ? calls(call("long-tool")) : answer(),
-    }, {
-      ...tools,
-      execute: async (_call, context) => {
-        toolSignal = context.signal;
-        entered.release();
-        await release.work;
-        return { content: "finished", isError: false };
+    const f = fixture(
+      {
+        listModels: async () => [],
+        complete: async () =>
+          ++requests === 1 ? calls(call("long-tool")) : answer(),
       },
-    }, { maxToolCalls: 1, maxRootToolCalls: 1, rootTimeoutMs: 1000 });
-    const work = f.run().finally(() => { settled = true; });
+      {
+        ...tools,
+        execute: async (_call, context) => {
+          toolSignal = context.signal;
+          entered.release();
+          await release.work;
+          return { content: "finished", isError: false };
+        },
+      },
+      { maxToolCalls: 1, maxRootToolCalls: 1, rootTimeoutMs: 1000 },
+    );
+    const work = f.run().finally(() => {
+      settled = true;
+    });
     try {
       await entered.work;
       await vi.advanceTimersByTimeAsync(48 * 60 * 60 * 1000);
@@ -178,7 +185,11 @@ describe("unlimited root ledger integration", () => {
       release.release();
       const result = await work;
       expect(result.status).toBe("completed");
-      expect(terminal(result).budget).toMatchObject({ timeoutMs: null, deadlineAt: null, consumed: 1 });
+      expect(terminal(result).budget).toMatchObject({
+        timeoutMs: null,
+        deadlineAt: null,
+        consumed: 1,
+      });
     } finally {
       release.release();
       await work;
@@ -197,7 +208,8 @@ describe("unlimited root ledger integration", () => {
         complete: async (_messages, _definitions, options) => {
           if (options.model === "child") {
             childRequests++;
-            if (_messages.some(message => message.role === "tool")) return answer();
+            if (_messages.some((message) => message.role === "tool"))
+              return answer();
             if (childRequests === 4) ready.release();
             await ready.work;
             return calls(
@@ -266,19 +278,38 @@ describe("unlimited root ledger integration", () => {
         if (spawned) await ready.work;
         if (spawned === 65) return answer();
         ready = latch();
-        return calls(call(`spawn-${++spawned}`, "spawn_agent", { task: "child", model: "child" }));
+        return calls(
+          call(`spawn-${++spawned}`, "spawn_agent", {
+            task: "child",
+            model: "child",
+          }),
+        );
       },
     });
-    const result = await f.run({ childToolFactory: async () => ({
-      ...tools, dispose: async () => { ready.release(); },
-    }) });
+    const result = await f.run({
+      childToolFactory: async () => ({
+        ...tools,
+        dispose: async () => {
+          ready.release();
+        },
+      }),
+    });
     expect(result.status).toBe("completed");
     expect(f.records.size).toBe(66);
     expect(terminal(result).budget?.sessions).toHaveLength(66);
-    const pages = result.messages.filter(message => message.role === "user" && message.origin === "agent_reconciliation")
-      .map(message => JSON.parse(message.content!.slice(message.content!.indexOf("\n") + 1)) as { id: string }[]);
-    expect(pages.map(page => page.length)).toEqual([32, 32, 1]);
-    expect(new Set(pages.flat().map(item => item.id)).size).toBe(65);
+    const pages = result.messages
+      .filter(
+        (message) =>
+          message.role === "user" && message.origin === "agent_reconciliation",
+      )
+      .map(
+        (message) =>
+          JSON.parse(
+            message.content!.slice(message.content!.indexOf("\n") + 1),
+          ) as { id: string }[],
+      );
+    expect(pages.map((page) => page.length)).toEqual([32, 32, 1]);
+    expect(new Set(pages.flat().map((item) => item.id)).size).toBe(65);
     expect(f.locked.size).toBe(0);
   });
 
@@ -358,9 +389,10 @@ describe("unlimited root ledger integration", () => {
     const f = fixture(
       {
         listModels: async () => [],
-        complete: async () => ++requests === 1
-          ? calls(call("denied", "run_command"), call("error", "read_file"))
-          : answer(),
+        complete: async () =>
+          ++requests === 1
+            ? calls(call("denied", "run_command"), call("error", "read_file"))
+            : answer(),
       },
       {
         ...tools,
@@ -426,10 +458,14 @@ describe("unlimited root ledger integration", () => {
     let settled = false;
     try {
       const work = f
-        .run({ rootBudget: t.budget }, async () => {
-          entered.release();
-          return new Promise<boolean>(() => {});
-        }, t.signal)
+        .run(
+          { rootBudget: t.budget },
+          async () => {
+            entered.release();
+            return new Promise<boolean>(() => {});
+          },
+          t.signal,
+        )
         .finally(() => {
           settled = true;
         });
@@ -520,19 +556,23 @@ describe("unlimited root ledger integration", () => {
     let settled = false;
     try {
       const work = f
-        .run({
-          rootBudget: t.budget,
-          childToolFactory: async () => {
-            entered.release();
-            await release.work;
-            return {
-              ...tools,
-              dispose: async () => {
-                disposed++;
-              },
-            };
+        .run(
+          {
+            rootBudget: t.budget,
+            childToolFactory: async () => {
+              entered.release();
+              await release.work;
+              return {
+                ...tools,
+                dispose: async () => {
+                  disposed++;
+                },
+              };
+            },
           },
-        }, undefined, t.signal)
+          undefined,
+          t.signal,
+        )
         .finally(() => {
           settled = true;
         });
@@ -591,7 +631,9 @@ describe("unlimited root ledger integration", () => {
         listModels: async () => [],
         complete: async () => {
           requests++;
-          return requests % 2 === 1 ? calls(call(`read-${requests}`)) : answer();
+          return requests % 2 === 1
+            ? calls(call(`read-${requests}`))
+            : answer();
         },
       },
       {

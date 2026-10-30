@@ -6,11 +6,11 @@ import { join } from "node:path";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import { sameOriginEndpoint, validSessionId } from "../../src/mcp/http";
 import { createMcpService } from "../../src/mcp/registry";
-import { mcpRegisterDtoSchema } from "../../src/shared/mcp";
 import {
   mcpRegisterAnyInputSchema,
   mcpRemoteServerConfigSchema,
 } from "../../src/mcp/types";
+import { mcpRegisterDtoSchema } from "../../src/shared/mcp";
 
 const initResult = {
   protocolVersion: "2025-11-25",
@@ -544,26 +544,38 @@ describe("URL and session helpers", () => {
 });
 
 describe("Streamable HTTP transport", () => {
-  it.each(["api-key", "bearer"])("forwards private %s credentials and redacts a bare echoed token", async (kind) => {
-    const fixture = streamableFixture();
-    const listening = await listen(fixture.handler);
-    servers.push(listening.server);
-    const mcp = await service();
-    open.push({ server: listening.server, service: mcp });
-    const token = "exa-api-key-fixture-only";
-    const id = `credential-${kind}`;
-    await mcp.register(mcpRegisterDtoSchema.parse({
-      id, label: "Exa-compatible fixture", transport: "http", url: `${listening.base}/mcp`,
-      headers: kind === "api-key" ? { "x-api-key": token } : { authorization: `Bearer ${token}` },
-      enabled: true,
-    }));
-    const output = await mcp.callTool(id, "echo", { text: token });
-    expect(output.text).toBe("[REDACTED]");
-    expect(JSON.stringify(output)).not.toContain(token);
-    expect(kind === "api-key" ? fixture.state.apiKeysSeen : fixture.state.authSeen)
-      .toContain(kind === "api-key" ? token : `Bearer ${token}`);
-    expect(JSON.stringify(await mcp.list())).not.toContain(token);
-  });
+  it.each(["api-key", "bearer"])(
+    "forwards private %s credentials and redacts a bare echoed token",
+    async (kind) => {
+      const fixture = streamableFixture();
+      const listening = await listen(fixture.handler);
+      servers.push(listening.server);
+      const mcp = await service();
+      open.push({ server: listening.server, service: mcp });
+      const token = "exa-api-key-fixture-only";
+      const id = `credential-${kind}`;
+      await mcp.register(
+        mcpRegisterDtoSchema.parse({
+          id,
+          label: "Exa-compatible fixture",
+          transport: "http",
+          url: `${listening.base}/mcp`,
+          headers:
+            kind === "api-key"
+              ? { "x-api-key": token }
+              : { authorization: `Bearer ${token}` },
+          enabled: true,
+        }),
+      );
+      const output = await mcp.callTool(id, "echo", { text: token });
+      expect(output.text).toBe("[REDACTED]");
+      expect(JSON.stringify(output)).not.toContain(token);
+      expect(
+        kind === "api-key" ? fixture.state.apiKeysSeen : fixture.state.authSeen,
+      ).toContain(kind === "api-key" ? token : `Bearer ${token}`);
+      expect(JSON.stringify(await mcp.list())).not.toContain(token);
+    },
+  );
 
   it("registers without contacting the endpoint, then initialize/list/call and hide headers", async () => {
     const fixture = streamableFixture();

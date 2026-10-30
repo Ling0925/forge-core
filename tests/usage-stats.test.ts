@@ -4,12 +4,34 @@ import {
   computeSessionUsage,
   createUsageStatsService,
 } from "../src/core/usage-stats";
-import type { SessionSnapshot } from "../src/shared/schemas";
+import {
+  type ContextUsage,
+  type SessionSnapshot,
+  sessionIdSchema,
+} from "../src/shared/schemas";
 
-function createMockSnapshot(overrides: Partial<SessionSnapshot> = {}): SessionSnapshot {
+const sessionId = (value: string) => sessionIdSchema.parse(value);
+// A schema-complete request-basis context sample; only the token fields matter here.
+const requestContext = (
+  tokens: Pick<
+    ContextUsage,
+    "promptTokens" | "completionTokens" | "cachedPromptTokens"
+  >,
+): ContextUsage => ({
+  windowTokens: null,
+  usedTokens: tokens.promptTokens ?? 0,
+  estimated: false,
+  basis: "request",
+  parts: { instructions: 0, memory: 0, conversation: 0, tools: 0 },
+  ...tokens,
+});
+
+function createMockSnapshot(
+  overrides: Partial<SessionSnapshot> = {},
+): SessionSnapshot {
   return {
     version: 1,
-    id: "00000000-0000-0000-0000-000000000001",
+    id: sessionId("00000000-0000-0000-0000-000000000001"),
     title: "Test Session",
     workspace: "/test/workspace",
     model: "test-model-1",
@@ -19,27 +41,28 @@ function createMockSnapshot(overrides: Partial<SessionSnapshot> = {}): SessionSn
     messages: [],
     events: [
       {
-        sessionId: "00000000-0000-0000-0000-000000000001",
+        sessionId: sessionId("00000000-0000-0000-0000-000000000001"),
         type: "run_started",
         model: overrides.model ?? "test-model-1",
-        permission: "read_only",
-        prompt: "Hello",
+        permission: "readonly",
         timestamp: "2025-01-01T10:00:00.000Z",
       },
       {
-        sessionId: "00000000-0000-0000-0000-000000000001",
+        sessionId: sessionId("00000000-0000-0000-0000-000000000001"),
         type: "context_usage",
-        usage: {
-          basis: "request",
+        timestamp: "2025-01-01T10:00:30.000Z",
+        usage: requestContext({
           promptTokens: 100,
           completionTokens: 20,
           cachedPromptTokens: 30,
-        },
+        }),
       },
       {
-        sessionId: "00000000-0000-0000-0000-000000000001",
+        sessionId: sessionId("00000000-0000-0000-0000-000000000001"),
         type: "run_finished",
         status: "completed",
+        turns: 1,
+        toolCalls: 0,
         timestamp: "2025-01-01T10:01:00.000Z",
         usage: {
           promptTokens: 100,
@@ -72,29 +95,30 @@ describe("usage-stats", () => {
   it("aggregates multiple sessions and models properly", () => {
     const s1 = computeSessionUsage(
       createMockSnapshot({
-        id: "00000000-0000-0000-0000-000000000001",
+        id: sessionId("00000000-0000-0000-0000-000000000001"),
         model: "model-a",
         workspace: "/ws1",
       }),
     );
     const s2 = computeSessionUsage(
       createMockSnapshot({
-        id: "00000000-0000-0000-0000-000000000002",
+        id: sessionId("00000000-0000-0000-0000-000000000002"),
         model: "model-b",
         workspace: "/ws2",
         events: [
           {
-            sessionId: "00000000-0000-0000-0000-000000000002",
+            sessionId: sessionId("00000000-0000-0000-0000-000000000002"),
             type: "run_started",
             model: "model-b",
-            permission: "read_only",
-            prompt: "Test",
+            permission: "readonly",
             timestamp: "2025-01-02T10:00:00.000Z",
           },
           {
-            sessionId: "00000000-0000-0000-0000-000000000002",
+            sessionId: sessionId("00000000-0000-0000-0000-000000000002"),
             type: "run_finished",
             status: "completed",
+            turns: 1,
+            toolCalls: 0,
             timestamp: "2025-01-02T10:01:00.000Z",
             usage: {
               promptTokens: 200,
@@ -154,12 +178,16 @@ describe("usage-stats", () => {
         if (id === snap1.id) return snap1;
         throw new Error("Not found");
       },
-      create: async () => { throw new Error("not implemented"); },
+      create: async () => {
+        throw new Error("not implemented");
+      },
       save: async () => {},
       acquire: async () => async () => {},
     };
 
-    const service = createUsageStatsService(store, { getPrices: async () => new Map() });
+    const service = createUsageStatsService(store, {
+      getPrices: async () => new Map(),
+    });
     const stats1 = await service.getUsageStats();
     expect(stats1.totalSessions).toBe(1);
     expect(stats1.totalTokens).toBe(125);

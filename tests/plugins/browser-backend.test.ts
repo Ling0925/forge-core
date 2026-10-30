@@ -215,9 +215,11 @@ describe("agent-browser backend", () => {
       // check() is a protocol/tool discovery probe only.
       expect(await test.cleanup()).toBeUndefined();
     } finally {
+      // biome-ignore lint/performance/noDelete: assigning undefined would store the string "undefined" in process.env.
       if (previous === undefined) delete process.env.FORGE_BACKEND_TEST_SECRET;
       else process.env.FORGE_BACKEND_TEST_SECRET = previous;
       if (previousProfile === undefined)
+        // biome-ignore lint/performance/noDelete: assigning undefined would store the string "undefined" in process.env.
         delete process.env.AGENT_BROWSER_PROFILE;
       else process.env.AGENT_BROWSER_PROFILE = previousProfile;
     }
@@ -326,18 +328,35 @@ describe("agent-browser backend", () => {
     expect(calls.map((call) => call.name)).toEqual(["agent_browser_open"]);
   });
 
-  it.each([{ domains: ["*"] }, { domains: ["example.com", "*"] }])("honors explicit all-host grants $domains without an upstream domain filter", async ({ domains }) => {
-    const test = await harness({ domains });
-    for (const url of ["file:///etc/passwd", "javascript:alert(1)", "https://user:pass@any.test/"])
-      await expect(test.backend.execute({ action: "navigate", url })).rejects.toThrow(/credential-free HTTP\(S\)/);
-    expect(await test.read("start.json")).toBeUndefined();
-    for (const url of ["https://not-listed.test/page", "http://127.0.0.1:8080/page"])
-      await expect(test.backend.execute({ action: "navigate", url })).resolves.toMatchObject({ isError: false });
-    expect((await test.start()).env.AGENT_BROWSER_ALLOWED_DOMAINS).toBeUndefined();
-    expect((await test.calls()).map(call => call.args.url)).toEqual([
-      "https://not-listed.test/page", "http://127.0.0.1:8080/page",
-    ]);
-  });
+  it.each([{ domains: ["*"] }, { domains: ["example.com", "*"] }])(
+    "honors explicit all-host grants $domains without an upstream domain filter",
+    async ({ domains }) => {
+      const test = await harness({ domains });
+      for (const url of [
+        "file:///etc/passwd",
+        "javascript:alert(1)",
+        "https://user:pass@any.test/",
+      ])
+        await expect(
+          test.backend.execute({ action: "navigate", url }),
+        ).rejects.toThrow(/credential-free HTTP\(S\)/);
+      expect(await test.read("start.json")).toBeUndefined();
+      for (const url of [
+        "https://not-listed.test/page",
+        "http://127.0.0.1:8080/page",
+      ])
+        await expect(
+          test.backend.execute({ action: "navigate", url }),
+        ).resolves.toMatchObject({ isError: false });
+      expect(
+        (await test.start()).env.AGENT_BROWSER_ALLOWED_DOMAINS,
+      ).toBeUndefined();
+      expect((await test.calls()).map((call) => call.args.url)).toEqual([
+        "https://not-listed.test/page",
+        "http://127.0.0.1:8080/page",
+      ]);
+    },
+  );
 
   it("returns bounded PNG image data and only reads its own private screenshot file", async () => {
     const test = await harness();

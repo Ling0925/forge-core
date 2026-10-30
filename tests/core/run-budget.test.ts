@@ -9,14 +9,28 @@ describe("unlimited root run ledger", () => {
     try {
       const ids = Array.from({ length: 4 }, () => randomUUID());
       for (const id of ids) budget.enter(id);
-      const attempts = await Promise.all(ids.map(async (id) => budget.reserve(id, 2)));
-      expect(budget.snapshot()).toMatchObject({ consumed: 0, reserved: 8, remaining: null });
+      const attempts = await Promise.all(
+        ids.map(async (id) => budget.reserve(id, 2)),
+      );
+      expect(budget.snapshot()).toMatchObject({
+        consumed: 0,
+        reserved: 8,
+        remaining: null,
+      });
       for (const attempt of attempts) {
         attempt.dispatch(2);
         attempt.release();
       }
-      expect(budget.snapshot()).toMatchObject({ consumed: 8, reserved: 0, remaining: null });
-      expect(budget.snapshot().sessions.reduce((sum, item) => sum + item.consumed, 0)).toBe(8);
+      expect(budget.snapshot()).toMatchObject({
+        consumed: 8,
+        reserved: 0,
+        remaining: null,
+      });
+      expect(
+        budget
+          .snapshot()
+          .sessions.reduce((sum, item) => sum + item.consumed, 0),
+      ).toBe(8);
       expect(() => budget.checkAdmission()).not.toThrow();
     } finally {
       budget.close();
@@ -32,12 +46,20 @@ describe("unlimited root run ledger", () => {
       first.dispatch();
       first.release();
       first.release();
-      expect(budget.snapshot()).toMatchObject({ consumed: 1, reserved: 0, remaining: null });
+      expect(budget.snapshot()).toMatchObject({
+        consumed: 1,
+        reserved: 0,
+        remaining: null,
+      });
       expect(() => first.dispatch()).toThrow("already consumed");
       const next = budget.reserve(id, 1_000_001);
       next.dispatch(1_000_001);
       next.release();
-      expect(budget.snapshot()).toMatchObject({ consumed: 1_000_002, reserved: 0, remaining: null });
+      expect(budget.snapshot()).toMatchObject({
+        consumed: 1_000_002,
+        reserved: 0,
+        remaining: null,
+      });
       expect(() => budget.checkAdmission()).not.toThrow();
     } finally {
       budget.close();
@@ -58,8 +80,13 @@ describe("unlimited root run ledger", () => {
       reservation.release();
       expect(() => budget.checkAdmission()).not.toThrow();
       expect(budget.snapshot()).toMatchObject({
-        consumed: 2, reserved: 0, stopReason: null,
-        maxToolCalls: null, timeoutMs: null, deadlineAt: null, remaining: null,
+        consumed: 2,
+        reserved: 0,
+        stopReason: null,
+        maxToolCalls: null,
+        timeoutMs: null,
+        deadlineAt: null,
+        remaining: null,
       });
       budget.close();
       expect(() => budget.check()).toThrow("cannot be resumed");
@@ -80,10 +107,19 @@ describe("unlimited root run ledger", () => {
       const snapshot = budget.snapshot();
       expect(snapshot.sessions).toHaveLength(66);
       expect(budget.snapshot(ids[0]).sessions).toHaveLength(1);
-      expect(rootBudgetSnapshotSchema.parse(JSON.parse(JSON.stringify(snapshot)))).toEqual(snapshot);
-      const historical = { ...snapshot, sessions: snapshot.sessions.slice(0, 33),
-        maxToolCalls: 2000, timeoutMs: 7200000, deadlineAt: "2026-01-01T02:00:00.000Z",
-        remaining: 1999, consumed: 1, stopReason: "deadline" };
+      expect(
+        rootBudgetSnapshotSchema.parse(JSON.parse(JSON.stringify(snapshot))),
+      ).toEqual(snapshot);
+      const historical = {
+        ...snapshot,
+        sessions: snapshot.sessions.slice(0, 33),
+        maxToolCalls: 2000,
+        timeoutMs: 7200000,
+        deadlineAt: "2026-01-01T02:00:00.000Z",
+        remaining: 1999,
+        consumed: 1,
+        stopReason: "deadline",
+      };
       expect(rootBudgetSnapshotSchema.parse(historical)).toEqual(historical);
     } finally {
       budget.close();
@@ -95,11 +131,17 @@ describe("unlimited root run ledger", () => {
     const budget = createRootRunBudget({ rootSessionId: root });
     budget.enter(root);
     const first = budget.beginUsage(root);
-    expect(budget.snapshot().usage).toMatchObject({ missingRequests: 1, complete: false });
+    expect(budget.snapshot().usage).toMatchObject({
+      missingRequests: 1,
+      complete: false,
+    });
     first({ promptTokens: 1, completionTokens: 2, totalTokens: 3 });
     first({ promptTokens: 1, completionTokens: 2, totalTokens: 3 });
     expect(budget.snapshot().usage).toMatchObject({
-      reportedRequests: 1, missingRequests: 0, complete: true, totalTokens: 3,
+      reportedRequests: 1,
+      missingRequests: 0,
+      complete: true,
+      totalTokens: 3,
     });
     const late = budget.beginUsage(root);
     const terminal = budget.snapshot();
@@ -108,7 +150,10 @@ describe("unlimited root run ledger", () => {
     budget.finishSession(root, "failed", "late");
     expect(budget.snapshot()).toEqual(terminal);
     expect(terminal.usage).toMatchObject({
-      reportedRequests: 1, missingRequests: 1, complete: false, totalTokens: 3,
+      reportedRequests: 1,
+      missingRequests: 1,
+      complete: false,
+      totalTokens: 3,
     });
   });
 
@@ -120,13 +165,22 @@ describe("unlimited root run ledger", () => {
       budget.enter(root);
       budget.enter(child);
       budget.observeUsage(root, {
-        promptTokens: 4, completionTokens: 2, totalTokens: 6, cachedPromptTokens: 1,
+        promptTokens: 4,
+        completionTokens: 2,
+        totalTokens: 6,
+        cachedPromptTokens: 1,
       });
       budget.observeUsage(child, undefined);
       const snapshot = budget.snapshot();
       expect(snapshot.usage).toEqual({
-        basis: "reported", reportedRequests: 1, missingRequests: 1, complete: false,
-        promptTokens: 4, completionTokens: 2, totalTokens: 6, cachedPromptTokens: 1,
+        basis: "reported",
+        reportedRequests: 1,
+        missingRequests: 1,
+        complete: false,
+        promptTokens: 4,
+        completionTokens: 2,
+        totalTokens: 6,
+        cachedPromptTokens: 1,
       });
       const row = snapshot.sessions[0];
       if (!row) throw Error("missing observation");

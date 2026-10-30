@@ -1,7 +1,7 @@
 import { ForgeError } from "../shared/errors";
+import type { McpToolOutcome } from "../shared/mcp";
 import { checkDiscovery } from "./bounds";
 import { toolOutcome } from "./content";
-import type { McpToolOutcome } from "../shared/mcp";
 export type { McpToolOutcome } from "../shared/mcp";
 import {
   MCP_DISCOVERY_LIMIT,

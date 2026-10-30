@@ -1,22 +1,31 @@
-import type { ServerSentEvent } from "openai/core/streaming";
 import { isDeepStrictEqual } from "node:util";
+import type { ServerSentEvent } from "openai/core/streaming";
 import type {
   ResponseCreateParamsStreaming,
   ResponseInput,
 } from "openai/resources/responses/responses";
 import { z } from "zod";
 import type { ProtocolReason } from "../shared/errors";
-import type { ProviderDiagnostic, ProviderStage } from "./errors";
 import { providerResponseSchema, toolCallSchema } from "../shared/schemas";
-import type { WebCitation, WebSearchMode, WebSearchProgress } from "../shared/web-search";
-import { citationRecord, searchRecord, urlCitation, webSearchCall } from "./responses-web-search";
-import { responseFailure } from "./responses-errors";
 import type {
   Message,
   ProviderResponse,
   ToolCallPreview,
   ToolDefinition,
 } from "../shared/schemas";
+import type {
+  WebCitation,
+  WebSearchMode,
+  WebSearchProgress,
+} from "../shared/web-search";
+import type { ProviderDiagnostic, ProviderStage } from "./errors";
+import { responseFailure } from "./responses-errors";
+import {
+  citationRecord,
+  searchRecord,
+  urlCitation,
+  webSearchCall,
+} from "./responses-web-search";
 
 const id = z.string().min(1).max(256);
 const call = z
@@ -37,14 +46,20 @@ const message = z
     status: z.literal("completed"),
     content: z
       .array(
-        z.union([z
-          .object({
-            type: z.literal("output_text"),
-            text: z.string().max(2_000_000),
-            annotations: z.array(urlCitation).max(256).optional(),
-          })
-          .passthrough(),
-          z.object({ type: z.literal("refusal"), refusal: z.string().max(2_000_000) }).passthrough(),
+        z.union([
+          z
+            .object({
+              type: z.literal("output_text"),
+              text: z.string().max(2_000_000),
+              annotations: z.array(urlCitation).max(256).optional(),
+            })
+            .passthrough(),
+          z
+            .object({
+              type: z.literal("refusal"),
+              refusal: z.string().max(2_000_000),
+            })
+            .passthrough(),
         ]),
       )
       .max(256),
@@ -56,19 +71,42 @@ const reasoning = z
     id,
     summary: z.array(z.unknown()).max(256),
     encrypted_content: z.string().max(1_000_000).nullable().optional(),
-    content: z.array(z.object({ type: z.literal("reasoning_text"), text: z.string() }).passthrough()).optional(),
+    content: z
+      .array(
+        z
+          .object({ type: z.literal("reasoning_text"), text: z.string() })
+          .passthrough(),
+      )
+      .optional(),
   })
   .passthrough();
 const outputItem = z.union([call, message, reasoning, webSearchCall]);
 const prose = (part: z.infer<typeof message>["content"][number]): string =>
   part.type === "output_text" ? part.text : part.refusal;
 const stateEvents = new Set([
-  "response.created", "response.in_progress", "response.completed", "response.failed", "response.incomplete", "error",
-  "response.output_item.added", "response.output_item.done", "response.output_text.delta", "response.output_text.done",
-  "response.content_part.added", "response.content_part.done",
-  "response.refusal.delta", "response.refusal.done", "response.function_call_arguments.delta", "response.function_call_arguments.done",
-  "response.web_search_call.in_progress", "response.web_search_call.searching", "response.web_search_call.completed",
-  "response.output_text.annotation.added", "response.reasoning_summary_text.delta", "response.reasoning_text.delta", "response.reasoning_text.done",
+  "response.created",
+  "response.in_progress",
+  "response.completed",
+  "response.failed",
+  "response.incomplete",
+  "error",
+  "response.output_item.added",
+  "response.output_item.done",
+  "response.output_text.delta",
+  "response.output_text.done",
+  "response.content_part.added",
+  "response.content_part.done",
+  "response.refusal.delta",
+  "response.refusal.done",
+  "response.function_call_arguments.delta",
+  "response.function_call_arguments.done",
+  "response.web_search_call.in_progress",
+  "response.web_search_call.searching",
+  "response.web_search_call.completed",
+  "response.output_text.annotation.added",
+  "response.reasoning_summary_text.delta",
+  "response.reasoning_text.delta",
+  "response.reasoning_text.done",
 ]);
 const terminal = z.object({
   id,
@@ -105,12 +143,28 @@ type Helpers = {
 };
 
 type MessagePart = z.infer<typeof message>["content"][number];
-function matchesPart(initial: MessagePart, final: MessagePart | undefined, exact: boolean): boolean {
+function matchesPart(
+  initial: MessagePart,
+  final: MessagePart | undefined,
+  exact: boolean,
+): boolean {
   if (!final || initial.type !== final.type) return false;
-  if (exact ? prose(initial) !== prose(final) : !prose(final).startsWith(prose(initial))) return false;
-  if (initial.type === "output_text" && final.type === "output_text" && initial.annotations !== undefined) {
-    if (exact) return isDeepStrictEqual(initial.annotations, final.annotations ?? []);
-    return initial.annotations.every((annotation, index) => isDeepStrictEqual(annotation, final.annotations?.[index]));
+  if (
+    exact
+      ? prose(initial) !== prose(final)
+      : !prose(final).startsWith(prose(initial))
+  )
+    return false;
+  if (
+    initial.type === "output_text" &&
+    final.type === "output_text" &&
+    initial.annotations !== undefined
+  ) {
+    if (exact)
+      return isDeepStrictEqual(initial.annotations, final.annotations ?? []);
+    return initial.annotations.every((annotation, index) =>
+      isDeepStrictEqual(annotation, final.annotations?.[index]),
+    );
   }
   return true;
 }
@@ -137,8 +191,12 @@ function sameAdded(added: unknown, done: z.infer<typeof outputItem>): boolean {
         done.arguments.startsWith(a.data.arguments))
     );
   if (done.type === "message")
-    return (a.data.role === undefined || a.data.role === done.role) &&
-      (a.data.content ?? []).every((part, index) => matchesPart(part, done.content[index], false));
+    return (
+      (a.data.role === undefined || a.data.role === done.role) &&
+      (a.data.content ?? []).every((part, index) =>
+        matchesPart(part, done.content[index], false),
+      )
+    );
   return true;
 }
 function sameItem(
@@ -153,10 +211,7 @@ function sameItem(
       a.arguments === b.arguments
     );
   if (a.type === "message" && b.type === "message")
-    return (
-      a.role === b.role &&
-      isDeepStrictEqual(a.content, b.content)
-    );
+    return a.role === b.role && isDeepStrictEqual(a.content, b.content);
   return (
     (a.type === "reasoning" || a.type === "web_search_call") &&
     a.type === b.type &&
@@ -294,12 +349,28 @@ export function createResponsesAdapter(h: Helpers, baseUrl: string) {
         model,
         input: input(messages, model) as ResponseInput,
         tools: [
-          ...tools.map((t) => ({ type: "function" as const, ...t.function, strict: false })),
-          ...(webSearch === "disabled" ? [] : [{ type: "web_search" as const, external_web_access: webSearch === "live" }]),
+          ...tools.map((t) => ({
+            type: "function" as const,
+            ...t.function,
+            strict: false,
+          })),
+          ...(webSearch === "disabled"
+            ? []
+            : [
+                {
+                  type: "web_search" as const,
+                  external_web_access: webSearch === "live",
+                },
+              ]),
         ],
         stream: true,
         store: false,
-        include: ["reasoning.encrypted_content", ...(webSearch === "disabled" ? [] : ["web_search_call.action.sources" as const])],
+        include: [
+          "reasoning.encrypted_content",
+          ...(webSearch === "disabled"
+            ? []
+            : ["web_search_call.action.sources" as const]),
+        ],
       };
     },
     async read(
@@ -325,8 +396,13 @@ export function createResponsesAdapter(h: Helpers, baseUrl: string) {
         // A final snapshot can supply arguments when no deltas were sent. Once
         // deltas (or another final snapshot) exist, require an exact match: never
         // repair truncated JSON or replace streamed arguments before execution.
-        if (previous === undefined || (argumentDeltas.has(itemId) || argumentDone.has(itemId)
-          ? previous !== value : !value.startsWith(previous))) throw h.protocol("invalid_tool_call");
+        if (
+          previous === undefined ||
+          (argumentDeltas.has(itemId) || argumentDone.has(itemId)
+            ? previous !== value
+            : !value.startsWith(previous))
+        )
+          throw h.protocol("invalid_tool_call");
         args.set(itemId, value);
       };
       const items = new Map<number, { id: string; type: string }>();
@@ -340,11 +416,19 @@ export function createResponsesAdapter(h: Helpers, baseUrl: string) {
       const reasoningDone = new Set<string>();
       const annotations = new Map<string, z.infer<typeof urlCitation>>();
       const searchStatuses = new Map<string, WebSearchProgress["status"]>();
-      const notifySearch = (id: string, status: WebSearchProgress["status"]) => {
+      const notifySearch = (
+        id: string,
+        status: WebSearchProgress["status"],
+      ) => {
         const previous = searchStatuses.get(id);
         if (previous === status) return;
-        if (previous && ["completed", "failed", "incomplete"].includes(previous)) throw h.protocol();
-        if (previous === "searching" && status === "in_progress") throw h.protocol();
+        if (
+          previous &&
+          ["completed", "failed", "incomplete"].includes(previous)
+        )
+          throw h.protocol();
+        if (previous === "searching" && status === "in_progress")
+          throw h.protocol();
         searchStatuses.set(id, status);
         // Isolate callback failures using the same observer boundary as text.
         h.notify(() => onWebSearch({ id, status }), "web_search");
@@ -375,12 +459,19 @@ export function createResponsesAdapter(h: Helpers, baseUrl: string) {
       const dispatch = (payload: unknown, eventName: string | null) => {
         // `message` is SSE's default event type, not a conflicting native type.
         const nativeEvent = eventName === "message" ? null : eventName;
-        const parsed = z.object({ type: z.string().optional() }).passthrough().parse(payload);
+        const parsed = z
+          .object({ type: z.string().optional() })
+          .passthrough()
+          .parse(payload);
         const e = { ...parsed, type: parsed.type ?? nativeEvent };
-        if (!e.type || (nativeEvent && nativeEvent !== e.type)) throw h.protocol();
+        if (!e.type || (nativeEvent && nativeEvent !== e.type))
+          throw h.protocol();
         if (e.type === "response.metadata") {
-          const p = z.object({ response_id: id, metadata: z.record(z.unknown()) }).parse(e);
-          if (responseId !== undefined && responseId !== p.response_id) throw h.protocol();
+          const p = z
+            .object({ response_id: id, metadata: z.record(z.unknown()) })
+            .parse(e);
+          if (responseId !== undefined && responseId !== p.response_id)
+            throw h.protocol();
           responseId = p.response_id;
           return;
         }
@@ -434,7 +525,19 @@ export function createResponsesAdapter(h: Helpers, baseUrl: string) {
             );
           else if (p.item.type === "web_search_call") {
             if (webSearch === "disabled") throw h.protocol();
-            const initial = z.object({ id, type: z.literal("web_search_call"), status: z.enum(["in_progress", "searching", "completed", "failed", "incomplete"]) }).parse(p.item);
+            const initial = z
+              .object({
+                id,
+                type: z.literal("web_search_call"),
+                status: z.enum([
+                  "in_progress",
+                  "searching",
+                  "completed",
+                  "failed",
+                  "incomplete",
+                ]),
+              })
+              .parse(p.item);
             if (searchStatuses.size >= 128) throw h.protocol("output_limit");
             added.set(p.output_index, initial);
             notifySearch(initial.id, initial.status);
@@ -483,45 +586,114 @@ export function createResponsesAdapter(h: Helpers, baseUrl: string) {
             if (item.type !== "message") throw h.protocol();
             if (p.content_index === undefined) throw h.protocol();
             const partKey = `${p.output_index}:${p.content_index}`;
-            const kind = e.type === "response.refusal.delta" ? "refusal" : "output_text";
-            if (textKinds.has(partKey) && textKinds.get(partKey) !== kind) throw h.protocol();
+            const kind =
+              e.type === "response.refusal.delta" ? "refusal" : "output_text";
+            if (textKinds.has(partKey) && textKinds.get(partKey) !== kind)
+              throw h.protocol();
             textKinds.set(partKey, kind);
-            if (textDone.has(partKey) || contentDone.has(partKey)) throw h.protocol();
+            if (textDone.has(partKey) || contentDone.has(partKey))
+              throw h.protocol();
             textParts.set(partKey, (textParts.get(partKey) ?? "") + p.delta);
             text += p.delta;
-            if (text.length > 2_000_000) throw h.protocol("output_limit", { stage: "output_text", observed: text.length, limit: 2_000_000, unit: "utf16_code_units" });
+            if (text.length > 2_000_000)
+              throw h.protocol("output_limit", {
+                stage: "output_text",
+                observed: text.length,
+                limit: 2_000_000,
+                unit: "utf16_code_units",
+              });
             for (let i = 0; i < p.delta.length; i += 65536)
               h.notify(observer, p.delta.slice(i, i + 65536));
           } else {
             if (item.type !== "function_call" || argumentDone.has(item.id))
               throw h.protocol();
             const next = (args.get(item.id) ?? "") + p.delta;
-            if (next.length > 1_000_000) throw h.protocol("output_limit", { stage: "tool_arguments", observed: next.length, limit: 1_000_000, unit: "utf16_code_units" });
+            if (next.length > 1_000_000)
+              throw h.protocol("output_limit", {
+                stage: "tool_arguments",
+                observed: next.length,
+                limit: 1_000_000,
+                unit: "utf16_code_units",
+              });
             args.set(item.id, next);
             if (p.delta) argumentDeltas.add(item.id);
             notifyToolPreview(p.output_index);
           }
-        } else if (e.type === "response.content_part.added" || e.type === "response.content_part.done") {
-          const p = z.object({
-            output_index: z.number().int().min(0).max(511), item_id: id,
-            content_index: z.number().int().min(0).max(255), part: message.shape.content.element,
-          }).parse(e);
+        } else if (
+          e.type === "response.content_part.added" ||
+          e.type === "response.content_part.done"
+        ) {
+          const p = z
+            .object({
+              output_index: z.number().int().min(0).max(511),
+              item_id: id,
+              content_index: z.number().int().min(0).max(255),
+              part: message.shape.content.element,
+            })
+            .parse(e);
           const item = items.get(p.output_index);
           const key = `${p.output_index}:${p.content_index}`;
-          const parts = e.type === "response.content_part.done" ? contentDone : contentAdded;
-          if (item?.id !== p.item_id || item.type !== "message" || ended.has(p.output_index) ||
-            parts.has(key) || (parts === contentAdded && contentDone.has(key))) throw h.protocol();
+          const parts =
+            e.type === "response.content_part.done"
+              ? contentDone
+              : contentAdded;
+          if (
+            item?.id !== p.item_id ||
+            item.type !== "message" ||
+            ended.has(p.output_index) ||
+            parts.has(key) ||
+            (parts === contentAdded && contentDone.has(key))
+          )
+            throw h.protocol();
           parts.set(key, p.part);
-        } else if (["response.web_search_call.in_progress", "response.web_search_call.searching", "response.web_search_call.completed"].includes(e.type)) {
-          const p = z.object({ item_id: id, output_index: z.number().int().min(0).max(511) }).parse(e);
+        } else if (
+          [
+            "response.web_search_call.in_progress",
+            "response.web_search_call.searching",
+            "response.web_search_call.completed",
+          ].includes(e.type)
+        ) {
+          const p = z
+            .object({
+              item_id: id,
+              output_index: z.number().int().min(0).max(511),
+            })
+            .parse(e);
           const item = items.get(p.output_index);
-          if (webSearch === "disabled" || item?.type !== "web_search_call" || item.id !== p.item_id || ended.has(p.output_index)) throw h.protocol();
-          notifySearch(item.id, e.type === "response.web_search_call.in_progress" ? "in_progress" : e.type === "response.web_search_call.searching" ? "searching" : "completed");
+          if (
+            webSearch === "disabled" ||
+            item?.type !== "web_search_call" ||
+            item.id !== p.item_id ||
+            ended.has(p.output_index)
+          )
+            throw h.protocol();
+          notifySearch(
+            item.id,
+            e.type === "response.web_search_call.in_progress"
+              ? "in_progress"
+              : e.type === "response.web_search_call.searching"
+                ? "searching"
+                : "completed",
+          );
         } else if (e.type === "response.output_text.annotation.added") {
-          const p = z.object({ item_id: id, output_index: z.number().int().min(0).max(511), content_index: z.number().int().min(0).max(255), annotation_index: z.number().int().min(0).max(255), annotation: urlCitation }).parse(e);
+          const p = z
+            .object({
+              item_id: id,
+              output_index: z.number().int().min(0).max(511),
+              content_index: z.number().int().min(0).max(255),
+              annotation_index: z.number().int().min(0).max(255),
+              annotation: urlCitation,
+            })
+            .parse(e);
           const item = items.get(p.output_index);
           const key = `${p.output_index}:${p.content_index}:${p.annotation_index}`;
-          if (item?.type !== "message" || item.id !== p.item_id || ended.has(p.output_index) || annotations.has(key)) throw h.protocol();
+          if (
+            item?.type !== "message" ||
+            item.id !== p.item_id ||
+            ended.has(p.output_index) ||
+            annotations.has(key)
+          )
+            throw h.protocol();
           if (annotations.size >= 256) throw h.protocol("output_limit");
           annotations.set(key, p.annotation);
         } else if (e.type === "response.function_call_arguments.done") {
@@ -552,7 +724,8 @@ export function createResponsesAdapter(h: Helpers, baseUrl: string) {
           )
             throw h.protocol();
           if (p.item.type === "function_call") {
-            if (!sameAdded(added.get(p.output_index), p.item)) throw h.protocol();
+            if (!sameAdded(added.get(p.output_index), p.item))
+              throw h.protocol();
             finishArguments(p.item.id, p.item.arguments);
           }
           if (
@@ -566,7 +739,11 @@ export function createResponsesAdapter(h: Helpers, baseUrl: string) {
           )
             throw h.protocol();
           if (p.item.type === "web_search_call") {
-            if (webSearch === "disabled" || !sameAdded(added.get(p.output_index), p.item)) throw h.protocol();
+            if (
+              webSearch === "disabled" ||
+              !sameAdded(added.get(p.output_index), p.item)
+            )
+              throw h.protocol();
             notifySearch(p.item.id, p.item.status);
           }
           ended.set(p.output_index, p.item);
@@ -575,7 +752,10 @@ export function createResponsesAdapter(h: Helpers, baseUrl: string) {
             names.set(p.item.id, p.item.name);
             notifyToolPreview(p.output_index);
           }
-        } else if (e.type === "response.output_text.done" || e.type === "response.refusal.done") {
+        } else if (
+          e.type === "response.output_text.done" ||
+          e.type === "response.refusal.done"
+        ) {
           const p = z
             .object({
               output_index: z.number().int(),
@@ -592,11 +772,19 @@ export function createResponsesAdapter(h: Helpers, baseUrl: string) {
             items.get(p.output_index)?.type !== "message" ||
             ended.has(p.output_index) ||
             textDone.has(key) ||
-            value === undefined || (textParts.has(key) && textParts.get(key) !== value) ||
-            (textKinds.has(key) && textKinds.get(key) !== (e.type === "response.refusal.done" ? "refusal" : "output_text"))
+            value === undefined ||
+            (textParts.has(key) && textParts.get(key) !== value) ||
+            (textKinds.has(key) &&
+              textKinds.get(key) !==
+                (e.type === "response.refusal.done"
+                  ? "refusal"
+                  : "output_text"))
           )
             throw h.protocol();
-          textKinds.set(key, e.type === "response.refusal.done" ? "refusal" : "output_text");
+          textKinds.set(
+            key,
+            e.type === "response.refusal.done" ? "refusal" : "output_text",
+          );
           textDone.set(key, value);
         } else if (e.type === "response.completed") {
           const p = z.object({ response: terminal }).parse(e);
@@ -625,10 +813,16 @@ export function createResponsesAdapter(h: Helpers, baseUrl: string) {
           }
           for (const [index, observed] of items) {
             const entry = output[index];
-            if (!entry || observed.id !== entry.id || observed.type !== entry.type ||
+            if (
+              !entry ||
+              observed.id !== entry.id ||
+              observed.type !== entry.type ||
               !sameAdded(added.get(index), entry) ||
-              (ended.has(index) && !sameItem(ended.get(index), entry))) throw h.protocol();
-            if (entry.type === "function_call") finishArguments(entry.id, entry.arguments);
+              (ended.has(index) && !sameItem(ended.get(index), entry))
+            )
+              throw h.protocol();
+            if (entry.type === "function_call")
+              finishArguments(entry.id, entry.arguments);
           }
           completedOutput = output;
           completed = p.response;
@@ -645,18 +839,42 @@ export function createResponsesAdapter(h: Helpers, baseUrl: string) {
               throw h.protocol();
             responseId = p.response.id;
           }
-        } else if (e.type === "response.reasoning_text.delta" || e.type === "response.reasoning_text.done") {
-          const p = z.object({ item_id: id, output_index: z.number().int(), content_index: z.number().int(), delta: z.string().optional(), text: z.string().optional() }).parse(e);
+        } else if (
+          e.type === "response.reasoning_text.delta" ||
+          e.type === "response.reasoning_text.done"
+        ) {
+          const p = z
+            .object({
+              item_id: id,
+              output_index: z.number().int(),
+              content_index: z.number().int(),
+              delta: z.string().optional(),
+              text: z.string().optional(),
+            })
+            .parse(e);
           const item = items.get(p.output_index);
           const key = `${p.output_index}:${p.content_index}`;
-          if (item?.id !== p.item_id || item.type !== "reasoning" || ended.has(p.output_index) || reasoningDone.has(key)) throw h.protocol();
+          if (
+            item?.id !== p.item_id ||
+            item.type !== "reasoning" ||
+            ended.has(p.output_index) ||
+            reasoningDone.has(key)
+          )
+            throw h.protocol();
           if (e.type === "response.reasoning_text.done") {
-            if (p.text === undefined || (reasoningParts.get(key) ?? "") !== p.text) throw h.protocol();
+            if (
+              p.text === undefined ||
+              (reasoningParts.get(key) ?? "") !== p.text
+            )
+              throw h.protocol();
             reasoningDone.add(key);
           } else {
             if (p.delta === undefined) throw h.protocol();
             reasoningParts.set(key, (reasoningParts.get(key) ?? "") + p.delta);
-            reasoning += p.delta.slice(0, Math.max(0, 131072 - reasoning.length));
+            reasoning += p.delta.slice(
+              0,
+              Math.max(0, 131072 - reasoning.length),
+            );
             for (let start = 0; start < p.delta.length; start += 65536)
               h.notify(onReasoning, p.delta.slice(start, start + 65536));
           }
@@ -676,18 +894,34 @@ export function createResponsesAdapter(h: Helpers, baseUrl: string) {
             h.notify(onReasoning, p.delta.slice(start, start + 65536));
         }
       };
-      const contentType = response.headers.get("content-type")?.split(";")[0]?.trim().toLowerCase();
+      const contentType = response.headers
+        .get("content-type")
+        ?.split(";")[0]
+        ?.trim()
+        .toLowerCase();
       if (contentType === "application/json") {
         // Some gateways honor the request but buffer the reply as JSON. Consume
         // that same response; never retry the generation or switch protocols.
-        const body = z.object({ status: z.string() }).passthrough().parse(h.parseJson(await response.text()));
-        const type = body.status === "failed" ? "response.failed"
-          : body.status === "incomplete" ? "response.incomplete" : "response.completed";
+        const body = z
+          .object({ status: z.string() })
+          .passthrough()
+          .parse(h.parseJson(await response.text()));
+        const type =
+          body.status === "failed"
+            ? "response.failed"
+            : body.status === "incomplete"
+              ? "response.incomplete"
+              : "response.completed";
         dispatch({ type, response: body }, null);
       } else {
         for await (const event of h.events(response)) {
           if (event.data === "[DONE]") {
-            if (!completed || transportDone || (event.event && event.event !== "message")) throw h.protocol();
+            if (
+              !completed ||
+              transportDone ||
+              (event.event && event.event !== "message")
+            )
+              throw h.protocol();
             transportDone = true;
           } else dispatch(h.parseJson(event.data, "sse_event"), event.event);
         }
@@ -701,36 +935,58 @@ export function createResponsesAdapter(h: Helpers, baseUrl: string) {
         for (let part = 0; part < entry.content.length; part++) {
           const value = entry.content[part];
           const key = `${index}:${part}`;
-          if (!value || (textParts.has(key) && textParts.get(key) !== prose(value)) ||
+          if (
+            !value ||
+            (textParts.has(key) && textParts.get(key) !== prose(value)) ||
             (textDone.has(key) && textDone.get(key) !== prose(value)) ||
-            (textKinds.has(key) && textKinds.get(key) !== value.type))
+            (textKinds.has(key) && textKinds.get(key) !== value.type)
+          )
             throw h.protocol();
         }
       }
-      for (const [snapshots, exact] of [[contentAdded, false], [contentDone, true]] as const) {
+      for (const [snapshots, exact] of [
+        [contentAdded, false],
+        [contentDone, true],
+      ] as const) {
         for (const [key, part] of snapshots) {
           const [index, partIndex] = key.split(":").map(Number);
           const entry = output[index ?? -1];
-          const final = entry?.type === "message" ? entry.content[partIndex ?? -1] : undefined;
+          const final =
+            entry?.type === "message"
+              ? entry.content[partIndex ?? -1]
+              : undefined;
           if (!matchesPart(part, final, exact)) throw h.protocol();
         }
       }
       for (const [key, value] of [...textParts, ...textDone]) {
         const [index, part] = key.split(":").map(Number);
         const entry = output[index ?? -1];
-        const content = entry?.type === "message" ? entry.content[part ?? -1] : undefined;
+        const content =
+          entry?.type === "message" ? entry.content[part ?? -1] : undefined;
         if (!content || prose(content) !== value) throw h.protocol();
       }
       for (const [key, value] of reasoningParts) {
         const [index, part] = key.split(":").map(Number);
         const entry = output[index ?? -1];
-        if (entry?.type !== "reasoning" || entry.content?.[part ?? -1]?.text !== value) throw h.protocol();
+        if (
+          entry?.type !== "reasoning" ||
+          entry.content?.[part ?? -1]?.text !== value
+        )
+          throw h.protocol();
       }
       for (const [key, annotation] of annotations) {
         const [index, part, annotationIndex] = key.split(":").map(Number);
         const entry = output[index ?? -1];
-        const content = entry?.type === "message" ? entry.content[part ?? -1] : undefined;
-        if (content?.type !== "output_text" || !isDeepStrictEqual(content.annotations?.[annotationIndex ?? -1], annotation)) throw h.protocol();
+        const content =
+          entry?.type === "message" ? entry.content[part ?? -1] : undefined;
+        if (
+          content?.type !== "output_text" ||
+          !isDeepStrictEqual(
+            content.annotations?.[annotationIndex ?? -1],
+            annotation,
+          )
+        )
+          throw h.protocol();
       }
       const citations: WebCitation[] = [];
       let textOffset = 0;
@@ -738,13 +994,20 @@ export function createResponsesAdapter(h: Helpers, baseUrl: string) {
         if (item.type !== "message") continue;
         for (const part of item.content) {
           if (part.type === "output_text")
-            for (const citation of part.annotations ?? []) citations.push(citationRecord(citation, textOffset));
+            for (const citation of part.annotations ?? [])
+              citations.push(citationRecord(citation, textOffset));
           textOffset += prose(part).length;
         }
       }
       if (citations.length > 256) throw h.protocol("output_limit");
-      const webSearches = output.filter((item) => item.type === "web_search_call").map(searchRecord);
-      if (webSearches.length > 128 || (webSearches.length && webSearch === "disabled")) throw h.protocol();
+      const webSearches = output
+        .filter((item) => item.type === "web_search_call")
+        .map(searchRecord);
+      if (
+        webSearches.length > 128 ||
+        (webSearches.length && webSearch === "disabled")
+      )
+        throw h.protocol();
       const calls = output
         .filter((i) => i.type === "function_call")
         .map((i) =>
@@ -758,8 +1021,15 @@ export function createResponsesAdapter(h: Helpers, baseUrl: string) {
         .filter((i) => i.type === "message")
         .flatMap((i) => i.content.map(prose))
         .join("");
-      if (finalText.length > 2_000_000) throw h.protocol("output_limit", { stage: "output_text", observed: finalText.length, limit: 2_000_000, unit: "utf16_code_units" });
-      if (!finalText.startsWith(text) || (!finalText && !calls.length)) throw h.protocol();
+      if (finalText.length > 2_000_000)
+        throw h.protocol("output_limit", {
+          stage: "output_text",
+          observed: finalText.length,
+          limit: 2_000_000,
+          unit: "utf16_code_units",
+        });
+      if (!finalText.startsWith(text) || (!finalText && !calls.length))
+        throw h.protocol();
       // Only emit text absent from the stream, after validating the complete
       // snapshot. Existing deltas must match whole parts above, not just prefixes.
       for (let start = text.length; start < finalText.length; start += 65536)
@@ -772,7 +1042,13 @@ export function createResponsesAdapter(h: Helpers, baseUrl: string) {
         // A done frame may have been deferred behind a gap, so it does not prove
         // that this tool has already received a correctly indexed preview.
         if (!ended.has(index) || callIndex.get(item.id) !== toolIndex)
-          h.notifyToolCall(onToolCall, toolIndex, item.name, item.arguments.length, item.arguments);
+          h.notifyToolCall(
+            onToolCall,
+            toolIndex,
+            item.name,
+            item.arguments.length,
+            item.arguments,
+          );
         toolIndex += 1;
       }
       const u = completed.usage;

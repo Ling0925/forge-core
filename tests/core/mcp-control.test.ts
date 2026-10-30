@@ -78,7 +78,10 @@ for (const action of ["disable", "remove", "cancel"] as const)
         enabled: true,
         requestTimeoutMs: 60000,
       });
-      const session = await h.createSession({ workspace, title: "MCP control fixture" });
+      const session = await h.createSession({
+        workspace,
+        title: "MCP control fixture",
+      });
       const approvals: string[] = [];
       const work = h.run(
         {

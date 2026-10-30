@@ -1,17 +1,20 @@
 import { randomUUID } from "node:crypto";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
-import { fileURLToPath } from "node:url";
 import { join } from "node:path";
 import { afterEach, beforeEach, expect, it } from "vitest";
-import type { LocalToolRegistry, ToolContext } from "../../src/shared/contracts";
+import type {
+  LocalToolRegistry,
+  ToolContext,
+} from "../../src/shared/contracts";
 import { parseSessionId } from "../../src/shared/schemas";
 import { createLocalToolRegistry } from "../../src/tools/local";
+import { testScratch } from "../fixtures/scratch";
 
 let root: string;
 let registry: LocalToolRegistry;
 let context: ToolContext;
 beforeEach(async () => {
-  const base = fileURLToPath(new URL("../../../../.forge/tmp/cross-provider-fixes/tools/", import.meta.url));
+  const base = testScratch("cross-provider-fixes", "tools");
   await mkdir(base, { recursive: true });
   root = await mkdtemp(join(base, "tool-guidance-"));
   registry = await createLocalToolRegistry(root);
@@ -31,7 +34,11 @@ afterEach(async () => {
 });
 const execute = (name: string, args: object) =>
   registry.execute(
-    { id: "guidance", type: "function", function: { name, arguments: JSON.stringify(args) } },
+    {
+      id: "guidance",
+      type: "function",
+      function: { name, arguments: JSON.stringify(args) },
+    },
     context,
   );
 const definition = (name: string) =>
@@ -40,7 +47,15 @@ const parameters = (name: string) => {
   const tool = definition(name);
   if (!tool) throw new Error(`Missing tool definition: ${name}`);
   return tool.function.parameters as {
-    properties?: Record<string, { type?: string; description?: string; maximum?: number; minimum?: number }>;
+    properties?: Record<
+      string,
+      {
+        type?: string;
+        description?: string;
+        maximum?: number;
+        minimum?: number;
+      }
+    >;
     required?: string[];
   };
 };
@@ -80,7 +95,9 @@ it("keeps tool parameters derived from the executable Zod schema", () => {
     "offset",
     "path",
   ]);
-  expect(Object.keys(parameters("search_files").properties ?? {}).sort()).toEqual([
+  expect(
+    Object.keys(parameters("search_files").properties ?? {}).sort(),
+  ).toEqual([
     "case_sensitive",
     "context_lines",
     "glob",
@@ -91,12 +108,17 @@ it("keeps tool parameters derived from the executable Zod schema", () => {
     "query",
     "regex",
   ]);
-  expect(parameters("search_files").properties?.mode).toMatchObject({ type: "string" });
+  expect(parameters("search_files").properties?.mode).toMatchObject({
+    type: "string",
+  });
 });
 
 it("explains the read_file limit ceiling without echoing the rejected value", async () => {
   await writeFile(join(root, "a.txt"), "one\ntwo\n");
-  const result = await execute("read_file", { path: "private-marker.txt", limit: 201 });
+  const result = await execute("read_file", {
+    path: "private-marker.txt",
+    limit: 201,
+  });
   expect(result.isError).toBe(true);
   const data = JSON.parse(result.content) as { code: string; error: string };
   expect(data.code).toBe("invalid_input");
@@ -105,7 +127,9 @@ it("explains the read_file limit ceiling without echoing the rejected value", as
   expect(data.error).toContain("next_offset");
   expect(result.content).not.toContain("private-marker.txt");
   // The documented ceiling is still accepted and enforced unchanged.
-  expect((await execute("read_file", { path: "a.txt", limit: 200 })).isError).toBe(false);
+  expect(
+    (await execute("read_file", { path: "a.txt", limit: 200 })).isError,
+  ).toBe(false);
 });
 
 it("explains the search_files limit and context_lines ceilings without echoing input", async () => {
@@ -115,7 +139,10 @@ it("explains the search_files limit and context_lines ceilings without echoing i
     limit: 101,
   });
   expect(overLimit.isError).toBe(true);
-  const limitError = JSON.parse(overLimit.content) as { code: string; error: string };
+  const limitError = JSON.parse(overLimit.content) as {
+    code: string;
+    error: string;
+  };
   expect(limitError.code).toBe("invalid_input");
   expect(limitError.error).toContain("limit: maximum 100");
   expect(limitError.error).toContain("1-100 matches per page");
@@ -127,7 +154,10 @@ it("explains the search_files limit and context_lines ceilings without echoing i
     context_lines: 4,
   });
   expect(overContext.isError).toBe(true);
-  const contextError = JSON.parse(overContext.content) as { code: string; error: string };
+  const contextError = JSON.parse(overContext.content) as {
+    code: string;
+    error: string;
+  };
   expect(contextError.code).toBe("invalid_input");
   expect(contextError.error).toContain("context_lines: maximum 3");
   expect(contextError.error).toContain("0-3");
@@ -136,7 +166,13 @@ it("explains the search_files limit and context_lines ceilings without echoing i
 
   // Documented ceilings still work.
   expect(
-    (await execute("search_files", { query: "needle", limit: 100, context_lines: 3 })).isError,
+    (
+      await execute("search_files", {
+        query: "needle",
+        limit: 100,
+        context_lines: 3,
+      })
+    ).isError,
   ).toBe(false);
 });
 
@@ -150,12 +186,18 @@ it("keeps unrelated validation errors free of paging hints", async () => {
 });
 
 it("does not silently clamp an out-of-range page instead of failing", async () => {
-  await writeFile(join(root, "long.txt"), Array.from({ length: 300 }, (_, i) => `l${i}`).join("\n"));
+  await writeFile(
+    join(root, "long.txt"),
+    Array.from({ length: 300 }, (_, i) => `l${i}`).join("\n"),
+  );
   const rejected = await execute("read_file", { path: "long.txt", limit: 500 });
   expect(rejected.isError).toBe(true);
   // No file page was returned, so nothing claims to have read 500 lines.
   expect(JSON.parse(rejected.content)).toMatchObject({ code: "invalid_input" });
   const allowed = await execute("read_file", { path: "long.txt", limit: 200 });
   expect(allowed.isError).toBe(false);
-  expect(JSON.parse(allowed.content)).toMatchObject({ lines_returned: 200, truncated: true });
+  expect(JSON.parse(allowed.content)).toMatchObject({
+    lines_returned: 200,
+    truncated: true,
+  });
 });

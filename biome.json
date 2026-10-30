@@ -11,15 +11,42 @@
       "pnpm-lock.yaml"
     ]
   },
-  "formatter": { "enabled": true, "indentStyle": "space", "indentWidth": 2 },
-  "organizeImports": { "enabled": true },
+  "formatter": {
+    "enabled": true,
+    "indentStyle": "space",
+    "indentWidth": 2
+  },
+  "organizeImports": {
+    "enabled": true
+  },
   "linter": {
     "enabled": true,
     "rules": {
       "recommended": true,
-      "suspicious": { "noExplicitAny": "error" },
-      "style": { "noNonNullAssertion": "error", "useImportType": "error" }
+      "suspicious": {
+        "noExplicitAny": "error"
+      },
+      "style": {
+        "noNonNullAssertion": "error",
+        "useImportType": "error"
+      }
     }
   },
-  "javascript": { "formatter": { "quoteStyle": "double" } }
+  "javascript": {
+    "formatter": {
+      "quoteStyle": "double"
+    }
+  },
+  "overrides": [
+    {
+      "include": ["tests/**"],
+      "linter": {
+        "rules": {
+          "style": {
+            "noNonNullAssertion": "off"
+          }
+        }
+      }
+    }
+  ]
 }

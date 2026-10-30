@@ -73,7 +73,9 @@ export function modelCatalogPricingToPrice(
 
 export function parseModelPrices(value: unknown): ModelPrices {
   const candidates: { price: ModelPrice; priority: number }[] = [];
-  for (const [providerKey, rawProvider] of Object.entries(record(value) ?? {})) {
+  for (const [providerKey, rawProvider] of Object.entries(
+    record(value) ?? {},
+  )) {
     const provider = record(rawProvider);
     const providerId =
       typeof provider?.id === "string" ? provider.id : providerKey;
@@ -134,11 +136,7 @@ export function parseModelPrices(value: unknown): ModelPrices {
             (a, b) => a.aboveTokens - b.aboveTokens,
           ),
         },
-        priority: firstParty
-          ? 0
-          : modelId.toLowerCase() === normalized
-            ? 1
-            : 2,
+        priority: firstParty ? 0 : modelId.toLowerCase() === normalized ? 1 : 2,
       });
     }
   }

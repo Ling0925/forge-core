@@ -1,7 +1,7 @@
-import { expect, it } from "vitest";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { expect, it } from "vitest";
 import { toolOutcome } from "../../src/mcp/content";
 import { StdioMcpConnection } from "../../src/mcp/protocol";
 import { createMcpService } from "../../src/mcp/registry";

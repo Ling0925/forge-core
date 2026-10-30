@@ -131,9 +131,7 @@ it("creates a detached worktree at the committed HEAD and leaves dirty parent fi
   });
 
   expect(result.baseRevision).toBe(head);
-  expect(result.worktree).toBe(
-    join(home, "forge-home-worktrees", sessionId),
-  );
+  expect(result.worktree).toBe(join(home, "forge-home-worktrees", sessionId));
   expect(result.workspace).toBe(result.worktree);
   expect(git("-C", result.worktree, "rev-parse", "HEAD").trim()).toBe(head);
   // Detached, not a branch checkout.

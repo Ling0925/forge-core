@@ -115,7 +115,16 @@ describe("neutral contract ownership", () => {
   });
 
   it("keeps the core independent of all application adapters", async () => {
-    for (const folder of ["core", "host", "web", "provider", "store", "tools", "context", "mcp"])
+    for (const folder of [
+      "core",
+      "host",
+      "web",
+      "provider",
+      "store",
+      "tools",
+      "context",
+      "mcp",
+    ])
       for (const file of await sources(resolve(root, "src", folder))) {
         expect(
           imports(await readFile(file, "utf8")).filter((path) =>
@@ -125,7 +134,9 @@ describe("neutral contract ownership", () => {
         ).toEqual([]);
       }
     const entries = await readdir(resolve(root, "src"));
-    expect(entries.filter(name => ["cli", "renderer", "desktop"].includes(name))).toEqual([]);
+    expect(
+      entries.filter((name) => ["cli", "renderer", "desktop"].includes(name)),
+    ).toEqual([]);
     const neutral = await import("../../src/host/runtime");
     expect(neutral.createRuntimeHub).toBeTypeOf("function");
   });
@@ -149,8 +160,9 @@ describe("neutral contract ownership", () => {
         "625517bc1b89f7362d8df667bb104fed7a062e864e8f9539f7c586d6f10345a5",
       mcpRecordDtoSchema:
         "06d51cc7e42c85ad6368c7a141828b62b96a128a8edb620f2a3ad76b4d4e0b0a",
+      // Updated for 6f4a2c8 (accept private API keys in public registration).
       mcpRegisterDtoSchema:
-        "8bbd08d1c5a4b717be64e1627bbe5d624f3c040d2e8fdcd1762389c16f3033c7",
+        "d3a50393b2a255f9872a6722df45a3676403e30638613594f6ddd12e1213e2b3",
       projectContextDtoSchema:
         "21ed2b8b5d7abb49490b53c467d08fecdc90f339be1cff0d52f822967c742efb",
     };

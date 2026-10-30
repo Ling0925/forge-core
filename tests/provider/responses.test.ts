@@ -177,25 +177,55 @@ it("preserves flat plan tools with explicit non-strict schemas in the Responses 
     received = body;
     send(response, textStream("ready"));
   });
-  const tools = nativeDefinitions.filter(definition => ["create_plan", "update_plan"].includes(definition.function.name));
+  const tools = nativeDefinitions.filter((definition) =>
+    ["create_plan", "update_plan"].includes(definition.function.name),
+  );
   expect(tools).toHaveLength(2);
 
   await provider.complete([{ role: "user", content: "Plan a task" }], tools, {
-    model: "fixture", onText: () => {}, signal: new AbortController().signal,
+    model: "fixture",
+    onText: () => {},
+    signal: new AbortController().signal,
   });
 
-  expect(requestBody.parse(received).tools).toEqual(tools.map(tool => ({ type: "function", ...tool.function, strict: false })));
+  expect(requestBody.parse(received).tools).toEqual(
+    tools.map((tool) => ({
+      type: "function",
+      ...tool.function,
+      strict: false,
+    })),
+  );
 });
 
 it("sends image-only and mixed input using native Responses input_image parts", async () => {
   let received: unknown;
-  const provider = await setup((_request, response, body) => { received = body; send(response, textStream("seen")); });
-  await run(provider, [{ role: "user", content: "old" }, { role: "user", content: "", images: [image] }, { role: "user", content: "describe", images: [image] }]);
-  expect(received).toMatchObject({ input: [
+  const provider = await setup((_request, response, body) => {
+    received = body;
+    send(response, textStream("seen"));
+  });
+  await run(provider, [
     { role: "user", content: "old" },
-    { role: "user", content: [{ type: "input_image", image_url: image.dataUrl, detail: "auto" }] },
-    { role: "user", content: [{ type: "input_text", text: "describe" }, { type: "input_image", image_url: image.dataUrl, detail: "auto" }] },
-  ] });
+    { role: "user", content: "", images: [image] },
+    { role: "user", content: "describe", images: [image] },
+  ]);
+  expect(received).toMatchObject({
+    input: [
+      { role: "user", content: "old" },
+      {
+        role: "user",
+        content: [
+          { type: "input_image", image_url: image.dataUrl, detail: "auto" },
+        ],
+      },
+      {
+        role: "user",
+        content: [
+          { type: "input_text", text: "describe" },
+          { type: "input_image", image_url: image.dataUrl, detail: "auto" },
+        ],
+      },
+    ],
+  });
   expect(JSON.stringify(received)).not.toContain(image.name);
 });
 
@@ -204,9 +234,17 @@ it("forwards reasoning summary deltas as a display preview without touching cont
     const m = msg("m_1", "answer");
     send(
       res,
-      wire("response.created", { response: { id: "resp_1", status: "in_progress" } }) +
-        wire("response.reasoning_summary_text.delta", { item_id: "r_1", delta: "weighing " }) +
-        wire("response.reasoning_summary_text.delta", { item_id: "r_1", delta: "options" }) +
+      wire("response.created", {
+        response: { id: "resp_1", status: "in_progress" },
+      }) +
+        wire("response.reasoning_summary_text.delta", {
+          item_id: "r_1",
+          delta: "weighing ",
+        }) +
+        wire("response.reasoning_summary_text.delta", {
+          item_id: "r_1",
+          delta: "options",
+        }) +
         item(0, { ...m, content: [] }) +
         wire("response.output_text.delta", {
           output_index: 0,

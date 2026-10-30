@@ -45,8 +45,18 @@ const unavailable = (): DiffPatch => unavailablePatch("budget");
  * Even partial hunks describe exactly the rows actually retained in that hunk.
  */
 export function createDiffPatch(before: string, after: string): DiffPatch {
-  if (before === after) return { version: 1, status: "complete", added: 0, removed: 0, omittedLines: 0, omittedHunks: 0, hunks: [] };
-  if (before.length > MAX_INPUT_CHARS || after.length > MAX_INPUT_CHARS) return unavailable();
+  if (before === after)
+    return {
+      version: 1,
+      status: "complete",
+      added: 0,
+      removed: 0,
+      omittedLines: 0,
+      omittedHunks: 0,
+      hunks: [],
+    };
+  if (before.length > MAX_INPUT_CHARS || after.length > MAX_INPUT_CHARS)
+    return unavailable();
   const oldLines = linesOf(before);
   const newLines = linesOf(after);
   if (!oldLines || !newLines) return unavailable();
@@ -56,16 +66,23 @@ export function createDiffPatch(before: string, after: string): DiffPatch {
   let removed = 0;
   const ranges: { from: number; to: number }[] = [];
   for (let i = 0; i < script.length; i++) {
-    const step = script[i]!;
-    if (step.op === "equal") continue;
-    if (step.op === "insert") added++; else removed++;
+    const step = script[i];
+    if (!step || step.op === "equal") continue;
+    if (step.op === "insert") added++;
+    else removed++;
     const from = Math.max(0, i - CONTEXT);
     const to = Math.min(script.length, i + CONTEXT + 1);
     const previous = ranges.at(-1);
     if (previous && from <= previous.to) previous.to = to;
     else ranges.push({ from, to });
   }
-  const hunks: { oldStart: number; oldLines: number; newStart: number; newLines: number; lines: { op: "equal" | "delete" | "insert"; text: string }[] }[] = [];
+  const hunks: {
+    oldStart: number;
+    oldLines: number;
+    newStart: number;
+    newLines: number;
+    lines: { op: "equal" | "delete" | "insert"; text: string }[];
+  }[] = [];
   let cursor = 0;
   let oldLine = 1;
   let newLine = 1;
@@ -75,16 +92,28 @@ export function createDiffPatch(before: string, after: string): DiffPatch {
   for (const range of ranges) {
     if (exhausted || hunks.length >= MAX_HUNKS) break;
     while (cursor < range.from) {
-      const step = script[cursor++]!;
+      const step = script[cursor++];
+      if (!step) break;
       if (step.op !== "insert") oldLine++;
       if (step.op !== "delete") newLine++;
     }
-    const hunk = { oldStart: oldLine, oldLines: 0, newStart: newLine, newLines: 0, lines: [] as { op: "equal" | "delete" | "insert"; text: string }[] };
+    const hunk = {
+      oldStart: oldLine,
+      oldLines: 0,
+      newStart: newLine,
+      newLines: 0,
+      lines: [] as { op: "equal" | "delete" | "insert"; text: string }[],
+    };
     bytes += 128; // Bounded integer fields and array punctuation.
     while (cursor < range.to) {
-      const step = script[cursor]!;
+      const step = script[cursor];
+      if (!step) break;
       const cost = byteLength(JSON.stringify(step)) + 1;
-      if (retained >= MAX_PATCH_LINES || step.text.length > MAX_LINE_CHARS || bytes + cost > MAX_PATCH_BYTES) {
+      if (
+        retained >= MAX_PATCH_LINES ||
+        step.text.length > MAX_LINE_CHARS ||
+        bytes + cost > MAX_PATCH_BYTES
+      ) {
         exhausted = true;
         break;
       }
@@ -92,8 +121,14 @@ export function createDiffPatch(before: string, after: string): DiffPatch {
       hunk.lines.push({ op: step.op, text: step.text });
       retained++;
       cursor++;
-      if (step.op !== "insert") { oldLine++; hunk.oldLines++; }
-      if (step.op !== "delete") { newLine++; hunk.newLines++; }
+      if (step.op !== "insert") {
+        oldLine++;
+        hunk.oldLines++;
+      }
+      if (step.op !== "delete") {
+        newLine++;
+        hunk.newLines++;
+      }
     }
     if (hunk.lines.length) {
       if (!hunk.oldLines) hunk.oldStart--;
@@ -101,8 +136,18 @@ export function createDiffPatch(before: string, after: string): DiffPatch {
       hunks.push(hunk);
     }
   }
-  const totalRows = ranges.reduce((total, range) => total + range.to - range.from, 0);
+  const totalRows = ranges.reduce(
+    (total, range) => total + range.to - range.from,
+    0,
+  );
   const omittedLines = totalRows - retained;
-  return { version: 1, status: omittedLines ? "truncated" : "complete", added, removed,
-    omittedLines, omittedHunks: ranges.length - hunks.length, hunks };
+  return {
+    version: 1,
+    status: omittedLines ? "truncated" : "complete",
+    added,
+    removed,
+    omittedLines,
+    omittedHunks: ranges.length - hunks.length,
+    hunks,
+  };
 }

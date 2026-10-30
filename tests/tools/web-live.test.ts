@@ -34,7 +34,9 @@ it.runIf(process.env.FORGE_WEB_SMOKE === "1")(
       );
       expect(page.isError, page.content).toBe(false);
       expect(JSON.parse(page.content).text).toContain("documentation examples");
-      console.log("Live web smoke: example.com text verified; native search requires a separately authorized Responses gateway.");
+      console.log(
+        "Live web smoke: example.com text verified; native search requires a separately authorized Responses gateway.",
+      );
     } finally {
       await registry.dispose();
     }

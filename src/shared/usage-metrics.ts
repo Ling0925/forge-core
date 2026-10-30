@@ -2,58 +2,104 @@ import { z } from "zod";
 import type { AgentEvent, Usage } from "./schemas";
 
 const requestBoundaries = new Set<AgentEvent["type"]>([
-  "run_started", "run_finished", "step_started", "step_finished",
-  "tool_started", "approval_requested",
+  "run_started",
+  "run_finished",
+  "step_started",
+  "step_finished",
+  "tool_started",
+  "approval_requested",
 ]);
 export const isUsageRequestBoundary = (event: AgentEvent): boolean =>
   requestBoundaries.has(event.type);
 
 export const providerRequestKey = (
   event: Extract<AgentEvent, { type: "provider_attempt" }>,
-): string => JSON.stringify([
-  event.sessionId, event.turn, event.step, event.selection.attempt,
-  event.selection.groupId, event.selection.sourceId, event.selection.credentialId,
-  event.selection.model, event.selection.apiMode,
-]);
+): string =>
+  JSON.stringify([
+    event.sessionId,
+    event.turn,
+    event.step,
+    event.selection.attempt,
+    event.selection.groupId,
+    event.selection.sourceId,
+    event.selection.credentialId,
+    event.selection.model,
+    event.selection.apiMode,
+  ]);
 
 /** End-to-end throughput, not streaming speed. Never substitute run wall time. */
-export function outputTokensPerSecond(output: number | undefined, durationMs: number): number | undefined {
-  if (output === undefined || !Number.isFinite(output) || output < 0 ||
-      !Number.isFinite(durationMs) || durationMs <= 0) return undefined;
+export function outputTokensPerSecond(
+  output: number | undefined,
+  durationMs: number,
+): number | undefined {
+  if (
+    output === undefined ||
+    !Number.isFinite(output) ||
+    output < 0 ||
+    !Number.isFinite(durationMs) ||
+    durationMs <= 0
+  )
+    return undefined;
   const rate = output / (durationMs / 1000);
   return Number.isFinite(rate) ? rate : undefined;
 }
 
 const count = z.number().int().nonnegative();
-export const cacheUsageStateSchema = z.object({
-  inputTokens: count,
-  readTokens: count,
-  reports: count,
-  requests: count,
-  partial: z.boolean(),
-  latestRate: z.number().min(0).max(1).optional(),
-  pending: z.object({ key: z.string().max(4096), timestamp: z.string() }).strict().optional(),
-  awaitingContext: z.boolean(),
-  runReports: count,
-  runPromptTokens: count,
-  runReadTokens: count,
-  runSuccesses: count,
-}).strict();
+export const cacheUsageStateSchema = z
+  .object({
+    inputTokens: count,
+    readTokens: count,
+    reports: count,
+    requests: count,
+    partial: z.boolean(),
+    latestRate: z.number().min(0).max(1).optional(),
+    pending: z
+      .object({ key: z.string().max(4096), timestamp: z.string() })
+      .strict()
+      .optional(),
+    awaitingContext: z.boolean(),
+    runReports: count,
+    runPromptTokens: count,
+    runReadTokens: count,
+    runSuccesses: count,
+  })
+  .strict();
 export type CacheUsageState = z.infer<typeof cacheUsageStateSchema>;
 
 export const emptyCacheUsage = (): CacheUsageState => ({
-  inputTokens: 0, readTokens: 0, reports: 0, requests: 0, partial: false,
-  awaitingContext: false, runReports: 0, runPromptTokens: 0, runReadTokens: 0, runSuccesses: 0,
+  inputTokens: 0,
+  readTokens: 0,
+  reports: 0,
+  requests: 0,
+  partial: false,
+  awaitingContext: false,
+  runReports: 0,
+  runPromptTokens: 0,
+  runReadTokens: 0,
+  runSuccesses: 0,
 });
 
 /** Only matched, provider-reported input/cache pairs contribute to this rate. */
-export function summarizeCacheUsage(state: Pick<CacheUsageState,
-  "inputTokens" | "readTokens" | "reports" | "requests" | "partial" | "pending">) {
+export function summarizeCacheUsage(
+  state: Pick<
+    CacheUsageState,
+    | "inputTokens"
+    | "readTokens"
+    | "reports"
+    | "requests"
+    | "partial"
+    | "pending"
+  >,
+) {
   return {
     inputTokens: state.inputTokens,
     readTokens: state.reports ? state.readTokens : undefined,
-    rate: state.inputTokens > 0 ? state.readTokens / state.inputTokens : undefined,
-    partial: state.partial || state.reports < state.requests || state.pending !== undefined,
+    rate:
+      state.inputTokens > 0 ? state.readTokens / state.inputTokens : undefined,
+    partial:
+      state.partial ||
+      state.reports < state.requests ||
+      state.pending !== undefined,
   };
 }
 
@@ -79,7 +125,14 @@ export function accumulateCacheUsage(
 ): void {
   const markPartial = (timestamp: string) => {
     state.partial = true;
-    onRecord?.({ timestamp, inputTokens: 0, readTokens: 0, reports: 0, requests: 0, partial: true });
+    onRecord?.({
+      timestamp,
+      inputTokens: 0,
+      readTokens: 0,
+      reports: 0,
+      requests: 0,
+      partial: true,
+    });
   };
   const observe = (
     usage: Pick<Usage, "promptTokens" | "cachedPromptTokens"> | undefined,
@@ -89,11 +142,21 @@ export function accumulateCacheUsage(
     const input = usage?.promptTokens;
     const read = usage?.cachedPromptTokens;
     // Malformed cache counts must not produce >100% or dilute valid samples.
-    const known = input !== undefined && Number.isSafeInteger(input) && input >= 0 &&
-      read !== undefined && Number.isSafeInteger(read) && read >= 0 && read <= input;
+    const known =
+      input !== undefined &&
+      Number.isSafeInteger(input) &&
+      input >= 0 &&
+      read !== undefined &&
+      Number.isSafeInteger(read) &&
+      read >= 0 &&
+      read <= input;
     const record: CacheUsageRecord = {
-      timestamp, inputTokens: known ? input : 0, readTokens: known ? read : 0,
-      reports: known ? 1 : 0, requests: 1, partial: !known,
+      timestamp,
+      inputTokens: known ? input : 0,
+      readTokens: known ? read : 0,
+      reports: known ? 1 : 0,
+      requests: 1,
+      partial: !known,
     };
     state.inputTokens += record.inputTokens;
     state.readTokens += record.readTokens;
@@ -127,18 +190,32 @@ export function accumulateCacheUsage(
       state.pending = { key, timestamp: selection.timestamp };
       state.awaitingContext = false;
     } else {
-      const timestamp = state.pending?.key === key ? state.pending.timestamp : selection.timestamp;
-      if (state.pending && state.pending.key !== key) markPartial(state.pending.timestamp);
+      const timestamp =
+        state.pending?.key === key
+          ? state.pending.timestamp
+          : selection.timestamp;
+      if (state.pending && state.pending.key !== key)
+        markPartial(state.pending.timestamp);
       state.pending = undefined;
       observe(selection.usage, timestamp, selection.outcome === "succeeded");
       state.awaitingContext = selection.outcome === "succeeded";
     }
-  } else if (event.type === "context_usage" && event.usage.basis !== "projected" &&
-      event.usage.promptTokens !== undefined) {
+  } else if (
+    event.type === "context_usage" &&
+    event.usage.basis !== "projected" &&
+    event.usage.promptTokens !== undefined
+  ) {
     if (!state.awaitingContext) {
-      observe({ promptTokens: event.usage.promptTokens,
-        ...(event.usage.cachedPromptTokens === undefined ? {} : { cachedPromptTokens: event.usage.cachedPromptTokens }),
-      }, event.timestamp, true);
+      observe(
+        {
+          promptTokens: event.usage.promptTokens,
+          ...(event.usage.cachedPromptTokens === undefined
+            ? {}
+            : { cachedPromptTokens: event.usage.cachedPromptTokens }),
+        },
+        event.timestamp,
+        true,
+      );
     }
     state.awaitingContext = false;
   } else if (event.type === "run_finished") {
@@ -151,9 +228,12 @@ export function accumulateCacheUsage(
         state.latestRate = undefined;
         markPartial(event.timestamp);
       }
-    } else if (event.turns > state.runSuccesses ||
-        (event.usage && event.usage.promptTokens !== state.runPromptTokens) ||
-        (event.usage?.cachedPromptTokens !== undefined && event.usage.cachedPromptTokens !== state.runReadTokens)) {
+    } else if (
+      event.turns > state.runSuccesses ||
+      (event.usage && event.usage.promptTokens !== state.runPromptTokens) ||
+      (event.usage?.cachedPromptTokens !== undefined &&
+        event.usage.cachedPromptTokens !== state.runReadTokens)
+    ) {
       // Missing/auxiliary requests or conflicting counters cannot be
       // reconstructed from a mixed total.
       markPartial(event.timestamp);
@@ -167,11 +247,21 @@ export function accumulateCacheUsage(
 }
 
 /** Request timestamps preserve the same time-filter boundary as request rows. */
-export function cacheUsageRecords(events: readonly AgentEvent[]): readonly CacheUsageRecord[] {
+export function cacheUsageRecords(
+  events: readonly AgentEvent[],
+): readonly CacheUsageRecord[] {
   const state = emptyCacheUsage();
   const records: CacheUsageRecord[] = [];
-  for (const event of events) accumulateCacheUsage(state, event, record => records.push(record));
-  if (state.pending) records.push({ timestamp: state.pending.timestamp,
-    inputTokens: 0, readTokens: 0, reports: 0, requests: 0, partial: true });
+  for (const event of events)
+    accumulateCacheUsage(state, event, (record) => records.push(record));
+  if (state.pending)
+    records.push({
+      timestamp: state.pending.timestamp,
+      inputTokens: 0,
+      readTokens: 0,
+      reports: 0,
+      requests: 0,
+      partial: true,
+    });
   return records;
 }

@@ -144,7 +144,9 @@ export function registerLocalHostTests() {
               id: randomUUID(),
               method: command === "steer" ? "steerRun" : "cancelRun",
               runId: target.result.runId,
-              ...(command === "steer" ? { prompt: "continue" } : { wait: true }),
+              ...(command === "steer"
+                ? { prompt: "continue" }
+                : { wait: true }),
             }),
           )
           .then(

@@ -131,8 +131,9 @@ it("keeps harness opt-in through run input, IPC startRun and the durable queue",
   };
   const input = { sessionId, prompt: "adapt then work", harness };
   expect(runInputSchema.parse(input).harness).toEqual(harness);
-  expect(runInputSchema.parse({ sessionId, prompt: "plain" }).harness)
-    .toBeUndefined();
+  expect(
+    runInputSchema.parse({ sessionId, prompt: "plain" }).harness,
+  ).toBeUndefined();
 
   const request = rpcRequestSchema.parse({
     id: randomUUID(),
@@ -155,7 +156,11 @@ it("keeps harness opt-in through run input, IPC startRun and the durable queue",
     updatedAt: "2026-01-01T00:00:00.000Z",
     runId: null,
     input,
-    selection: { model: "fixture-model", mode: "build", permission: "workspace" },
+    selection: {
+      model: "fixture-model",
+      mode: "build",
+      permission: "workspace",
+    },
   });
   expect(queued.input?.harness).toEqual(harness);
 
@@ -187,7 +192,11 @@ it("enforces strict strategy and probe shapes with their upper bounds", () => {
   // Baseline deliberately uses empty advisory text; the fields are bounded,
   // not required to be nonempty.
   expect(
-    harnessStrategySchema.parse({ planning: "", toolGuidance: "", verification: "" }),
+    harnessStrategySchema.parse({
+      planning: "",
+      toolGuidance: "",
+      verification: "",
+    }),
   ).toEqual(BASELINE_HARNESS_STRATEGY);
   for (const value of [
     { ...strategy, unknown: "x" },
@@ -228,9 +237,9 @@ it("parses a completed report event as the browser-facing public contract", () =
   });
   // The same event survives a transport JSON round trip and is not provider-
   // or Node-specific at the shared boundary.
-  expect(
-    agentEventSchema.parse(JSON.parse(JSON.stringify(completed))),
-  ).toEqual(completed);
+  expect(agentEventSchema.parse(JSON.parse(JSON.stringify(completed)))).toEqual(
+    completed,
+  );
   expect(
     harnessAdaptationProgressSchema.parse({
       phase: "completed",
@@ -252,8 +261,10 @@ it("rejects unreported or inconsistent adaptation progress", () => {
   ] as const)
     expect(harnessAdaptationProgressSchema.parse({ phase }).phase).toBe(phase);
   expect(
-    harnessAdaptationProgressSchema.parse({ phase: "probe", probeId: "composed" })
-      .probeId,
+    harnessAdaptationProgressSchema.parse({
+      phase: "probe",
+      probeId: "composed",
+    }).probeId,
   ).toBe("composed");
   expect(
     harnessAdaptationProgressSchema.parse({
@@ -263,7 +274,8 @@ it("rejects unreported or inconsistent adaptation progress", () => {
   ).toBeTruthy();
   // Optional fields are shape-validated, not coupled to a specific phase.
   expect(
-    harnessAdaptationProgressSchema.parse({ phase: "probe", report }).report?.id,
+    harnessAdaptationProgressSchema.parse({ phase: "probe", report }).report
+      ?.id,
   ).toBe(reportId);
   for (const value of [
     { phase: "unknown" },
@@ -271,7 +283,9 @@ it("rejects unreported or inconsistent adaptation progress", () => {
     { phase: "experience", experienceId: "not-a-uuid" },
     { phase: "baseline", unknown: true },
   ])
-    expect(harnessAdaptationProgressSchema.safeParse(value).success).toBe(false);
+    expect(harnessAdaptationProgressSchema.safeParse(value).success).toBe(
+      false,
+    );
 
   for (const value of [
     { ...report, unknown: true },
@@ -282,7 +296,16 @@ it("rejects unreported or inconsistent adaptation progress", () => {
     { ...report, probes: Array(6).fill(probe) },
     { ...report, modelRequests: 34 },
     { ...report, toolCalls: 81 },
-    { ...report, experiencesUsed: [randomUUID(), randomUUID(), randomUUID(), randomUUID(), randomUUID()] },
+    {
+      ...report,
+      experiencesUsed: [
+        randomUUID(),
+        randomUUID(),
+        randomUUID(),
+        randomUUID(),
+        randomUUID(),
+      ],
+    },
     { ...report, experiencesUsed: ["not-a-uuid"] },
     { ...report, strategy: { ...strategy, unknown: true } },
   ])
@@ -307,11 +330,32 @@ it("keeps experience inputs strict and scope-bound", () => {
     }),
   ).toMatchObject({ scope, reportId });
   for (const value of [
-    { scope: { ...scope, unknown: true }, sessionId, reportId, strategy, lesson: "x", evidence: ["e"] },
+    {
+      scope: { ...scope, unknown: true },
+      sessionId,
+      reportId,
+      strategy,
+      lesson: "x",
+      evidence: ["e"],
+    },
     { scope, sessionId, reportId, strategy, lesson: "", evidence: ["e"] },
     { scope, sessionId, reportId, strategy, lesson: "x", evidence: [] },
-    { scope, sessionId, reportId, strategy, lesson: "x", evidence: ["e", "e", "e", "e", "e"] },
-    { scope, sessionId, reportId, strategy: { ...strategy, unknown: true }, lesson: "x", evidence: ["e"] },
+    {
+      scope,
+      sessionId,
+      reportId,
+      strategy,
+      lesson: "x",
+      evidence: ["e", "e", "e", "e", "e"],
+    },
+    {
+      scope,
+      sessionId,
+      reportId,
+      strategy: { ...strategy, unknown: true },
+      lesson: "x",
+      evidence: ["e"],
+    },
   ])
     expect(harnessExperienceInputSchema.safeParse(value).success).toBe(false);
 });

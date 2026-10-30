@@ -1,14 +1,43 @@
-import { rootBudgetSnapshotSchema, rootTimeoutSchema, rootToolLimitSchema } from "./run-budget";
-import { agentProfileIdSchema, agentProfileSchema, agentProfilesSchema, agentProfileOperationSchema } from "./agent-profiles";
-import { advisorRequestSchema } from "./agent-coordination";
 import { z } from "zod";
-import { sourceAccessFields, providerProtocolSchema, credentialInputSchema, publicCredentialSchema, connectionInputSchema, publicConnectionSchema, routeGroupSchema, routeOperationSchema, accountTokensSchema, providerAttemptSchema, reasoningEffortSchema } from "./model-access";
+import { advisorRequestSchema } from "./agent-coordination";
+import {
+  agentProfileIdSchema,
+  agentProfileOperationSchema,
+  agentProfileSchema,
+  agentProfilesSchema,
+} from "./agent-profiles";
+import { C0_CONTROL } from "./control-characters";
 import { createDiffPatch, unavailablePatch } from "./diff";
+import {
+  harnessAdaptationOptionsSchema,
+  harnessAdaptationProgressSchema,
+} from "./harness-adaptation";
 import { imageAttachmentsSchema } from "./images";
+import {
+  accountTokensSchema,
+  connectionInputSchema,
+  credentialInputSchema,
+  providerAttemptSchema,
+  providerProtocolSchema,
+  publicConnectionSchema,
+  publicCredentialSchema,
+  reasoningEffortSchema,
+  routeGroupSchema,
+  routeOperationSchema,
+  sourceAccessFields,
+} from "./model-access";
 import { publishedFilesSchema } from "./published-files";
+import {
+  rootBudgetSnapshotSchema,
+  rootTimeoutSchema,
+  rootToolLimitSchema,
+} from "./run-budget";
 import { toolHookDiagnosticSchema } from "./tool-hooks";
-import { harnessAdaptationOptionsSchema, harnessAdaptationProgressSchema } from "./harness-adaptation";
-import { webCitationSchema, webSearchRecordSchema, webSearchProgressSchema } from "./web-search";
+import {
+  webCitationSchema,
+  webSearchProgressSchema,
+  webSearchRecordSchema,
+} from "./web-search";
 
 export type JsonValue =
   | null
@@ -39,17 +68,50 @@ export const permissionSchema = z.enum([
   "unrestricted",
 ]);
 export type Permission = z.infer<typeof permissionSchema>;
-export const lspServerSchema = z.object({
-  id: z.string().regex(/^[a-z][a-z0-9_-]{0,31}$/),
-  command: z.string().min(1).max(4096).refine(value => !/[\x00-\x1f]/.test(value)),
-  args: z.array(z.string().max(1024).refine(value => !value.includes("\0"))).max(32).readonly(),
-  extensions: z.array(z.string().regex(/^\.[a-zA-Z0-9_-]{1,16}$/)).min(1).max(32).readonly(),
-}).strict().readonly();
-export const lspServersSchema = z.array(lspServerSchema).max(8).readonly().refine(servers =>
-  new Set(servers.map(server => server.id)).size === servers.length
-  && new Set(servers.flatMap(server => server.extensions.map(ext => ext.toLowerCase()))).size === servers.reduce((sum, server) => sum + server.extensions.length, 0),
-  "LSP server IDs and file extensions must be unique",
-).refine(servers => JSON.stringify(servers).length <= 24000, "LSP configuration is too large");
+export const lspServerSchema = z
+  .object({
+    id: z.string().regex(/^[a-z][a-z0-9_-]{0,31}$/),
+    command: z
+      .string()
+      .min(1)
+      .max(4096)
+      .refine((value) => !C0_CONTROL.test(value)),
+    args: z
+      .array(
+        z
+          .string()
+          .max(1024)
+          .refine((value) => !value.includes("\0")),
+      )
+      .max(32)
+      .readonly(),
+    extensions: z
+      .array(z.string().regex(/^\.[a-zA-Z0-9_-]{1,16}$/))
+      .min(1)
+      .max(32)
+      .readonly(),
+  })
+  .strict()
+  .readonly();
+export const lspServersSchema = z
+  .array(lspServerSchema)
+  .max(8)
+  .readonly()
+  .refine(
+    (servers) =>
+      new Set(servers.map((server) => server.id)).size === servers.length &&
+      new Set(
+        servers.flatMap((server) =>
+          server.extensions.map((ext) => ext.toLowerCase()),
+        ),
+      ).size ===
+        servers.reduce((sum, server) => sum + server.extensions.length, 0),
+    "LSP server IDs and file extensions must be unique",
+  )
+  .refine(
+    (servers) => JSON.stringify(servers).length <= 24000,
+    "LSP configuration is too large",
+  );
 export const settingsFields = {
   apiMode: providerProtocolSchema.optional(),
   maxOutputTokens: z.number().int().min(1).max(1000000).optional(),
@@ -83,9 +145,20 @@ export const settingsFields = {
   requestTimeoutMs: z.number().int().min(1000).max(600000),
   // Legacy fallback for unknown model windows, not a cap on known windows.
   contextBudgetChars: z.number().int().min(4096).max(2000000),
-  contextBudgetTokens: z.number().int().min(4096).max(10000000).nullable().optional(),
+  contextBudgetTokens: z
+    .number()
+    .int()
+    .min(4096)
+    .max(10000000)
+    .nullable()
+    .optional(),
   // Per-model overrides: gateways/aliases need not have the upstream window.
-  modelContextWindows: z.record(z.string().min(1).max(256), z.number().int().positive().max(10000000).nullable()).optional(),
+  modelContextWindows: z
+    .record(
+      z.string().min(1).max(256),
+      z.number().int().positive().max(10000000).nullable(),
+    )
+    .optional(),
   lspServers: lspServersSchema.optional(),
 };
 const configurableSettingsFields = {
@@ -95,7 +168,9 @@ const configurableSettingsFields = {
 };
 // Provider sources: a stored endpoint/model/key set selectable at runtime. The
 // public projection never carries credentials, only whether a key exists.
-export const providerSourceIdSchema = z.string().regex(/^[a-z][a-z0-9_-]{0,31}$/);
+export const providerSourceIdSchema = z
+  .string()
+  .regex(/^[a-z][a-z0-9_-]{0,31}$/);
 const providerSourceContentFields = {
   ...sourceAccessFields,
   label: z.string().trim().min(1).max(80),
@@ -112,7 +187,10 @@ const providerSourceFields = {
 // (desktop, LAN web or CLI) saved the same source in the meantime.
 export const providerSourceRevisionSchema = z.number().int().nonnegative();
 export const providerSourceSchema = z
-  .object({ ...providerSourceFields, revision: providerSourceRevisionSchema.optional() })
+  .object({
+    ...providerSourceFields,
+    revision: providerSourceRevisionSchema.optional(),
+  })
   .strict()
   .readonly();
 export type ProviderSource = z.infer<typeof providerSourceSchema>;
@@ -180,7 +258,12 @@ export const providerSourceOperationSchema = z
         source: z.object(providerSourceFields).strict().readonly(),
         apiKey: apiKeySchema.optional(),
         credentials: z.array(credentialInputSchema).readonly().optional(),
-        connection: connectionInputSchema.unwrap().extend({ extraBody: jsonObjectSchema.optional() }).strict().readonly().optional(),
+        connection: connectionInputSchema
+          .unwrap()
+          .extend({ extraBody: jsonObjectSchema.optional() })
+          .strict()
+          .readonly()
+          .optional(),
         // Omitted for a brand-new source; required to overwrite a stored one.
         expectedRevision: providerSourceRevisionSchema.optional(),
       })
@@ -193,7 +276,11 @@ export const providerSourceOperationSchema = z
         type: z.literal("remove"),
         id: providerSourceIdSchema,
         // Session ids that still reference the source, acknowledged by the user.
-        forgottenSessionIds: z.array(z.string()).max(100000).readonly().optional(),
+        forgottenSessionIds: z
+          .array(z.string())
+          .max(100000)
+          .readonly()
+          .optional(),
       })
       .strict(),
   ])
@@ -254,16 +341,22 @@ export const toolCallSchema = z
   .readonly();
 export type ToolCall = z.infer<typeof toolCallSchema>;
 /** Display-only generation metadata. Partial arguments never cross the UI boundary. */
-export const toolCallPreviewSchema = z.object({
-  index: z.number().int().min(0).max(255),
-  name: z.string().max(64).regex(/^[a-zA-Z0-9_-]*$/),
-  argumentsChars: z.number().int().min(0).max(1000000),
-  // Coarse live line estimate for write/edit arguments. Absent for tools that
-  // cannot be estimated, and never a diff: only bounded counters cross the
-  // boundary, never raw argument fragments.
-  linesAdded: z.number().int().min(0).max(1000000).optional(),
-  linesRemoved: z.number().int().min(0).max(1000000).optional(),
-}).strict().readonly();
+export const toolCallPreviewSchema = z
+  .object({
+    index: z.number().int().min(0).max(255),
+    name: z
+      .string()
+      .max(64)
+      .regex(/^[a-zA-Z0-9_-]*$/),
+    argumentsChars: z.number().int().min(0).max(1000000),
+    // Coarse live line estimate for write/edit arguments. Absent for tools that
+    // cannot be estimated, and never a diff: only bounded counters cross the
+    // boundary, never raw argument fragments.
+    linesAdded: z.number().int().min(0).max(1000000).optional(),
+    linesRemoved: z.number().int().min(0).max(1000000).optional(),
+  })
+  .strict()
+  .readonly();
 export type ToolCallPreview = z.infer<typeof toolCallPreviewSchema>;
 export const toolDefinitionSchema = z
   .object({
@@ -354,25 +447,44 @@ export const providerResponseSchema = z
   .strict()
   .readonly();
 export type ProviderResponse = z.infer<typeof providerResponseSchema>;
-export const diffPatchSchema = z.object({
-  version: z.literal(1),
-  status: z.enum(["complete", "truncated", "unavailable"]),
-  reason: z.literal("budget").optional(),
-  added: z.number().int().nonnegative().optional(),
-  removed: z.number().int().nonnegative().optional(),
-  omittedLines: z.number().int().nonnegative(),
-  omittedHunks: z.number().int().nonnegative(),
-  hunks: z.array(z.object({
-    oldStart: z.number().int().nonnegative(),
-    oldLines: z.number().int().nonnegative(),
-    newStart: z.number().int().nonnegative(),
-    newLines: z.number().int().nonnegative(),
-    lines: z.array(z.object({
-      op: z.enum(["equal", "delete", "insert"]),
-      text: z.string().max(8192),
-    }).strict().readonly()).max(400).readonly(),
-  }).strict().readonly()).max(64).readonly(),
-}).strict().readonly();
+export const diffPatchSchema = z
+  .object({
+    version: z.literal(1),
+    status: z.enum(["complete", "truncated", "unavailable"]),
+    reason: z.literal("budget").optional(),
+    added: z.number().int().nonnegative().optional(),
+    removed: z.number().int().nonnegative().optional(),
+    omittedLines: z.number().int().nonnegative(),
+    omittedHunks: z.number().int().nonnegative(),
+    hunks: z
+      .array(
+        z
+          .object({
+            oldStart: z.number().int().nonnegative(),
+            oldLines: z.number().int().nonnegative(),
+            newStart: z.number().int().nonnegative(),
+            newLines: z.number().int().nonnegative(),
+            lines: z
+              .array(
+                z
+                  .object({
+                    op: z.enum(["equal", "delete", "insert"]),
+                    text: z.string().max(8192),
+                  })
+                  .strict()
+                  .readonly(),
+              )
+              .max(400)
+              .readonly(),
+          })
+          .strict()
+          .readonly(),
+      )
+      .max(64)
+      .readonly(),
+  })
+  .strict()
+  .readonly();
 export type DiffPatch = z.infer<typeof diffPatchSchema>;
 
 /**
@@ -383,11 +495,7 @@ export type DiffPatch = z.infer<typeof diffPatchSchema>;
 const migrateFileChange = (value: unknown): unknown => {
   if (typeof value !== "object" || value === null) return value;
   const record = value as Record<string, unknown>;
-  if (
-    !("before" in record) &&
-    !("after" in record) &&
-    !("truncated" in record)
-  )
+  if (!("before" in record) && !("after" in record) && !("truncated" in record))
     return value;
   const { before, after, truncated, ...rest } = record;
   if (rest.patch !== undefined) return rest;
@@ -395,7 +503,8 @@ const migrateFileChange = (value: unknown): unknown => {
   // is empty only for a creation/deletion, never for an unknown modification.
   const complete =
     truncated === false &&
-    (typeof before === "string" || (rest.kind === "created" && before === null)) &&
+    (typeof before === "string" ||
+      (rest.kind === "created" && before === null)) &&
     (typeof after === "string" || (rest.kind === "deleted" && after === null));
   const patch = complete
     ? createDiffPatch(
@@ -504,33 +613,56 @@ export const contextSummarySchema = z
     fallback: z.boolean(),
   })
   .strict();
-export const contextUsageSchema = z.object({
-  windowTokens: z.number().int().positive().nullable(),
-  budgetTokens: z.number().int().positive().optional(),
-  budgetChars: z.number().int().positive().optional(),
-  usedTokens: z.number().int().nonnegative(),
-  estimated: z.boolean(),
-  basis: z.enum(["projected", "request", "request-with-output"]),
-  // Provider input count for this request, never the accumulated billing total.
-  promptTokens: z.number().int().nonnegative().optional(),
-  cachedPromptTokens: z.number().int().nonnegative().optional(),
-  completionTokens: z.number().int().nonnegative().optional(),
-  parts: z.object({
-    instructions: z.number().int().nonnegative(),
-    memory: z.number().int().nonnegative(),
-    conversation: z.number().int().nonnegative(),
-    tools: z.number().int().nonnegative(),
-  }).strict(),
-}).strict().readonly();
+export const contextUsageSchema = z
+  .object({
+    windowTokens: z.number().int().positive().nullable(),
+    budgetTokens: z.number().int().positive().optional(),
+    budgetChars: z.number().int().positive().optional(),
+    usedTokens: z.number().int().nonnegative(),
+    estimated: z.boolean(),
+    basis: z.enum(["projected", "request", "request-with-output"]),
+    // Provider input count for this request, never the accumulated billing total.
+    promptTokens: z.number().int().nonnegative().optional(),
+    cachedPromptTokens: z.number().int().nonnegative().optional(),
+    completionTokens: z.number().int().nonnegative().optional(),
+    parts: z
+      .object({
+        instructions: z.number().int().nonnegative(),
+        memory: z.number().int().nonnegative(),
+        conversation: z.number().int().nonnegative(),
+        tools: z.number().int().nonnegative(),
+      })
+      .strict(),
+  })
+  .strict()
+  .readonly();
 export type ContextUsage = z.infer<typeof contextUsageSchema>;
 // Read existing sessions without reinterpreting their old character counts as tokens.
 const persistedContextUsageSchema = z.union([
   contextUsageSchema,
-  z.object({ budgetChars: z.number().int().positive(), usedChars: z.number().int().nonnegative(),
-    parts: z.object({ instructions: z.number().int().nonnegative(), memory: z.number().int().nonnegative(),
-      conversation: z.number().int().nonnegative(), tools: z.number().int().nonnegative() }).strict(),
-  }).strict().transform((): ContextUsage => ({ windowTokens: null, usedTokens: 0, estimated: true,
-    basis: "projected", parts: { instructions: 0, memory: 0, conversation: 0, tools: 0 } })),
+  z
+    .object({
+      budgetChars: z.number().int().positive(),
+      usedChars: z.number().int().nonnegative(),
+      parts: z
+        .object({
+          instructions: z.number().int().nonnegative(),
+          memory: z.number().int().nonnegative(),
+          conversation: z.number().int().nonnegative(),
+          tools: z.number().int().nonnegative(),
+        })
+        .strict(),
+    })
+    .strict()
+    .transform(
+      (): ContextUsage => ({
+        windowTokens: null,
+        usedTokens: 0,
+        estimated: true,
+        basis: "projected",
+        parts: { instructions: 0, memory: 0, conversation: 0, tools: 0 },
+      }),
+    ),
 ]);
 const eventBase = {
   sessionId: sessionIdSchema,
@@ -542,23 +674,59 @@ const eventBase = {
 export const agentEventSchema = z
   .discriminatedUnion("type", [
     // Only identity/lifecycle is durable; live reasoning still stays ephemeral.
-    z.object({ ...eventBase, type: z.literal("generation_started"),
-      generationId: z.string().uuid(), messageIndex: z.number().int().nonnegative(),
-    }).strict(),
-    z.object({ ...eventBase, type: z.literal("generation_finished"),
-      generationId: z.string().uuid(),
-      status: z.enum(["completed", "failed", "cancelled", "superseded"]),
-    }).strict(),
+    z
+      .object({
+        ...eventBase,
+        type: z.literal("generation_started"),
+        generationId: z.string().uuid(),
+        messageIndex: z.number().int().nonnegative(),
+      })
+      .strict(),
+    z
+      .object({
+        ...eventBase,
+        type: z.literal("generation_finished"),
+        generationId: z.string().uuid(),
+        status: z.enum(["completed", "failed", "cancelled", "superseded"]),
+      })
+      .strict(),
     // Provider-owned search progress, not an executable local function call.
-    z.object({ ...eventBase, type: z.literal("web_search"), search: webSearchProgressSchema }).strict(),
-    z.object({ ...eventBase, type: z.literal("web_search_result"), citations: z.array(webCitationSchema).max(256).readonly(), webSearches: z.array(webSearchRecordSchema).max(128).readonly() }).strict(),
-    z.object({ ...eventBase, type: z.literal("permission_changed"), permission: permissionSchema }).strict(),
-    z.object({ ...eventBase, type: z.literal("harness_adaptation"), progress: harnessAdaptationProgressSchema }).strict(),
-    z.object({
-      ...eventBase,
-      type: z.literal("context_usage"),
-      usage: persistedContextUsageSchema,
-    }).strict(),
+    z
+      .object({
+        ...eventBase,
+        type: z.literal("web_search"),
+        search: webSearchProgressSchema,
+      })
+      .strict(),
+    z
+      .object({
+        ...eventBase,
+        type: z.literal("web_search_result"),
+        citations: z.array(webCitationSchema).max(256).readonly(),
+        webSearches: z.array(webSearchRecordSchema).max(128).readonly(),
+      })
+      .strict(),
+    z
+      .object({
+        ...eventBase,
+        type: z.literal("permission_changed"),
+        permission: permissionSchema,
+      })
+      .strict(),
+    z
+      .object({
+        ...eventBase,
+        type: z.literal("harness_adaptation"),
+        progress: harnessAdaptationProgressSchema,
+      })
+      .strict(),
+    z
+      .object({
+        ...eventBase,
+        type: z.literal("context_usage"),
+        usage: persistedContextUsageSchema,
+      })
+      .strict(),
     z
       .object({
         ...eventBase,
@@ -574,20 +742,31 @@ export const agentEventSchema = z
         status: sessionStatusSchema,
         model: settingsFields.model,
         summary: z.string().max(4096),
-        currentTool: z.object({ name: z.string().max(256), target: z.string().max(1024) }).strict().optional(),
+        currentTool: z
+          .object({ name: z.string().max(256), target: z.string().max(1024) })
+          .strict()
+          .optional(),
       })
       .strict(),
-    z.object({ ...eventBase, type: z.literal("advisor_update"), request: advisorRequestSchema }).strict(),
+    z
+      .object({
+        ...eventBase,
+        type: z.literal("advisor_update"),
+        request: advisorRequestSchema,
+      })
+      .strict(),
     // Ephemeral cumulative child reply: never a parent message or stored event.
-    z.object({
-      ...eventBase,
-      type: z.literal("agent_progress"),
-      childSessionId: sessionIdSchema,
-      text: z.string().max(65536),
-      truncated: z.boolean(),
-      childTurn: z.number().int().positive().optional(),
-      childStep: z.number().int().positive().optional(),
-    }).strict(),
+    z
+      .object({
+        ...eventBase,
+        type: z.literal("agent_progress"),
+        childSessionId: sessionIdSchema,
+        text: z.string().max(65536),
+        truncated: z.boolean(),
+        childTurn: z.number().int().positive().optional(),
+        childStep: z.number().int().positive().optional(),
+      })
+      .strict(),
     z
       .object({
         ...eventBase,
@@ -604,7 +783,13 @@ export const agentEventSchema = z
         text: z.string().max(131072),
       })
       .strict(),
-    z.object({ ...eventBase, type: z.literal("provider_attempt"), selection: providerAttemptSchema }).strict(),
+    z
+      .object({
+        ...eventBase,
+        type: z.literal("provider_attempt"),
+        selection: providerAttemptSchema,
+      })
+      .strict(),
     // Bounded user-visible retry status. Carries no upstream body, prompt or
     // endpoint. Persisted so request retries remain inspectable after resume.
     z
@@ -613,13 +798,7 @@ export const agentEventSchema = z
         type: z.literal("provider_retry"),
         attempt: z.number().int().min(1).max(5),
         maxAttempts: z.literal(5),
-        reason: z.enum([
-          "protocol",
-          "network",
-          "timeout",
-          "http",
-          "upstream",
-        ]),
+        reason: z.enum(["protocol", "network", "timeout", "http", "upstream"]),
       })
       .strict(),
     // Clear the live partial text/reasoning of the failed attempt before the
@@ -631,16 +810,18 @@ export const agentEventSchema = z
       })
       .strict(),
     // Ephemeral metadata only: neither executable arguments nor transcript evidence.
-    z.object({
-      ...eventBase,
-      type: z.literal("tool_call_preview"),
-      previewId: z.string().min(1).max(128),
-      name: toolCallPreviewSchema.unwrap().shape.name,
-      argumentsChars: toolCallPreviewSchema.unwrap().shape.argumentsChars,
-      // Optional so older persisted/queued previews still parse unchanged.
-      linesAdded: toolCallPreviewSchema.unwrap().shape.linesAdded,
-      linesRemoved: toolCallPreviewSchema.unwrap().shape.linesRemoved,
-    }).strict(),
+    z
+      .object({
+        ...eventBase,
+        type: z.literal("tool_call_preview"),
+        previewId: z.string().min(1).max(128),
+        name: toolCallPreviewSchema.unwrap().shape.name,
+        argumentsChars: toolCallPreviewSchema.unwrap().shape.argumentsChars,
+        // Optional so older persisted/queued previews still parse unchanged.
+        linesAdded: toolCallPreviewSchema.unwrap().shape.linesAdded,
+        linesRemoved: toolCallPreviewSchema.unwrap().shape.linesRemoved,
+      })
+      .strict(),
     z.object({ ...eventBase, type: z.literal("tool_preview_reset") }).strict(),
     z
       .object({
@@ -660,9 +841,14 @@ export const agentEventSchema = z
         result: toolResultSchema,
       })
       .strict(),
-    z.object({ ...eventBase, type: z.literal("tool_hook"),
-      diagnostic: toolHookDiagnosticSchema, toolCallId: z.string().min(1).max(128).optional(),
-    }).strict(),
+    z
+      .object({
+        ...eventBase,
+        type: z.literal("tool_hook"),
+        diagnostic: toolHookDiagnosticSchema,
+        toolCallId: z.string().min(1).max(128).optional(),
+      })
+      .strict(),
     z
       .object({
         ...eventBase,
@@ -729,21 +915,25 @@ export const agentEventSchema = z
         childUsageComplete: z.boolean().optional(),
       })
       .strict(),
-    z.object({
-      ...eventBase,
-      type: z.literal("step_started"),
-      turn: z.number().int().positive(),
-      step: z.number().int().positive(),
-      messageIndex: z.number().int().nonnegative(),
-    }).strict(),
-    z.object({
-      ...eventBase,
-      type: z.literal("step_finished"),
-      turn: z.number().int().positive(),
-      step: z.number().int().positive(),
-      messageIndex: z.number().int().nonnegative(),
-      status: z.enum(["completed", "failed", "cancelled", "interrupted"]),
-    }).strict(),
+    z
+      .object({
+        ...eventBase,
+        type: z.literal("step_started"),
+        turn: z.number().int().positive(),
+        step: z.number().int().positive(),
+        messageIndex: z.number().int().nonnegative(),
+      })
+      .strict(),
+    z
+      .object({
+        ...eventBase,
+        type: z.literal("step_finished"),
+        turn: z.number().int().positive(),
+        step: z.number().int().positive(),
+        messageIndex: z.number().int().nonnegative(),
+        status: z.enum(["completed", "failed", "cancelled", "interrupted"]),
+      })
+      .strict(),
     z
       .object({
         ...eventBase,
@@ -761,9 +951,12 @@ export const agentEventSchema = z
       })
       .strict(),
   ])
-  .refine(event => (event.type !== "tool_started" && event.type !== "tool_finished") ||
-    (event.generationId === undefined) === (event.callIndex === undefined),
-  "Tool generation identity and call index must be supplied together")
+  .refine(
+    (event) =>
+      (event.type !== "tool_started" && event.type !== "tool_finished") ||
+      (event.generationId === undefined) === (event.callIndex === undefined),
+    "Tool generation identity and call index must be supplied together",
+  )
   .readonly();
 export type AgentEvent = z.infer<typeof agentEventSchema>;
 export const sessionTitleSchema = z.string().trim().min(1).max(256);
@@ -790,8 +983,15 @@ export const sessionSnapshotSchema = z
     ...summaryFields,
     messages: z.array(messageSchema).max(100000).readonly(),
     // Durable user input waiting for the active native tool exchange to close.
-    pendingSteering: z.array(messageSchema.refine(message => message.role === "user" && !message.origin))
-      .max(1000).readonly().optional(),
+    pendingSteering: z
+      .array(
+        messageSchema.refine(
+          (message) => message.role === "user" && !message.origin,
+        ),
+      )
+      .max(1000)
+      .readonly()
+      .optional(),
     events: z.array(agentEventSchema).max(1000000).readonly(),
     changes: z.array(fileChangeSchema).max(100000).readonly(),
     titleSource: z.enum(["default", "user", "auto"]).optional(),
@@ -804,19 +1004,39 @@ export const sessionSnapshotSchema = z
     agentTask: z.string().max(16384).optional(),
     // Immutable role snapshot: editing settings never retargets an existing child.
     agentProfile: agentProfileSchema.optional(),
-    advisorRequests: z.array(advisorRequestSchema).max(10000).readonly().optional(),
-    agentWorktree: z.object({
-      repository: z.string().min(1).max(4096),
-      worktree: z.string().min(1).max(4096),
-      baseRevision: z.string().regex(/^[a-f0-9]{40,64}$/),
-    }).strict().readonly().optional(),
+    advisorRequests: z
+      .array(advisorRequestSchema)
+      .max(10000)
+      .readonly()
+      .optional(),
+    agentWorktree: z
+      .object({
+        repository: z.string().min(1).max(4096),
+        worktree: z.string().min(1).max(4096),
+        baseRevision: z.string().regex(/^[a-f0-9]{40,64}$/),
+      })
+      .strict()
+      .readonly()
+      .optional(),
     ownership: z.string().max(4096).optional(),
-    writePaths: z.array(z.string().min(1).max(512)).max(32).readonly().optional(),
-    agentResolutions: z.array(z.object({
-      id: sessionIdSchema,
-      childUpdatedAt: timestampSchema,
-      resolution: z.string().min(1).max(4096),
-    }).strict()).max(10000).readonly().optional(),
+    writePaths: z
+      .array(z.string().min(1).max(512))
+      .max(32)
+      .readonly()
+      .optional(),
+    agentResolutions: z
+      .array(
+        z
+          .object({
+            id: sessionIdSchema,
+            childUpdatedAt: timestampSchema,
+            resolution: z.string().min(1).max(4096),
+          })
+          .strict(),
+      )
+      .max(10000)
+      .readonly()
+      .optional(),
     permissionCeiling: permissionSchema.optional(),
     contextSummary: contextSummarySchema.optional(),
     archived: z.boolean().optional(),
@@ -831,7 +1051,7 @@ export const createSessionInputSchema = z
     title: summaryFields.title.optional(),
     model: settingsFields.model.optional(),
     providerSourceId: providerSourceIdSchema.optional(),
-  routeGroupId: z.string().min(1).optional(),
+    routeGroupId: z.string().min(1).optional(),
   })
   .strict()
   .readonly();
@@ -847,12 +1067,15 @@ export const runInputSchema = z
     permission: permissionSchema.optional(),
     model: settingsFields.model.optional(),
     providerSourceId: providerSourceIdSchema.optional(),
-  routeGroupId: z.string().min(1).optional(),
-  /** Set by the Web host when forwarding a page request; selects Web-only
-   * capabilities (chart tool + fence prompt). The CLI never sets it. */
-  uiHost: z.literal("web").optional(),
+    routeGroupId: z.string().min(1).optional(),
+    /** Set by the Web host when forwarding a page request; selects Web-only
+     * capabilities (chart tool + fence prompt). The CLI never sets it. */
+    uiHost: z.literal("web").optional(),
   })
   .strict()
-  .refine(input => Boolean(input.prompt || input.images?.length), "请输入消息或添加图片。")
+  .refine(
+    (input) => Boolean(input.prompt || input.images?.length),
+    "请输入消息或添加图片。",
+  )
   .readonly();
 export type RunInput = z.infer<typeof runInputSchema>;

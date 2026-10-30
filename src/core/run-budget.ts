@@ -150,7 +150,10 @@ export function createRootRunBudget(options: {
         stopReason: null,
         usage,
         // Child events do not duplicate the ever-growing whole-tree ledger.
-        sessions: sessionId === undefined ? [...sessions.values()] : [session(sessionId)],
+        sessions:
+          sessionId === undefined
+            ? [...sessions.values()]
+            : [session(sessionId)],
       });
     },
     close() {

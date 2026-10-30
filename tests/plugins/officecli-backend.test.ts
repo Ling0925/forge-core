@@ -16,9 +16,9 @@ import {
   createOfficeCliBackend,
 } from "../../src/plugins/builtin/officecli/backend";
 import { ForgeError } from "../../src/shared/errors";
+import { testScratch } from "../fixtures/scratch";
 
-const projectRoot = fileURLToPath(new URL("../../../../", import.meta.url));
-const qaRoot = join(projectRoot, ".forge", "tmp", "officecli", "backend-tests");
+const qaRoot = testScratch("officecli", "backend-tests");
 const fixturePath = fileURLToPath(
   new URL("../fixtures/officecli-process.mjs", import.meta.url),
 );

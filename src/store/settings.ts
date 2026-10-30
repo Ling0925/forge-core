@@ -1,9 +1,28 @@
 import { join } from "node:path";
 import { z } from "zod";
 import { agentProfilesSchema } from "../shared/agent-profiles";
-import type { AgentProfile, AgentProfileOperation } from "../shared/agent-profiles";
+import type {
+  AgentProfile,
+  AgentProfileOperation,
+} from "../shared/agent-profiles";
 import type { SettingsStore } from "../shared/contracts";
 import { ForgeError } from "../shared/errors";
+import {
+  type CredentialInput,
+  type ProviderProtocol,
+  type RouteGroup,
+  accountTokensSchema,
+  connectionInputSchema,
+  credentialInputSchema,
+  routeGroupSchema,
+  sourceAccessFields,
+} from "../shared/model-access";
+import {
+  exclusiveModelProtocol,
+  modelProtocol,
+  modelProtocolEndpoint,
+  modelProtocolOverride,
+} from "../shared/model-protocol";
 import {
   configureInputSchema,
   defaultPublicSettings,
@@ -13,11 +32,12 @@ import {
   providerSourceSchema,
   publicSettingsSchema,
 } from "../shared/schemas";
-import type { ProviderSourceOperation, PublicSettings } from "../shared/schemas";
+import type {
+  ProviderSourceOperation,
+  PublicSettings,
+} from "../shared/schemas";
 import { atomicJson, privateDirectory, readJson, storageError } from "./io";
 import { fileLock } from "./lock";
-import { accountTokensSchema, credentialInputSchema, connectionInputSchema, routeGroupSchema, sourceAccessFields, type CredentialInput, type ProviderProtocol, type RouteGroup } from "../shared/model-access";
-import { exclusiveModelProtocol, modelProtocol, modelProtocolEndpoint, modelProtocolOverride } from "../shared/model-protocol";
 
 async function settingsLock(path: string): Promise<() => Promise<void>> {
   for (let attempt = 0; attempt < 1000; attempt += 1) {
@@ -39,16 +59,27 @@ const NEW_SOURCE_LABEL = "Default";
 // Accept and discard retired fields only when reading stored data. Public
 // configuration rejects them. Old browser preferences must neither block startup
 // nor enable/configure the browser plugin; that grant lives in its own store.
-const fieldsSchema = configureInputSchema.unwrap().shape.settings.unwrap().unwrap()
+const fieldsSchema = configureInputSchema
+  .unwrap()
+  .shape.settings.unwrap()
+  .unwrap()
   .extend({
     webSearch: z.enum(["disabled", "cached", "live"]).optional(),
     browserAllowedOrigins: z.unknown().optional(),
     browserExecutablePath: z.unknown().optional(),
   })
-  .transform(({ webSearch: _legacyWebSearch, browserAllowedOrigins: _legacyOrigins,
-    browserExecutablePath: _legacyBrowserExecutable, ...settings }) => settings)
+  .transform(
+    ({
+      webSearch: _legacyWebSearch,
+      browserAllowedOrigins: _legacyOrigins,
+      browserExecutablePath: _legacyBrowserExecutable,
+      ...settings
+    }) => settings,
+  )
   .readonly();
-const credentialValueSchema = configureInputSchema.unwrap().shape.apiKey.unwrap();
+const credentialValueSchema = configureInputSchema
+  .unwrap()
+  .shape.apiKey.unwrap();
 const configSchema = z
   .object({ version: z.literal(1), settings: fieldsSchema })
   .strict();
@@ -158,77 +189,165 @@ function seedFromLegacy(state: StoredState): StoredState {
 // The active source is projected onto the legacy top-level pair so runtimes and
 // the CLI keep working through the no-argument provider config path.
 function projectActive(state: StoredState, source: StoredSource): StoredState {
+  // Drop a stale top-level apiMode when the active source has none.
+  const { apiMode: _staleApiMode, ...inherited } = state.settings;
   const settings: Record<string, unknown> = {
-    ...state.settings,
+    ...inherited,
     baseUrl: source.baseUrl,
     model: source.model,
+    ...(source.apiMode === undefined ? {} : { apiMode: source.apiMode }),
   };
-  if (source.apiMode === undefined) delete settings.apiMode;
-  else settings.apiMode = source.apiMode;
-  return { ...state, settings: settings as StoredSettings, apiKey: source.apiKey };
+  return {
+    ...state,
+    settings: settings as StoredSettings,
+    apiKey: source.apiKey,
+  };
 }
 
 function sourceCredentials(source: StoredSource): readonly CredentialInput[] {
-  return source.credentials ?? [{ id: "default", label: "Default", type: "api-key", enabled: true, apiKey: source.apiKey }];
+  return (
+    source.credentials ?? [
+      {
+        id: "default",
+        label: "Default",
+        type: "api-key",
+        enabled: true,
+        apiKey: source.apiKey,
+      },
+    ]
+  );
 }
-function selectedCredential(source: StoredSource, id?: string, protocol: ProviderProtocol = source.apiMode ?? "chat-completions"): CredentialInput {
+function selectedCredential(
+  source: StoredSource,
+  id?: string,
+  protocol: ProviderProtocol = source.apiMode ?? "chat-completions",
+): CredentialInput {
   const credentials = sourceCredentials(source);
   const requested = id ?? source.activeCredentialId;
-  const credential = requested === undefined
-    ? credentials.find(item => item.enabled && (!item.protocol || item.protocol === protocol))
-    : credentials.find(item => item.id === requested);
-  if (!credential || !credential.enabled) throw invalid("此来源没有可用的凭据。");
-  if (credential.protocol && credential.protocol !== protocol) throw invalid("凭据与所选协议不匹配。");
+  const credential =
+    requested === undefined
+      ? credentials.find(
+          (item) =>
+            item.enabled && (!item.protocol || item.protocol === protocol),
+        )
+      : credentials.find((item) => item.id === requested);
+  if (!credential || !credential.enabled)
+    throw invalid("此来源没有可用的凭据。");
+  if (credential.protocol && credential.protocol !== protocol)
+    throw invalid("凭据与所选协议不匹配。");
   return credential;
 }
 function publicSource(source: StoredSource) {
   const { apiKey, credentials: _credentials, connection, ...fields } = source;
   return {
     ...fields,
-    hasApiKey: sourceCredentials(source).some(item => !!item.apiKey || !!item.account?.accessToken),
-    ...(source.credentials ? { credentials: source.credentials.map(item => ({
-      id: item.id, label: item.label, type: item.type, enabled: item.enabled,
-      ...(item.protocol ? { protocol: item.protocol } : {}),
-      ...(item.account ? { platform: item.account.platform, ...(item.account.expiresAt === undefined ? {} : { expiresAt: item.account.expiresAt }) } : {}),
-      status: !item.enabled ? "disabled" : item.type === "account" && !item.account ? "signed-out"
-        : item.account?.expiresAt !== undefined && item.account.expiresAt <= Date.now() ? "expired" : "ready",
-    })) } : {}),
-    ...(connection ? { connection: {
-      ...(connection.auth ? { auth: { type: connection.auth.type, ...(connection.auth.header ? { header: connection.auth.header } : {}) } } : {}),
-      headerNames: Object.keys(connection.headers ?? {}), hasExtraBody: Object.keys(connection.extraBody ?? {}).length > 0, hasProxy: !!connection.proxyUrl,
-      ...(connection.vertex ? { hasVertex: true } : {}),
-    } } : {}),
+    hasApiKey: sourceCredentials(source).some(
+      (item) => !!item.apiKey || !!item.account?.accessToken,
+    ),
+    ...(source.credentials
+      ? {
+          credentials: source.credentials.map((item) => ({
+            id: item.id,
+            label: item.label,
+            type: item.type,
+            enabled: item.enabled,
+            ...(item.protocol ? { protocol: item.protocol } : {}),
+            ...(item.account
+              ? {
+                  platform: item.account.platform,
+                  ...(item.account.expiresAt === undefined
+                    ? {}
+                    : { expiresAt: item.account.expiresAt }),
+                }
+              : {}),
+            status: !item.enabled
+              ? "disabled"
+              : item.type === "account" && !item.account
+                ? "signed-out"
+                : item.account?.expiresAt !== undefined &&
+                    item.account.expiresAt <= Date.now()
+                  ? "expired"
+                  : "ready",
+          })),
+        }
+      : {}),
+    ...(connection
+      ? {
+          connection: {
+            ...(connection.auth
+              ? {
+                  auth: {
+                    type: connection.auth.type,
+                    ...(connection.auth.header
+                      ? { header: connection.auth.header }
+                      : {}),
+                  },
+                }
+              : {}),
+            headerNames: Object.keys(connection.headers ?? {}),
+            hasExtraBody: Object.keys(connection.extraBody ?? {}).length > 0,
+            hasProxy: !!connection.proxyUrl,
+            ...(connection.vertex ? { hasVertex: true } : {}),
+          },
+        }
+      : {}),
   };
 }
 function validateReferences(state: StoredState): void {
   const groups = state.routeGroups ?? [];
-  if (new Set(groups.map(group => group.id)).size !== groups.length) throw invalid("路由组 ID 重复。");
+  if (new Set(groups.map((group) => group.id)).size !== groups.length)
+    throw invalid("路由组 ID 重复。");
   for (const source of state.sources) {
     const credentials = sourceCredentials(source);
-    if (new Set(credentials.map(item => item.id)).size !== credentials.length) throw invalid("凭据 ID 重复。");
-    if (source.activeCredentialId && !credentials.some(item => item.id === source.activeCredentialId)) throw invalid("所选凭据不存在。");
+    if (new Set(credentials.map((item) => item.id)).size !== credentials.length)
+      throw invalid("凭据 ID 重复。");
+    if (
+      source.activeCredentialId &&
+      !credentials.some((item) => item.id === source.activeCredentialId)
+    )
+      throw invalid("所选凭据不存在。");
   }
-  for (const group of groups) for (const member of group.members) {
-    const source = state.sources.find(item => item.id === member.sourceId);
-    if (!source || (member.credentialId && !sourceCredentials(source).some(item => item.id === member.credentialId)))
-      throw invalid("路由仍引用此来源或凭据，请先更新路由成员。");
-  }
+  for (const group of groups)
+    for (const member of group.members) {
+      const source = state.sources.find((item) => item.id === member.sourceId);
+      if (
+        !source ||
+        (member.credentialId &&
+          !sourceCredentials(source).some(
+            (item) => item.id === member.credentialId,
+          ))
+      )
+        throw invalid("路由仍引用此来源或凭据，请先更新路由成员。");
+    }
   // A stored fixed profile must always resolve: it is an explicit model choice,
   // never a hint to fall back to whatever source happens to be active.
   for (const profile of state.agentProfiles ?? []) {
     const selection = profile.model;
     if (selection.mode !== "fixed") continue;
     const sourceId = selection.providerSourceId;
-    if (!state.sources.some(source => source.id === sourceId))
-      throw invalid("智能体配置固定使用的模型来源不存在，请先修改或删除该智能体配置。");
+    if (!state.sources.some((source) => source.id === sourceId))
+      throw invalid(
+        "智能体配置固定使用的模型来源不存在，请先修改或删除该智能体配置。",
+      );
   }
 }
 function hasExtendedState(state: StoredState): boolean {
-  return state.version === 2 || state.routeGroups !== undefined ||
-    state.agentProfiles !== undefined || state.agentProfilesRevision !== undefined ||
-    state.settings.apiMode === "gemini" || state.sources.some(source =>
-      source.credentials !== undefined || source.connection !== undefined || source.apiMode === "gemini" ||
-      Object.keys(sourceAccessFields).some(key => source[key as keyof StoredSource] !== undefined));
+  return (
+    state.version === 2 ||
+    state.routeGroups !== undefined ||
+    state.agentProfiles !== undefined ||
+    state.agentProfilesRevision !== undefined ||
+    state.settings.apiMode === "gemini" ||
+    state.sources.some(
+      (source) =>
+        source.credentials !== undefined ||
+        source.connection !== undefined ||
+        source.apiMode === "gemini" ||
+        Object.keys(sourceAccessFields).some(
+          (key) => source[key as keyof StoredSource] !== undefined,
+        ),
+    )
+  );
 }
 
 export async function openSettingsStore(
@@ -252,12 +371,16 @@ export async function openSettingsStore(
     }
   };
   const record = (state: StoredState) => ({
-    version: hasExtendedState(state) ? 2 as const : 1 as const,
+    version: hasExtendedState(state) ? (2 as const) : (1 as const),
     settings: state.settings,
     apiKey: state.apiKey,
     sources: [...state.sources],
-    ...(state.routeGroups === undefined ? {} : { routeGroups: state.routeGroups }),
-    ...(state.agentProfiles === undefined ? {} : { agentProfiles: state.agentProfiles }),
+    ...(state.routeGroups === undefined
+      ? {}
+      : { routeGroups: state.routeGroups }),
+    ...(state.agentProfiles === undefined
+      ? {}
+      : { agentProfiles: state.agentProfiles }),
     ...(state.agentProfilesRevision === undefined
       ? {}
       : { agentProfilesRevision: state.agentProfilesRevision }),
@@ -272,7 +395,7 @@ export async function openSettingsStore(
       const previous = await optionalRecord(transactionPath, TRANSACTION_LIMIT);
       if (previous && (previous as { version?: unknown }).version === 1) {
         const backup = join(folder, "state.v1.backup.json");
-        if (await optionalRecord(backup, TRANSACTION_LIMIT) === undefined)
+        if ((await optionalRecord(backup, TRANSACTION_LIMIT)) === undefined)
           await atomicJson(backup, previous, TRANSACTION_LIMIT);
       }
     }
@@ -298,7 +421,9 @@ export async function openSettingsStore(
     if (!parsed.success) throw storageError();
     const state: StoredState = {
       version: parsed.data.version,
-      ...(parsed.data.routeGroups === undefined ? {} : { routeGroups: parsed.data.routeGroups }),
+      ...(parsed.data.routeGroups === undefined
+        ? {}
+        : { routeGroups: parsed.data.routeGroups }),
       ...(parsed.data.agentProfiles === undefined
         ? {}
         : { agentProfiles: parsed.data.agentProfiles }),
@@ -315,7 +440,11 @@ export async function openSettingsStore(
         ? {}
         : { activeSourceId: parsed.data.activeSourceId }),
     };
-    try { validateReferences(state); } catch { throw storageError(); }
+    try {
+      validateReferences(state);
+    } catch {
+      throw storageError();
+    }
     return state;
   };
   const initialize = async () => {
@@ -331,7 +460,8 @@ export async function openSettingsStore(
       if (
         parsed.data.sources === undefined ||
         parsed.data.sources.some((source) => source.revision === undefined)
-      ) await commitState(seedFromLegacy(stored));
+      )
+        await commitState(seedFromLegacy(stored));
       return;
     }
     // Import legacy files only while holding the cross-process writer lock, and
@@ -389,8 +519,7 @@ export async function openSettingsStore(
       (source) => source.id === stored.activeSourceId,
     );
     // FORGE_* keeps its original priority over the stored active source.
-    const apiKey =
-      overlay.data.apiKey ?? active?.apiKey ?? stored.apiKey;
+    const apiKey = overlay.data.apiKey ?? active?.apiKey ?? stored.apiKey;
     const environmentOverride =
       process.env.FORGE_BASE_URL !== undefined ||
       process.env.FORGE_MODEL !== undefined ||
@@ -406,7 +535,9 @@ export async function openSettingsStore(
         providerSources: stored.sources.map(publicSource),
         // Explicit empty list: older configs migrate without rewriting the file.
         agentProfiles: stored.agentProfiles ?? [],
-        ...(stored.routeGroups === undefined ? {} : { routeGroups: stored.routeGroups }),
+        ...(stored.routeGroups === undefined
+          ? {}
+          : { routeGroups: stored.routeGroups }),
         ...(stored.activeSourceId === undefined
           ? {}
           : { activeSourceId: stored.activeSourceId }),
@@ -414,11 +545,19 @@ export async function openSettingsStore(
       }),
     };
   };
-  const providerSnapshot = async (sourceId?: string, credentialId?: string, model?: string) => {
+  const providerSnapshot = async (
+    requestedSourceId?: string,
+    credentialId?: string,
+    model?: string,
+  ) => {
     const state = await effective();
-    if (sourceId === undefined && !state.environmentOverride) sourceId = state.stored.activeSourceId;
+    const sourceId =
+      requestedSourceId ??
+      (state.environmentOverride ? undefined : state.stored.activeSourceId);
     if (sourceId !== undefined) {
-      const source = state.stored.sources.find(candidate => candidate.id === sourceId);
+      const source = state.stored.sources.find(
+        (candidate) => candidate.id === sourceId,
+      );
       if (!source) throw unknownSource();
       // Resolve request routing before choosing a credential: a protocol-bound
       // credential must be selected for the model's effective protocol, and an
@@ -430,33 +569,68 @@ export async function openSettingsStore(
       // names a protocol: routing still defaults to chat-completions, but
       // apiMode stays omitted rather than being materialized as a setting.
       const explicitProtocol = override ?? source.apiMode;
-      if (override !== undefined && source.connection?.vertex && override !== "gemini")
-        throw invalid(`Vertex 来源固定使用 gemini 协议，不能${model === undefined ? "" : `为模型 ${model} `}覆盖为 ${override}。`);
+      if (
+        override !== undefined &&
+        source.connection?.vertex &&
+        override !== "gemini"
+      )
+        throw invalid(
+          `Vertex 来源固定使用 gemini 协议，不能${model === undefined ? "" : `为模型 ${model} `}覆盖为 ${override}。`,
+        );
       const credential = selectedCredential(source, credentialId, protocol);
-      if (credential.type === "account" && !credential.account) throw invalid("账号已退出，请重新登录。");
-      const exclusive = exclusiveModelProtocol(undefined, credential.account?.platform);
-      if (override !== undefined && exclusive !== undefined && override !== exclusive)
-        throw invalid(`${credential.account?.platform === "codex" ? "Codex 账号" : "账号"}固定使用 ${exclusive} 协议，不能${model === undefined ? "" : `为模型 ${model} `}覆盖为 ${override}。`);
+      if (credential.type === "account" && !credential.account)
+        throw invalid("账号已退出，请重新登录。");
+      const exclusive = exclusiveModelProtocol(
+        undefined,
+        credential.account?.platform,
+      );
+      if (
+        override !== undefined &&
+        exclusive !== undefined &&
+        override !== exclusive
+      )
+        throw invalid(
+          `${credential.account?.platform === "codex" ? "Codex 账号" : "账号"}固定使用 ${exclusive} 协议，不能${model === undefined ? "" : `为模型 ${model} `}覆盖为 ${override}。`,
+        );
+      const publicSource = state.public.providerSources?.find(
+        (candidate) => candidate.id === source.id,
+      );
+      if (!publicSource) throw invalid("未找到模型来源。");
       return {
-        source: state.public.providerSources!.find(candidate => candidate.id === source.id)!,
+        source: publicSource,
         config: providerConfigSchema.parse({
           ...source.connection,
           baseUrl: modelProtocolEndpoint(source, protocol) ?? source.baseUrl,
           apiKey: credential.apiKey ?? credential.account?.accessToken ?? "",
-          credentialId: credential.id, sourceId: source.id, sourceRevision: source.revision,
+          credentialId: credential.id,
+          sourceId: source.id,
+          sourceRevision: source.revision,
           ...(credential.account ? { account: credential.account } : {}),
           requestTimeoutMs: state.public.requestTimeoutMs,
-          ...(explicitProtocol === undefined ? {} : { apiMode: explicitProtocol }),
-          reasoningEffort: state.public.reasoningEffort, maxOutputTokens: state.public.maxOutputTokens,
+          ...(explicitProtocol === undefined
+            ? {}
+            : { apiMode: explicitProtocol }),
+          reasoningEffort: state.public.reasoningEffort,
+          maxOutputTokens: state.public.maxOutputTokens,
         }),
       };
     }
     const config = state.public;
-    if (!config.baseUrl) throw new ForgeError("invalid_input", "Configure a provider endpoint before listing models.");
-    return { config: providerConfigSchema.parse({
-      baseUrl: config.baseUrl, apiKey: state.apiKey, requestTimeoutMs: config.requestTimeoutMs,
-      apiMode: config.apiMode, reasoningEffort: config.reasoningEffort, maxOutputTokens: config.maxOutputTokens,
-    }) };
+    if (!config.baseUrl)
+      throw new ForgeError(
+        "invalid_input",
+        "Configure a provider endpoint before listing models.",
+      );
+    return {
+      config: providerConfigSchema.parse({
+        baseUrl: config.baseUrl,
+        apiKey: state.apiKey,
+        requestTimeoutMs: config.requestTimeoutMs,
+        apiMode: config.apiMode,
+        reasoningEffort: config.reasoningEffort,
+        maxOutputTokens: config.maxOutputTokens,
+      }),
+    };
   };
   await locked(initialize);
   let tail: Promise<void> = Promise.resolve();
@@ -469,7 +643,12 @@ export async function openSettingsStore(
       const snapshot = await providerSnapshot(sourceId, credentialId, model);
       if (snapshot.source && !snapshot.source.credentials) {
         // Preserve the legacy private-config shape for older injected hosts.
-        const { sourceId: _id, sourceRevision: _revision, credentialId: _credential, ...legacy } = snapshot.config;
+        const {
+          sourceId: _id,
+          sourceRevision: _revision,
+          credentialId: _credential,
+          ...legacy
+        } = snapshot.config;
         return legacy;
       }
       return snapshot.config;
@@ -477,17 +656,38 @@ export async function openSettingsStore(
     async refreshAccount(sourceId, credentialId, refresh, model) {
       await locked(async () => {
         const state = await load();
-        const source = state.sources.find(item => item.id === sourceId);
+        const source = state.sources.find((item) => item.id === sourceId);
         if (!source) throw unknownSource();
-        const credential = selectedCredential(source, credentialId, modelProtocol(source, model));
+        const credential = selectedCredential(
+          source,
+          credentialId,
+          modelProtocol(source, model),
+        );
         if (!credential.account) throw invalid("未找到订阅账号。");
-        if (credential.account.expiresAt === undefined || credential.account.expiresAt > Date.now() + 30_000) return;
+        if (
+          credential.account.expiresAt === undefined ||
+          credential.account.expiresAt > Date.now() + 30_000
+        )
+          return;
         // The same cross-process lock spans token rotation and commit. Another
         // reader rechecks expiry after acquiring it instead of reusing a stale token.
-        const account = accountTokensSchema.parse(await refresh(credential.account));
-        const saved = { ...source, revision: source.revision + 1, credentials: sourceCredentials(source).map(item =>
-          item.id === credentialId ? { ...item, account } : item) };
-        await commitAll({ ...state, version: 2, sources: state.sources.map(item => item.id === sourceId ? saved : item) });
+        const account = accountTokensSchema.parse(
+          await refresh(credential.account),
+        );
+        const saved = {
+          ...source,
+          revision: source.revision + 1,
+          credentials: sourceCredentials(source).map((item) =>
+            item.id === credentialId ? { ...item, account } : item,
+          ),
+        };
+        await commitAll({
+          ...state,
+          version: 2,
+          sources: state.sources.map((item) =>
+            item.id === sourceId ? saved : item,
+          ),
+        });
       });
       return (await providerSnapshot(sourceId, credentialId, model)).config;
     },
@@ -500,11 +700,21 @@ export async function openSettingsStore(
               "invalid_input",
               "Settings failed validation.",
             );
-          const { source, sources: batch, route, agent, settings, apiKey } =
-            parsed.data;
-          if ((source || batch) && (settings !== undefined || apiKey !== undefined))
+          const {
+            source,
+            sources: batch,
+            route,
+            agent,
+            settings,
+            apiKey,
+          } = parsed.data;
+          if (
+            (source || batch) &&
+            (settings !== undefined || apiKey !== undefined)
+          )
             throw invalid("来源操作不能与普通设置或密钥更新同时提交。");
-          if (source && batch) throw invalid("不能同时提交单个来源和来源批次。");
+          if (source && batch)
+            throw invalid("不能同时提交单个来源和来源批次。");
           // Profile CRUD and source edits each validate cross-references against
           // the other, so combining them would make the outcome order-dependent.
           if (agent !== undefined && (source || batch))
@@ -516,9 +726,17 @@ export async function openSettingsStore(
           if (settings !== undefined || apiKey !== undefined)
             next = updateLegacy(next, parsed.data);
           for (const operation of batch ?? (source ? [source] : []))
-            next = await updateSource(next, operation, options.referencedSessions ?? (async () => []));
+            next = await updateSource(
+              next,
+              operation,
+              options.referencedSessions ?? (async () => []),
+            );
           if (route) {
-            const groups = (next.routeGroups ?? []).filter(group => group.id !== (route.type === "save" ? route.group.id : route.id));
+            const groups = (next.routeGroups ?? []).filter(
+              (group) =>
+                group.id !==
+                (route.type === "save" ? route.group.id : route.id),
+            );
             if (route.type === "save") groups.push(route.group);
             next = { ...next, version: 2, routeGroups: groups };
           }
@@ -545,14 +763,13 @@ function updateAgent(
 ): StoredState {
   const profiles = [...(state.agentProfiles ?? [])];
   const index = profiles.findIndex(
-    profile => profile.id === (operation.type === "save" ? operation.profile.id : operation.id),
+    (profile) =>
+      profile.id ===
+      (operation.type === "save" ? operation.profile.id : operation.id),
   );
   const existing = index === -1 ? undefined : profiles[index];
   if (operation.type === "remove" && existing === undefined)
-    throw new ForgeError(
-      "not_found",
-      "未找到该智能体配置，可能已在别处删除。",
-    );
+    throw new ForgeError("not_found", "未找到该智能体配置，可能已在别处删除。");
   // New profiles must prove they expect "no existing profile" (0); updates must
   // echo the committed revision they were shown.
   if ((existing?.revision ?? 0) !== operation.expectedRevision)
@@ -560,10 +777,9 @@ function updateAgent(
       "该智能体配置已被其他窗口或 CLI 修改。请重新加载设置后再保存，避免覆盖对方的改动。",
     );
   const previousRevision = state.agentProfilesRevision ?? 0;
-  const revision = Math.max(
-    previousRevision,
-    ...profiles.map(profile => profile.revision),
-  ) + 1;
+  const revision =
+    Math.max(previousRevision, ...profiles.map((profile) => profile.revision)) +
+    1;
   if (operation.type === "remove") profiles.splice(index, 1);
   else {
     const saved: AgentProfile = {
@@ -576,7 +792,7 @@ function updateAgent(
     const selection = saved.model;
     if (
       selection.mode === "fixed" &&
-      !state.sources.some(source => source.id === selection.providerSourceId)
+      !state.sources.some((source) => source.id === selection.providerSourceId)
     )
       throw invalid("智能体配置固定使用的模型来源不存在，请先配置该来源。");
     if (existing === undefined) {
@@ -624,26 +840,55 @@ async function updateSource(
         "修改来源地址时必须重新提供新地址的密钥（或明确清除已保存的密钥），以免把旧密钥发往新地址。",
       );
     const previousCredentials = existing ? sourceCredentials(existing) : [];
-    let credentials = operation.credentials?.map(item => {
-      const previous = previousCredentials.find(value => value.id === item.id && value.type === item.type);
-      return { ...item, ...(item.type === "api-key" ? { apiKey: item.apiKey ?? previous?.apiKey ?? "" }
-        : { account: item.account ?? previous?.account }) };
-    }) ?? existing?.credentials;
-    if (credentials && operation.apiKey !== undefined) {
-      const id = operation.source.activeCredentialId ?? existing?.activeCredentialId ?? credentials[0]?.id ?? "default";
-      credentials = credentials.map(item => item.id === id ? { ...item, type: "api-key" as const, apiKey: operation.apiKey!, account: undefined } : item);
+    let credentials =
+      operation.credentials?.map((item) => {
+        const previous = previousCredentials.find(
+          (value) => value.id === item.id && value.type === item.type,
+        );
+        return {
+          ...item,
+          ...(item.type === "api-key"
+            ? { apiKey: item.apiKey ?? previous?.apiKey ?? "" }
+            : { account: item.account ?? previous?.account }),
+        };
+      }) ?? existing?.credentials;
+    const replacementApiKey = operation.apiKey;
+    if (credentials && replacementApiKey !== undefined) {
+      const id =
+        operation.source.activeCredentialId ??
+        existing?.activeCredentialId ??
+        credentials[0]?.id ??
+        "default";
+      credentials = credentials.map((item) =>
+        item.id === id
+          ? {
+              ...item,
+              type: "api-key" as const,
+              apiKey: replacementApiKey,
+              account: undefined,
+            }
+          : item,
+      );
     }
     let saved: StoredSource = {
       ...existing,
       ...operation.source,
       ...(credentials === undefined ? {} : { credentials }),
-      ...(operation.connection === undefined ? {} : { connection: { ...existing?.connection, ...operation.connection } }),
+      ...(operation.connection === undefined
+        ? {}
+        : { connection: { ...existing?.connection, ...operation.connection } }),
       apiKey: operation.apiKey ?? existing?.apiKey ?? "",
       revision: (existing?.revision ?? 0) + 1,
     };
     if (saved.credentials) {
-      const selected = saved.credentials.find(item => item.id === saved.activeCredentialId) ?? saved.credentials.find(item => item.enabled);
-      saved = { ...saved, apiKey: selected?.type === "api-key" ? selected.apiKey ?? "" : "" };
+      const selected =
+        saved.credentials.find(
+          (item) => item.id === saved.activeCredentialId,
+        ) ?? saved.credentials.find((item) => item.enabled);
+      saved = {
+        ...saved,
+        apiKey: selected?.type === "api-key" ? (selected.apiKey ?? "") : "",
+      };
     }
     if (existing === undefined) sources.push(saved);
     else sources[index] = saved;
@@ -671,11 +916,17 @@ async function updateSource(
   if (index === -1) throw unknownSource();
   // A fixed profile names an explicit source. Removing it would silently move
   // that role to another provider, so refuse and let the user decide instead.
-  const fixed = (state.agentProfiles ?? []).filter(profile =>
-    profile.model.mode === "fixed" && profile.model.providerSourceId === operation.id);
+  const fixed = (state.agentProfiles ?? []).filter(
+    (profile) =>
+      profile.model.mode === "fixed" &&
+      profile.model.providerSourceId === operation.id,
+  );
   if (fixed.length > 0)
     throw invalid(
-      `有 ${fixed.length} 个智能体配置固定使用此来源（${fixed.slice(0, 5).map(profile => profile.name).join("、")}）。请先修改或删除这些智能体配置，再删除该模型来源。`,
+      `有 ${fixed.length} 个智能体配置固定使用此来源（${fixed
+        .slice(0, 5)
+        .map((profile) => profile.name)
+        .join("、")}）。请先修改或删除这些智能体配置，再删除该模型来源。`,
     );
   // Sessions pin the source they were created with; removing it would strand
   // them with a source id that no longer resolves. Require an explicit ack.
@@ -694,7 +945,10 @@ async function updateSource(
   const next = sources[0];
   if (next === undefined) {
     // Nothing left: clear the legacy projection so no stale pair stays usable.
-    const { apiMode: _apiMode, ...rest } = state.settings as Record<string, unknown>;
+    const { apiMode: _apiMode, ...rest } = state.settings as Record<
+      string,
+      unknown
+    >;
     const { activeSourceId: _active, ...persistent } = state;
     return {
       ...persistent,
@@ -739,20 +993,39 @@ function updateLegacy(
       };
       return next;
     }
+    // `apiMode` is optional: dropping it when unset keeps the source exact.
+    const { apiMode: _currentApiMode, ...currentWithoutApiMode } = current;
     const synced: StoredSource = {
-      ...current,
+      ...currentWithoutApiMode,
       baseUrl: baseUrl as string,
       model: (settings.model as string | undefined) ?? "",
       ...(settings.apiMode === undefined
         ? {}
         : { apiMode: settings.apiMode as StoredSource["apiMode"] }),
     };
-    // `apiMode` is optional: dropping it when unset keeps the source exact.
-    if (settings.apiMode === undefined) delete (synced as { apiMode?: unknown }).apiMode;
-    const providerChanged = input.apiKey !== undefined || ["baseUrl", "model", "apiMode"].some(key => Object.hasOwn(patch, key));
-    const credentials = current.credentials && input.apiKey !== undefined ? current.credentials.map(item =>
-      item.id === (current.activeCredentialId ?? current.credentials?.[0]?.id) ? { ...item, type: "api-key" as const, apiKey, account: undefined } : item) : current.credentials;
-    sources[index] = { ...synced, apiKey, ...(credentials ? { credentials } : {}), revision: current.revision + (providerChanged ? 1 : 0) };
+    const providerChanged =
+      input.apiKey !== undefined ||
+      ["baseUrl", "model", "apiMode"].some((key) => Object.hasOwn(patch, key));
+    const credentials =
+      current.credentials && input.apiKey !== undefined
+        ? current.credentials.map((item) =>
+            item.id ===
+            (current.activeCredentialId ?? current.credentials?.[0]?.id)
+              ? {
+                  ...item,
+                  type: "api-key" as const,
+                  apiKey,
+                  account: undefined,
+                }
+              : item,
+          )
+        : current.credentials;
+    sources[index] = {
+      ...synced,
+      apiKey,
+      ...(credentials ? { credentials } : {}),
+      revision: current.revision + (providerChanged ? 1 : 0),
+    };
     return {
       ...persistent,
       settings: settings as StoredSettings,
@@ -763,13 +1036,18 @@ function updateLegacy(
   }
   const baseUrl = settings.baseUrl;
   if (baseUrl === undefined || baseUrl === "")
-    return { ...persistent, settings: settings as StoredSettings, apiKey, sources };
+    return {
+      ...persistent,
+      settings: settings as StoredSettings,
+      apiKey,
+      sources,
+    };
   // A legacy CLI update that sets an endpoint where no source exists yet
   // creates the "default" source so both views stay describable.
   const existing = sources.findIndex((source) => source.id === NEW_SOURCE_ID);
   const created: StoredSource = {
     id: NEW_SOURCE_ID,
-    label: existing === -1 ? NEW_SOURCE_LABEL : sources[existing]!.label,
+    label: sources[existing]?.label ?? NEW_SOURCE_LABEL,
     baseUrl: baseUrl as string,
     model: (settings.model as string | undefined) ?? "",
     ...(settings.apiMode === undefined

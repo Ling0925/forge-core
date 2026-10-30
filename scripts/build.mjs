@@ -15,11 +15,20 @@ const buildInfo = {
 };
 async function sources(directory) {
   const entries = await readdir(directory, { withFileTypes: true });
-  return (await Promise.all(entries.map(entry => {
-    const path = join(directory, entry.name);
-    return entry.isDirectory() ? sources(path)
-      : entry.name.endsWith(".ts") && !entry.name.endsWith(".test.ts") && !entry.name.endsWith(".d.ts") ? [path] : [];
-  }))).flat();
+  return (
+    await Promise.all(
+      entries.map((entry) => {
+        const path = join(directory, entry.name);
+        return entry.isDirectory()
+          ? sources(path)
+          : entry.name.endsWith(".ts") &&
+              !entry.name.endsWith(".test.ts") &&
+              !entry.name.endsWith(".d.ts")
+            ? [path]
+            : [];
+      }),
+    )
+  ).flat();
 }
 
 // Each source module remains an explicit package subpath. Code splitting keeps
@@ -48,11 +57,27 @@ const result = await build({
 if (process.platform === "darwin") {
   await mkdir("dist/native", { recursive: true });
   // Do not inherit the build host's OS version: the desktop bundle targets macOS 13.
-  execFileSync("/usr/bin/cc", ["-mmacosx-version-min=13.0", "-O2", "-Wall", "-Wextra", "-Werror", "native/flock.c", "-o", "dist/native/forge-flock"], { stdio: "inherit" });
+  execFileSync(
+    "/usr/bin/cc",
+    [
+      "-mmacosx-version-min=13.0",
+      "-O2",
+      "-Wall",
+      "-Wextra",
+      "-Werror",
+      "native/flock.c",
+      "-o",
+      "dist/native/forge-flock",
+    ],
+    { stdio: "inherit" },
+  );
   await chmod("dist/native/forge-flock", 0o755);
 }
 await chmod("dist/web/serve.js", 0o755);
-await writeFile("dist/build-meta.json", JSON.stringify(result.metafile, null, 2) + "\n");
+await writeFile(
+  "dist/build-meta.json",
+  `${JSON.stringify(result.metafile, null, 2)}\n`,
+);
 // Written only after a successful build, atomically, so a reader never sees a
 // half-written manifest and a crashed build cannot advertise a new identity.
 await writeFile(

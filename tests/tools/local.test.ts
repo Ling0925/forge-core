@@ -112,7 +112,9 @@ describe("original local tools", () => {
 
   it("describes native editing first without weakening schemas or safety boundaries", () => {
     const get = (name: string) => {
-      const tool = tools.definitions.find(item => item.function.name === name);
+      const tool = tools.definitions.find(
+        (item) => item.function.name === name,
+      );
       if (!tool) throw new Error(`Missing tool ${name}`);
       return tool.function;
     };
@@ -121,7 +123,9 @@ describe("original local tools", () => {
     const command = get("run_command");
     for (const tool of [write, edit]) {
       expect(tool.description).toMatch(/^Default tool/);
-      expect(tool.description).toContain("when a checkpoint store is configured");
+      expect(tool.description).toContain(
+        "when a checkpoint store is configured",
+      );
       expect(tool.description).toContain("diff patch");
       expect(tool.description).not.toContain("before/after previews");
       expect(tool.description).toContain("Workspace-relative only");
@@ -134,14 +138,18 @@ describe("original local tools", () => {
     expect(edit.description).toContain("exactly one occurrence");
     expect(edit.description).toContain("replace_all");
     expect(write.parameters).toEqual({
-      type: "object", additionalProperties: false, required: ["path", "content"],
+      type: "object",
+      additionalProperties: false,
+      required: ["path", "content"],
       properties: {
         path: { type: "string", minLength: 1, maxLength: 4096 },
         content: { type: "string", maxLength: 2097152 },
       },
     });
     expect(edit.parameters).toEqual({
-      type: "object", additionalProperties: false, required: ["path", "old_text", "new_text"],
+      type: "object",
+      additionalProperties: false,
+      required: ["path", "old_text", "new_text"],
       properties: {
         path: { type: "string", minLength: 1, maxLength: 4096 },
         old_text: { type: "string", minLength: 1, maxLength: 2097152 },
@@ -150,11 +158,18 @@ describe("original local tools", () => {
       },
     });
     for (const rule of [
-      "builds, tests, git and package managers", "write_file/edit_file",
-      "command effects are not checkpointed", "Readonly denied",
-      "per-call approval under the host policy", "NOT an OS sandbox",
-      "cwd is guarded", "read_command_output", "128 KiB", "maximum 30 minutes",
-    ]) expect(command.description).toContain(rule);
+      "builds, tests, git and package managers",
+      "write_file/edit_file",
+      "command effects are not checkpointed",
+      "Readonly denied",
+      "per-call approval under the host policy",
+      "NOT an OS sandbox",
+      "cwd is guarded",
+      "read_command_output",
+      "128 KiB",
+      "maximum 30 minutes",
+    ])
+      expect(command.description).toContain(rule);
     expect(command.description.length).toBeLessThan(850);
   });
 
@@ -224,12 +239,24 @@ describe("original local tools", () => {
       path: "a",
       kind: "modified",
       patch: {
-        version: 1, status: "complete", added: 1, removed: 1,
-        omittedLines: 0, omittedHunks: 0,
-        hunks: [{
-          oldStart: 1, oldLines: 1, newStart: 1, newLines: 1,
-          lines: [{ op: "delete", text: "same same" }, { op: "insert", text: "new new" }],
-        }],
+        version: 1,
+        status: "complete",
+        added: 1,
+        removed: 1,
+        omittedLines: 0,
+        omittedHunks: 0,
+        hunks: [
+          {
+            oldStart: 1,
+            oldLines: 1,
+            newStart: 1,
+            newLines: 1,
+            lines: [
+              { op: "delete", text: "same same" },
+              { op: "insert", text: "new new" },
+            ],
+          },
+        ],
       },
     });
     expect(output(edited).replacements).toBe(2);
@@ -308,7 +335,10 @@ describe("original local tools", () => {
       ).toBe(true);
     }
     await writeFile(join(root, "binary"), Buffer.from([0, 255, 1]));
-    await writeFile(join(root, "large"), Buffer.alloc(16 * 1024 * 1024 + 1, 65));
+    await writeFile(
+      join(root, "large"),
+      Buffer.alloc(16 * 1024 * 1024 + 1, 65),
+    );
     expect((await execute("read_file", { path: "binary" })).isError).toBe(true);
     expect((await execute("read_file", { path: "large" })).isError).toBe(true);
     await writeFile(
@@ -396,7 +426,10 @@ describe("original local tools", () => {
       ["write_file", { path: "a", content: "no" }],
       ["edit_file", { path: "a", old_text: "ok", new_text: "no" }],
       ["make_directory", { path: "new" }],
-      ["run_command", { argv: [process.execPath, "-e", "process.exit(0)"], timeout_ms: 2000 }],
+      [
+        "run_command",
+        { argv: [process.execPath, "-e", "process.exit(0)"], timeout_ms: 2000 },
+      ],
     ] as const) {
       expect((await execute(name, args, "readonly")).isError).toBe(true);
     }
@@ -431,7 +464,12 @@ describe("original local tools", () => {
 
   it("preserves host HOME without inheriting API keys, tokens or proxies", async () => {
     const home = await mkdtemp(join(tmpdir(), "forge-command-home-"));
-    const names = ["FORGE_TEST_API_KEY", "FORGE_TEST_TOKEN", "HTTPS_PROXY", "HOME"];
+    const names = [
+      "FORGE_TEST_API_KEY",
+      "FORGE_TEST_TOKEN",
+      "HTTPS_PROXY",
+      "HOME",
+    ];
     const old = names.map((name) => process.env[name]);
     try {
       for (const name of names) process.env[name] = "nonsecret-fixture";
@@ -461,12 +499,16 @@ describe("original local tools", () => {
   });
 
   it("requires a model-chosen execution timeout with a 30-minute ceiling", async () => {
-    const command = tools.definitions.find(item => item.function.name === "run_command")!.function;
+    const command = tools.definitions.find(
+      (item) => item.function.name === "run_command",
+    )!.function;
     expect(command.parameters.required).toEqual(["argv", "timeout_ms"]);
     expect(command.parameters.properties).toMatchObject({
       timeout_ms: { type: "integer", minimum: 1, maximum: 1800000 },
     });
-    expect(command.parameters.properties).not.toHaveProperty("timeout_ms.default");
+    expect(command.parameters.properties).not.toHaveProperty(
+      "timeout_ms.default",
+    );
     expect(command.description).toContain("Choose and pass timeout_ms");
     expect(command.description).toContain("maximum 30 minutes");
 
@@ -474,7 +516,9 @@ describe("original local tools", () => {
     const argv = [process.execPath, "-e", "process.exit(0)"];
     expect((await execute("run_command", { argv })).isError).toBe(true);
     for (const timeout_ms of [0, -1, 1.5, 1800001, "300000"]) {
-      expect((await execute("run_command", { argv, timeout_ms })).isError).toBe(true);
+      expect((await execute("run_command", { argv, timeout_ms })).isError).toBe(
+        true,
+      );
     }
     expect(approvals).toBe(0);
 
@@ -483,7 +527,11 @@ describe("original local tools", () => {
       try {
         const run = await node("process.stdout.write('ok')", timeout_ms);
         expect(run.isError).toBe(false);
-        expect(output(run)).toMatchObject({ stdout: "ok", timed_out: false, exit_code: 0 });
+        expect(output(run)).toMatchObject({
+          stdout: "ok",
+          timed_out: false,
+          exit_code: 0,
+        });
         expect(timer).toHaveBeenCalledWith(expect.any(Function), timeout_ms);
         expect(timer).not.toHaveBeenCalledWith(expect.any(Function), 30000);
       } finally {
@@ -499,9 +547,7 @@ describe("original local tools", () => {
     expect(timeout.isError).toBe(true);
     expect(output(timeout).timed_out).toBe(true);
     expect(Date.now() - started).toBeLessThan(3000);
-    const noisy = await node(
-      "process.stdout.write('x'.repeat(100000))",
-    );
+    const noisy = await node("process.stdout.write('x'.repeat(100000))");
     expect(noisy.isError).toBe(false);
     expect(output(noisy).truncated).toBe(false);
     expect(output(noisy).preview_truncated).toBe(true);

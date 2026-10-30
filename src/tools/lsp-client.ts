@@ -1,4 +1,4 @@
-import { spawn, type ChildProcess } from "node:child_process";
+import { type ChildProcess, spawn } from "node:child_process";
 import { homedir } from "node:os";
 import { cleanupProcess } from "../mcp/cleanup";
 
@@ -22,24 +22,31 @@ export class StdioLspClient {
   private messages = 0;
   private stderrBytes = 0;
   private nextId = 1;
-  private pending = new Map<number, {
-    resolve: (result: unknown) => void;
-    reject: (error: Error) => void;
-  }>();
+  private pending = new Map<
+    number,
+    {
+      resolve: (result: unknown) => void;
+      reject: (error: Error) => void;
+    }
+  >();
   private timer: ReturnType<typeof setTimeout> | undefined;
   private abort: (() => void) | undefined;
 
-  constructor(private readonly options: Readonly<{
-    command: string;
-    args: readonly string[];
-    cwd: string;
-    signal: AbortSignal;
-    timeoutMs?: number;
-  }>) {}
+  constructor(
+    private readonly options: Readonly<{
+      command: string;
+      args: readonly string[];
+      cwd: string;
+      signal: AbortSignal;
+      timeoutMs?: number;
+    }>,
+  ) {}
 
   start(): void {
-    if (this.child || this.disposal) throw new Error("LSP client already used.");
-    if (this.options.signal.aborted) throw new Error("LSP invocation cancelled.");
+    if (this.child || this.disposal)
+      throw new Error("LSP client already used.");
+    if (this.options.signal.aborted)
+      throw new Error("LSP invocation cancelled.");
     const env: NodeJS.ProcessEnv = { HOME: homedir() };
     // Deliberately do not forward tokens, proxy settings, NODE_OPTIONS or config.
     if (process.env.PATH) env.PATH = process.env.PATH;
@@ -102,13 +109,21 @@ export class StdioLspClient {
           this.fail("LSP header limit exceeded.");
           return;
         }
-        const lines = this.buffer.subarray(0, end).toString("ascii").split("\r\n");
+        const lines = this.buffer
+          .subarray(0, end)
+          .toString("ascii")
+          .split("\r\n");
         const lengths = lines.filter((line) => /^Content-Length:/i.test(line));
-        const match = lengths.length === 1
-          ? /^Content-Length:\s*([0-9]+)\s*$/i.exec(lengths[0] ?? "")
-          : null;
-        const size = match ? Number(match[1]) : NaN;
-        if (!Number.isSafeInteger(size) || size < 1 || size > LSP_MESSAGE_LIMIT) {
+        const match =
+          lengths.length === 1
+            ? /^Content-Length:\s*([0-9]+)\s*$/i.exec(lengths[0] ?? "")
+            : null;
+        const size = match ? Number(match[1]) : Number.NaN;
+        if (
+          !Number.isSafeInteger(size) ||
+          size < 1 ||
+          size > LSP_MESSAGE_LIMIT
+        ) {
           this.fail("LSP message length invalid or exceeds 1 MiB.");
           return;
         }
@@ -125,7 +140,9 @@ export class StdioLspClient {
       }
       let message: unknown;
       try {
-        message = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes));
+        message = JSON.parse(
+          new TextDecoder("utf-8", { fatal: true }).decode(bytes),
+        );
       } catch {
         this.fail("LSP message is not valid UTF-8 JSON.");
         return;
@@ -148,14 +165,25 @@ export class StdioLspClient {
           return;
         }
         try {
-          this.send({ jsonrpc: "2.0", id: value.id,
-            error: { code: -32601, message: "Server requests are not supported" } });
-        } catch { this.fail("LSP server-request rejection failed."); }
+          this.send({
+            jsonrpc: "2.0",
+            id: value.id,
+            error: {
+              code: -32601,
+              message: "Server requests are not supported",
+            },
+          });
+        } catch {
+          this.fail("LSP server-request rejection failed.");
+        }
       }
       return;
     }
-    if (typeof value.id !== "number" || !Number.isSafeInteger(value.id) ||
-        (("result" in value) === ("error" in value))) {
+    if (
+      typeof value.id !== "number" ||
+      !Number.isSafeInteger(value.id) ||
+      "result" in value === "error" in value
+    ) {
       this.fail("Invalid LSP response.");
       return;
     }
@@ -165,7 +193,8 @@ export class StdioLspClient {
       return;
     }
     this.pending.delete(value.id);
-    if ("error" in value) pending.reject(new Error("LSP server rejected the query."));
+    if ("error" in value)
+      pending.reject(new Error("LSP server rejected the query."));
     else pending.resolve(value.result);
   }
 
@@ -187,12 +216,14 @@ export class StdioLspClient {
 
   request(method: string, params: ObjectValue): Promise<unknown> {
     if (this.failure) return Promise.reject(this.failure);
-    if (this.pending.size >= 4) return Promise.reject(new Error("LSP pending limit exceeded."));
+    if (this.pending.size >= 4)
+      return Promise.reject(new Error("LSP pending limit exceeded."));
     const id = this.nextId++;
     return new Promise((resolve, reject) => {
       this.pending.set(id, { resolve, reject });
-      try { this.send({ jsonrpc: "2.0", id, method, params }); }
-      catch (error) {
+      try {
+        this.send({ jsonrpc: "2.0", id, method, params });
+      } catch (error) {
         this.pending.delete(id);
         reject(error);
       }
@@ -203,9 +234,11 @@ export class StdioLspClient {
     if (!this.disposal) {
       this.disposal = Promise.resolve().then(async () => {
         if (this.timer) clearTimeout(this.timer);
-        if (this.abort) this.options.signal.removeEventListener("abort", this.abort);
+        if (this.abort)
+          this.options.signal.removeEventListener("abort", this.abort);
         if (!this.failure) this.failure = new Error("LSP client disposed.");
-        for (const pending of this.pending.values()) pending.reject(this.failure);
+        for (const pending of this.pending.values())
+          pending.reject(this.failure);
         this.pending.clear();
         this.buffer = Buffer.alloc(0);
         if (this.child) {

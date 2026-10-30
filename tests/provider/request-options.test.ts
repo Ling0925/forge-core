@@ -1,10 +1,13 @@
 import { expect, it } from "vitest";
-import { providerConfigSchema, type ProviderConfig } from "../../src/shared/schemas";
 import {
   applyExtraBody,
   createRequestOptions,
   requestHeaders,
 } from "../../src/provider/request-options";
+import {
+  type ProviderConfig,
+  providerConfigSchema,
+} from "../../src/shared/schemas";
 
 const config = (overrides: Record<string, unknown> = {}): ProviderConfig =>
   providerConfigSchema.parse({
@@ -42,9 +45,9 @@ it("honours every explicit auth mode, including an empty prefix", () => {
     requestHeaders(config({ auth: { type: "bearer", prefix: "Token " } }))
       .Authorization,
   ).toBe("Token sk-test-secret");
-  expect(
-    requestHeaders(config({ auth: { type: "api-key" } }))["api-key"],
-  ).toBe("sk-test-secret");
+  expect(requestHeaders(config({ auth: { type: "api-key" } }))["api-key"]).toBe(
+    "sk-test-secret",
+  );
   expect(
     requestHeaders(
       config({ auth: { type: "header", header: "X-Custom", prefix: "" } }),
@@ -133,9 +136,7 @@ it("resolves the proxy transport up front and names unsupported schemes", () => 
     config({ proxyUrl: "http://127.0.0.1:7890" }),
   );
   expect(typeof options.fetch).toBe("function");
-  expect(
-    createRequestOptions(config({ proxyUrl: "" })).fetch,
-  ).toBeUndefined();
+  expect(createRequestOptions(config({ proxyUrl: "" })).fetch).toBeUndefined();
   expect(() =>
     createRequestOptions(config({ proxyUrl: "socks5://127.0.0.1:1080" })),
   ).toThrow(/Only HTTP\(S\) proxies/);
@@ -187,9 +188,9 @@ it("merges extraBody before turning a Codex account's body into the Codex CLI sh
 });
 
 it("derives no per-request headers outside a signed-in account", () => {
-  expect(
-    createRequestOptions(config()).headersFor({ messages: [] }),
-  ).toEqual({});
+  expect(createRequestOptions(config()).headersFor({ messages: [] })).toEqual(
+    {},
+  );
 });
 
 const copilot = (await import("../../src/provider/accounts/copilot")) as {

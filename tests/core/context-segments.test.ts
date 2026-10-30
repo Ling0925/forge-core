@@ -7,15 +7,37 @@ import {
 import type { ModelProvider } from "../../src/shared/contracts";
 import { type Message, sessionSnapshotSchema } from "../../src/shared/schemas";
 
-const snapshot = (messages: Message[]) => sessionSnapshotSchema.parse({
-  version: 1, id: "12345678-1234-4234-8234-123456789abc", title: "test",
-  workspace: "/workspace", model: "test", createdAt: "2026-01-01T00:00:00Z",
-  updatedAt: "2026-01-01T00:00:00Z", status: "idle", messages, events: [], changes: [],
+const snapshot = (messages: Message[]) =>
+  sessionSnapshotSchema.parse({
+    version: 1,
+    id: "12345678-1234-4234-8234-123456789abc",
+    title: "test",
+    workspace: "/workspace",
+    model: "test",
+    createdAt: "2026-01-01T00:00:00Z",
+    updatedAt: "2026-01-01T00:00:00Z",
+    status: "idle",
+    messages,
+    events: [],
+    changes: [],
+  });
+const provider = (complete: ModelProvider["complete"]): ModelProvider => ({
+  listModels: async () => [],
+  complete,
 });
-const provider = (complete: ModelProvider["complete"]): ModelProvider => ({ listModels: async () => [], complete });
 
 function call(id: string, name = "write_file"): Message {
-  return { role: "assistant", content: null, tool_calls: [{ id, type: "function", function: { name, arguments: `{"path":"${id}.txt"}` } }] };
+  return {
+    role: "assistant",
+    content: null,
+    tool_calls: [
+      {
+        id,
+        type: "function",
+        function: { name, arguments: `{"path":"${id}.txt"}` },
+      },
+    ],
+  };
 }
 function toolResult(id: string, content = "done"): Message {
   return { role: "tool", tool_call_id: id, content };
@@ -26,13 +48,17 @@ describe("bounded summary segmentation", () => {
     const messages: Message[] = [
       { role: "system", content: "rules" },
       { role: "user", content: "start" },
-      ...Array.from({ length: 6 }, (_, i) => [call(`c${i}`), toolResult(`c${i}`)]).flat(),
+      ...Array.from({ length: 6 }, (_, i) => [
+        call(`c${i}`),
+        toolResult(`c${i}`),
+      ]).flat(),
     ];
     // Bound is large enough that no single-group split happens, so ranges are
     // disjoint and each message index appears exactly once.
     const shards = buildSummaryShards(messages, 400);
     const seen: number[] = [];
-    for (const shard of shards) for (let i = shard.from; i < shard.to; i++) seen.push(i);
+    for (const shard of shards)
+      for (let i = shard.from; i < shard.to; i++) seen.push(i);
     expect(seen).toEqual(messages.map((_, i) => i));
     for (let i = 0; i < messages.length; i++) {
       const message = messages[i];
@@ -40,7 +66,9 @@ describe("bounded summary segmentation", () => {
       const owner = shards.find((shard) => shard.from <= i && i < shard.to);
       expect(owner).toBeDefined();
       for (const tool of message.tool_calls) {
-        const resultIndex = messages.findIndex((m) => m.role === "tool" && m.tool_call_id === tool.id);
+        const resultIndex = messages.findIndex(
+          (m) => m.role === "tool" && m.tool_call_id === tool.id,
+        );
         expect(resultIndex).toBeGreaterThanOrEqual(owner?.from ?? -1);
         expect(resultIndex).toBeLessThan(owner?.to ?? -1);
       }
@@ -49,7 +77,10 @@ describe("bounded summary segmentation", () => {
 
   it("explicitly shards one over-long group and reports its range and part", () => {
     const huge: Message = { role: "user", content: "中".repeat(5000) };
-    const shards = buildSummaryShards([{ role: "user", content: "lead" }, huge], 1024);
+    const shards = buildSummaryShards(
+      [{ role: "user", content: "lead" }, huge],
+      1024,
+    );
     const oversized = shards.filter((shard) => shard.parts > 1);
     expect(oversized.length).toBeGreaterThan(1);
     // Every piece of the oversized group points back at the same source range.
@@ -58,9 +89,12 @@ describe("bounded summary segmentation", () => {
       expect(shard.to).toBe(2);
       expect(shard.parts).toBe(oversized.length);
     }
-    expect(oversized.map((shard) => shard.part)).toEqual(oversized.map((_, i) => i + 1));
+    expect(oversized.map((shard) => shard.part)).toEqual(
+      oversized.map((_, i) => i + 1),
+    );
     // Bounded: every shard is within the requested UTF-16 character ceiling.
-    for (const shard of shards) expect(shard.text.length).toBeLessThanOrEqual(1024);
+    for (const shard of shards)
+      expect(shard.text.length).toBeLessThanOrEqual(1024);
   });
 
   it("never splits a UTF-16 surrogate pair when a message must be sharded", () => {
@@ -78,7 +112,10 @@ describe("bounded summary segmentation", () => {
   });
 
   it("describeShardRanges stays bounded for many ranges", () => {
-    const messages: Message[] = Array.from({ length: 20 }, (_, i) => ({ role: "user", content: `${i}-${"x".repeat(20)}` }));
+    const messages: Message[] = Array.from({ length: 20 }, (_, i) => ({
+      role: "user",
+      content: `${i}-${"x".repeat(20)}`,
+    }));
     const shards = buildSummaryShards(messages, 26);
     expect(shards.length).toBeGreaterThan(6);
     const text = describeShardRanges(shards, 0);
@@ -89,8 +126,22 @@ describe("bounded summary segmentation", () => {
 
 describe("summarize partial-failure reliability", () => {
   it("reserves space for retained memory even at the minimum fallback budget", async () => {
-    const state = { ...snapshot([{ role: "user", content: "old" }, { role: "user", content: "new" }]), contextSummary: { content: "PRIOR_KEEP", boundary: 1, fallback: false } };
-    const result = await summarize(state, provider(async () => { throw Error("offline"); }), new AbortController().signal, 2, 512);
+    const state = {
+      ...snapshot([
+        { role: "user", content: "old" },
+        { role: "user", content: "new" },
+      ]),
+      contextSummary: { content: "PRIOR_KEEP", boundary: 1, fallback: false },
+    };
+    const result = await summarize(
+      state,
+      provider(async () => {
+        throw Error("offline");
+      }),
+      new AbortController().signal,
+      2,
+      512,
+    );
     expect(result.contextSummary?.content.length).toBeLessThanOrEqual(256);
     expect(result.contextSummary?.content).toContain("PRIOR_KEEP");
     expect(result.contextSummary?.content).toContain("untrusted");
@@ -98,7 +149,11 @@ describe("summarize partial-failure reliability", () => {
   });
   it("retains earlier successful memory and names unsummarized ranges after a later failure", async () => {
     const messages: Message[] = [];
-    for (let i = 0; i < 6; i++) messages.push({ role: "user", content: `turn-${i}` }, { role: "assistant", content: "y".repeat(900) });
+    for (let i = 0; i < 6; i++)
+      messages.push(
+        { role: "user", content: `turn-${i}` },
+        { role: "assistant", content: "y".repeat(900) },
+      );
     let calls = 0;
     const result = await summarize(
       snapshot(messages),
@@ -123,7 +178,10 @@ describe("summarize partial-failure reliability", () => {
   it("segments by messages but never hands a request a split tool exchange", async () => {
     const messages: Message[] = [
       { role: "user", content: "task" },
-      ...Array.from({ length: 10 }, (_, i) => [call(`t${i}`), toolResult(`t${i}`)]).flat(),
+      ...Array.from({ length: 10 }, (_, i) => [
+        call(`t${i}`),
+        toolResult(`t${i}`),
+      ]).flat(),
     ];
     const seen: string[] = [];
     const result = await summarize(
@@ -134,7 +192,9 @@ describe("summarize partial-failure reliability", () => {
         // A fragment that carries a tool result without the matching assistant
         // call would be a split pair; the segmenter must never produce one.
         for (const id of Array.from({ length: 10 }, (_, i) => `t${i}`)) {
-          const hasResult = fragment.includes(`"tool_call_id":"${id}"`) || fragment.includes(`"tool_call_id": "${id}"`);
+          const hasResult =
+            fragment.includes(`"tool_call_id":"${id}"`) ||
+            fragment.includes(`"tool_call_id": "${id}"`);
           const hasCall = fragment.includes(`"id":"${id}"`);
           if (hasResult && !hasCall) throw Error(`split pair ${id}`);
         }
@@ -146,24 +206,53 @@ describe("summarize partial-failure reliability", () => {
     );
     expect(result.contextSummary?.fallback).toBe(false);
     expect(seen.length).toBeGreaterThan(1);
-    expect(seen.every((fragment) => fragment.includes("covering messages"))).toBe(true);
+    expect(
+      seen.every((fragment) => fragment.includes("covering messages")),
+    ).toBe(true);
   });
 
   it("keeps previous untrusted memory when the very first request fails", async () => {
-    const s = { ...snapshot([{ role: "user", content: "old" }, { role: "assistant", content: "done" }, { role: "user", content: "new" }]), contextSummary: { content: "PRIOR_CONSTRAINT", boundary: 2, fallback: false } };
-    const failed = await summarize(s, provider(async () => { throw Error("offline"); }), new AbortController().signal, 3, 4096);
+    const s = {
+      ...snapshot([
+        { role: "user", content: "old" },
+        { role: "assistant", content: "done" },
+        { role: "user", content: "new" },
+      ]),
+      contextSummary: {
+        content: "PRIOR_CONSTRAINT",
+        boundary: 2,
+        fallback: false,
+      },
+    };
+    const failed = await summarize(
+      s,
+      provider(async () => {
+        throw Error("offline");
+      }),
+      new AbortController().signal,
+      3,
+      4096,
+    );
     expect(failed.contextSummary?.fallback).toBe(true);
     expect(failed.contextSummary?.content).toContain("PRIOR_CONSTRAINT");
-    expect(failed.contextSummary?.content).not.toContain("SEMANTIC SUMMARY FAILED");
+    expect(failed.contextSummary?.content).not.toContain(
+      "SEMANTIC SUMMARY FAILED",
+    );
     expect(failed.messages).toBe(s.messages);
   });
 
   it("fails into retained memory without retrying once the request ceiling is exceeded", async () => {
-    const messages: Message[] = Array.from({ length: 64 }, (_, i) => ({ role: "user", content: `${i}-${"z".repeat(80)}` }));
+    const messages: Message[] = Array.from({ length: 64 }, (_, i) => ({
+      role: "user",
+      content: `${i}-${"z".repeat(80)}`,
+    }));
     let calls = 0;
     const result = await summarize(
       snapshot(messages),
-      provider(async () => { calls++; return { message: { role: "assistant", content: "never" } }; }),
+      provider(async () => {
+        calls++;
+        return { message: { role: "assistant", content: "never" } };
+      }),
       new AbortController().signal,
       64,
       512,
@@ -178,18 +267,23 @@ describe("summarize partial-failure reliability", () => {
   it("cancels without persisting a partial fallback or retrying", async () => {
     const abort = new AbortController();
     let calls = 0;
-    const messages: Message[] = Array.from({ length: 8 }, (_, i) => ({ role: "user", content: `${i}-${"q".repeat(600)}` }));
-    await expect(summarize(
-      snapshot(messages),
-      provider(async () => {
-        calls++;
-        abort.abort();
-        return { message: { role: "assistant", content: "chunk" } };
-      }),
-      abort.signal,
-      8,
-      2048,
-    )).rejects.toMatchObject({ code: "cancelled" });
+    const messages: Message[] = Array.from({ length: 8 }, (_, i) => ({
+      role: "user",
+      content: `${i}-${"q".repeat(600)}`,
+    }));
+    await expect(
+      summarize(
+        snapshot(messages),
+        provider(async () => {
+          calls++;
+          abort.abort();
+          return { message: { role: "assistant", content: "chunk" } };
+        }),
+        abort.signal,
+        8,
+        2048,
+      ),
+    ).rejects.toMatchObject({ code: "cancelled" });
     expect(calls).toBe(1);
   });
 
@@ -204,17 +298,26 @@ describe("summarize partial-failure reliability", () => {
         call("new"),
         toolResult("new"),
       ]),
-      contextSummary: { content: "PREVIOUS_MEMORY", boundary: 4, fallback: false },
+      contextSummary: {
+        content: "PREVIOUS_MEMORY",
+        boundary: 4,
+        fallback: false,
+      },
     };
     let calls = 0;
-    const result = await summarize(s, provider(async (incoming) => {
-      calls++;
-      expect(incoming[1]?.content).toContain("PREVIOUS_MEMORY");
-      expect(incoming[1]?.content).toContain("NEW_WORK");
-      expect(incoming[1]?.content).toContain('"id":"new"');
-      expect(incoming[1]?.content).not.toContain("OLD_RAW_MUST_NOT_REAPPEAR");
-      return { message: { role: "assistant", content: "merged" } };
-    }), new AbortController().signal, 7);
+    const result = await summarize(
+      s,
+      provider(async (incoming) => {
+        calls++;
+        expect(incoming[1]?.content).toContain("PREVIOUS_MEMORY");
+        expect(incoming[1]?.content).toContain("NEW_WORK");
+        expect(incoming[1]?.content).toContain('"id":"new"');
+        expect(incoming[1]?.content).not.toContain("OLD_RAW_MUST_NOT_REAPPEAR");
+        return { message: { role: "assistant", content: "merged" } };
+      }),
+      new AbortController().signal,
+      7,
+    );
     expect(calls).toBe(1);
     expect(result.contextSummary?.fallback).toBe(false);
     expect(result.contextSummary?.boundary).toBe(7);

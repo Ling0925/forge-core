@@ -4,8 +4,8 @@ import { request as httpRequest } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { MAX_RESPONSE_BYTES, sendFrame } from "../../src/host/frames";
 import { createWorkerController } from "../../src/host/controller";
+import { MAX_RESPONSE_BYTES, sendFrame } from "../../src/host/frames";
 import { createRuntimeHub } from "../../src/host/runtime";
 import { createTransportBridge } from "../../src/shared/bridge";
 import type { HarnessService } from "../../src/shared/contracts";
@@ -138,7 +138,11 @@ describe("plugin RPC schemas", () => {
       {
         id,
         method: "browser",
-        input: { sessionId, action: "execute", command: { action: "navigate", url: "file:///etc/passwd" } },
+        input: {
+          sessionId,
+          action: "execute",
+          command: { action: "navigate", url: "file:///etc/passwd" },
+        },
       },
     ])
       expect(rpcRequestSchema.safeParse(raw).success, JSON.stringify(raw)).toBe(
@@ -340,7 +344,7 @@ describe("plugin bridge dispatch", () => {
       }),
     });
     await expect(bridge.browser(browserStatus)).rejects.toThrow(
-      "Invalid host response.",
+      "Invalid host response for browser: schema_mismatch.",
     );
   });
 });

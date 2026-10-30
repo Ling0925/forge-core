@@ -1,15 +1,13 @@
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { fileURLToPath } from "node:url";
 import { afterEach, expect, it } from "vitest";
 import type { AgentProfileInput } from "../../src/shared/agent-profiles";
 import { openSettingsStore } from "../../src/store/settings";
+import { testScratch } from "../fixtures/scratch";
 
-// All fixtures live under the main repo's ignored temp directory; nothing reads
+// All fixtures live under the ignored test scratch root; nothing reads
 // or writes the real FORGE_HOME.
-const temp = fileURLToPath(
-  new URL("../../../../.forge/tmp/agent-collaboration/", import.meta.url),
-);
+const temp = testScratch("agent-collaboration");
 const directories: string[] = [];
 afterEach(async () => {
   await Promise.all(
@@ -515,7 +513,10 @@ it("serializes concurrent profile edits across stores without losing either role
     }),
   ]);
   const merged = (await one.getPublic()).agentProfiles ?? [];
-  expect(merged.map((item) => item.id).sort()).toEqual(["explorer", "reviewer"]);
+  expect(merged.map((item) => item.id).sort()).toEqual([
+    "explorer",
+    "reviewer",
+  ]);
   // Revisions come from one shared counter, so they never collide.
   expect(new Set(merged.map((item) => item.revision)).size).toBe(2);
   expect((await profilesOf(directory)).agentProfilesRevision).toBe(2);

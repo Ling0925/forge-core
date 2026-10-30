@@ -1,5 +1,10 @@
 import type { LocalToolRegistry } from "../shared/contracts";
-import type { BrowserRequest, BrowserResponse, PluginHealth, PluginManifest } from "../shared/plugins";
+import type {
+  BrowserRequest,
+  BrowserResponse,
+  PluginHealth,
+  PluginManifest,
+} from "../shared/plugins";
 import type { JsonValue, SessionId } from "../shared/schemas";
 
 export type PluginConfig = Readonly<Record<string, JsonValue>>;
@@ -21,5 +26,8 @@ export interface PluginDefinition {
   readonly manifest: PluginManifest;
   parseConfig(value: unknown, enabled: boolean): PluginConfig;
   createScope(options: PluginScopeOptions): Promise<PluginScope>;
-  check(options: Pick<PluginScopeOptions, "home" | "config">, signal: AbortSignal): Promise<PluginHealth>;
+  check(
+    options: Pick<PluginScopeOptions, "home" | "config">,
+    signal: AbortSignal,
+  ): Promise<PluginHealth>;
 }

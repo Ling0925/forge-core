@@ -1,4 +1,5 @@
 import { ForgeError } from "./errors";
+import type { HarnessAdaptationHost } from "./harness-adaptation";
 import type {
   AgentEvent,
   ApprovalRequest,
@@ -38,9 +39,7 @@ export interface RunControl {
   /** Freeze host permission changes before persisting the terminal permission. */
   readonly onFinalizing?: () => void;
   /** final=true atomically closes an empty child queue before terminal cleanup. */
-  readonly drainSteering: (
-    final?: boolean,
-  ) => readonly SteeringInput[];
+  readonly drainSteering: (final?: boolean) => readonly SteeringInput[];
   readonly onSteeringApplied?: () => void;
   /** Bind the run's sole writer after startup; unbind before terminal cleanup. */
   readonly setSteeringHandler?: (handler: SteeringHandler | undefined) => void;
@@ -49,10 +48,19 @@ export interface ModelProvider {
   readonly apiMode?: "chat-completions" | "responses" | "anthropic" | "gemini";
   /** Host-derived metadata for mixed routes with Responses candidates, not a setting or gateway support guarantee. */
   readonly mayUseWebSearch?: boolean;
-  listModels(signal?: AbortSignal, refresh?: boolean): Promise<readonly string[]>;
+  listModels(
+    signal?: AbortSignal,
+    refresh?: boolean,
+  ): Promise<readonly string[]>;
   /** Complete normalized metadata from one catalog request; no guessed windows. */
-  listModelCatalog?(signal?: AbortSignal, refresh?: boolean): Promise<import("./model-catalog").ModelCatalog>;
-  getModelContextWindow?(model: string, signal?: AbortSignal): Promise<number | null>;
+  listModelCatalog?(
+    signal?: AbortSignal,
+    refresh?: boolean,
+  ): Promise<import("./model-catalog").ModelCatalog>;
+  getModelContextWindow?(
+    model: string,
+    signal?: AbortSignal,
+  ): Promise<number | null>;
   complete(
     messages: readonly Message[],
     toolDefinitions: readonly ToolDefinition[],
@@ -127,11 +135,29 @@ export interface SessionStore {
 export interface SettingsStore {
   getPublic(): Promise<PublicSettings>;
   /** Without an id: the active source (legacy top-level settings when none). */
-  getProviderConfig(sourceId?: string, credentialId?: string, model?: string): Promise<ProviderConfig>;
+  getProviderConfig(
+    sourceId?: string,
+    credentialId?: string,
+    model?: string,
+  ): Promise<ProviderConfig>;
   /** Endpoint, credential and source metadata from the same immutable read. */
-  getProviderSnapshot?(sourceId?: string, credentialId?: string, model?: string): Promise<{ config: ProviderConfig; source?: import("./schemas").PublicProviderSource }>;
+  getProviderSnapshot?(
+    sourceId?: string,
+    credentialId?: string,
+    model?: string,
+  ): Promise<{
+    config: ProviderConfig;
+    source?: import("./schemas").PublicProviderSource;
+  }>;
 
-  refreshAccount?(sourceId: string, credentialId: string, refresh: (tokens: import("./model-access").AccountTokens) => Promise<import("./model-access").AccountTokens>, model?: string): Promise<ProviderConfig>;
+  refreshAccount?(
+    sourceId: string,
+    credentialId: string,
+    refresh: (
+      tokens: import("./model-access").AccountTokens,
+    ) => Promise<import("./model-access").AccountTokens>,
+    model?: string,
+  ): Promise<ProviderConfig>;
   update(input: ConfigureInput): Promise<PublicSettings>;
 }
 export interface HarnessService {
@@ -141,12 +167,27 @@ export interface HarnessService {
   cancelSession(sessionId: SessionId): Promise<boolean>;
   getSettings(): Promise<PublicSettings>;
   updateSettings(input: ConfigureInput): Promise<PublicSettings>;
-  modelAccess?(input: import("./model-access").ModelAccessRequest, signal?: AbortSignal): Promise<import("./model-access").ModelAccessResult>;
-  listModelCatalog?(signal?: AbortSignal, sourceId?: string, refresh?: boolean): Promise<import("./model-catalog").ModelCatalog>;
+  modelAccess?(
+    input: import("./model-access").ModelAccessRequest,
+    signal?: AbortSignal,
+  ): Promise<import("./model-access").ModelAccessResult>;
+  listModelCatalog?(
+    signal?: AbortSignal,
+    sourceId?: string,
+    refresh?: boolean,
+  ): Promise<import("./model-catalog").ModelCatalog>;
   getToolHooks?(): Promise<import("./tool-hooks").ToolHooksConfig>;
   setToolHooks?(config: import("./tool-hooks").ToolHooksConfig): Promise<void>;
-  listModels(signal?: AbortSignal, sourceId?: string, refresh?: boolean): Promise<readonly string[]>;
-  getModelContextWindow?(model: string, signal?: AbortSignal, sourceId?: string): Promise<number | null>;
+  listModels(
+    signal?: AbortSignal,
+    sourceId?: string,
+    refresh?: boolean,
+  ): Promise<readonly string[]>;
+  getModelContextWindow?(
+    model: string,
+    signal?: AbortSignal,
+    sourceId?: string,
+  ): Promise<number | null>;
   listSessions(): Promise<readonly SessionSummary[]>;
   createSession(input: CreateSessionInput): Promise<SessionSnapshot>;
   getSession(id: SessionId): Promise<SessionSnapshot>;
@@ -253,20 +294,36 @@ export interface AgentRuntimeDependencies {
   readonly agentWorktrees?: import("./agent-worktrees").AgentWorktreeService;
   readonly settings: PublicSettings;
   /** Fresh public role catalog for admission, never private provider configuration. */
-  readonly getAgentProfiles?: () => Promise<readonly import("./agent-profiles").AgentProfile[]>;
+  readonly getAgentProfiles?: () => Promise<
+    readonly import("./agent-profiles").AgentProfile[]
+  >;
   /** Cross-source discovery and exact child selection; never changes the parent's binding. */
   readonly delegationModels?: {
-    list(signal: AbortSignal, providerSourceId?: string): Promise<{
+    list(
+      signal: AbortSignal,
+      providerSourceId?: string,
+    ): Promise<{
       models: readonly { id: string; providerSourceId?: string }[];
       unavailableSourceIds: readonly string[];
     }>;
-    resolve(model: string, providerSourceId: string | undefined, signal: AbortSignal): Promise<string | undefined>;
+    resolve(
+      model: string,
+      providerSourceId: string | undefined,
+      signal: AbortSignal,
+    ): Promise<string | undefined>;
   };
   /** Only the active supervisor can create this identity-bound child capability. */
   readonly advisorParent?: import("./agent-coordination").AdvisorParentPort;
   readonly childToolFactory?: ToolFactory;
-  readonly childContextFactory?: (workspace: string, input?: RunInput, signal?: AbortSignal) => Promise<{
-    readonly tools: LocalToolRegistry; readonly instructions: string; readonly provider?: ModelProvider; readonly providerSourceId?: string;
+  readonly childContextFactory?: (
+    workspace: string,
+    input?: RunInput,
+    signal?: AbortSignal,
+  ) => Promise<{
+    readonly tools: LocalToolRegistry;
+    readonly instructions: string;
+    readonly provider?: ModelProvider;
+    readonly providerSourceId?: string;
   }>;
   readonly onChildOperation?: (
     id: SessionId,
@@ -275,7 +332,7 @@ export interface AgentRuntimeDependencies {
   ) => void;
   readonly projectInstructions?: string;
   /** Trusted host support for explicitly requested Harness² preflight runs. */
-  readonly harnessAdaptation?: import("./harness-adaptation").HarnessAdaptationHost;
+  readonly harnessAdaptation?: HarnessAdaptationHost;
   readonly now?: () => string;
 }
 export interface AgentRuntime {

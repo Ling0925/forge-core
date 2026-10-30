@@ -1,7 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { z } from "zod";
 import type { ModelProvider } from "../shared/contracts";
-import { scopeProviderState } from "./state-scope";
 import { ForgeError } from "../shared/errors";
 import type { ModelCatalog, ModelCatalogEntry } from "../shared/model-catalog";
 import {
@@ -21,10 +20,11 @@ import type {
   Usage,
 } from "../shared/schemas";
 import { estimateToolCallLines } from "../shared/tool-preview-lines";
-import { ProviderError, httpError, protocol } from "./errors";
 import { MAX_PROVIDER_JSON_CHARS, parseProviderJson } from "./bounded-json";
+import { ProviderError, httpError, protocol } from "./errors";
 import { createRequestOptions } from "./request-options";
 import { sdkEvents, withSdkRequest } from "./sdk-transport";
+import { scopeProviderState } from "./state-scope";
 
 // Native Google Gemini API adapter (generativelanguage.googleapis.com and
 // relays that answer as it does). Protocol reference:
@@ -210,9 +210,18 @@ const argumentsObject = (value: unknown): Readonly<Record<string, unknown>> => {
   if (typeof parsed === "string") {
     // Some relays forward functionCall.args as JSON text instead of a Struct.
     // A string that is not a complete JSON object is never executed.
-    if (parsed.length > MAX_TEXT) throw protocol("output_limit", { stage: "tool_arguments", observed: parsed.length, limit: MAX_TEXT, unit: "utf16_code_units" });
-    try { parsed = JSON.parse(parsed) as unknown; }
-    catch { throw protocol("invalid_tool_call", { stage: "tool_arguments" }); }
+    if (parsed.length > MAX_TEXT)
+      throw protocol("output_limit", {
+        stage: "tool_arguments",
+        observed: parsed.length,
+        limit: MAX_TEXT,
+        unit: "utf16_code_units",
+      });
+    try {
+      parsed = JSON.parse(parsed) as unknown;
+    } catch {
+      throw protocol("invalid_tool_call", { stage: "tool_arguments" });
+    }
   }
   if (parsed === undefined || parsed === null) return {};
   if (typeof parsed !== "object" || Array.isArray(parsed))
@@ -567,7 +576,13 @@ const responseReader = (
       emit(options.onReasoning, value);
     } else if (value) {
       text += value;
-      if (text.length > MAX_TEXT) throw protocol("output_limit", { stage: "output_text", observed: text.length, limit: MAX_TEXT, unit: "utf16_code_units" });
+      if (text.length > MAX_TEXT)
+        throw protocol("output_limit", {
+          stage: "output_text",
+          observed: text.length,
+          limit: MAX_TEXT,
+          unit: "utf16_code_units",
+        });
       emit(options.onText, value);
     }
     if (value || part.thoughtSignature)
@@ -728,7 +743,13 @@ const send = async (
 
 const readBody = async (response: Response): Promise<string> => {
   const text = await response.text();
-  if (text.length > MAX_PROVIDER_JSON_CHARS) throw protocol("output_limit", { stage: "json_response", observed: text.length, limit: MAX_PROVIDER_JSON_CHARS, unit: "utf16_code_units" });
+  if (text.length > MAX_PROVIDER_JSON_CHARS)
+    throw protocol("output_limit", {
+      stage: "json_response",
+      observed: text.length,
+      limit: MAX_PROVIDER_JSON_CHARS,
+      unit: "utf16_code_units",
+    });
   return text;
 };
 
@@ -878,124 +899,130 @@ export function createGeminiProvider(config: ProviderConfig): ModelProvider {
       };
     });
   };
-  return scopeProviderState({
-    apiMode: "gemini",
-    listModels,
-    listModelCatalog,
-    async getModelContextWindow(model, signal) {
-      if (!catalogLoaded) await listModels(signal);
-      return catalog.get(model)?.contextWindowTokens ?? null;
-    },
-    async complete(messages, tools, options) {
-      if (options.webSearch !== undefined && options.webSearch !== "disabled")
-        throw new ForgeError(
-          "invalid_input",
-          "Native web search requires a Responses endpoint and a model supporting web_search; no local-search fallback is used.",
-        );
-      const model = settingsFields.model.safeParse(options.model);
-      const history = z.array(messageSchema).max(100000).safeParse(messages);
-      const definitions = z
-        .array(toolDefinitionSchema)
-        .max(256)
-        .safeParse(tools);
-      if (!model.success || !history.success || !definitions.success)
-        throw new ForgeError(
-          "invalid_input",
-          "Provide a valid model, message history and tool definitions.",
-          false,
-        );
-      return withSdkRequest(
-        settings,
-        { signal: options.signal, idle: true, fetch: transport.fetch },
-        async ({ signal, fetch }) => {
-          const request = wireContents(
-            history.data,
-            baseUrl,
-            model.data,
-            settings.credentialId,
+  return scopeProviderState(
+    {
+      apiMode: "gemini",
+      listModels,
+      listModelCatalog,
+      async getModelContextWindow(model, signal) {
+        if (!catalogLoaded) await listModels(signal);
+        return catalog.get(model)?.contextWindowTokens ?? null;
+      },
+      async complete(messages, tools, options) {
+        if (options.webSearch !== undefined && options.webSearch !== "disabled")
+          throw new ForgeError(
+            "invalid_input",
+            "Native web search requires a Responses endpoint and a model supporting web_search; no local-search fallback is used.",
           );
-          const declarations = definitions.data.map((tool) => ({
-            name: tool.function.name,
-            ...(tool.function.description
-              ? { description: tool.function.description }
-              : {}),
-            parameters: tool.function.parameters,
-          }));
-          const generation: Record<string, unknown> = {};
-          if (settings.maxOutputTokens)
-            generation.maxOutputTokens = settings.maxOutputTokens;
-          const thinking = thinkingConfig(model.data, settings.reasoningEffort);
-          if (thinking) generation.thinkingConfig = thinking;
-          const body = transport.applyBody(
-            {
-              ...(request.system
-                ? { systemInstruction: { parts: [{ text: request.system }] } }
-                : {}),
-              contents: request.contents,
-              ...(declarations.length
-                ? { tools: [{ functionDeclarations: declarations }] }
-                : {}),
-              ...(Object.keys(generation).length
-                ? { generationConfig: generation }
-                : {}),
-            },
-            options.sessionId,
+        const model = settingsFields.model.safeParse(options.model);
+        const history = z.array(messageSchema).max(100000).safeParse(messages);
+        const definitions = z
+          .array(toolDefinitionSchema)
+          .max(256)
+          .safeParse(tools);
+        if (!model.success || !history.success || !definitions.success)
+          throw new ForgeError(
+            "invalid_input",
+            "Provide a valid model, message history and tool definitions.",
+            false,
           );
-          const response = await send(
-            fetch,
-            `${baseUrl}/models/${pathOf(model.data)}:streamGenerateContent?alt=sse`,
-            {
-              method: "POST",
-              headers: {
-                ...wireHeaders(transport.headers),
-                ...transport.headersFor(body),
-                "content-type": "application/json",
+        return withSdkRequest(
+          settings,
+          { signal: options.signal, idle: true, fetch: transport.fetch },
+          async ({ signal, fetch }) => {
+            const request = wireContents(
+              history.data,
+              baseUrl,
+              model.data,
+              settings.credentialId,
+            );
+            const declarations = definitions.data.map((tool) => ({
+              name: tool.function.name,
+              ...(tool.function.description
+                ? { description: tool.function.description }
+                : {}),
+              parameters: tool.function.parameters,
+            }));
+            const generation: Record<string, unknown> = {};
+            if (settings.maxOutputTokens)
+              generation.maxOutputTokens = settings.maxOutputTokens;
+            const thinking = thinkingConfig(
+              model.data,
+              settings.reasoningEffort,
+            );
+            if (thinking) generation.thinkingConfig = thinking;
+            const body = transport.applyBody(
+              {
+                ...(request.system
+                  ? { systemInstruction: { parts: [{ text: request.system }] } }
+                  : {}),
+                contents: request.contents,
+                ...(declarations.length
+                  ? { tools: [{ functionDeclarations: declarations }] }
+                  : {}),
+                ...(Object.keys(generation).length
+                  ? { generationConfig: generation }
+                  : {}),
               },
-              body: JSON.stringify(body),
-            },
-            signal,
-          );
-          if (!response.ok) {
-            await response.body?.cancel();
-            throw httpError(response.status);
-          }
-          const reader = responseReader(
-            options,
-            model.data,
-            baseUrl,
-            settings.credentialId,
-          );
-          const contentType = response.headers
-            .get("content-type")
-            ?.split(";")[0]
-            ?.trim()
-            .toLowerCase();
-          if (contentType === "text/event-stream") {
-            try {
-              for await (const event of sdkEvents(response))
-                reader.dispatch(event.data);
-            } catch (error) {
-              if (error instanceof ForgeError) throw error;
-              if (error instanceof TypeError)
-                throw new ProviderError(
-                  "network",
-                  "The provider connection failed.",
-                  true,
-                );
-              throw error;
+              options.sessionId,
+            );
+            const response = await send(
+              fetch,
+              `${baseUrl}/models/${pathOf(model.data)}:streamGenerateContent?alt=sse`,
+              {
+                method: "POST",
+                headers: {
+                  ...wireHeaders(transport.headers),
+                  ...transport.headersFor(body),
+                  "content-type": "application/json",
+                },
+                body: JSON.stringify(body),
+              },
+              signal,
+            );
+            if (!response.ok) {
+              await response.body?.cancel();
+              throw httpError(response.status);
             }
-            return reader.response();
-          }
-          // A gateway that ignores alt=sse may answer with one JSON body
-          // (Factory does, per the reference); it is the same response object.
-          if (contentType === "application/json") {
-            reader.accept(parseProviderJson(await readBody(response)));
-            return reader.response();
-          }
-          await response.body?.cancel();
-          throw protocol();
-        },
-      );
+            const reader = responseReader(
+              options,
+              model.data,
+              baseUrl,
+              settings.credentialId,
+            );
+            const contentType = response.headers
+              .get("content-type")
+              ?.split(";")[0]
+              ?.trim()
+              .toLowerCase();
+            if (contentType === "text/event-stream") {
+              try {
+                for await (const event of sdkEvents(response))
+                  reader.dispatch(event.data);
+              } catch (error) {
+                if (error instanceof ForgeError) throw error;
+                if (error instanceof TypeError)
+                  throw new ProviderError(
+                    "network",
+                    "The provider connection failed.",
+                    true,
+                  );
+                throw error;
+              }
+              return reader.response();
+            }
+            // A gateway that ignores alt=sse may answer with one JSON body
+            // (Factory does, per the reference); it is the same response object.
+            if (contentType === "application/json") {
+              reader.accept(parseProviderJson(await readBody(response)));
+              return reader.response();
+            }
+            await response.body?.cancel();
+            throw protocol();
+          },
+        );
+      },
     },
-  }, settings);
+    settings,
+  );
 }

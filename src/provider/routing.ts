@@ -193,8 +193,11 @@ interface ClassifiedFailure {
 const wasRejectedBeforeExecution = (error: unknown): boolean => {
   if (!isRetryableProviderFailure(error)) return false;
   const failure = error as ClassifiedFailure;
-  return (failure.classification === "http" && failure.status === 429) ||
-    (failure.classification === "upstream" && failure.reason === "rate_limit_exceeded");
+  return (
+    (failure.classification === "http" && failure.status === 429) ||
+    (failure.classification === "upstream" &&
+      failure.reason === "rate_limit_exceeded")
+  );
 };
 const isCancellation = (error: unknown): boolean =>
   (error instanceof ForgeError && error.code === "cancelled") ||
@@ -492,10 +495,14 @@ export function createRoutedProvider(
     ): ProviderAttempt => ({
       sourceId: member.sourceId,
       model: resolved.actualModel ?? member.model,
-      ...(resolved.config ? { reasoningEffort: resolved.config.reasoningEffort ?? "default" } : {}),
+      ...(resolved.config
+        ? { reasoningEffort: resolved.config.reasoningEffort ?? "default" }
+        : {}),
       ...((resolved.config?.credentialId ?? member.credentialId) === undefined
         ? {}
-        : { credentialId: resolved.config?.credentialId ?? member.credentialId }),
+        : {
+            credentialId: resolved.config?.credentialId ?? member.credentialId,
+          }),
       apiMode,
       groupId: group.id,
       attempt,
@@ -512,8 +519,10 @@ export function createRoutedProvider(
     let streamed = false;
     // Authorization alone is enough: remote search may run before any progress
     // reaches us. Never replay a search-enabled member, even on an empty stream.
-    let hostedSearch = apiMode === "responses"
-      && completeOptions.webSearch !== undefined && completeOptions.webSearch !== "disabled";
+    let hostedSearch =
+      apiMode === "responses" &&
+      completeOptions.webSearch !== undefined &&
+      completeOptions.webSearch !== "disabled";
     let response: ProviderResponse;
     try {
       response = await resolved.provider.complete(messages, toolDefinitions, {
@@ -527,7 +536,12 @@ export function createRoutedProvider(
           : { sessionId: completeOptions.sessionId }),
         ...(completeOptions.webSearch === undefined
           ? {}
-          : { webSearch: apiMode === "responses" ? completeOptions.webSearch : "disabled" }),
+          : {
+              webSearch:
+                apiMode === "responses"
+                  ? completeOptions.webSearch
+                  : "disabled",
+            }),
         ...(completeOptions.onWebSearch === undefined
           ? {}
           : {
@@ -566,7 +580,9 @@ export function createRoutedProvider(
             ? "uncertain"
             : wasRejectedBeforeExecution(error)
               ? "unexecuted"
-              : isRetryableProviderFailure(error) ? "uncertain" : "rejected";
+              : isRetryableProviderFailure(error)
+                ? "uncertain"
+                : "rejected";
       const candidate = candidateOf(state, selection.key);
       candidate.started += 1;
       if (kind === "unexecuted" || kind === "rejected") candidate.failed += 1;
@@ -613,8 +629,11 @@ export function createRoutedProvider(
 
   return {
     ...(options.apiMode === undefined ? {} : { apiMode: options.apiMode }),
-    mayUseWebSearch: options.apiMode === "responses" || options.mayUseWebSearch === true,
-    ...(options.contextWindow === undefined ? {} : { getModelContextWindow: async () => options.contextWindow ?? null }),
+    mayUseWebSearch:
+      options.apiMode === "responses" || options.mayUseWebSearch === true,
+    ...(options.contextWindow === undefined
+      ? {}
+      : { getModelContextWindow: async () => options.contextWindow ?? null }),
     // Exact member model ids, in declared order: no network and no aliases.
     listModels: async () => [
       ...new Set(

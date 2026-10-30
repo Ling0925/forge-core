@@ -430,9 +430,10 @@ function normalizeRegistration(input: McpRegisterAnyInput): McpServerConfig {
 function secretValues(config: McpServerConfig): string[] {
   if (isRemote(config)) {
     return Object.entries(config.headers).flatMap(([name, value]) => {
-      const token = name.toLowerCase() === "authorization"
-        ? /^(?:Bearer|Basic)\s+(.+)$/i.exec(value)?.[1]
-        : undefined;
+      const token =
+        name.toLowerCase() === "authorization"
+          ? /^(?:Bearer|Basic)\s+(.+)$/i.exec(value)?.[1]
+          : undefined;
       return token ? [value, token] : [value];
     });
   }

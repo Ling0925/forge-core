@@ -131,7 +131,8 @@ async function run(
     child.once("close", (code) => {
       clearTimeout(timer);
       signal?.removeEventListener("abort", abort);
-      if (reason === "cancelled" || signal?.aborted) resolve({ kind: "cancelled" });
+      if (reason === "cancelled" || signal?.aborted)
+        resolve({ kind: "cancelled" });
       else if (reason === "timeout") resolve({ kind: "timeout" });
       else if (reason === "limit") resolve({ kind: "output_limit" });
       else if (spawnFailed) resolve({ kind: "unavailable" });
@@ -146,7 +147,9 @@ async function run(
   });
 }
 /** Fixed reasons a workspace has no inspection to report. Text is authored here. */
-const notApplicableNotes: Readonly<Record<"absent" | "invalid" | "no_worktree", string>> = {
+const notApplicableNotes: Readonly<
+  Record<"absent" | "invalid" | "no_worktree", string>
+> = {
   absent:
     "This workspace is not inside a Git work tree, so Git status/diff/log do not apply here. Nothing was inspected; use filesystem tools, or run Git inspection from a repository root.",
   invalid:
@@ -158,7 +161,9 @@ const notApplicableNotes: Readonly<Record<"absent" | "invalid" | "no_worktree", 
  * Map private git diagnostics onto fixed reasons. Matching is restricted to stable
  * message prefixes under LC_ALL=C, and no diagnostic text is ever returned.
  */
-export function gitNotApplicableNote(outcome: GitInspectionOutcome): string | undefined {
+export function gitNotApplicableNote(
+  outcome: GitInspectionOutcome,
+): string | undefined {
   if (outcome.kind !== "exit") return undefined;
   if (/^(?:fatal|error): not a git repository\b/m.test(outcome.diagnostic))
     return notApplicableNotes.absent;
@@ -168,7 +173,11 @@ export function gitNotApplicableNote(outcome: GitInspectionOutcome): string | un
     )
   )
     return notApplicableNotes.invalid;
-  if (/^(?:fatal|error): this operation must be run in a work tree\b/m.test(outcome.diagnostic))
+  if (
+    /^(?:fatal|error): this operation must be run in a work tree\b/m.test(
+      outcome.diagnostic,
+    )
+  )
     return notApplicableNotes.no_worktree;
   return undefined;
 }
@@ -202,7 +211,10 @@ export function gitFailure(outcome: GitInspectionOutcome): ForgeError {
             `Git inspection failed with exit code ${outcome.code}. Repository state was not modified; git diagnostics are withheld because they can contain paths or credentials.`,
           );
     case "ok":
-      return new ForgeError("internal", "Git inspection outcome was not a failure.");
+      return new ForgeError(
+        "internal",
+        "Git inspection outcome was not a failure.",
+      );
   }
 }
 function notApplicableResult(note: string): GitInspection {
@@ -256,7 +268,8 @@ function redact(text: string, values: readonly string[]): string {
 function bounded(output: string, omitted: number): GitInspection {
   const marker = "\n[git output truncated]";
   const bytes = Buffer.from(output);
-  if (bytes.length <= CAP) return { output, truncated: false, omitted, repository: true };
+  if (bytes.length <= CAP)
+    return { output, truncated: false, omitted, repository: true };
   return {
     output:
       bytes
@@ -295,7 +308,11 @@ export async function gitInspect(
       "Workspace is inside a Git work tree but is not its root. Run Git inspection from the repository root, or use filesystem tools for this subdirectory.",
     );
   if (action === "log") {
-    const head = await run(root, ["rev-parse", "--verify", "--quiet", "HEAD"], signal);
+    const head = await run(
+      root,
+      ["rev-parse", "--verify", "--quiet", "HEAD"],
+      signal,
+    );
     // Exit code 1 from --verify --quiet means "no such revision" without diagnostics:
     // a repository whose branch has no commits yet has an empty log, not a failure.
     if (head.kind === "exit" && head.code === 1)
@@ -307,12 +324,10 @@ export async function gitInspect(
         note: "Repository has no commits yet, so there is no log to show.",
       };
     if (head.kind !== "ok") throw gitFailure(head);
-    const output = (
-      await run(
-        root,
-        ["log", "-10", "--format=%h %s", "--no-show-signature"],
-        signal,
-      )
+    const output = await run(
+      root,
+      ["log", "-10", "--format=%h %s", "--no-show-signature"],
+      signal,
     );
     if (output.kind !== "ok") throw gitFailure(output);
     const text = output.stdout.toString("utf8");

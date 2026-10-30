@@ -47,7 +47,9 @@ afterEach(async () => {
 });
 
 it("registration is lazy and exposes only page fetch, not a fake search function", () => {
-  expect(registry.definitions.map((tool) => tool.function.name)).toEqual(["web_fetch"]);
+  expect(registry.definitions.map((tool) => tool.function.name)).toEqual([
+    "web_fetch",
+  ]);
   expect(mocks.request).not.toHaveBeenCalled();
 });
 it.each(["workspace"] as const)(
@@ -137,7 +139,10 @@ it("evicts the oldest of eight cached pages", async () => {
   expect(mocks.request).toHaveBeenCalledTimes(10);
 });
 it("never executes old local web_search calls or falls back to Bing", async () => {
-  const output = await registry.execute(call("web_search", { query: "test" }), context());
+  const output = await registry.execute(
+    call("web_search", { query: "test" }),
+    context(),
+  );
   expect(output.isError).toBe(true);
   expect(mocks.request).not.toHaveBeenCalled();
 });

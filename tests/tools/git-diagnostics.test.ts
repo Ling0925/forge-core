@@ -3,7 +3,6 @@ import { randomUUID } from "node:crypto";
 import { lstat, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { fileURLToPath } from "node:url";
 import { afterEach, expect, it } from "vitest";
 import type { ToolContext } from "../../src/shared/contracts";
 import { parseSessionId } from "../../src/shared/schemas";
@@ -14,6 +13,7 @@ import {
   gitNotApplicableNote,
 } from "../../src/tools/git";
 import { createLocalToolRegistry } from "../../src/tools/local";
+import { testScratch } from "../fixtures/scratch";
 
 const roots: string[] = [];
 afterEach(async () => {
@@ -41,14 +41,18 @@ function isRepository(path: string): boolean {
  */
 async function nonRepositoryRoot(): Promise<string | undefined> {
   // Read-only repository detection in an existing OS temp directory; never create
-  // or remove fixtures outside the assembly workspace's .forge/tmp directory.
+  // or remove fixtures outside the test scratch root (tests/fixtures/scratch.ts).
   for (const base of [tmpdir(), "/tmp", "/var/tmp"]) {
-    if ((await lstat(base).catch(() => undefined))?.isDirectory() && !isRepository(base)) return base;
+    if (
+      (await lstat(base).catch(() => undefined))?.isDirectory() &&
+      !isRepository(base)
+    )
+      return base;
   }
   return undefined;
 }
 async function newDirectory(name: string): Promise<string> {
-  const base = fileURLToPath(new URL("../../../../.forge/tmp/cross-provider-fixes/tools/", import.meta.url));
+  const base = testScratch("cross-provider-fixes", "tools");
   await mkdir(base, { recursive: true });
   const parent = await mkdtemp(join(base, "git-diagnostics-"));
   roots.push(parent);
@@ -67,7 +71,10 @@ async function repo() {
   git("init", "-q");
   return { root, git };
 }
-function context(root: string, signal = new AbortController().signal): ToolContext {
+function context(
+  root: string,
+  signal = new AbortController().signal,
+): ToolContext {
   return {
     sessionId: parseSessionId(randomUUID()),
     toolCallId: "diagnostics",
@@ -84,7 +91,11 @@ async function call(root: string, name: string, signal?: AbortSignal) {
   const registry = await createLocalToolRegistry(root);
   try {
     return await registry.execute(
-      { id: "diagnostics", type: "function", function: { name, arguments: "{}" } },
+      {
+        id: "diagnostics",
+        type: "function",
+        function: { name, arguments: "{}" },
+      },
       context(root, signal),
     );
   } finally {
@@ -216,13 +227,16 @@ it.each([
   "fatal: invalid gitfile format: /tmp/x/.git\n",
   "fatal: gitfile does not point to a valid repository: /tmp/x/.git\n",
   "fatal: this operation must be run in a work tree\n",
-] as const)("classifies %j as not applicable without echoing it", (diagnostic) => {
-  const note = gitNotApplicableNote({ kind: "exit", code: 128, diagnostic });
-  expect(note).toBeDefined();
-  expect(note).not.toContain("/tmp/x");
-  expect(note).not.toContain("fatal:");
-  expect(note).not.toContain("gitfile");
-});
+] as const)(
+  "classifies %j as not applicable without echoing it",
+  (diagnostic) => {
+    const note = gitNotApplicableNote({ kind: "exit", code: 128, diagnostic });
+    expect(note).toBeDefined();
+    expect(note).not.toContain("/tmp/x");
+    expect(note).not.toContain("fatal:");
+    expect(note).not.toContain("gitfile");
+  },
+);
 
 it.each([
   "fatal: authentication failed for 'https://user@example.invalid/repo'",
@@ -230,29 +244,47 @@ it.each([
   "fatal: detected dubious ownership in repository at '/tmp/x'",
   "",
 ] as const)("does not treat %j as a not-applicable workspace", (diagnostic) => {
-  expect(gitNotApplicableNote({ kind: "exit", code: 128, diagnostic })).toBeUndefined();
+  expect(
+    gitNotApplicableNote({ kind: "exit", code: 128, diagnostic }),
+  ).toBeUndefined();
 });
 
 it.each([
-  ["cancelled", { kind: "cancelled" }, "cancelled", "Git inspection cancelled."],
+  [
+    "cancelled",
+    { kind: "cancelled" },
+    "cancelled",
+    "Git inspection cancelled.",
+  ],
   ["timeout", { kind: "timeout" }, "tool", "timed out after 5 seconds"],
   ["output_limit", { kind: "output_limit" }, "tool", "64 KiB ceiling"],
   ["unavailable", { kind: "unavailable" }, "tool", "could not start"],
-] as const)("classifies a %s outcome distinctly and without diagnostics", (_label, outcome, code, expected) => {
-  const error = gitFailure(outcome as GitInspectionOutcome);
-  expect(error.code).toBe(code);
-  expect(error.message).toContain(expected);
-  expect(error.message).not.toContain("unavailable or timed out");
-});
+] as const)(
+  "classifies a %s outcome distinctly and without diagnostics",
+  (_label, outcome, code, expected) => {
+    const error = gitFailure(outcome as GitInspectionOutcome);
+    expect(error.code).toBe(code);
+    expect(error.message).toContain(expected);
+    expect(error.message).not.toContain("unavailable or timed out");
+  },
+);
 
 it("reports non-zero exits by safe exit code only", () => {
-  const error = gitFailure({ kind: "exit", code: 128, diagnostic: privateDiagnostic });
+  const error = gitFailure({
+    kind: "exit",
+    code: 128,
+    diagnostic: privateDiagnostic,
+  });
   expect(error.code).toBe("tool");
   expect(error.message).toContain("exit code 128");
   expect(error.message).toContain("withheld");
   expect(error.message).not.toContain("canary-9f3a2b");
   expect(error.message).not.toContain("/home/private-user");
-  const killed = gitFailure({ kind: "exit", code: null, diagnostic: privateDiagnostic });
+  const killed = gitFailure({
+    kind: "exit",
+    code: null,
+    diagnostic: privateDiagnostic,
+  });
   expect(killed.message).toContain("terminated by a signal");
   expect(killed.message).not.toContain("canary-9f3a2b");
 });
@@ -260,9 +292,15 @@ it("reports non-zero exits by safe exit code only", () => {
 it("does not create repository metadata when reporting a non-repository workspace", async () => {
   const root = await nonRepositoryRoot();
   if (root === undefined)
-    throw new Error("No non-repository fixture root available for the side-effect check.");
-  await expect(lstat(join(root, ".git"))).rejects.toMatchObject({ code: "ENOENT" });
+    throw new Error(
+      "No non-repository fixture root available for the side-effect check.",
+    );
+  await expect(lstat(join(root, ".git"))).rejects.toMatchObject({
+    code: "ENOENT",
+  });
   expect((await call(root, "git_status")).isError).toBe(false);
   // This probe is entirely read-only, including its assertions.
-  await expect(lstat(join(root, ".git"))).rejects.toMatchObject({ code: "ENOENT" });
+  await expect(lstat(join(root, ".git"))).rejects.toMatchObject({
+    code: "ENOENT",
+  });
 });

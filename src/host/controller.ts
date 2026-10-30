@@ -154,20 +154,35 @@ export function createWorkerController(
       run.recovery.set(value.type, value);
     if (value.type === "agent_progress") {
       const key = `agent-progress:${value.childSessionId}`;
-      const childKeys = [...run.recovery.keys()].filter(key => key.startsWith("agent-progress:"));
-      if (run.recovery.has(key) || childKeys.length < 32) run.recovery.set(key, value);
+      const childKeys = [...run.recovery.keys()].filter((key) =>
+        key.startsWith("agent-progress:"),
+      );
+      if (run.recovery.has(key) || childKeys.length < 32)
+        run.recovery.set(key, value);
     }
-    if (value.type === "agent_update" && !["running", "awaiting_approval"].includes(value.status))
+    if (
+      value.type === "agent_update" &&
+      !["running", "awaiting_approval"].includes(value.status)
+    )
       run.recovery.delete(`agent-progress:${value.childSessionId}`);
     if (value.type === "generation_started") {
       // Replay only the current attempt, in lifecycle order. Never concatenate
       // a new generation with the previous generation's bounded preview.
       for (const key of run.recovery.keys())
-        if (["generation_started", "generation_finished", "text_delta", "reasoning_delta"].includes(key) || key.startsWith("tool-preview:"))
+        if (
+          [
+            "generation_started",
+            "generation_finished",
+            "text_delta",
+            "reasoning_delta",
+          ].includes(key) ||
+          key.startsWith("tool-preview:")
+        )
           run.recovery.delete(key);
       run.recovery.set(value.type, value);
     }
-    if (value.type === "generation_finished") run.recovery.set(value.type, value);
+    if (value.type === "generation_finished")
+      run.recovery.set(value.type, value);
     if (value.type === "tool_call_preview") {
       const key = `tool-preview:${value.previewId}`;
       if (run.recovery.has(key) || run.recovery.size < 264)
@@ -195,7 +210,8 @@ export function createWorkerController(
     if (value.type === "text_delta" || value.type === "reasoning_delta") {
       const previous = run.recovery.get(value.type);
       const text =
-        previous && previous.generationId === value.generationId &&
+        previous &&
+        previous.generationId === value.generationId &&
         (previous.type === "text_delta" || previous.type === "reasoning_delta")
           ? previous.text
           : "";
@@ -363,16 +379,26 @@ export function createWorkerController(
             },
             setSteeringHandler: (handler) => {
               run.acceptSteering = handler;
-              if (!handler) { run.acceptingSteering = false; return; }
+              if (!handler) {
+                run.acceptingSteering = false;
+                return;
+              }
               // Requests received during startup join the runtime's sole writer
               // as soon as it is ready, not at the next provider boundary.
               for (const request of run.steering.splice(0)) {
-                void handler({ prompt: request.prompt, ...(request.images?.length ? { images: request.images } : {}) })
-                  .then(() => respond(request, null), error => respond(request, null, toErrorInfo(error)));
+                void handler({
+                  prompt: request.prompt,
+                  ...(request.images?.length ? { images: request.images } : {}),
+                }).then(
+                  () => respond(request, null),
+                  (error) => respond(request, null, toErrorInfo(error)),
+                );
               }
             },
             getPermission: () => run.permission,
-            onFinalizing: () => { run.acceptingPermission = false; },
+            onFinalizing: () => {
+              run.acceptingPermission = false;
+            },
             ...(providerBinding ? { providerBinding } : {}),
             ...(acknowledgedPredecessor ? { acknowledgedPredecessor } : {}),
             ...(inputOrigin ? { inputOrigin } : {}),
@@ -398,13 +424,8 @@ export function createWorkerController(
     isBusy: (sessionId) =>
       [...runs.values()].some((run) => run.input.sessionId === sessionId),
     start: (input, runId, binding, predecessor, origin) =>
-      startRun(
-        input,
-        runIdSchema.parse(runId),
-        binding,
-        predecessor,
-        origin,
-      ).operation,
+      startRun(input, runIdSchema.parse(runId), binding, predecessor, origin)
+        .operation,
   });
   void queueReady?.catch(() => undefined);
   const queue = async () => {
@@ -464,11 +485,19 @@ export function createWorkerController(
         case "listModels":
           respond(
             request,
-            await service.listModels(undefined, request.sourceId, request.refresh),
+            await service.listModels(
+              undefined,
+              request.sourceId,
+              request.refresh,
+            ),
           );
           break;
         case "modelAccess":
-          if (!service.modelAccess) throw new ForgeError("not_found", "Model access is unavailable on this host.");
+          if (!service.modelAccess)
+            throw new ForgeError(
+              "not_found",
+              "Model access is unavailable on this host.",
+            );
           respond(request, await service.modelAccess(request.input));
           break;
         case "listSessions":
@@ -483,7 +512,10 @@ export function createWorkerController(
         case "getSessionPage":
           respond(
             request,
-            paginateSession(await service.getSession(request.sessionId), request.page),
+            paginateSession(
+              await service.getSession(request.sessionId),
+              request.page,
+            ),
           );
           break;
         case "getPublishedFile":
@@ -535,22 +567,34 @@ export function createWorkerController(
         }
         case "listPlugins":
           if (!service.listPlugins)
-            throw new ForgeError("not_found", "Plugins are unavailable on this host.");
+            throw new ForgeError(
+              "not_found",
+              "Plugins are unavailable on this host.",
+            );
           respond(request, await service.listPlugins());
           break;
         case "configurePlugin":
           if (!service.configurePlugin)
-            throw new ForgeError("not_found", "Plugins are unavailable on this host.");
+            throw new ForgeError(
+              "not_found",
+              "Plugins are unavailable on this host.",
+            );
           respond(request, await service.configurePlugin(request.input));
           break;
         case "checkPlugin":
           if (!service.checkPlugin)
-            throw new ForgeError("not_found", "Plugins are unavailable on this host.");
+            throw new ForgeError(
+              "not_found",
+              "Plugins are unavailable on this host.",
+            );
           respond(request, await service.checkPlugin(request.pluginId));
           break;
         case "browser":
           if (!service.browser)
-            throw new ForgeError("not_found", "Browser control is unavailable on this host.");
+            throw new ForgeError(
+              "not_found",
+              "Browser control is unavailable on this host.",
+            );
           respond(request, await service.browser(request.input));
           break;
         case "listCheckpoints":
@@ -680,7 +724,10 @@ export function createWorkerController(
               "当前运行已结束或正在收尾，草稿已保留。请手动发送下一轮。",
             );
           if (run.acceptSteering) {
-            await run.acceptSteering({ prompt: request.prompt, ...(request.images?.length ? { images: request.images } : {}) });
+            await run.acceptSteering({
+              prompt: request.prompt,
+              ...(request.images?.length ? { images: request.images } : {}),
+            });
             respond(request, null);
             break;
           }
@@ -708,10 +755,19 @@ export function createWorkerController(
         }
         case "setRunPermission": {
           const run = runs.get(request.runId);
-          if (!run || run.finished || !run.acceptingPermission || run.abort.signal.aborted)
+          if (
+            !run ||
+            run.finished ||
+            !run.acceptingPermission ||
+            run.abort.signal.aborted
+          )
             throw new ForgeError("not_found", "The run is no longer active.");
           const snapshot = await service.getSession(run.input.sessionId);
-          if (run.finished || !run.acceptingPermission || run.abort.signal.aborted)
+          if (
+            run.finished ||
+            !run.acceptingPermission ||
+            run.abort.signal.aborted
+          )
             throw new ForgeError("not_found", "The run is no longer active.");
           const levels = ["readonly", "workspace", "unrestricted"] as const;
           const ceiling =
@@ -852,7 +908,11 @@ export function createWorkerController(
         }
       }
       for (const [key, event] of run.recovery)
-        if (key.startsWith("tool-preview:") || key.startsWith("agent-progress:")) result.push({ runId, event });
+        if (
+          key.startsWith("tool-preview:") ||
+          key.startsWith("agent-progress:")
+        )
+          result.push({ runId, event });
       const generationFinished = run.recovery.get("generation_finished");
       if (generationFinished) result.push({ runId, event: generationFinished });
       for (const approval of run.approvals.values()) {

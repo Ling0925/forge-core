@@ -1,12 +1,16 @@
 import { z } from "zod";
-import { sessionSnapshotSchema, type SessionSnapshot } from "./schemas";
+import { type SessionSnapshot, sessionSnapshotSchema } from "./schemas";
 
 const offset = z.number().int().nonnegative();
-export const sessionDeltaSchema = z.object({
-  base: z.string().uuid(),
-  prefix: z.object({ messages: offset, events: offset, changes: offset }).strict(),
-  snapshot: sessionSnapshotSchema,
-}).strict();
+export const sessionDeltaSchema = z
+  .object({
+    base: z.string().uuid(),
+    prefix: z
+      .object({ messages: offset, events: offset, changes: offset })
+      .strict(),
+    snapshot: sessionSnapshotSchema,
+  })
+  .strict();
 export type SessionDelta = z.infer<typeof sessionDeltaSchema>;
 
 export function applySessionDelta(
@@ -22,8 +26,17 @@ export function applySessionDelta(
   }
   return {
     ...delta.snapshot,
-    messages: [...previous.messages.slice(0, delta.prefix.messages), ...delta.snapshot.messages],
-    events: [...previous.events.slice(0, delta.prefix.events), ...delta.snapshot.events],
-    changes: [...previous.changes.slice(0, delta.prefix.changes), ...delta.snapshot.changes],
+    messages: [
+      ...previous.messages.slice(0, delta.prefix.messages),
+      ...delta.snapshot.messages,
+    ],
+    events: [
+      ...previous.events.slice(0, delta.prefix.events),
+      ...delta.snapshot.events,
+    ],
+    changes: [
+      ...previous.changes.slice(0, delta.prefix.changes),
+      ...delta.snapshot.changes,
+    ],
   };
 }

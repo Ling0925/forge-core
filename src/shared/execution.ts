@@ -15,45 +15,87 @@ export interface ExecutionTurn {
 
 const cache = new WeakMap<SessionSnapshot, readonly ExecutionTurn[]>();
 
-export function executionTurns(snapshot: SessionSnapshot): readonly ExecutionTurn[] {
+export function executionTurns(
+  snapshot: SessionSnapshot,
+): readonly ExecutionTurn[] {
   const cached = cache.get(snapshot);
   if (cached) return cached;
-  const starts = snapshot.events.flatMap((event, index) =>
-    event.type === "run_started" ? [{ event, index }] : []).map((start, ordinal) => ({ ...start, ordinal }));
+  const starts = snapshot.events
+    .flatMap((event, index) =>
+      event.type === "run_started" ? [{ event, index }] : [],
+    )
+    .map((start, ordinal) => ({ ...start, ordinal }));
   const offset = snapshot.transcript?.messageOffset ?? 0;
   const firstTurn = snapshot.transcript?.firstTurn ?? 1;
-  const firstAnchor = (starts.find(({ event }) => event.messageIndex !== undefined)?.event.messageIndex
-    ?? (offset + snapshot.messages.length)) - offset;
+  const firstAnchor =
+    (starts.find(({ event }) => event.messageIndex !== undefined)?.event
+      .messageIndex ?? offset + snapshot.messages.length) - offset;
   const users = snapshot.messages.flatMap((message, index) =>
-    message.role === "user" && !message.origin && index < firstAnchor ? [index] : []);
-  const legacyStarts = starts.filter(({ event }) => event.messageIndex === undefined);
+    message.role === "user" && !message.origin && index < firstAnchor
+      ? [index]
+      : [],
+  );
+  const legacyStarts = starts.filter(
+    ({ event }) => event.messageIndex === undefined,
+  );
   const aligned = users.length === legacyStarts.length;
   const boundaries = [
     ...users.map((messageStart, index) => ({
-      turn: index + firstTurn, messageStart, start: aligned ? legacyStarts[index] : undefined,
+      turn: index + firstTurn,
+      messageStart,
+      start: aligned ? legacyStarts[index] : undefined,
     })),
-    ...starts.flatMap(start => start.event.messageIndex === undefined ? [] : [{
-      turn: start.event.turn ?? start.ordinal + firstTurn,
-      messageStart: start.event.messageIndex - offset, start,
-    }]),
+    ...starts.flatMap((start) =>
+      start.event.messageIndex === undefined
+        ? []
+        : [
+            {
+              turn: start.event.turn ?? start.ordinal + firstTurn,
+              messageStart: start.event.messageIndex - offset,
+              start,
+            },
+          ],
+    ),
   ];
   const result = boundaries.map((boundary, index): ExecutionTurn => {
     const next = boundaries[index + 1];
     const start = boundary.start;
-    const events = start === undefined ? [] : snapshot.events.slice(start.index, starts[start.ordinal + 1]?.index);
-    const finish = events.find((event): event is Extract<AgentEvent, { type: "run_finished" }> => event.type === "run_finished");
+    const events =
+      start === undefined
+        ? []
+        : snapshot.events.slice(start.index, starts[start.ordinal + 1]?.index);
+    const finish = events.find(
+      (event): event is Extract<AgentEvent, { type: "run_finished" }> =>
+        event.type === "run_finished",
+    );
     const explicit = start?.event.messageIndex !== undefined;
-    const lastBoundary = events.findLast(event => event.type === "step_started" || event.type === "step_finished");
+    const lastBoundary = events.findLast(
+      (event) =>
+        event.type === "step_started" || event.type === "step_finished",
+    );
     return {
       turn: boundary.turn,
       messageStart: boundary.messageStart,
       messageEnd: next?.messageStart ?? snapshot.messages.length,
       events,
       finish,
-      steps: explicit ? events.filter(event => event.type === "step_finished").length : finish?.steps ?? finish?.turns,
-      currentStep: lastBoundary?.type === "step_started" && !finish ? lastBoundary.step : undefined,
-      toolCalls: finish?.toolCalls ?? (explicit ? events.filter(event => event.type === "tool_started").length : undefined),
-      retries: finish?.retries ?? (explicit ? events.filter(event => event.type === "provider_retry").length : undefined),
+      steps: explicit
+        ? events.filter((event) => event.type === "step_finished").length
+        : (finish?.steps ?? finish?.turns),
+      currentStep:
+        lastBoundary?.type === "step_started" && !finish
+          ? lastBoundary.step
+          : undefined,
+      toolCalls:
+        finish?.toolCalls ??
+        (explicit
+          ? events.filter((event) => event.type === "tool_started").length
+          : undefined),
+      retries:
+        finish?.retries ??
+        (explicit
+          ? events.filter((event) => event.type === "provider_retry").length
+          : undefined),
     };
   });
   cache.set(snapshot, result);
@@ -62,7 +104,8 @@ export function executionTurns(snapshot: SessionSnapshot): readonly ExecutionTur
 
 export function executionLabel(turn: ExecutionTurn): string {
   const parts: string[] = [];
-  if (turn.currentStep !== undefined) parts.push(`进行到第 ${turn.currentStep} 步`);
+  if (turn.currentStep !== undefined)
+    parts.push(`进行到第 ${turn.currentStep} 步`);
   else if (turn.steps !== undefined) parts.push(`${turn.steps} 步`);
   if (turn.toolCalls !== undefined) parts.push(`${turn.toolCalls} 次工具调用`);
   if (turn.retries) parts.push(`${turn.retries} 次请求重试`);

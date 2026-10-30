@@ -1,6 +1,6 @@
-import OpenAI from "openai";
 import Anthropic from "@anthropic-ai/sdk";
-import { _iterSSEMessages, type ServerSentEvent } from "openai/core/streaming";
+import OpenAI from "openai";
+import { type ServerSentEvent, _iterSSEMessages } from "openai/core/streaming";
 import { z } from "zod";
 import { ForgeError } from "../shared/errors";
 import type { ProviderConfig } from "../shared/schemas";
@@ -30,7 +30,8 @@ class SseFraming {
       this.cr = char === "\r";
       if (char === "\n" || char === "\r") {
         if (!this.prefix) this.data = false;
-        else if (this.prefix === "data" || this.prefix === "data:") this.data = true;
+        else if (this.prefix === "data" || this.prefix === "data:")
+          this.data = true;
         this.prefix = "";
       } else if (this.prefix.length < 5) this.prefix += char;
     }
@@ -77,8 +78,14 @@ export async function withSdkRequest<T>(
     if (!response.body) return response;
     const reader = response.body.getReader();
     const decoder = new TextDecoder("utf-8", { fatal: true });
-    const sse = response.headers.get("content-type")?.split(";")[0]?.trim().toLowerCase() === "text/event-stream"
-      ? new SseFraming() : undefined;
+    const sse =
+      response.headers
+        .get("content-type")
+        ?.split(";")[0]
+        ?.trim()
+        .toLowerCase() === "text/event-stream"
+        ? new SseFraming()
+        : undefined;
     let bytes = 0;
     const cancel = () => {
       void reader.cancel().catch(() => undefined);
@@ -100,7 +107,13 @@ export async function withSdkRequest<T>(
           }
           if (chunk.value.byteLength) touch();
           bytes += chunk.value.byteLength;
-          if (bytes > 8_000_000) throw protocol("output_limit", { stage: "transport_body", observed: bytes, limit: 8_000_000, unit: "bytes" });
+          if (bytes > 8_000_000)
+            throw protocol("output_limit", {
+              stage: "transport_body",
+              observed: bytes,
+              limit: 8_000_000,
+              unit: "bytes",
+            });
           const text = decoder.decode(chunk.value, { stream: true });
           sse?.write(text);
           target.enqueue(chunk.value);
@@ -124,7 +137,11 @@ export async function withSdkRequest<T>(
   };
   try {
     controller.signal.throwIfAborted();
-    const result = await operation({ signal: controller.signal, fetch, hasBodyFailure: () => bodyFailure !== undefined });
+    const result = await operation({
+      signal: controller.signal,
+      fetch,
+      hasBodyFailure: () => bodyFailure !== undefined,
+    });
     controller.signal.throwIfAborted();
     return result;
   } catch (caught) {
@@ -184,16 +201,28 @@ export async function* sdkEvents(
   const controller = new AbortController();
   try {
     for await (const event of _iterSSEMessages(response, controller)) {
-      const chars = event.raw.reduce((maximum, line) => Math.max(maximum, line.length), event.data.length);
+      const chars = event.raw.reduce(
+        (maximum, line) => Math.max(maximum, line.length),
+        event.data.length,
+      );
       if (chars > 1_200_000)
-        throw protocol("output_limit", { stage: "sse_event", observed: chars, limit: 1_200_000, unit: "utf16_code_units" });
+        throw protocol("output_limit", {
+          stage: "sse_event",
+          observed: chars,
+          limit: 1_200_000,
+          unit: "utf16_code_units",
+        });
       // The SDK exposes named, data-free records, while SSE dispatch discards
       // them. Do not JSON.parse an empty heartbeat; real empty/malformed data
       // remains a protocol error, and adapters still require native completion.
-      if (!event.data && !event.raw.some(line => /^data(?::|$)/.test(line))) {
+      if (!event.data && !event.raw.some((line) => /^data(?::|$)/.test(line))) {
         // A broken failure frame must not be mistaken for a heartbeat and then
         // superseded by successful output from a relay.
-        if (["error", "response.failed", "response.incomplete"].includes(event.event ?? ""))
+        if (
+          ["error", "response.failed", "response.incomplete"].includes(
+            event.event ?? "",
+          )
+        )
           throw protocol("provider_error_event");
         continue;
       }

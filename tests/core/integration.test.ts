@@ -57,7 +57,11 @@ const reply = {
 };
 const fakeKey = "fixture-only-test-key";
 
-const configured = async (): Promise<{ baseUrl: string; state: string; workspace: string }> => {
+const configured = async (): Promise<{
+  baseUrl: string;
+  state: string;
+  workspace: string;
+}> => {
   const baseUrl = await gateway(() => reply);
   const [state, workspace] = [await directory(), await directory()];
   const service = await createHarness({ stateDir: state });
@@ -122,25 +126,53 @@ describe("default harness tool integration", () => {
       const providerFactory = (): ModelProvider => ({
         listModels: async () => ["fixture-model"],
         complete: async (messages, tools) => {
-          expect(tools.some((tool) => tool.function.name === "web_fetch")).toBe(true);
-          if (turns++ === 0) return { message: {
-            role: "assistant", content: null, tool_calls: [{
-              id: "web-denied", type: "function", function: {
-                name: "web_fetch", arguments: JSON.stringify({ url: "https://example.com/docs" }),
+          expect(tools.some((tool) => tool.function.name === "web_fetch")).toBe(
+            true,
+          );
+          if (turns++ === 0)
+            return {
+              message: {
+                role: "assistant",
+                content: null,
+                tool_calls: [
+                  {
+                    id: "web-denied",
+                    type: "function",
+                    function: {
+                      name: "web_fetch",
+                      arguments: JSON.stringify({
+                        url: "https://example.com/docs",
+                      }),
+                    },
+                  },
+                ],
               },
-            }],
-          } };
-          const outcome = messages.findLast((message) => message.role === "tool");
-          expect(outcome?.content).toContain(permission === "readonly"
-            ? "Core readonly policy denies" : "Web request was denied");
-          return { message: { role: "assistant", content: "Access denied; no source read." } };
+            };
+          const outcome = messages.findLast(
+            (message) => message.role === "tool",
+          );
+          expect(outcome?.content).toContain(
+            permission === "readonly"
+              ? "Core readonly policy denies"
+              : "Web request was denied",
+          );
+          return {
+            message: {
+              role: "assistant",
+              content: "Access denied; no source read.",
+            },
+          };
         },
       });
       const service = await createHarness({ stateDir: state, providerFactory });
       cleanups.push(() => service.dispose());
-      await service.updateSettings({ settings: { defaultPermission: permission } });
+      await service.updateSettings({
+        settings: { defaultPermission: permission },
+      });
       const { events } = await runOnce(service, workspace);
-      const approvals = events.filter((event) => event.type === "approval_requested");
+      const approvals = events.filter(
+        (event) => event.type === "approval_requested",
+      );
       expect(approvals).toHaveLength(permission === "readonly" ? 0 : 1);
       if (permission !== "readonly")
         expect(JSON.stringify(approvals)).toContain("https://example.com/docs");
@@ -160,8 +192,14 @@ describe("default harness tool integration", () => {
     });
     const service = await createHarness({ stateDir: state, providerFactory });
     cleanups.push(() => service.dispose());
-    await service.configurePlugin!({ pluginId: "browser", enabled: true,
-      config: { executablePath: "/nonexistent/forge-test-agent-browser", allowedDomains: ["127.0.0.1"] } });
+    await service.configurePlugin!({
+      pluginId: "browser",
+      enabled: true,
+      config: {
+        executablePath: "/nonexistent/forge-test-agent-browser",
+        allowedDomains: ["127.0.0.1"],
+      },
+    });
     await runOnce(service, workspace);
     const names = definitions.map((definition) => definition.function.name);
     expect(names).toContain("read_file");
@@ -222,27 +260,47 @@ describe("default harness tool integration", () => {
     legacy.settings.browserExecutablePath = "/unused/legacy-chrome";
     await writeFile(path, JSON.stringify(legacy));
     let definitions: readonly { function: { name: string } }[] = [];
-    const service = await createHarness({ stateDir: state, providerFactory: () => ({
-      listModels: async () => ["fixture-model"],
-      complete: async (_messages, tools) => { definitions = tools; return { message: { role: "assistant", content: "done" } }; },
-    }) });
+    const service = await createHarness({
+      stateDir: state,
+      providerFactory: () => ({
+        listModels: async () => ["fixture-model"],
+        complete: async (_messages, tools) => {
+          definitions = tools;
+          return { message: { role: "assistant", content: "done" } };
+        },
+      }),
+    });
     cleanups.push(() => service.dispose());
     const settings = await service.getSettings();
     expect(settings).not.toHaveProperty("browserAllowedOrigins");
     expect(settings).not.toHaveProperty("browserExecutablePath");
     expect(settings.hasApiKey).toBe(true);
     await runOnce(service, workspace);
-    expect(definitions.some(tool => tool.function.name.startsWith("browser_"))).toBe(false);
+    expect(
+      definitions.some((tool) => tool.function.name.startsWith("browser_")),
+    ).toBe(false);
     expect((await service.listPlugins!())[0]).toMatchObject({ enabled: false });
 
-    const configuredPlugin = await service.configurePlugin!({ pluginId: "browser", enabled: true,
-      config: { allowedDomains: ["*"], browserExecutablePath: "/explicit/plugin-chrome" } });
+    const configuredPlugin = await service.configurePlugin!({
+      pluginId: "browser",
+      enabled: true,
+      config: {
+        allowedDomains: ["*"],
+        browserExecutablePath: "/explicit/plugin-chrome",
+      },
+    });
     await service.updateSettings({ settings: { theme: "light" } });
     const reopened = await createHarness({ stateDir: state });
     cleanups.push(() => reopened.dispose());
-    expect((await reopened.listPlugins!())[0]?.config).toEqual(configuredPlugin.config);
+    expect((await reopened.listPlugins!())[0]?.config).toEqual(
+      configuredPlugin.config,
+    );
     expect((await reopened.listPlugins!())[0]?.enabled).toBe(true);
-    expect(await reopened.getSettings()).toMatchObject({ theme: "light", model: "fixture-model", hasApiKey: true });
+    expect(await reopened.getSettings()).toMatchObject({
+      theme: "light",
+      model: "fixture-model",
+      hasApiKey: true,
+    });
   });
 
   it("still cancels and releases the session lock with default tools", async () => {
@@ -365,8 +423,14 @@ describe("default harness tool integration", () => {
     const service = await createHarness({ stateDir: state, providerFactory });
     cleanups.push(() => service.dispose());
     const session = await service.createSession({ workspace });
-    await service.configurePlugin!({ pluginId: "browser", enabled: true,
-      config: { executablePath: "/nonexistent/forge-test-agent-browser", allowedDomains: ["127.0.0.1"] } });
+    await service.configurePlugin!({
+      pluginId: "browser",
+      enabled: true,
+      config: {
+        executablePath: "/nonexistent/forge-test-agent-browser",
+        allowedDomains: ["127.0.0.1"],
+      },
+    });
     const events: AgentEvent[] = [];
     const result = await service.run(
       { sessionId: session.id, prompt: "browse" },
@@ -429,22 +493,47 @@ describe("default harness tool integration", () => {
 });
 
 it("persists automatic title provenance and protects explicit titles across reopen", async () => {
-  const {state, workspace} = await configured();
-  const providerFactory = (): ModelProvider => ({listModels: async () => [], complete: async messages => ({message: {role: "assistant", content: messages[0]?.content?.startsWith("Generate only") ? "登录修复" : "done"}})});
-  const service = await createHarness({stateDir: state, providerFactory});
+  const { state, workspace } = await configured();
+  const providerFactory = (): ModelProvider => ({
+    listModels: async () => [],
+    complete: async (messages) => ({
+      message: {
+        role: "assistant",
+        content: messages[0]?.content?.startsWith("Generate only")
+          ? "登录修复"
+          : "done",
+      },
+    }),
+  });
+  const service = await createHarness({ stateDir: state, providerFactory });
   cleanups.push(() => service.dispose());
-  const created = await service.createSession({workspace});
+  const created = await service.createSession({ workspace });
   expect(created.titleSource).toBe("default");
-  const result = await service.run({sessionId: created.id, prompt: "修复登录问题"}, () => {}, async () => false, new AbortController().signal);
+  const result = await service.run(
+    { sessionId: created.id, prompt: "修复登录问题" },
+    () => {},
+    async () => false,
+    new AbortController().signal,
+  );
   expect(result.status).toBe("completed");
-  for (let i = 0; i < 100 && (await service.getSession(created.id)).title !== "登录修复"; i++) await new Promise(resolve => setTimeout(resolve, 10));
+  for (
+    let i = 0;
+    i < 100 && (await service.getSession(created.id)).title !== "登录修复";
+    i++
+  )
+    await new Promise((resolve) => setTimeout(resolve, 10));
   expect((await service.getSession(created.id)).title).toBe("登录修复");
   const renamed = await service.renameSession(created.id, "  手动标题  ");
-  expect(renamed).toMatchObject({title: "手动标题", titleSource: "user"});
+  expect(renamed).toMatchObject({ title: "手动标题", titleSource: "user" });
   await service.dispose();
-  const reopened = await createHarness({stateDir: state, providerFactory});
+  const reopened = await createHarness({ stateDir: state, providerFactory });
   cleanups.push(() => reopened.dispose());
   expect((await reopened.getSession(created.id)).autoTitleAttempted).toBe(true);
-  await reopened.run({sessionId: created.id, prompt: "继续"}, () => {}, async () => false, new AbortController().signal);
+  await reopened.run(
+    { sessionId: created.id, prompt: "继续" },
+    () => {},
+    async () => false,
+    new AbortController().signal,
+  );
   expect((await reopened.getSession(created.id)).title).toBe("手动标题");
 });

@@ -5,16 +5,8 @@ import { z } from "zod";
 import type { SessionStore } from "../shared/contracts";
 import { ForgeError } from "../shared/errors";
 import type { SessionId } from "../shared/schemas";
-import {
-  createSessionInputSchema,
-  sessionIdSchema,
-} from "../shared/schemas";
-import {
-  hasCode,
-  privateDirectory,
-  readJson,
-  storageError,
-} from "./io";
+import { createSessionInputSchema, sessionIdSchema } from "../shared/schemas";
+import { hasCode, privateDirectory, readJson, storageError } from "./io";
 import { fileLock } from "./lock";
 import { createSessionJournal } from "./session-journal";
 import { validateSnapshot } from "./session-validation";
@@ -47,9 +39,10 @@ export async function openSessionStore(
   return {
     get,
     incremental: {
-      read: id => journal.read(validateId(id)),
+      read: (id) => journal.read(validateId(id)),
       commit: (id, mutation) => journal.commit(validateId(id), mutation),
-      changesSince: (id, revision) => journal.changesSince(validateId(id), revision),
+      changesSince: (id, revision) =>
+        journal.changesSince(validateId(id), revision),
     },
     async list() {
       try {
@@ -61,7 +54,11 @@ export async function openSessionStore(
           try {
             summaries.push(await journal.summary(id.data));
           } catch (error) {
-            if (!(error instanceof ForgeError) && !(error instanceof z.ZodError)) throw error;
+            if (
+              !(error instanceof ForgeError) &&
+              !(error instanceof z.ZodError)
+            )
+              throw error;
           }
         }
         return summaries.sort(
@@ -101,8 +98,12 @@ export async function openSessionStore(
           title: parsed.data.title,
           ...(titleSource ? { titleSource } : {}),
           model: parsed.data.model,
-          ...(parsed.data.providerSourceId ? { providerSourceId: parsed.data.providerSourceId } : {}),
-          ...(parsed.data.routeGroupId ? { routeGroupId: parsed.data.routeGroupId } : {}),
+          ...(parsed.data.providerSourceId
+            ? { providerSourceId: parsed.data.providerSourceId }
+            : {}),
+          ...(parsed.data.routeGroupId
+            ? { routeGroupId: parsed.data.routeGroupId }
+            : {}),
           createdAt: now,
           updatedAt: now,
           status: "idle",

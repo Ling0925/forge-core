@@ -35,19 +35,18 @@ export const rootBudgetSnapshotSchema = z
     remaining: count.nullable(),
     stopReason: z.enum(["tools", "deadline"]).nullable(),
     usage: observedUsageSchema,
-    sessions: z
-      .array(
-        z
-          .object({
-            sessionId: z.string().uuid(),
-            consumed: count,
-            reserved: count,
-            status: z.enum(["running", "completed", "failed", "cancelled"]),
-            reason: z.string().max(64).nullable(),
-            usage: observedUsageSchema,
-          })
-          .strict(),
-      ),
+    sessions: z.array(
+      z
+        .object({
+          sessionId: z.string().uuid(),
+          consumed: count,
+          reserved: count,
+          status: z.enum(["running", "completed", "failed", "cancelled"]),
+          reason: z.string().max(64).nullable(),
+          usage: observedUsageSchema,
+        })
+        .strict(),
+    ),
   })
   .strict()
   .readonly();

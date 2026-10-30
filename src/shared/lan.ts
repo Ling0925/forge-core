@@ -18,7 +18,7 @@ export const lanIpv4Schema = z
     /^(?:(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)\.){3}(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)$/,
     "需要一个具体的 IPv4 地址",
   )
-  .refine(value => value !== "0.0.0.0", "不能使用 0.0.0.0");
+  .refine((value) => value !== "0.0.0.0", "不能使用 0.0.0.0");
 
 const lanPortSchema = z.number().int().min(1024).max(65535);
 const lanWorkspaceSchema = z.string().min(1).max(4096);
@@ -85,7 +85,8 @@ export function createForgeLanBridge(
     try {
       raw = await transport.request(parsed);
     } catch (error) {
-      if (error instanceof Error && error.message) throw new Error(error.message);
+      if (error instanceof Error && error.message)
+        throw new Error(error.message);
       throw new Error("局域网服务不可用，请检查状态后重试。");
     }
     const status = lanStatusSchema.safeParse(raw);

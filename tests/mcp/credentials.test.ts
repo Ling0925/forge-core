@@ -16,8 +16,16 @@ const registration = {
 
 it("accepts explicit private env through the public RPC contract and preserves legacy registration", () => {
   expect(mcpRegisterDtoSchema.parse(registration)).toEqual(registration);
-  const input = { ...registration, transport: "stdio", env: { EXA_API_KEY: "fixture-key" } };
-  const request = rpcRequestSchema.parse({ id: randomUUID(), method: "registerMcpServer", input });
+  const input = {
+    ...registration,
+    transport: "stdio",
+    env: { EXA_API_KEY: "fixture-key" },
+  };
+  const request = rpcRequestSchema.parse({
+    id: randomUUID(),
+    method: "registerMcpServer",
+    input,
+  });
   expect(request).toMatchObject({ method: "registerMcpServer", input });
 });
 
@@ -27,7 +35,9 @@ it.each([
   { env: { "BAD-NAME": "value" } },
   { env: { EXA_API_KEY: 123 } },
 ])("rejects unsafe or invalid public environment inputs: %j", (extra) => {
-  expect(mcpRegisterDtoSchema.safeParse({ ...registration, ...extra }).success).toBe(false);
+  expect(
+    mcpRegisterDtoSchema.safeParse({ ...registration, ...extra }).success,
+  ).toBe(false);
 });
 
 it("persists explicit env privately and passes it to stdio without exposing it in public output", async () => {
@@ -51,23 +61,31 @@ it("persists explicit env privately and passes it to stdio without exposing it i
     });`;
   try {
     const input = mcpRegisterDtoSchema.parse({
-      ...registration, args: ["-e", script.replaceAll("\n", " ")], env: { EXA_API_KEY: secret },
+      ...registration,
+      args: ["-e", script.replaceAll("\n", " ")],
+      env: { EXA_API_KEY: secret },
     });
     const record = await service.register(input);
     expect(record).toMatchObject({ enabled: false, hasPrivateEnv: true });
     expect(JSON.stringify(record)).not.toContain(secret);
-    expect(await service.health(registration.id)).toMatchObject({ connected: false });
+    expect(await service.health(registration.id)).toMatchObject({
+      connected: false,
+    });
     const path = join(home, "mcp", "servers.json");
     expect((await stat(path)).mode & 0o077).toBe(0);
     expect(await readFile(path, "utf8")).toContain(secret);
     await service.dispose();
     service = await createMcpService({ home });
     await service.setEnabled(registration.id, true);
-    expect(await service.health(registration.id)).toMatchObject({ connected: true });
+    expect(await service.health(registration.id)).toMatchObject({
+      connected: true,
+    });
     const result = await service.callTool(registration.id, "report", {});
     expect(result.text).toBe("[REDACTED]");
     expect(JSON.stringify(result)).not.toContain(secret);
-    await expect(service.callTool(registration.id, "fail", {})).rejects.toThrow("[REDACTED]");
+    await expect(service.callTool(registration.id, "fail", {})).rejects.toThrow(
+      "[REDACTED]",
+    );
     expect(JSON.stringify(await service.list())).not.toContain(secret);
   } finally {
     await service.dispose();

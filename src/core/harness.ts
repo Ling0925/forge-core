@@ -1,27 +1,37 @@
-import { resolveStateDirectory } from "./state-directory";
-import { createRootRunBudget } from "./run-budget";
-import type { RootRunBudget } from "../shared/run-budget";
 import { createHash } from "node:crypto";
 import { stat } from "node:fs/promises";
 import { isAbsolute, join, resolve } from "node:path";
 import { createProjectContext } from "../context/index";
 import { createMcpService } from "../mcp/registry";
 import { createPluginHost } from "../plugins/host";
-import { browserRequestSchema } from "../shared/plugins";
 import { createModelProvider } from "../provider/openai";
-import { createModelAccessService } from "./model-access";
-import { createDelegationModels } from "./delegation-models";
-import { createRoutedProvider, createRouteState } from "../provider/routing";
-import { openModelCatalogStore } from "../store/model-catalog";
+import { createRouteState, createRoutedProvider } from "../provider/routing";
+import type { AsyncTaskService } from "../shared/async-tasks";
+import {
+  budgetUsage,
+  measureContext,
+  resolveContextBudget,
+  resolveContextWindow,
+} from "../shared/context-usage";
 import type {
   HarnessOptions,
   HarnessService,
   LocalToolRegistry,
   ModelProvider,
 } from "../shared/contracts";
-import { budgetUsage, measureContext, resolveContextBudget, resolveContextWindow } from "../shared/context-usage";
 import { ForgeError } from "../shared/errors";
-import { modelProtocol, modelProtocolEndpoint, modelProtocolOverride } from "../shared/model-protocol";
+import { QueueAdmissionError } from "../shared/input-queue";
+import {
+  modelProtocol,
+  modelProtocolEndpoint,
+  modelProtocolOverride,
+} from "../shared/model-protocol";
+import { browserRequestSchema } from "../shared/plugins";
+import {
+  collectPublishedFiles,
+  publishedFileIdSchema,
+} from "../shared/published-files";
+import type { RootRunBudget } from "../shared/run-budget";
 import {
   configureInputSchema,
   createSessionInputSchema,
@@ -35,47 +45,53 @@ import type {
   SessionId,
   SessionSnapshot,
 } from "../shared/schemas";
+import type { CommandTaskAccess } from "../shared/task-view";
 import { createCheckpointStore } from "../store/checkpoints";
-import { openPublishedFileStore } from "../store/published-files";
-import { collectPublishedFiles, publishedFileIdSchema } from "../shared/published-files";
-import { createPublishedFileTool } from "../tools/published-files";
-import { openSessionStore } from "../store/sessions";
+import { openHarnessExperienceStore } from "../store/harness-experiences";
 import { openMemoryStore } from "../store/memory";
-import { createMemoryToolRegistry } from "../tools/memory";
-import { createChartToolRegistry } from "../tools/chart";
-import { forgeMemory } from "./forge-memory";
-import { openAsyncTaskService } from "./async-tasks";
-import type { AsyncTaskService } from "../shared/async-tasks";
-import { createAsyncTaskToolRegistry } from "../tools/async-tasks";
+import { openModelCatalogStore } from "../store/model-catalog";
+import { openPublishedFileStore } from "../store/published-files";
+import { openSessionStore } from "../store/sessions";
 import { openSettingsStore } from "../store/settings";
 import { openToolHooksStore } from "../store/tool-hooks";
-import { openHarnessExperienceStore } from "../store/harness-experiences";
-import { redactMemoryText } from "./memory-retrieval";
-import { createAgentWorktreeService } from "./agent-worktrees";
+import { createAsyncTaskToolRegistry } from "../tools/async-tasks";
+import { createChartToolRegistry } from "../tools/chart";
 import { createCombinedToolRegistry } from "../tools/combined";
-import { createLocalToolRegistry } from "../tools/local";
 import { withCommandTasks } from "../tools/command-tasks";
+import { createLocalToolRegistry } from "../tools/local";
 import { createLspToolRegistry } from "../tools/lsp";
 import { createMcpToolRegistry } from "../tools/mcp";
+import { createMemoryToolRegistry } from "../tools/memory";
+import { createPublishedFileTool } from "../tools/published-files";
 import { createSkillTool } from "../tools/skills";
 import { createWebToolRegistry } from "../tools/web";
-import { createUsageStatsService } from "./usage-stats";
-import { createModelPricingService } from "./model-pricing";
+import { assertAgentModel } from "./agent-profiles";
+import { createAgentWorktreeService } from "./agent-worktrees";
+import { openAsyncTaskService } from "./async-tasks";
 import { assertBoundary, projectSummary } from "./context";
-import { summarizeWorkingState } from "./working-memory";
+import { createDelegationModels } from "./delegation-models";
+import { forgeMemory } from "./forge-memory";
+import {
+  inputPredecessor,
+  inputProviderBinding,
+  openInputQueue,
+} from "./input-queue";
+import { redactMemoryText } from "./memory-retrieval";
+import { createModelAccessService } from "./model-access";
+import { createModelPricingService } from "./model-pricing";
+import { createRootRunBudget } from "./run-budget";
 import { openRunMemory } from "./run-memory";
+import { createAgentRuntime, withCancellation } from "./runtime";
 import { autoTitle } from "./session-title";
+import { createSessionWriter } from "./session-writer";
+import { resolveStateDirectory } from "./state-directory";
 import { createTaskService } from "./task-service";
+import { createUsageStatsService } from "./usage-stats";
+import { summarizeWorkingState } from "./working-memory";
 import {
   listWorkspaceDirectory,
   readWorkspaceFilePreview,
 } from "./workspace-files";
-import type { CommandTaskAccess } from "../shared/task-view";
-import { QueueAdmissionError } from "../shared/input-queue";
-import { inputPredecessor, inputProviderBinding, openInputQueue } from "./input-queue";
-import { createSessionWriter } from "./session-writer";
-import { createAgentRuntime, withCancellation } from "./runtime";
-import { assertAgentModel } from "./agent-profiles";
 
 // Default per-run tools include the explicitly enabled plugin registries.
 // Browser tools come only from the browser plugin and launch lazily on use;
@@ -88,7 +104,9 @@ const createDefaultTools = async (
   checkpointDirectory: string,
   stateDirectory: string,
   mcp: Awaited<ReturnType<typeof createMcpService>>,
-  extensions: Awaited<ReturnType<Awaited<ReturnType<typeof createPluginHost>>["createTools"]>>,
+  extensions: Awaited<
+    ReturnType<Awaited<ReturnType<typeof createPluginHost>>["createTools"]>
+  >,
 ): Promise<LocalToolRegistry> => {
   const registries: LocalToolRegistry[] = [extensions.registry];
   try {
@@ -104,9 +122,13 @@ const createDefaultTools = async (
     registries.push(withCommandTasks(local, { redactValues: [apiKey] }));
     // Public-text tools require no browser configuration and do no I/O until called.
     registries.push(createWebToolRegistry({ redactValues: [apiKey] }));
-    if (settings.lspServers?.length) registries.push(await createLspToolRegistry(workspace, settings.lspServers, {
-      protectedRoots: [stateDirectory], redactValues: [apiKey],
-    }));
+    if (settings.lspServers?.length)
+      registries.push(
+        await createLspToolRegistry(workspace, settings.lspServers, {
+          protectedRoots: [stateDirectory],
+          redactValues: [apiKey],
+        }),
+      );
     registries.push(
       await createMcpToolRegistry(mcp, { redactValues: [apiKey] }),
     );
@@ -150,30 +172,55 @@ export const createHarness = async (
   const memories = await openMemoryStore(directory);
   const toolHooksStore = await openToolHooksStore(directory);
   // Lazy: ordinary runs neither read nor create the adaptation library.
-  let harnessExperiences: ReturnType<typeof openHarnessExperienceStore> | undefined;
+  let harnessExperiences:
+    | ReturnType<typeof openHarnessExperienceStore>
+    | undefined;
   const agentWorktrees = createAgentWorktreeService(directory);
   const publishedFiles = await openPublishedFileStore(directory);
   const plugins = await createPluginHost(directory, {
     async publishOfficePreview(sessionId, preview, signal) {
-      return publishedFiles.put(sessionId, Buffer.from(preview.html, "utf8"), {
-        name: preview.name, mimeType: "text/html", previewKind: "html", description: preview.description,
-      }, signal);
+      return publishedFiles.put(
+        sessionId,
+        Buffer.from(preview.html, "utf8"),
+        {
+          name: preview.name,
+          mimeType: "text/html",
+          previewKind: "html",
+          description: preview.description,
+        },
+        signal,
+      );
     },
     async publishImage(sessionId, image, signal) {
       const bytes = Buffer.from(image.data, "base64");
-      const png = bytes.subarray(0, 8).equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]));
+      const png = bytes
+        .subarray(0, 8)
+        .equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]));
       const jpeg = bytes[0] === 255 && bytes[1] === 216 && bytes[2] === 255;
-      if (bytes.toString("base64") !== image.data || (image.mimeType === "image/png" ? !png : !jpeg))
+      if (
+        bytes.toString("base64") !== image.data ||
+        (image.mimeType === "image/png" ? !png : !jpeg)
+      )
         throw new ForgeError("tool", "Browser returned an invalid screenshot.");
-      return publishedFiles.put(sessionId, bytes, {
-        name: `browser-${Date.now()}.${png ? "png" : "jpg"}`, mimeType: image.mimeType,
-        previewKind: "image", description: "Browser screenshot",
-      }, signal);
+      return publishedFiles.put(
+        sessionId,
+        bytes,
+        {
+          name: `browser-${Date.now()}.${png ? "png" : "jpg"}`,
+          mimeType: image.mimeType,
+          previewKind: "image",
+          description: "Browser screenshot",
+        },
+        signal,
+      );
     },
   });
-  const usageStatsService = createUsageStatsService(store, createModelPricingService({
-    cacheDirectory: directory,
-  }));
+  const usageStatsService = createUsageStatsService(
+    store,
+    createModelPricingService({
+      cacheDirectory: directory,
+    }),
+  );
   const mcp = await createMcpService({ home: directory });
   const liveMcp = new Set<Awaited<ReturnType<typeof createMcpService>>>();
   // Keep live access and a bounded recent history without retaining disposed tools.
@@ -183,10 +230,28 @@ export const createHarness = async (
   let asyncTasks: Promise<AsyncTaskService> | undefined;
   // Only sessions which actually launch retained async receipts enter this map.
   // Later runs replace the reader so pending commits observe current grants.
-  const asyncPermissions = new Map<SessionId, () => import("../shared/schemas").Permission>();
+  const asyncPermissions = new Map<
+    SessionId,
+    () => import("../shared/schemas").Permission
+  >();
   const getAsyncTasks = () => {
     check();
-    return asyncTasks ??= openAsyncTaskService({ directory, notify: request => inputQueue.notify(request) });
+    asyncTasks ??= openAsyncTaskService({
+      directory,
+      notify: (request) => inputQueue.notify(request),
+    });
+    return asyncTasks;
+  };
+  const getHarnessExperiences = () => {
+    harnessExperiences ??= openHarnessExperienceStore(directory);
+    return harnessExperiences;
+  };
+  // Without an explicit source, use the active one unless the environment
+  // overrides the provider configuration.
+  const defaultSourceId = async (requested: string | undefined) => {
+    if (requested !== undefined) return requested;
+    const settings = await settingsStore.getPublic();
+    return settings.environmentOverride ? undefined : settings.activeSourceId;
   };
   const buildTools = async (
     workspace: string,
@@ -227,46 +292,97 @@ export const createHarness = async (
       await context.refresh();
       const combined = createCombinedToolRegistry(
         local,
-        ...(!options.toolFactory ? [
-          await createPublishedFileTool(workspace, publishedFiles, { protectedRoots: [directory], redactValues: [apiKey] }),
-          createMemoryToolRegistry(memories, { redactValues: [apiKey],
-            forge: (input, toolContext) => forgeMemory(input, { sessions: store, memories, provider, context: toolContext, secrets: [apiKey] }),
-            background: async (input, toolContext) => {
-              const current = await store.get(toolContext.sessionId);
-              const main = current.parentSessionId ? await store.get(current.parentSessionId) : current;
-              const service = await getAsyncTasks();
-              const levels = ["readonly", "workspace", "unrestricted"] as const;
-              let ceiling = levels.indexOf(toolContext.permission);
-              const newOwner = !asyncPermissions.has(main.id);
-              if (newOwner) asyncPermissions.set(main.id, () => toolContext.permission);
-              try {
-                return await service.start({ tool: "forge_memory", sessionId: current.id, wakeSessionId: main.id,
-                  resume: { model: main.model, permission: toolContext.permission,
-                    ...(main.providerSourceId ? { providerSourceId: main.providerSourceId } : {}),
-                    ...(main.routeGroupId ? { routeGroupId: main.routeGroupId } : {}) },
-                  signal: toolContext.signal, redact: text => redactMemoryText(text, [apiKey]),
-                  execute: async (signal, onModelUsage) => {
-                    const context = { ...toolContext, signal, onModelUsage,
-                      // No late callbacks into a disposed run's writer/approval queue.
-                      approve: async () => false, onEvent: () => {},
-                      get permission() {
-                        ceiling = Math.min(ceiling, levels.indexOf(toolContext.permission),
-                          levels.indexOf(asyncPermissions.get(main.id)?.() ?? "readonly"));
-                        return levels[ceiling] ?? "readonly";
+        ...(!options.toolFactory
+          ? [
+              await createPublishedFileTool(workspace, publishedFiles, {
+                protectedRoots: [directory],
+                redactValues: [apiKey],
+              }),
+              createMemoryToolRegistry(memories, {
+                redactValues: [apiKey],
+                forge: (input, toolContext) =>
+                  forgeMemory(input, {
+                    sessions: store,
+                    memories,
+                    provider,
+                    context: toolContext,
+                    secrets: [apiKey],
+                  }),
+                background: async (input, toolContext) => {
+                  const current = await store.get(toolContext.sessionId);
+                  const main = current.parentSessionId
+                    ? await store.get(current.parentSessionId)
+                    : current;
+                  const service = await getAsyncTasks();
+                  const levels = [
+                    "readonly",
+                    "workspace",
+                    "unrestricted",
+                  ] as const;
+                  let ceiling = levels.indexOf(toolContext.permission);
+                  const newOwner = !asyncPermissions.has(main.id);
+                  if (newOwner)
+                    asyncPermissions.set(main.id, () => toolContext.permission);
+                  try {
+                    return await service.start({
+                      tool: "forge_memory",
+                      sessionId: current.id,
+                      wakeSessionId: main.id,
+                      resume: {
+                        model: main.model,
+                        permission: toolContext.permission,
+                        ...(main.providerSourceId
+                          ? { providerSourceId: main.providerSourceId }
+                          : {}),
+                        ...(main.routeGroupId
+                          ? { routeGroupId: main.routeGroupId }
+                          : {}),
                       },
-                    };
-                    return { content: JSON.stringify(await forgeMemory(input, { sessions: store, memories, provider,
-                      context, current, secrets: [apiKey] })), isError: false };
-                  },
-                });
-              } catch (error) {
-                if (newOwner) asyncPermissions.delete(main.id);
-                throw error;
-              }
-            },
-          }),
-          createAsyncTaskToolRegistry(getAsyncTasks),
-        ] : []),
+                      signal: toolContext.signal,
+                      redact: (text) => redactMemoryText(text, [apiKey]),
+                      execute: async (signal, onModelUsage) => {
+                        const context = {
+                          ...toolContext,
+                          signal,
+                          onModelUsage,
+                          // No late callbacks into a disposed run's writer/approval queue.
+                          approve: async () => false,
+                          onEvent: () => {},
+                          get permission() {
+                            ceiling = Math.min(
+                              ceiling,
+                              levels.indexOf(toolContext.permission),
+                              levels.indexOf(
+                                asyncPermissions.get(main.id)?.() ?? "readonly",
+                              ),
+                            );
+                            return levels[ceiling] ?? "readonly";
+                          },
+                        };
+                        return {
+                          content: JSON.stringify(
+                            await forgeMemory(input, {
+                              sessions: store,
+                              memories,
+                              provider,
+                              context,
+                              current,
+                              secrets: [apiKey],
+                            }),
+                          ),
+                          isError: false,
+                        };
+                      },
+                    });
+                  } catch (error) {
+                    if (newOwner) asyncPermissions.delete(main.id);
+                    throw error;
+                  }
+                },
+              }),
+              createAsyncTaskToolRegistry(getAsyncTasks),
+            ]
+          : []),
         createSkillTool(context),
         // The chart tool is a pure validator with no side effects; only the
         // Web host stamps uiHost, so CLI/desktop runs never advertise it.
@@ -279,12 +395,17 @@ export const createHarness = async (
       if (apiKey) taskSecrets.add(apiKey);
       let accessReleased = false;
       return {
-        instructions: [context.getSystemContext(), extensions?.instructions].filter(Boolean).join("\n\n"),
+        instructions: [context.getSystemContext(), extensions?.instructions]
+          .filter(Boolean)
+          .join("\n\n"),
         tools: {
           definitions: combined.definitions,
-          isConcurrencySafe: call => combined.isConcurrencySafe?.(call) === true,
+          isConcurrencySafe: (call) =>
+            combined.isConcurrencySafe?.(call) === true,
           execute: combined.execute,
-          ...(combined.settleBackground ? { settleBackground: combined.settleBackground } : {}),
+          ...(combined.settleBackground
+            ? { settleBackground: combined.settleBackground }
+            : {}),
           async dispose() {
             try {
               await combined.dispose();
@@ -320,19 +441,37 @@ export const createHarness = async (
   };
   // No checkpoints, command tasks, network, MCP, hooks or other native tools.
   // Each probe owns independent read authority; it cannot authorize later edits.
-  const buildProbeTools = async (workspace: string, apiKey: string): Promise<LocalToolRegistry> => {
+  const buildProbeTools = async (
+    workspace: string,
+    apiKey: string,
+  ): Promise<LocalToolRegistry> => {
     let local: LocalToolRegistry | undefined;
     let context: Awaited<ReturnType<typeof createProjectContext>> | undefined;
     try {
-      local = options.toolFactory ? await options.toolFactory(workspace)
-        : await createLocalToolRegistry(workspace, { protectedRoots: [directory], redactValues: [apiKey] });
-      context = await createProjectContext(workspace, { protectedRoots: [directory] });
+      local = options.toolFactory
+        ? await options.toolFactory(workspace)
+        : await createLocalToolRegistry(workspace, {
+            protectedRoots: [directory],
+            redactValues: [apiKey],
+          });
+      context = await createProjectContext(workspace, {
+        protectedRoots: [directory],
+      });
       await context.refresh();
-      const combined = createCombinedToolRegistry(local, createSkillTool(context));
+      const combined = createCombinedToolRegistry(
+        local,
+        createSkillTool(context),
+      );
       const ownedContext = context;
-      return { definitions: combined.definitions, execute: combined.execute,
+      return {
+        definitions: combined.definitions,
+        execute: combined.execute,
         async dispose() {
-          try { await combined.dispose(); } finally { await ownedContext.dispose(); }
+          try {
+            await combined.dispose();
+          } finally {
+            await ownedContext.dispose();
+          }
         },
       };
     } catch (error) {
@@ -359,20 +498,28 @@ export const createHarness = async (
    * Whenever a caller does name one, remember it, so selecting a model in any
    * client automatically keeps that source for the next run.
    */
-  const rememberSource = async (sourceId: string | undefined): Promise<void> => {
+  const rememberSource = async (
+    sourceId: string | undefined,
+  ): Promise<void> => {
     if (!sourceId) return;
     const current = await settingsStore.getPublic();
     if (current.activeSourceId === sourceId) return;
     try {
-      await settingsStore.update({ source: { type: "activate", id: sourceId } });
+      await settingsStore.update({
+        source: { type: "activate", id: sourceId },
+      });
     } catch {
       // Remembering the fallback is best-effort: the run already resolved its
       // own source explicitly and must not fail because of this.
     }
   };
   const disposal = new AbortController();
-  const modelAccess = createModelAccessService({ settingsStore, catalogStore,
-    providerFactory: options.providerFactory ?? createModelProvider, signal: disposal.signal });
+  const modelAccess = createModelAccessService({
+    settingsStore,
+    catalogStore,
+    providerFactory: options.providerFactory ?? createModelProvider,
+    signal: disposal.signal,
+  });
   const active = new Map<SessionId, Promise<SessionSnapshot>>();
   const controls = new Map<
     SessionId,
@@ -392,10 +539,16 @@ export const createHarness = async (
       .catch(() => undefined);
   };
   const titleTasks = new Set<Promise<void>>();
-  const titleOperations = new Map<SessionId, { controller: AbortController; work: Promise<void> }>();
+  const titleOperations = new Map<
+    SessionId,
+    { controller: AbortController; work: Promise<void> }
+  >();
   const stopTitle = async (id: SessionId) => {
     const pending = titleOperations.get(id);
-    if (pending) { pending.controller.abort(); await pending.work; }
+    if (pending) {
+      pending.controller.abort();
+      await pending.work;
+    }
   };
   let disposed = false;
   let closing: Promise<void> | undefined;
@@ -428,49 +581,128 @@ export const createHarness = async (
   // Bind configured selection, not resolved account tokens or normalized cloud URLs.
   // Route members can be temporarily unavailable; admission must not turn a valid
   // fallback group into a direct request to its first member.
-  const queueProviderBinding = async (settings: PublicSettings, model: string, sourceId?: string, routeGroupId?: string) => {
+  const queueProviderBinding = async (
+    settings: PublicSettings,
+    model: string,
+    sourceId?: string,
+    routeGroupId?: string,
+  ) => {
     if (routeGroupId) {
-      const group = settings.routeGroups?.find(item => item.id === routeGroupId);
-      if (!group) throw new ForgeError("not_found", "会话的路由组已不可用，请重新选择。");
-      const members = group.members.map(member => {
-        const source = settings.providerSources?.find(item => item.id === member.sourceId);
-        return [member.sourceId, member.credentialId ?? null, member.enabled ?? true,
-          modelProtocolEndpoint(source, modelProtocol(source, member.model)) ?? null,
-          modelProtocolOverride(source, member.model) ?? source?.apiMode ?? null,
-          source?.modelAliases?.[member.model] ?? member.model];
+      const group = settings.routeGroups?.find(
+        (item) => item.id === routeGroupId,
+      );
+      if (!group)
+        throw new ForgeError("not_found", "会话的路由组已不可用，请重新选择。");
+      const members = group.members.map((member) => {
+        const source = settings.providerSources?.find(
+          (item) => item.id === member.sourceId,
+        );
+        return [
+          member.sourceId,
+          member.credentialId ?? null,
+          member.enabled ?? true,
+          modelProtocolEndpoint(source, modelProtocol(source, member.model)) ??
+            null,
+          modelProtocolOverride(source, member.model) ??
+            source?.apiMode ??
+            null,
+          source?.modelAliases?.[member.model] ?? member.model,
+        ];
       });
-      return createHash("sha256").update(JSON.stringify([group.id, group.strategy, group.sticky ?? false, members])).digest("hex");
+      return createHash("sha256")
+        .update(
+          JSON.stringify([
+            group.id,
+            group.strategy,
+            group.sticky ?? false,
+            members,
+          ]),
+        )
+        .digest("hex");
     }
-    const config = await settingsStore.getProviderConfig(sourceId, undefined, model);
+    const config = await settingsStore.getProviderConfig(
+      sourceId,
+      undefined,
+      model,
+    );
     endpoint(config.baseUrl);
-    const source = settings.providerSources?.find(item => item.id === sourceId);
-    return inputProviderBinding(config, source?.modelAliases?.[model] ?? model, sourceId);
+    const source = settings.providerSources?.find(
+      (item) => item.id === sourceId,
+    );
+    return inputProviderBinding(
+      config,
+      source?.modelAliases?.[model] ?? model,
+      sourceId,
+    );
   };
-  const inputQueue = await openInputQueue({ directory, validateSession: async id => { await store.get(id); },
+  const inputQueue = await openInputQueue({
+    directory,
+    validateSession: async (id) => {
+      await store.get(id);
+    },
     predecessor: async (id, acknowledge) => {
       if (!acknowledge) return inputPredecessor(await store.get(id));
       if (controls.has(id)) throw new QueueAdmissionError();
       const release = await store.acquire(id);
-      try { return inputPredecessor(await store.get(id)); } finally { await release(); }
-    }, prepare: async input => {
-    check();
-    const [snapshot, settings] = await Promise.all([store.get(input.sessionId), settingsStore.getPublic()]);
-    const providerSourceId = input.providerSourceId ?? snapshot.providerSourceId ??
-      inferSourceId(settings, input.model) ?? settings.activeSourceId;
-    const routeGroupId = input.routeGroupId ?? (input.model !== undefined || input.providerSourceId !== undefined ? undefined : snapshot.routeGroupId);
-    const model = settingsFields.model.parse(input.model ?? snapshot.model);
-    const providerBinding = await queueProviderBinding(settings, model, providerSourceId, routeGroupId);
-    const levels = ["readonly", "workspace", "unrestricted"] as const;
-    const permission = levels[Math.min(levels.indexOf(input.mode === "plan" ? "readonly" : input.permission ?? settings.defaultPermission),
-      levels.indexOf(snapshot.permissionCeiling ?? "unrestricted"))] ?? "readonly";
-    return { input: { ...input, model, permission, mode: input.mode ?? "build",
-      ...(providerSourceId ? { providerSourceId } : {}), ...(routeGroupId ? { routeGroupId } : {}) }, providerBinding };
-  } });
+      try {
+        return inputPredecessor(await store.get(id));
+      } finally {
+        await release();
+      }
+    },
+    prepare: async (input) => {
+      check();
+      const [snapshot, settings] = await Promise.all([
+        store.get(input.sessionId),
+        settingsStore.getPublic(),
+      ]);
+      const providerSourceId =
+        input.providerSourceId ??
+        snapshot.providerSourceId ??
+        inferSourceId(settings, input.model) ??
+        settings.activeSourceId;
+      const routeGroupId =
+        input.routeGroupId ??
+        (input.model !== undefined || input.providerSourceId !== undefined
+          ? undefined
+          : snapshot.routeGroupId);
+      const model = settingsFields.model.parse(input.model ?? snapshot.model);
+      const providerBinding = await queueProviderBinding(
+        settings,
+        model,
+        providerSourceId,
+        routeGroupId,
+      );
+      const levels = ["readonly", "workspace", "unrestricted"] as const;
+      const permission =
+        levels[
+          Math.min(
+            levels.indexOf(
+              input.mode === "plan"
+                ? "readonly"
+                : (input.permission ?? settings.defaultPermission),
+            ),
+            levels.indexOf(snapshot.permissionCeiling ?? "unrestricted"),
+          )
+        ] ?? "readonly";
+      return {
+        input: {
+          ...input,
+          model,
+          permission,
+          mode: input.mode ?? "build",
+          ...(providerSourceId ? { providerSourceId } : {}),
+          ...(routeGroupId ? { routeGroupId } : {}),
+        },
+        providerBinding,
+      };
+    },
+  });
   const taskService = createTaskService({
     store,
     commands: () => [...taskAccess, ...recentTaskAccess],
-    owns: id => controls.has(id),
-    cancel: async id => {
+    owns: (id) => controls.has(id),
+    cancel: async (id) => {
       check();
       const owned = controls.get(id);
       if (!owned) return false;
@@ -478,9 +710,10 @@ export const createHarness = async (
       await Promise.allSettled([owned.work]);
       return true;
     },
-    redact: text => {
+    redact: (text) => {
       let result = text;
-      for (const secret of taskSecrets) result = result.split(secret).join("[REDACTED]");
+      for (const secret of taskSecrets)
+        result = result.split(secret).join("[REDACTED]");
       return result;
     },
   });
@@ -490,25 +723,50 @@ export const createHarness = async (
     await stat(join(directory, "async-tasks"));
     await getAsyncTasks();
   } catch (error) {
-    if (!(error && typeof error === "object" && "code" in error && error.code === "ENOENT")) {
-      await Promise.allSettled([modelAccess.dispose(), inputQueue.dispose(), memories.close(), mcp.dispose()]);
+    if (
+      !(
+        error &&
+        typeof error === "object" &&
+        "code" in error &&
+        error.code === "ENOENT"
+      )
+    ) {
+      await Promise.allSettled([
+        modelAccess.dispose(),
+        inputQueue.dispose(),
+        memories.close(),
+        mcp.dispose(),
+      ]);
       throw error;
     }
   }
   return {
     inputQueue,
     tasks: {
-      listTasks: (...args) => { check(); return taskService.listTasks(...args); },
-      getTask: (...args) => { check(); return taskService.getTask(...args); },
-      stopTask: (...args) => { check(); return taskService.stopTask(...args); },
+      listTasks: (...args) => {
+        check();
+        return taskService.listTasks(...args);
+      },
+      getTask: (...args) => {
+        check();
+        return taskService.getTask(...args);
+      },
+      stopTask: (...args) => {
+        check();
+        return taskService.stopTask(...args);
+      },
     },
     async cancelSession(rawId) {
       const id = sessionIdSchema.parse(rawId);
       const owned = controls.get(id);
       owned?.controller.abort();
       let stoppedTask = false;
-      try { if (asyncTasks) stoppedTask = await (await asyncTasks).cancelSession(id); }
-      finally { await Promise.allSettled([owned?.work]); }
+      try {
+        if (asyncTasks)
+          stoppedTask = await (await asyncTasks).cancelSession(id);
+      } finally {
+        await Promise.allSettled([owned?.work]);
+      }
       return !!owned || stoppedTask;
     },
     compactSession(rawId, callerSignal) {
@@ -527,41 +785,107 @@ export const createHarness = async (
         ]);
         const settings = await settingsStore.getPublic();
         const providerSourceId = s.providerSourceId ?? settings.activeSourceId;
-        const group = s.routeGroupId ? settings.routeGroups?.find(item => item.id === s.routeGroupId) : undefined;
-        if (s.routeGroupId && !group) throw new ForgeError("not_found", "会话的路由组已不可用，请重新选择。");
-        const prepared = group ? await modelAccess.prepareRoute(group, signal) : undefined;
-        const resolved = prepared?.base ?? await modelAccess.resolveProvider(providerSourceId, undefined, signal, s.model);
+        const group = s.routeGroupId
+          ? settings.routeGroups?.find((item) => item.id === s.routeGroupId)
+          : undefined;
+        if (s.routeGroupId && !group)
+          throw new ForgeError(
+            "not_found",
+            "会话的路由组已不可用，请重新选择。",
+          );
+        const prepared = group
+          ? await modelAccess.prepareRoute(group, signal)
+          : undefined;
+        const resolved =
+          prepared?.base ??
+          (await modelAccess.resolveProvider(
+            providerSourceId,
+            undefined,
+            signal,
+            s.model,
+          ));
         const { provider } = resolved;
-        const bound = providerSourceId && providerSourceId !== s.providerSourceId ? { ...s, providerSourceId } : s;
+        const bound =
+          providerSourceId && providerSourceId !== s.providerSourceId
+            ? { ...s, providerSourceId }
+            : s;
         let reported: number | null = prepared?.contextWindow ?? null;
-        const metadataSignal = AbortSignal.any([signal, AbortSignal.timeout(2000)]);
-        try { reported ??= await withCancellation(provider.getModelContextWindow?.(resolved.actualModel ?? s.model, metadataSignal) ?? Promise.resolve(null), metadataSignal); }
-        catch { /* Optional metadata must not prevent compaction. */ }
+        const metadataSignal = AbortSignal.any([
+          signal,
+          AbortSignal.timeout(2000),
+        ]);
+        try {
+          reported ??= await withCancellation(
+            provider.getModelContextWindow?.(
+              resolved.actualModel ?? s.model,
+              metadataSignal,
+            ) ?? Promise.resolve(null),
+            metadataSignal,
+          );
+        } catch {
+          /* Optional metadata must not prevent compaction. */
+        }
         const window = resolveContextWindow(s.model, settings, reported);
-        const next = await summarizeWorkingState(bound, provider, signal, s.messages.length, Math.floor(window * 0.8));
+        const next = await summarizeWorkingState(
+          bound,
+          provider,
+          signal,
+          s.messages.length,
+          Math.floor(window * 0.8),
+        );
         const last = s.events.at(-1);
         // Also repair the stale meter on sessions compacted by older versions.
-        if (next === s && last?.type === "context_usage" && last.usage.basis === "projected") return s;
+        if (
+          next === s &&
+          last?.type === "context_usage" &&
+          last.usage.basis === "projected"
+        )
+          return s;
         const before = projectSummary(s);
         const after = projectSummary(next);
         const usage = measureContext(after, window);
         // Retain the last known tool-definition overhead without opening tool/MCP
         // services just to render an estimate. Tool results themselves are compacted.
-        const previous = s.events.findLast(event => event.type === "context_usage" && event.usage.basis === "projected");
-        const toolOverhead = previous?.type === "context_usage"
-          ? Math.max(0, previous.usage.parts.tools - measureContext(before, window).parts.tools) : 0;
+        const previous = s.events.findLast(
+          (event) =>
+            event.type === "context_usage" && event.usage.basis === "projected",
+        );
+        const toolOverhead =
+          previous?.type === "context_usage"
+            ? Math.max(
+                0,
+                previous.usage.parts.tools -
+                  measureContext(before, window).parts.tools,
+              )
+            : 0;
         const timestamp = new Date().toISOString();
         return {
           ...next,
           updatedAt: timestamp,
-          events: [...next.events,
-            { type: "context_compacted", sessionId: id, timestamp,
+          events: [
+            ...next.events,
+            {
+              type: "context_compacted",
+              sessionId: id,
+              timestamp,
               removedMessages: Math.max(0, before.length - after.length),
-              beforeChars: JSON.stringify(before).length, afterChars: JSON.stringify(after).length },
-            { type: "context_usage", sessionId: id, timestamp,
-              usage: { ...usage, ...budgetUsage(resolveContextBudget(window, settings)),
+              beforeChars: JSON.stringify(before).length,
+              afterChars: JSON.stringify(after).length,
+            },
+            {
+              type: "context_usage",
+              sessionId: id,
+              timestamp,
+              usage: {
+                ...usage,
+                ...budgetUsage(resolveContextBudget(window, settings)),
                 usedTokens: usage.usedTokens + toolOverhead,
-                parts: { ...usage.parts, tools: usage.parts.tools + toolOverhead } } },
+                parts: {
+                  ...usage.parts,
+                  tools: usage.parts.tools + toolOverhead,
+                },
+              },
+            },
           ],
         };
       });
@@ -589,7 +913,9 @@ export const createHarness = async (
           workspace: source.workspace,
           title: `Fork: ${source.title}`.slice(0, 256),
           model: source.model,
-          ...(source.providerSourceId ? { providerSourceId: source.providerSourceId } : {}),
+          ...(source.providerSourceId
+            ? { providerSourceId: source.providerSourceId }
+            : {}),
           ...(source.routeGroupId ? { routeGroupId: source.routeGroupId } : {}),
         });
         const next = {
@@ -706,54 +1032,89 @@ export const createHarness = async (
       check();
       return settingsStore.getPublic();
     },
-    async listPlugins() { check(); return plugins.list(); },
-    async configurePlugin(input) { check(); return plugins.configure(input); },
-    async checkPlugin(id) { check(); return plugins.health(id); },
+    async listPlugins() {
+      check();
+      return plugins.list();
+    },
+    async configurePlugin(input) {
+      check();
+      return plugins.configure(input);
+    },
+    async checkPlugin(id) {
+      check();
+      return plugins.health(id);
+    },
     async browser(raw) {
       check();
       const input = browserRequestSchema.parse(raw);
       await store.get(input.sessionId); // Unknown sessions cannot probe another browser owner.
       return plugins.browser(input);
     },
-    async getToolHooks() { check(); return toolHooksStore.get(); },
-    async setToolHooks(config) { check(); await toolHooksStore.set(config); },
+    async getToolHooks() {
+      check();
+      return toolHooksStore.get();
+    },
+    async setToolHooks(config) {
+      check();
+      await toolHooksStore.set(config);
+    },
     async updateSettings(input) {
       check();
       return settingsStore.update(configureInputSchema.parse(input));
     },
-    async getModelContextWindow(model, signal, sourceId) {
+    async getModelContextWindow(model, signal, requestedSourceId) {
       check();
-      if (sourceId === undefined) {
-        const settings = await settingsStore.getPublic();
-        if (!settings.environmentOverride) sourceId = settings.activeSourceId;
-      }
-      const requestSignal = AbortSignal.any(signal ? [signal, disposal.signal] : [disposal.signal]);
-      const { provider } = await modelAccess.resolveProvider(sourceId, undefined, requestSignal, model);
+      const sourceId = await defaultSourceId(requestedSourceId);
+      const requestSignal = AbortSignal.any(
+        signal ? [signal, disposal.signal] : [disposal.signal],
+      );
+      const { provider } = await modelAccess.resolveProvider(
+        sourceId,
+        undefined,
+        requestSignal,
+        model,
+      );
       check();
-      return await provider.getModelContextWindow?.(model, requestSignal) ?? null;
+      return (
+        (await provider.getModelContextWindow?.(model, requestSignal)) ?? null
+      );
     },
-    async listModels(signal, sourceId, refresh) {
+    async listModels(signal, requestedSourceId, refresh) {
       check();
-      if (sourceId === undefined) {
-        const settings = await settingsStore.getPublic();
-        if (!settings.environmentOverride) sourceId = settings.activeSourceId;
-      }
-      const requestSignal = AbortSignal.any(signal ? [signal, disposal.signal] : [disposal.signal]);
-      const { provider } = await modelAccess.resolveProvider(sourceId, undefined, requestSignal);
+      const sourceId = await defaultSourceId(requestedSourceId);
+      const requestSignal = AbortSignal.any(
+        signal ? [signal, disposal.signal] : [disposal.signal],
+      );
+      const { provider } = await modelAccess.resolveProvider(
+        sourceId,
+        undefined,
+        requestSignal,
+      );
       check();
       return provider.listModels(requestSignal, refresh);
     },
-    async listModelCatalog(signal, sourceId, refresh) {
+    async listModelCatalog(signal, requestedSourceId, refresh) {
       check();
-      if (sourceId === undefined) {
-        const settings = await settingsStore.getPublic();
-        if (!settings.environmentOverride) sourceId = settings.activeSourceId;
-      }
-      const requestSignal = AbortSignal.any(signal ? [signal, disposal.signal] : [disposal.signal]);
-      const { provider } = await modelAccess.resolveProvider(sourceId, undefined, requestSignal);
-      return provider.listModelCatalog!(requestSignal, refresh);
+      const sourceId = await defaultSourceId(requestedSourceId);
+      const requestSignal = AbortSignal.any(
+        signal ? [signal, disposal.signal] : [disposal.signal],
+      );
+      const { provider } = await modelAccess.resolveProvider(
+        sourceId,
+        undefined,
+        requestSignal,
+      );
+      if (!provider.listModelCatalog)
+        throw new ForgeError(
+          "provider",
+          "This provider does not expose a model catalog.",
+        );
+      return provider.listModelCatalog(requestSignal, refresh);
     },
-    async modelAccess(input, signal) { check(); return modelAccess.request(input, signal); },
+    async modelAccess(input, signal) {
+      check();
+      return modelAccess.request(input, signal);
+    },
     async listSessions() {
       check();
       return store.list();
@@ -786,11 +1147,20 @@ export const createHarness = async (
       check();
       const session = await store.get(sessionIdSchema.parse(rawSessionId));
       const fileId = publishedFileIdSchema.parse(rawFileId);
-      const referenced = collectPublishedFiles(session.messages).find(file => file.id === fileId);
-      if (!referenced) throw new ForgeError("not_found", "This session does not contain that attachment.");
+      const referenced = collectPublishedFiles(session.messages).find(
+        (file) => file.id === fileId,
+      );
+      if (!referenced)
+        throw new ForgeError(
+          "not_found",
+          "This session does not contain that attachment.",
+        );
       const response = await publishedFiles.get(fileId);
       if (JSON.stringify(response.file) !== JSON.stringify(referenced))
-        throw new ForgeError("storage", "Attachment metadata does not match the published snapshot.");
+        throw new ForgeError(
+          "storage",
+          "Attachment metadata does not match the published snapshot.",
+        );
       return response;
     },
     async createSession(raw) {
@@ -799,15 +1169,29 @@ export const createHarness = async (
       const settings = await settingsStore.getPublic();
       // A new session pins the source of the model the user picked, so choosing
       // a model alone is enough to switch providers.
-      const group = input.routeGroupId ? settings.routeGroups?.find(item => item.id === input.routeGroupId) : undefined;
-      if (input.routeGroupId && !group) throw new ForgeError("not_found", "未找到所选路由组。");
-      const firstMember = group?.members.find(member => member.enabled !== false);
-      const providerSourceId = firstMember?.sourceId ??
-        input.providerSourceId ?? inferSourceId(settings, input.model) ?? settings.activeSourceId;
-      const source = settings.providerSources?.find(candidate => candidate.id === providerSourceId);
+      const group = input.routeGroupId
+        ? settings.routeGroups?.find((item) => item.id === input.routeGroupId)
+        : undefined;
+      if (input.routeGroupId && !group)
+        throw new ForgeError("not_found", "未找到所选路由组。");
+      const firstMember = group?.members.find(
+        (member) => member.enabled !== false,
+      );
+      const providerSourceId =
+        firstMember?.sourceId ??
+        input.providerSourceId ??
+        inferSourceId(settings, input.model) ??
+        settings.activeSourceId;
+      const source = settings.providerSources?.find(
+        (candidate) => candidate.id === providerSourceId,
+      );
       if (providerSourceId && !source)
-        throw new ForgeError("invalid_input", "The session's provider source is unavailable. Select an existing source explicitly.");
-      const model = firstMember?.model ?? input.model ?? source?.model ?? settings.model;
+        throw new ForgeError(
+          "invalid_input",
+          "The session's provider source is unavailable. Select an existing source explicitly.",
+        );
+      const model =
+        firstMember?.model ?? input.model ?? source?.model ?? settings.model;
       if (!model)
         throw new ForgeError(
           "invalid_input",
@@ -846,14 +1230,16 @@ export const createHarness = async (
       const input = runInputSchema.parse(raw);
       if (controls.has(input.sessionId))
         return Promise.reject(
-          control?.providerBinding ? new QueueAdmissionError() : new ForgeError(
-            "busy",
-            "This session already has an active run.",
-            true,
-          ),
+          control?.providerBinding
+            ? new QueueAdmissionError()
+            : new ForgeError(
+                "busy",
+                "This session already has an active run.",
+                true,
+              ),
         );
       const controller = new AbortController();
-      let signal = AbortSignal.any([
+      const signal = AbortSignal.any([
         callerSignal,
         disposal.signal,
         controller.signal,
@@ -865,9 +1251,15 @@ export const createHarness = async (
         let rootBudget: RootRunBudget | undefined;
         try {
           await stopTitle(input.sessionId);
-          try { releaseSession = await store.acquire(input.sessionId, signal); }
-          catch (error) {
-            if (control?.providerBinding && error instanceof ForgeError && error.code === "busy") throw new QueueAdmissionError();
+          try {
+            releaseSession = await store.acquire(input.sessionId, signal);
+          } catch (error) {
+            if (
+              control?.providerBinding &&
+              error instanceof ForgeError &&
+              error.code === "busy"
+            )
+              throw new QueueAdmissionError();
             throw error;
           }
           if (signal.aborted)
@@ -881,14 +1273,32 @@ export const createHarness = async (
           // Recheck under the actual execution lock, before provider/tool construction.
           if (control?.providerBinding) {
             const predecessor = inputPredecessor(snapshot);
-            if (predecessor.unsafe && control.acknowledgedPredecessor !== predecessor.token)
+            if (
+              predecessor.unsafe &&
+              control.acknowledgedPredecessor !== predecessor.token
+            )
               throw new QueueAdmissionError();
           }
           if (asyncPermissions.has(input.sessionId)) {
             const levels = ["readonly", "workspace", "unrestricted"] as const;
-            asyncPermissions.set(input.sessionId, () => levels[Math.min(
-              levels.indexOf(input.mode === "plan" ? "readonly" : control?.getPermission?.() ?? input.permission ?? settings.defaultPermission),
-              levels.indexOf(snapshot.permissionCeiling ?? "unrestricted"))] ?? "readonly");
+            asyncPermissions.set(
+              input.sessionId,
+              () =>
+                levels[
+                  Math.min(
+                    levels.indexOf(
+                      input.mode === "plan"
+                        ? "readonly"
+                        : (control?.getPermission?.() ??
+                            input.permission ??
+                            settings.defaultPermission),
+                    ),
+                    levels.indexOf(
+                      snapshot.permissionCeiling ?? "unrestricted",
+                    ),
+                  )
+                ] ?? "readonly",
+            );
           }
           rootBudget = createRootRunBudget({ rootSessionId: input.sessionId });
           // An explicit selection (the picked model's source) wins; a session
@@ -899,37 +1309,123 @@ export const createHarness = async (
             snapshot.providerSourceId ??
             inferSourceId(settings, input.model) ??
             settings.activeSourceId;
-          const routeGroupId = input.routeGroupId ?? (input.model !== undefined || input.providerSourceId !== undefined ? undefined : snapshot.routeGroupId);
-          const group = routeGroupId ? settings.routeGroups?.find(item => item.id === routeGroupId) : undefined;
-          if (routeGroupId && !group) throw new ForgeError("not_found", "会话的路由组已不可用，请重新选择。");
-          if (input.harness && routeGroupId) throw new ForgeError("invalid_input", "Harness adaptation requires a direct model selection, not a route group.");
-          const requestedModel = settingsFields.model.parse(input.model ?? snapshot.model);
-          const directSource = settings.providerSources?.find(source => source.id === providerSourceId);
-          const credentials = directSource?.credentials?.filter(item => item.enabled);
+          const routeGroupId =
+            input.routeGroupId ??
+            (input.model !== undefined || input.providerSourceId !== undefined
+              ? undefined
+              : snapshot.routeGroupId);
+          const group = routeGroupId
+            ? settings.routeGroups?.find((item) => item.id === routeGroupId)
+            : undefined;
+          if (routeGroupId && !group)
+            throw new ForgeError(
+              "not_found",
+              "会话的路由组已不可用，请重新选择。",
+            );
+          if (input.harness && routeGroupId)
+            throw new ForgeError(
+              "invalid_input",
+              "Harness adaptation requires a direct model selection, not a route group.",
+            );
+          const requestedModel = settingsFields.model.parse(
+            input.model ?? snapshot.model,
+          );
+          const directSource = settings.providerSources?.find(
+            (source) => source.id === providerSourceId,
+          );
+          const credentials = directSource?.credentials?.filter(
+            (item) => item.enabled,
+          );
           // Direct selections rotate only their explicitly configured credentials.
-          const selectedGroup = group ?? (credentials && credentials.length > 1 && directSource ? {
-            id: `credentials:${directSource.id}`, label: directSource.label,
-            strategy: directSource.credentialRouting ?? "order", sticky: directSource.sticky,
-            members: credentials.map(credential => ({ sourceId: directSource.id, model: requestedModel, credentialId: credential.id })),
-          } : undefined);
-          if (control?.providerBinding && control.providerBinding !== await queueProviderBinding(settings, requestedModel, providerSourceId, routeGroupId))
-            throw new ForgeError("invalid_input", "The queued provider selection changed before execution. Nothing was replayed.");
-          const validateSelection: Parameters<typeof modelAccess.resolveProvider>[4] = control?.providerBinding ? (config, source, model) => {
-            const selectedModel = model ?? requestedModel;
-            const actual = inputProviderBinding(config, source?.modelAliases?.[selectedModel] ?? selectedModel, config.sourceId ?? providerSourceId);
-            let expected = control.providerBinding;
-            if (routeGroupId) {
-              const acceptedSource = settings.providerSources?.find(item => item.id === config.sourceId);
-              if (!acceptedSource) throw new ForgeError("invalid_input", "The queued route source is no longer available.");
-              expected = inputProviderBinding({ ...config,
-                baseUrl: modelProtocolEndpoint(acceptedSource, modelProtocol(acceptedSource, selectedModel)) ?? acceptedSource.baseUrl,
-                apiMode: modelProtocolOverride(acceptedSource, selectedModel) ?? acceptedSource.apiMode,
-              }, acceptedSource.modelAliases?.[selectedModel] ?? selectedModel, acceptedSource.id);
-            }
-            if (actual !== expected) throw new ForgeError("invalid_input", "The queued provider selection changed before execution. Nothing was replayed.");
-          } : undefined;
-          const prepared = selectedGroup ? await modelAccess.prepareRoute(selectedGroup, signal, validateSelection) : undefined;
-          const resolved = prepared?.base ?? await modelAccess.resolveProvider(providerSourceId, undefined, signal, requestedModel, validateSelection);
+          const selectedGroup =
+            group ??
+            (credentials && credentials.length > 1 && directSource
+              ? {
+                  id: `credentials:${directSource.id}`,
+                  label: directSource.label,
+                  strategy: directSource.credentialRouting ?? "order",
+                  sticky: directSource.sticky,
+                  members: credentials.map((credential) => ({
+                    sourceId: directSource.id,
+                    model: requestedModel,
+                    credentialId: credential.id,
+                  })),
+                }
+              : undefined);
+          if (
+            control?.providerBinding &&
+            control.providerBinding !==
+              (await queueProviderBinding(
+                settings,
+                requestedModel,
+                providerSourceId,
+                routeGroupId,
+              ))
+          )
+            throw new ForgeError(
+              "invalid_input",
+              "The queued provider selection changed before execution. Nothing was replayed.",
+            );
+          const validateSelection: Parameters<
+            typeof modelAccess.resolveProvider
+          >[4] = control?.providerBinding
+            ? (config, source, model) => {
+                const selectedModel = model ?? requestedModel;
+                const actual = inputProviderBinding(
+                  config,
+                  source?.modelAliases?.[selectedModel] ?? selectedModel,
+                  config.sourceId ?? providerSourceId,
+                );
+                let expected = control.providerBinding;
+                if (routeGroupId) {
+                  const acceptedSource = settings.providerSources?.find(
+                    (item) => item.id === config.sourceId,
+                  );
+                  if (!acceptedSource)
+                    throw new ForgeError(
+                      "invalid_input",
+                      "The queued route source is no longer available.",
+                    );
+                  expected = inputProviderBinding(
+                    {
+                      ...config,
+                      baseUrl:
+                        modelProtocolEndpoint(
+                          acceptedSource,
+                          modelProtocol(acceptedSource, selectedModel),
+                        ) ?? acceptedSource.baseUrl,
+                      apiMode:
+                        modelProtocolOverride(acceptedSource, selectedModel) ??
+                        acceptedSource.apiMode,
+                    },
+                    acceptedSource.modelAliases?.[selectedModel] ??
+                      selectedModel,
+                    acceptedSource.id,
+                  );
+                }
+                if (actual !== expected)
+                  throw new ForgeError(
+                    "invalid_input",
+                    "The queued provider selection changed before execution. Nothing was replayed.",
+                  );
+              }
+            : undefined;
+          const prepared = selectedGroup
+            ? await modelAccess.prepareRoute(
+                selectedGroup,
+                signal,
+                validateSelection,
+              )
+            : undefined;
+          const resolved =
+            prepared?.base ??
+            (await modelAccess.resolveProvider(
+              providerSourceId,
+              undefined,
+              signal,
+              requestedModel,
+              validateSelection,
+            ));
           const { config } = resolved;
           endpoint(config.baseUrl);
           // An explicit source (or one the model alone identifies) is what the
@@ -938,13 +1434,26 @@ export const createHarness = async (
             input.providerSourceId ?? inferSourceId(settings, input.model),
           );
           rootBudget.checkAdmission();
-          const provider = selectedGroup && prepared ? createRoutedProvider({
-            group: selectedGroup, state: routeState,
-            ...(prepared.apiMode ? { apiMode: prepared.apiMode } : {}),
-            mayUseWebSearch: prepared.mayUseWebSearch,
-            contextWindow: prepared.contextWindow, quota: prepared.quota, exclude: prepared.exclude,
-            resolve: (member, requestSignal) => modelAccess.resolveProvider(member.sourceId, member.credentialId, requestSignal, member.model, validateSelection),
-          }) : resolved.provider;
+          const provider =
+            selectedGroup && prepared
+              ? createRoutedProvider({
+                  group: selectedGroup,
+                  state: routeState,
+                  ...(prepared.apiMode ? { apiMode: prepared.apiMode } : {}),
+                  mayUseWebSearch: prepared.mayUseWebSearch,
+                  contextWindow: prepared.contextWindow,
+                  quota: prepared.quota,
+                  exclude: prepared.exclude,
+                  resolve: (member, requestSignal) =>
+                    modelAccess.resolveProvider(
+                      member.sourceId,
+                      member.credentialId,
+                      requestSignal,
+                      member.model,
+                      validateSelection,
+                    ),
+                })
+              : resolved.provider;
           if (signal.aborted)
             throw new ForgeError("cancelled", "Run cancelled.");
           const built = await buildTools(
@@ -965,10 +1474,20 @@ export const createHarness = async (
               secrets: [config.apiKey, config.baseUrl],
               start: (claimed, apply) => {
                 const titleController = new AbortController();
-                const titleSignal = AbortSignal.any([signal, titleController.signal]);
-                const naming = autoTitle({ snapshot: claimed, provider: resolved.provider, signal: titleSignal, secrets: [config.apiKey, config.baseUrl], beginUsage: () => budget.beginUsage(input.sessionId) })
-                  .then(async title => {
-                    if (!title || titleSignal.aborted || await apply(title)) return;
+                const titleSignal = AbortSignal.any([
+                  signal,
+                  titleController.signal,
+                ]);
+                const naming = autoTitle({
+                  snapshot: claimed,
+                  provider: resolved.provider,
+                  signal: titleSignal,
+                  secrets: [config.apiKey, config.baseUrl],
+                  beginUsage: () => budget.beginUsage(input.sessionId),
+                })
+                  .then(async (title) => {
+                    if (!title || titleSignal.aborted || (await apply(title)))
+                      return;
                     // A fast run may finish before inference. Re-read under a
                     // new lock; never save the stale first-turn snapshot.
                     const unlock = await store.acquire(claimed.id, titleSignal);
@@ -976,15 +1495,26 @@ export const createHarness = async (
                       if (titleSignal.aborted) return;
                       const writer = createSessionWriter(store, claimed.id);
                       const current = await writer.read();
-                      if (current.titleSource === "auto" && current.title === claimed.title && current.autoTitleAttempted)
+                      if (
+                        current.titleSource === "auto" &&
+                        current.title === claimed.title &&
+                        current.autoTitleAttempted
+                      )
                         await writer.save({ ...current, title });
-                    } finally { await unlock(); }
-                  }).catch(() => {});
-                titleOperations.set(claimed.id, { controller: titleController, work: naming });
+                    } finally {
+                      await unlock();
+                    }
+                  })
+                  .catch(() => {});
+                titleOperations.set(claimed.id, {
+                  controller: titleController,
+                  work: naming,
+                });
                 titleTasks.add(naming);
                 void naming.finally(() => {
                   titleTasks.delete(naming);
-                  if (titleOperations.get(claimed.id)?.work === naming) titleOperations.delete(claimed.id);
+                  if (titleOperations.get(claimed.id)?.work === naming)
+                    titleOperations.delete(claimed.id);
                 });
               },
             },
@@ -992,44 +1522,83 @@ export const createHarness = async (
             toolHooks: await toolHooksStore.get(),
             agentWorktrees,
             settings,
-            getAgentProfiles: async () => (await settingsStore.getPublic()).agentProfiles ?? [],
+            getAgentProfiles: async () =>
+              (await settingsStore.getPublic()).agentProfiles ?? [],
             delegationModels: createDelegationModels({
               getSettings: () => settingsStore.getPublic(),
               listModels: async (sourceId, requestSignal) => {
-                const resolved = await modelAccess.resolveProvider(sourceId, undefined, requestSignal);
+                const resolved = await modelAccess.resolveProvider(
+                  sourceId,
+                  undefined,
+                  requestSignal,
+                );
                 return resolved.provider.listModels(requestSignal);
               },
             }),
             provider,
             tools,
             projectInstructions: built.instructions,
-            ...(input.harness ? { harnessAdaptation: {
-              createProbeTools: () => buildProbeTools(snapshot.workspace, config.apiKey),
-              redact: (text: string) => redactMemoryText(text, [config.apiKey, config.baseUrl]),
-              experiences: {
-                list: async scope => (await (harnessExperiences ??= openHarnessExperienceStore(directory))).list(scope),
-                save: async experience => (await (harnessExperiences ??= openHarnessExperienceStore(directory))).save(experience),
-              },
-            } } : {}),
+            ...(input.harness
+              ? {
+                  harnessAdaptation: {
+                    createProbeTools: () =>
+                      buildProbeTools(snapshot.workspace, config.apiKey),
+                    redact: (text: string) =>
+                      redactMemoryText(text, [config.apiKey, config.baseUrl]),
+                    experiences: {
+                      list: async (scope) =>
+                        (await getHarnessExperiences()).list(scope),
+                      save: async (experience) =>
+                        (await getHarnessExperiences()).save(experience),
+                    },
+                  },
+                }
+              : {}),
             onChildOperation: track,
             childContextFactory: async (workspace, childInput, childSignal) => {
               // Delegated model IDs remain exact, even when the parent chose a group.
               const current = await settingsStore.getPublic();
               // Admission already resolved an exact source. Never fall back to the parent's provider.
               const childSourceId = childInput?.providerSourceId;
-              const child = await modelAccess.resolveProvider(childSourceId, undefined, childSignal ?? signal, childInput?.model);
-              return { ...await buildTools(workspace, current, child.config.apiKey, child.provider, input.uiHost), provider: child.provider,
-                ...(childSourceId ? { providerSourceId: childSourceId } : {}) };
+              const child = await modelAccess.resolveProvider(
+                childSourceId,
+                undefined,
+                childSignal ?? signal,
+                childInput?.model,
+              );
+              return {
+                ...(await buildTools(
+                  workspace,
+                  current,
+                  child.config.apiKey,
+                  child.provider,
+                  input.uiHost,
+                )),
+                provider: child.provider,
+                ...(childSourceId ? { providerSourceId: childSourceId } : {}),
+              };
             },
-          }).run({ ...input, ...(providerSourceId ? { providerSourceId } : {}), ...(routeGroupId ? { routeGroupId } : {}) }, onEvent, approve, signal, control);
+          }).run(
+            {
+              ...input,
+              ...(providerSourceId ? { providerSourceId } : {}),
+              ...(routeGroupId ? { routeGroupId } : {}),
+            },
+            onEvent,
+            approve,
+            signal,
+            control,
+          );
           return result;
         } finally {
           try {
             if (tools) await tools.dispose();
           } finally {
-            try { await releaseSession?.(); }
-            finally {
-              rootBudget?.close(); active.delete(input.sessionId);
+            try {
+              await releaseSession?.();
+            } finally {
+              rootBudget?.close();
+              active.delete(input.sessionId);
               const reader = asyncPermissions.get(input.sessionId);
               if (reader) {
                 const permission = reader();
@@ -1052,13 +1621,26 @@ export const createHarness = async (
         [...controls.values()].map((c) => c.work),
       ).then(async () => {
         try {
-          try { if (asyncTasks) await (await asyncTasks).dispose(); }
-          finally { await modelAccess.dispose(); }
-        }
-        finally {
+          try {
+            if (asyncTasks) await (await asyncTasks).dispose();
+          } finally {
+            await modelAccess.dispose();
+          }
+        } finally {
           await Promise.allSettled([...titleTasks]);
-          try { await inputQueue.dispose(); }
-          finally { try { await memories.close(); } finally { try { await mcp.dispose(); } finally { await plugins.dispose(); } } }
+          try {
+            await inputQueue.dispose();
+          } finally {
+            try {
+              await memories.close();
+            } finally {
+              try {
+                await mcp.dispose();
+              } finally {
+                await plugins.dispose();
+              }
+            }
+          }
         }
       });
       return closing;

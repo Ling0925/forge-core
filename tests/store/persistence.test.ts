@@ -92,7 +92,9 @@ describe("private persistence", () => {
     });
     await writeFile(path, "{");
     expect(await store.list()).toEqual([]);
-    await expect(store.get(snapshot.id)).rejects.toMatchObject({ code: "storage" });
+    await expect(store.get(snapshot.id)).rejects.toMatchObject({
+      code: "storage",
+    });
     await rm(path);
     await symlink(join(directory, "absent"), path);
     await expect(store.get(snapshot.id)).rejects.toMatchObject({

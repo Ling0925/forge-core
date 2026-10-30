@@ -5,12 +5,23 @@ import type { ProviderProtocol } from "./model-access";
 // consulted here.
 export type ModelProtocolSource = Readonly<{
   apiMode?: ProviderProtocol | undefined;
-  endpoints?: Readonly<Partial<Record<ProviderProtocol, string | undefined>>> | undefined;
+  endpoints?:
+    | Readonly<Partial<Record<ProviderProtocol, string | undefined>>>
+    | undefined;
   baseUrl?: string | undefined;
   modelAliases?: Readonly<Record<string, string>> | undefined;
-  modelSelection?: Readonly<{
-    overrides?: Readonly<Record<string, Readonly<{ apiMode?: ProviderProtocol | undefined }>>> | undefined;
-  }> | undefined;
+  modelSelection?:
+    | Readonly<{
+        overrides?:
+          | Readonly<
+              Record<
+                string,
+                Readonly<{ apiMode?: ProviderProtocol | undefined }>
+              >
+            >
+          | undefined;
+      }>
+    | undefined;
 }>;
 
 /**
@@ -35,7 +46,11 @@ export function modelProtocol(
   source: ModelProtocolSource | undefined,
   model: string | undefined,
 ): ProviderProtocol {
-  return modelProtocolOverride(source, model) ?? source?.apiMode ?? "chat-completions";
+  return (
+    modelProtocolOverride(source, model) ??
+    source?.apiMode ??
+    "chat-completions"
+  );
 }
 
 /**
@@ -70,8 +85,14 @@ export function exclusiveModelProtocol(
  */
 export function accountProtocolCompatible(
   requested: ProviderProtocol | undefined,
-  account: Readonly<{ apiMode: ProviderProtocol; protocols?: readonly ProviderProtocol[] | undefined }>,
+  account: Readonly<{
+    apiMode: ProviderProtocol;
+    protocols?: readonly ProviderProtocol[] | undefined;
+  }>,
 ): boolean {
-  return requested === undefined
-    || (requested === account.apiMode && (!account.protocols?.length || account.protocols.includes(requested)));
+  return (
+    requested === undefined ||
+    (requested === account.apiMode &&
+      (!account.protocols?.length || account.protocols.includes(requested)))
+  );
 }

@@ -137,7 +137,10 @@ const scatterSeries = z
         z
           .object({
             name: seriesName,
-            points: z.array(z.tuple([number, number])).min(1).max(2048),
+            points: z
+              .array(z.tuple([number, number]))
+              .min(1)
+              .max(2048),
           })
           .strict(),
       )
@@ -155,7 +158,9 @@ const heatmapSeries = z
     yCategories: z.array(name).min(1).max(64),
     /** [xIndex, yIndex, value] triples over the category grids above. */
     data: z
-      .array(z.tuple([z.number().int().min(0), z.number().int().min(0), number]))
+      .array(
+        z.tuple([z.number().int().min(0), z.number().int().min(0), number]),
+      )
       .min(1)
       .max(2048),
     xTitle: z.string().min(1).max(NAME_LIMIT).optional(),
@@ -216,22 +221,32 @@ const rawJsonSchema: z.ZodType<RawJson> = z.lazy(() =>
     z.boolean(),
     z.null(),
     z.array(rawJsonSchema).max(4096),
-    z.record(rawJsonSchema).refine(
-      (value) => Object.keys(value).length <= 256,
-      "raw option objects accept at most 256 keys per level.",
-    ),
+    z
+      .record(rawJsonSchema)
+      .refine(
+        (value) => Object.keys(value).length <= 256,
+        "raw option objects accept at most 256 keys per level.",
+      ),
   ]),
 );
 
 function rawNodeCount(value: RawJson): number {
-  if (Array.isArray(value)) return 1 + value.reduce((sum: number, item) => sum + rawNodeCount(item), 0);
+  if (Array.isArray(value))
+    return 1 + value.reduce((sum: number, item) => sum + rawNodeCount(item), 0);
   if (value !== null && typeof value === "object")
-    return 1 + Object.values(value).reduce((sum: number, item) => sum + rawNodeCount(item), 0);
+    return (
+      1 +
+      Object.values(value).reduce(
+        (sum: number, item) => sum + rawNodeCount(item),
+        0,
+      )
+    );
   return 1;
 }
 
 function rawDepth(value: RawJson): number {
-  if (Array.isArray(value)) return 1 + (value.length ? Math.max(...value.map(rawDepth)) : 0);
+  if (Array.isArray(value))
+    return 1 + (value.length ? Math.max(...value.map(rawDepth)) : 0);
   if (value !== null && typeof value === "object") {
     const children = Object.values(value);
     return 1 + (children.length ? Math.max(...children.map(rawDepth)) : 0);
@@ -312,7 +327,9 @@ export function validateChartSpec(value: unknown): ChartValidation {
         `${issue.path.length ? issue.path.join(".") : "(root)"}: ${issue.message}`,
     );
   if (parsed.error.issues.length > errors.length)
-    errors.push(`（另有 ${parsed.error.issues.length - errors.length} 项问题未列出）`);
+    errors.push(
+      `（另有 ${parsed.error.issues.length - errors.length} 项问题未列出）`,
+    );
   return { ok: false, errors };
 }
 
@@ -324,7 +341,9 @@ export function parseChartFence(source: string): ChartValidation {
   } catch (error) {
     return {
       ok: false,
-      errors: [`不是合法 JSON：${error instanceof Error ? error.message : String(error)}`],
+      errors: [
+        `不是合法 JSON：${error instanceof Error ? error.message : String(error)}`,
+      ],
     };
   }
   return validateChartSpec(value);
@@ -332,7 +351,7 @@ export function parseChartFence(source: string): ChartValidation {
 
 /** Canonical fence text returned by render_chart and copyable by the UI. */
 export function chartFence(spec: unknown): string {
-  return "```chart\n" + JSON.stringify(spec, null, 2) + "\n```";
+  return `\`\`\`chart\n${JSON.stringify(spec, null, 2)}\n\`\`\``;
 }
 
 /** Strip a ```chart (or bare ```) fence wrapper, returning the JSON body. */

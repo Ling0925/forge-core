@@ -683,7 +683,9 @@ export function createVertexAuth(
   };
 
   return {
-    get baseUrl() { return target(); },
+    get baseUrl() {
+      return target();
+    },
     async resolve(signal) {
       throwIfAborted(signal);
       const baseUrl = target();

@@ -223,9 +223,7 @@ it("reads a complete JSON array buffered into one SSE event", async () => {
     reply(response, [
       [
         {
-          candidates: [
-            { content: { role: "model", parts: [{ text: "ok" }] } },
-          ],
+          candidates: [{ content: { role: "model", parts: [{ text: "ok" }] } }],
         },
         {
           candidates: [
@@ -279,14 +277,10 @@ it("accepts a blank role and a final status frame whose content has no parts", a
   const provider = await fixture((_request, response) =>
     reply(response, [
       {
-        candidates: [
-          { content: { role: "", parts: [{ text: "ok" }] } },
-        ],
+        candidates: [{ content: { role: "", parts: [{ text: "ok" }] } }],
       },
       {
-        candidates: [
-          { content: { role: "model" }, finishReason: "STOP" },
-        ],
+        candidates: [{ content: { role: "model" }, finishReason: "STOP" }],
       },
     ]),
   );
@@ -809,9 +803,7 @@ it.each([
     const provider = await fixture((_request, response) =>
       reply(response, [
         {
-          candidates: [
-            { content: { role: "model", parts: [] }, finishReason },
-          ],
+          candidates: [{ content: { role: "model", parts: [] }, finishReason }],
         },
       ]),
     );
@@ -869,9 +861,7 @@ it("still rejects cut-off JSON, missing finishes and content after finish", asyn
         ],
       },
       {
-        candidates: [
-          { content: { role: "model", parts: [{ text: "two" }] } },
-        ],
+        candidates: [{ content: { role: "model", parts: [{ text: "two" }] } }],
       },
     ]),
   );
@@ -1225,17 +1215,47 @@ it("keeps a base prefix and cuts a pasted endpoint back to it", async () => {
   ]);
 });
 
-it.each(["", "FINISH_REASON_UNSPECIFIED"])("does not treat the default finish reason %j as a terminal chunk", async finishReason => {
-  const provider = await fixture((_request, response) => reply(response, [
-    { candidates: [{ content: { parts: [{ text: "hel" }] }, finishReason }] },
-    { candidates: [{ content: { parts: [{ text: "lo" }] }, finishReason: "STOP" }] },
-  ]));
-  expect((await provider.complete([{ role: "user", content: "hello" }], [], options())).message.content).toBe("hello");
-});
+it.each(["", "FINISH_REASON_UNSPECIFIED"])(
+  "does not treat the default finish reason %j as a terminal chunk",
+  async (finishReason) => {
+    const provider = await fixture((_request, response) =>
+      reply(response, [
+        {
+          candidates: [{ content: { parts: [{ text: "hel" }] }, finishReason }],
+        },
+        {
+          candidates: [
+            { content: { parts: [{ text: "lo" }] }, finishReason: "STOP" },
+          ],
+        },
+      ]),
+    );
+    expect(
+      (
+        await provider.complete(
+          [{ role: "user", content: "hello" }],
+          [],
+          options(),
+        )
+      ).message.content,
+    ).toBe("hello");
+  },
+);
 
 it("still requires a real finish after an unspecified finish reason", async () => {
-  const provider = await fixture((_request, response) => reply(response, [
-    { candidates: [{ content: { parts: [{ text: "partial" }] }, finishReason: "FINISH_REASON_UNSPECIFIED" }] },
-  ]));
-  await expect(provider.complete([{ role: "user", content: "hello" }], [], options())).rejects.toMatchObject({ reason: "missing_finish" });
+  const provider = await fixture((_request, response) =>
+    reply(response, [
+      {
+        candidates: [
+          {
+            content: { parts: [{ text: "partial" }] },
+            finishReason: "FINISH_REASON_UNSPECIFIED",
+          },
+        ],
+      },
+    ]),
+  );
+  await expect(
+    provider.complete([{ role: "user", content: "hello" }], [], options()),
+  ).rejects.toMatchObject({ reason: "missing_finish" });
 });

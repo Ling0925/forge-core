@@ -1,9 +1,14 @@
 import { expect, it } from "vitest";
+import { nativeDefinitions, nativeDefinitionsFor } from "../../src/core/agents";
 import { buildSystemInstructions } from "../../src/core/prompts";
 import { createAgentRuntime } from "../../src/core/runtime";
-import { nativeDefinitions, nativeDefinitionsFor } from "../../src/core/agents";
 import type { ModelProvider, SessionStore } from "../../src/shared/contracts";
-import { defaultPublicSettings, sessionSnapshotSchema, sessionIdSchema, type Message } from "../../src/shared/schemas";
+import {
+  type Message,
+  defaultPublicSettings,
+  sessionIdSchema,
+  sessionSnapshotSchema,
+} from "../../src/shared/schemas";
 
 // Exercise the real runtime projection, not just the text builder. No disk,
 // network, commands or user settings are needed for these provider fixtures.
@@ -82,11 +87,18 @@ it("uses live permissions for each tool and refreshes the next model request", a
               })),
             },
           };
-        expect(messages[0]?.content).toBe(buildSystemInstructions({
-          session: f.state, permission: "readonly", mode: undefined,
-          maxToolCalls: 17, projectInstructions: "PROJECT_V1",
-          toolNames: nativeDefinitions.map(definition => definition.function.name),
-        }));
+        expect(messages[0]?.content).toBe(
+          buildSystemInstructions({
+            session: f.state,
+            permission: "readonly",
+            mode: undefined,
+            maxToolCalls: 17,
+            projectInstructions: "PROJECT_V1",
+            toolNames: nativeDefinitions.map(
+              (definition) => definition.function.name,
+            ),
+          }),
+        );
         return { message: { role: "assistant", content: "done" } };
       },
     },
@@ -124,10 +136,24 @@ it("refreshes mode, effective permissions and project context without rewriting 
     );
   expect((await run("plan")).status).toBe("completed");
   const persisted = f.current().messages[0];
-  const expected = (mode: "plan" | "build", permission: "readonly" | "unrestricted", projectInstructions: string) =>
-    buildSystemInstructions({ session: f.state, mode, permission, projectInstructions,
-      maxToolCalls: 17, toolNames: nativeDefinitions.map(definition => definition.function.name) });
-  expect(f.received[0]?.[0]?.content).toBe(expected("plan", "readonly", "PROJECT_V1"));
+  const expected = (
+    mode: "plan" | "build",
+    permission: "readonly" | "unrestricted",
+    projectInstructions: string,
+  ) =>
+    buildSystemInstructions({
+      session: f.state,
+      mode,
+      permission,
+      projectInstructions,
+      maxToolCalls: 17,
+      toolNames: nativeDefinitions.map(
+        (definition) => definition.function.name,
+      ),
+    });
+  expect(f.received[0]?.[0]?.content).toBe(
+    expected("plan", "readonly", "PROJECT_V1"),
+  );
   f.deps.projectInstructions = "PROJECT_V2";
   expect((await run("build")).status).toBe("completed");
   const latest = f.received[1]?.[0]?.content;
@@ -171,10 +197,18 @@ it("uses inherited child ceilings and scope when projecting a legacy summarized 
     new AbortController().signal,
   );
   expect(result.status).toBe("completed");
-  expect(f.received[0]?.[0]?.content).toBe(buildSystemInstructions({
-    session: f.state, permission: "readonly", mode: "build", maxToolCalls: 17,
-    projectInstructions: "PROJECT_V1", toolNames: nativeDefinitionsFor(true, false).map(definition => definition.function.name),
-  }));
+  expect(f.received[0]?.[0]?.content).toBe(
+    buildSystemInstructions({
+      session: f.state,
+      permission: "readonly",
+      mode: "build",
+      maxToolCalls: 17,
+      projectInstructions: "PROJECT_V1",
+      toolNames: nativeDefinitionsFor(true, false).map(
+        (definition) => definition.function.name,
+      ),
+    }),
+  );
   expect(f.received[0]?.[1]?.content).toContain("prior work, do not replay");
   expect(result.messages.slice(0, legacy.length)).toEqual(legacy);
 });
@@ -199,10 +233,22 @@ it("projects registry-specific guidance unchanged across tool turns", async () =
         }
       : { message: { role: "assistant", content: "done" } };
   };
-  const runtime = createAgentRuntime({ ...f.deps, tools: { ...f.deps.tools, definitions: [{
-    type: "function", function: { name: "publish_file", description: "fixture",
-      parameters: { type: "object", properties: {} } },
-  }] } });
+  const runtime = createAgentRuntime({
+    ...f.deps,
+    tools: {
+      ...f.deps.tools,
+      definitions: [
+        {
+          type: "function",
+          function: {
+            name: "publish_file",
+            description: "fixture",
+            parameters: { type: "object", properties: {} },
+          },
+        },
+      ],
+    },
+  });
   const result = await runtime.run(
     { sessionId: f.state.id, prompt: "inspect" },
     () => {},

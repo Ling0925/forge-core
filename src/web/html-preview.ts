@@ -26,7 +26,8 @@ export class HtmlPreviewStore {
     this.evict();
     const id = randomBytes(24).toString("hex");
     const size = Buffer.byteLength(html, "utf8");
-    if (size > HTML_PREVIEW_MAX_BYTES) throw new PreviewFileError(413, "HTML exceeds the preview byte limit.");
+    if (size > HTML_PREVIEW_MAX_BYTES)
+      throw new PreviewFileError(413, "HTML exceeds the preview byte limit.");
     this.documents.set(id, { html, size, createdAt: Date.now() });
     this.bytes += size;
     while (

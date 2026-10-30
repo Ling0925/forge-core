@@ -23,7 +23,6 @@ import {
 export { projectContextDtoSchema } from "./project-context";
 export type { ProjectContextDto } from "./project-context";
 import { z } from "zod";
-import { modelAccessRequestSchema, modelAccessResultSchema, providerAttemptSchema, type ModelAccessRequest, type ModelAccessResult } from "./model-access";
 import { hostStateSchema } from "./host";
 import type { HtmlPreviewResponse } from "./html-preview";
 import { type ImageAttachment, imageAttachmentsSchema } from "./images";
@@ -32,6 +31,26 @@ import {
   inputQueueSnapshotSchema,
   queuedInputSchema,
 } from "./input-queue";
+import {
+  type ModelAccessRequest,
+  type ModelAccessResult,
+  modelAccessRequestSchema,
+  modelAccessResultSchema,
+  providerAttemptSchema,
+} from "./model-access";
+import {
+  type BrowserRequest,
+  type BrowserResponse,
+  type PluginConfigureInput,
+  type PluginHealth,
+  type PluginRecord,
+  browserRequestSchema,
+  browserResponseSchema,
+  pluginConfigureInputSchema,
+  pluginHealthSchema,
+  pluginIdSchema,
+  pluginRecordSchema,
+} from "./plugins";
 import {
   type PublishedFileResponse,
   publishedFileIdSchema,
@@ -65,19 +84,6 @@ import {
   sessionPageRequestSchema,
   sessionPageSchema,
 } from "./session-page";
-import {
-  type BrowserRequest,
-  type BrowserResponse,
-  type PluginConfigureInput,
-  type PluginHealth,
-  type PluginRecord,
-  browserRequestSchema,
-  browserResponseSchema,
-  pluginConfigureInputSchema,
-  pluginHealthSchema,
-  pluginIdSchema,
-  pluginRecordSchema,
-} from "./plugins";
 import type { WorkspaceDirectoryPage } from "./workspaces";
 
 export const IPC_CHANNELS = Object.freeze({
@@ -180,32 +186,50 @@ export const sessionUsageStatSchema = z
   .readonly();
 export type SessionUsageStat = z.infer<typeof sessionUsageStatSchema>;
 
-export const routeUsageStatSchema = z.object({
-  groupId: z.string().optional(), sourceId: z.string(), credentialId: z.string().optional(), model: z.string(), apiMode: z.string(),
-  attempts: z.number().int().nonnegative(), succeeded: z.number().int().nonnegative(), failed: z.number().int().nonnegative(),
-  unknownUsage: z.number().int().nonnegative(), promptTokens: z.number().int().nonnegative(), completionTokens: z.number().int().nonnegative(),
-  cachedTokens: z.number().int().nonnegative(), totalTokens: z.number().int().nonnegative(),
-}).strict().readonly();
-export const usageRequestSchema = providerAttemptSchema.unwrap().extend({
-  id: z.string(),
-  sessionId: sessionIdSchema,
-  sessionTitle: z.string(),
-  workspace: z.string(),
-  turn: z.number().int().positive().optional(),
-  step: z.number().int().positive().optional(),
-  outcome: z.enum(["started", "succeeded", "failed", "unknown"]),
-  startedAt: z.string().optional(),
-  finishedAt: z.string().optional(),
-  durationMs: z.number().nonnegative().optional(),
-  tokensPerSecond: z.number().finite().nonnegative().optional(),
-  estimatedCostUsd: z.number().finite().nonnegative().optional(),
-}).readonly();
+export const routeUsageStatSchema = z
+  .object({
+    groupId: z.string().optional(),
+    sourceId: z.string(),
+    credentialId: z.string().optional(),
+    model: z.string(),
+    apiMode: z.string(),
+    attempts: z.number().int().nonnegative(),
+    succeeded: z.number().int().nonnegative(),
+    failed: z.number().int().nonnegative(),
+    unknownUsage: z.number().int().nonnegative(),
+    promptTokens: z.number().int().nonnegative(),
+    completionTokens: z.number().int().nonnegative(),
+    cachedTokens: z.number().int().nonnegative(),
+    totalTokens: z.number().int().nonnegative(),
+  })
+  .strict()
+  .readonly();
+export const usageRequestSchema = providerAttemptSchema
+  .unwrap()
+  .extend({
+    id: z.string(),
+    sessionId: sessionIdSchema,
+    sessionTitle: z.string(),
+    workspace: z.string(),
+    turn: z.number().int().positive().optional(),
+    step: z.number().int().positive().optional(),
+    outcome: z.enum(["started", "succeeded", "failed", "unknown"]),
+    startedAt: z.string().optional(),
+    finishedAt: z.string().optional(),
+    durationMs: z.number().nonnegative().optional(),
+    tokensPerSecond: z.number().finite().nonnegative().optional(),
+    estimatedCostUsd: z.number().finite().nonnegative().optional(),
+  })
+  .readonly();
 export type UsageRequest = z.infer<typeof usageRequestSchema>;
 
-export const usagePricingStatusSchema = z.object({
-  state: z.enum(["ready", "stale", "unavailable"]),
-  fetchedAt: z.string().datetime().optional(),
-}).strict().readonly();
+export const usagePricingStatusSchema = z
+  .object({
+    state: z.enum(["ready", "stale", "unavailable"]),
+    fetchedAt: z.string().datetime().optional(),
+  })
+  .strict()
+  .readonly();
 export type UsagePricingStatus = z.infer<typeof usagePricingStatusSchema>;
 
 export const usageStatsDtoSchema = z
@@ -228,7 +252,10 @@ export const usageStatsDtoSchema = z
     routes: z.array(routeUsageStatSchema).readonly().optional(),
     requests: z.array(usageRequestSchema).readonly().optional(),
     pricing: usagePricingStatusSchema.optional(),
-    modelPrices: z.record(z.string(), usageModelPriceSchema).readonly().optional(),
+    modelPrices: z
+      .record(z.string(), usageModelPriceSchema)
+      .readonly()
+      .optional(),
   })
   .strict()
   .readonly();
@@ -345,8 +372,24 @@ export const rpcRequestSchema = z
         input: configureInputSchema,
       })
       .strict(),
-    z.object({ ...requestBase, method: z.literal("listModels"), sourceId: z.string().regex(/^[a-z][a-z0-9_-]{0,31}$/).optional(), refresh: z.boolean().optional() }).strict(),
-    z.object({ ...requestBase, method: z.literal("modelAccess"), input: modelAccessRequestSchema }).strict(),
+    z
+      .object({
+        ...requestBase,
+        method: z.literal("listModels"),
+        sourceId: z
+          .string()
+          .regex(/^[a-z][a-z0-9_-]{0,31}$/)
+          .optional(),
+        refresh: z.boolean().optional(),
+      })
+      .strict(),
+    z
+      .object({
+        ...requestBase,
+        method: z.literal("modelAccess"),
+        input: modelAccessRequestSchema,
+      })
+      .strict(),
     z.object({ ...requestBase, method: z.literal("listSessions") }).strict(),
     z
       .object({

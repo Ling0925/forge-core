@@ -46,7 +46,13 @@ describe("core evolution", () => {
       listModels: async () => [],
       complete: async (messages, _tools, options) => {
         if (options.model === "child" && childTurns++ === 0)
-          return { message: { role: "assistant", content: null, tool_calls: [call("child-read", "read_file", { path: "a.ts" })] } };
+          return {
+            message: {
+              role: "assistant",
+              content: null,
+              tool_calls: [call("child-read", "read_file", { path: "a.ts" })],
+            },
+          };
         if (options.model === "child")
           return {
             message: {
@@ -106,6 +112,8 @@ describe("core evolution", () => {
       const finalMessage = {
         role: "assistant",
         content: "Reconciled parent answer: implementation verified",
+        // Assistant messages carry the persisted generation identity.
+        generationId: expect.any(String),
       };
       expect(result.messages.at(-1)).toEqual(finalMessage);
       const restarted = await openSessionStore(dir);
@@ -113,8 +121,19 @@ describe("core evolution", () => {
       expect(
         persisted.messages.filter((m) => m.role === "assistant").at(-1),
       ).toEqual(finalMessage);
-      expect(persisted.events.some(e => e.type === "agent_update" && e.currentTool?.name === "read_file" && e.currentTool.target === "a.ts")).toBe(true);
-      expect(persisted.events.some(e => e.type === "tool_started" && e.call.id === "child-read")).toBe(false);
+      expect(
+        persisted.events.some(
+          (e) =>
+            e.type === "agent_update" &&
+            e.currentTool?.name === "read_file" &&
+            e.currentTool.target === "a.ts",
+        ),
+      ).toBe(true);
+      expect(
+        persisted.events.some(
+          (e) => e.type === "tool_started" && e.call.id === "child-read",
+        ),
+      ).toBe(false);
       const completed = persisted.events.filter(
         (e) => e.type === "agent_update" && e.status === "completed",
       );
@@ -132,6 +151,7 @@ describe("core evolution", () => {
       expect(child.messages.at(-1)).toEqual({
         role: "assistant",
         content: "Child verified the implementation",
+        generationId: expect.any(String),
       });
     } finally {
       await rm(dir, { recursive: true, force: true });

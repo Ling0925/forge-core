@@ -11,15 +11,25 @@ const PATCH_BUDGET = 32_000;
 
 /** Persisted native edits survive commits and compaction. They are historical
  * evidence, not a workspace-wide diff or an assertion about current file bytes. */
-export function sessionReviewInput(snapshot: SessionSnapshot, focus = ""): SessionReviewInput {
+export function sessionReviewInput(
+  snapshot: SessionSnapshot,
+  focus = "",
+): SessionReviewInput {
   if (snapshot.status === "running" || snapshot.status === "awaiting_approval")
-    throw new ForgeError("busy", "当前会话正在运行，请等待完成或停止后再审查。");
+    throw new ForgeError(
+      "busy",
+      "当前会话正在运行，请等待完成或停止后再审查。",
+    );
   const emphasis = focus.trim();
   if (emphasis.length > 8_000)
-    throw new ForgeError("invalid_input", "/review 的审查重点不能超过 8000 字符。");
+    throw new ForgeError(
+      "invalid_input",
+      "/review 的审查重点不能超过 8000 字符。",
+    );
 
   const paths = new Map<string, number>();
-  for (const change of snapshot.changes) paths.set(change.path, (paths.get(change.path) ?? 0) + 1);
+  for (const change of snapshot.changes)
+    paths.set(change.path, (paths.get(change.path) ?? 0) + 1);
   const index: string[] = [];
   let indexChars = 0;
   for (const [path, edits] of paths) {
@@ -34,9 +44,13 @@ export function sessionReviewInput(snapshot: SessionSnapshot, focus = ""): Sessi
   const patches: string[] = [];
   let patchChars = 0;
   for (let i = snapshot.changes.length - 1; i >= 0; i--) {
-    const change = snapshot.changes[i]!;
-    const entry = JSON.stringify({ change: i + 1, ...change,
-      ...(!change.patch ? { patchStatus: "unavailable" } : {}) });
+    const change = snapshot.changes[i];
+    if (!change) continue;
+    const entry = JSON.stringify({
+      change: i + 1,
+      ...change,
+      ...(!change.patch ? { patchStatus: "unavailable" } : {}),
+    });
     if (patchChars + entry.length + 1 > PATCH_BUDGET) break;
     patches.push(entry);
     patchChars += entry.length + 1;
@@ -57,11 +71,28 @@ export function sessionReviewInput(snapshot: SessionSnapshot, focus = ""): Sessi
     `原生变更记录：${snapshot.changes.length} 次操作，涉及 ${paths.size} 个路径。`,
     "路径索引（JSONL，edits 为操作次数）：",
     ...index,
-    ...(index.length < paths.size ? [`路径索引已截断，省略 ${paths.size - index.length} 个路径；必须查阅历史补全范围。`] : []),
+    ...(index.length < paths.size
+      ? [
+          `路径索引已截断，省略 ${paths.size - index.length} 个路径；必须查阅历史补全范围。`,
+        ]
+      : []),
     "历史补丁（JSONL，change 为按时间递增的操作序号；patch.status/omittedLines/omittedHunks 表示原始补丁完整性）：",
     ...patches,
-    ...(patches.length < snapshot.changes.length ? [`审查上下文预算有限，省略 ${snapshot.changes.length - patches.length} 次较早操作的补丁；必须通过历史补查，不能据此声称完整审查。`] : []),
-    ...(snapshot.changes.length === 0 ? ["没有原生文件变更记录不等于没有改动。先检查会话历史中的命令和子任务证据；若仍无可确认的变更，明确说明，不要擅自扩大到整个仓库。"] : []),
+    ...(patches.length < snapshot.changes.length
+      ? [
+          `审查上下文预算有限，省略 ${snapshot.changes.length - patches.length} 次较早操作的补丁；必须通过历史补查，不能据此声称完整审查。`,
+        ]
+      : []),
+    ...(snapshot.changes.length === 0
+      ? [
+          "没有原生文件变更记录不等于没有改动。先检查会话历史中的命令和子任务证据；若仍无可确认的变更，明确说明，不要擅自扩大到整个仓库。",
+        ]
+      : []),
   ].join("\n\n");
-  return { sessionId: snapshot.id, prompt, mode: "build", permission: "readonly" };
+  return {
+    sessionId: snapshot.id,
+    prompt,
+    mode: "build",
+    permission: "readonly",
+  };
 }
