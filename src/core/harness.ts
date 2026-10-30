@@ -1,4 +1,3 @@
-import { createHash } from "node:crypto";
 import { stat } from "node:fs/promises";
 import { join } from "node:path";
 import { createProjectContext } from "../context/index";
@@ -21,7 +20,6 @@ import {
 } from "../shared/schemas";
 import type { SessionId, SessionSnapshot } from "../shared/schemas";
 import type { CommandTaskAccess } from "../shared/task-view";
-import { createCheckpointStore } from "../store/checkpoints";
 import { openHarnessExperienceStore } from "../store/harness-experiences";
 import { openMemoryStore } from "../store/memory";
 import { openModelCatalogStore } from "../store/model-catalog";
@@ -32,6 +30,7 @@ import { openToolHooksStore } from "../store/tool-hooks";
 import { createAgentWorktreeService } from "./agent-worktrees";
 import { openAsyncTaskService } from "./async-tasks";
 import { projectSummary } from "./context";
+import { createHarnessCheckpoints } from "./harness-checkpoints";
 import { compactSessionSnapshot } from "./harness-compaction";
 import { openHarnessInputQueue } from "./harness-input-queue";
 import { createProviderSelection } from "./harness-provider-selection";
@@ -128,18 +127,7 @@ export const createHarness = async (
     recentTaskAccess,
     taskSecrets,
   });
-  const checkpointFor = async (id: SessionId) => {
-    const s = await store.get(id);
-    return createCheckpointStore(
-      s.workspace,
-      join(
-        directory,
-        "checkpoints",
-        createHash("sha256").update(s.workspace).digest("hex"),
-      ),
-      { protectedStateRoot: directory },
-    );
-  };
+  const checkpoints = createHarnessCheckpoints(store, directory);
   const catalogStore = await openModelCatalogStore(directory);
   const routeState = createRouteState();
   const disposal = new AbortController();
@@ -385,34 +373,17 @@ export const createHarness = async (
     },
     async listCheckpoints(id) {
       check();
-      return (await (await checkpointFor(id)).list()).filter(
-        (c) => c.sessionId === id,
-      );
+      return checkpoints.list(id);
     },
     async getCheckpointDiff(id, checkpointId) {
       check();
-      const cp = await checkpointFor(id);
-      if (
-        !(await cp.list()).some(
-          (c) => c.id === checkpointId && c.sessionId === id,
-        )
-      )
-        throw new ForgeError("not_found", "Checkpoint not found");
-      return cp.getDiff(checkpointId);
+      return checkpoints.diff(id, checkpointId);
     },
     async restoreCheckpoint(id, checkpointId) {
       return mutate(id, async (s) => {
-        const cp = await checkpointFor(id);
-        if (
-          !(await cp.list()).some(
-            (c) => c.id === checkpointId && c.sessionId === id,
-          )
-        )
-          throw new ForgeError("not_found", "Checkpoint not found");
-        await cp.restore(checkpointId, {
-          isSessionActive: async (session) =>
-            active.has(sessionIdSchema.parse(session)),
-        });
+        await checkpoints.restore(id, checkpointId, async (session) =>
+          active.has(sessionIdSchema.parse(session)),
+        );
         return s;
       });
     },
