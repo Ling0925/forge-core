@@ -51,6 +51,7 @@ import {
   queuedSelectionValidator,
   selectRouteGroup,
 } from "./harness-provider-selection";
+import { createHarnessTitles } from "./harness-titles";
 import { createHarnessTools } from "./harness-tools";
 import { inputPredecessor, openInputQueue } from "./input-queue";
 import { redactMemoryText } from "./memory-retrieval";
@@ -59,7 +60,6 @@ import { createModelPricingService } from "./model-pricing";
 import { createRootRunBudget } from "./run-budget";
 import { openRunMemory } from "./run-memory";
 import { createAgentRuntime } from "./runtime";
-import { autoTitle } from "./session-title";
 import { createSessionWriter } from "./session-writer";
 import { resolveStateDirectory } from "./state-directory";
 import { createTaskService } from "./task-service";
@@ -215,18 +215,11 @@ export const createHarness = async (
       })
       .catch(() => undefined);
   };
-  const titleTasks = new Set<Promise<void>>();
-  const titleOperations = new Map<
-    SessionId,
-    { controller: AbortController; work: Promise<void> }
-  >();
-  const stopTitle = async (id: SessionId) => {
-    const pending = titleOperations.get(id);
-    if (pending) {
-      pending.controller.abort();
-      await pending.work;
-    }
-  };
+  const {
+    stopTitle,
+    startTitle,
+    pending: pendingTitles,
+  } = createHarnessTitles(store);
   let disposed = false;
   let closing: Promise<void> | undefined;
   const check = (): void => {
@@ -933,51 +926,13 @@ export const createHarness = async (
             sessionLock: { id: input.sessionId, release: releaseSession },
             autoTitle: {
               secrets: [config.apiKey, config.baseUrl],
-              start: (claimed, apply) => {
-                const titleController = new AbortController();
-                const titleSignal = AbortSignal.any([
+              start: (claimed, apply) =>
+                startTitle(claimed, apply, {
                   signal,
-                  titleController.signal,
-                ]);
-                const naming = autoTitle({
-                  snapshot: claimed,
                   provider: resolved.provider,
-                  signal: titleSignal,
                   secrets: [config.apiKey, config.baseUrl],
                   beginUsage: () => budget.beginUsage(input.sessionId),
-                })
-                  .then(async (title) => {
-                    if (!title || titleSignal.aborted || (await apply(title)))
-                      return;
-                    // A fast run may finish before inference. Re-read under a
-                    // new lock; never save the stale first-turn snapshot.
-                    const unlock = await store.acquire(claimed.id, titleSignal);
-                    try {
-                      if (titleSignal.aborted) return;
-                      const writer = createSessionWriter(store, claimed.id);
-                      const current = await writer.read();
-                      if (
-                        current.titleSource === "auto" &&
-                        current.title === claimed.title &&
-                        current.autoTitleAttempted
-                      )
-                        await writer.save({ ...current, title });
-                    } finally {
-                      await unlock();
-                    }
-                  })
-                  .catch(() => {});
-                titleOperations.set(claimed.id, {
-                  controller: titleController,
-                  work: naming,
-                });
-                titleTasks.add(naming);
-                void naming.finally(() => {
-                  titleTasks.delete(naming);
-                  if (titleOperations.get(claimed.id)?.work === naming)
-                    titleOperations.delete(claimed.id);
-                });
-              },
+                }),
             },
             runMemory,
             toolHooks: await toolHooksStore.get(),
@@ -1088,7 +1043,7 @@ export const createHarness = async (
             await modelAccess.dispose();
           }
         } finally {
-          await Promise.allSettled([...titleTasks]);
+          await Promise.allSettled(pendingTitles());
           try {
             await inputQueue.dispose();
           } finally {
