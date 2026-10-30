@@ -225,7 +225,7 @@ it("isolates a failing preview observer to the observer classification", async (
     await drain(request);
     sse(response);
     response.end(
-      chunk(
+      `${chunk(
         {
           tool_calls: [
             {
@@ -237,7 +237,7 @@ it("isolates a failing preview observer to the observer classification", async (
           ],
         },
         "tool_calls",
-      ) + "data: [DONE]\n\n",
+      )}data: [DONE]\n\n`,
     );
   });
   await expect(
@@ -314,13 +314,13 @@ it("emits Responses previews keyed by tool sequence and completes a missing name
       wire("response.output_item.done", { output_index: 1, item: finished }),
     );
     response.end(
-      wire("response.completed", {
+      `${wire("response.completed", {
         response: {
           id: "resp_1",
           status: "completed",
           output: [reason, finished],
         },
-      }) + "data: [DONE]\n\n",
+      })}data: [DONE]\n\n`,
     );
   }, "responses");
 
@@ -588,9 +588,9 @@ it("estimates both edit_file directions from Responses argument deltas", async (
       wire("response.output_item.done", { output_index: 0, item: finished }),
     );
     response.end(
-      wire("response.completed", {
+      `${wire("response.completed", {
         response: { id: "resp_1", status: "completed", output: [finished] },
-      }) + "data: [DONE]\n\n",
+      })}data: [DONE]\n\n`,
     );
   }, "responses");
 

@@ -153,7 +153,7 @@ it("preserves long results regardless of age and keeps every appended prefix byt
       role: "tool",
       tool_call_id: `read-${i}`,
       content: JSON.stringify({
-        content: "HEAD" + "x".repeat(20000) + "TAIL",
+        content: `HEAD${"x".repeat(20000)}TAIL`,
         isError: i === 0,
       }),
     });

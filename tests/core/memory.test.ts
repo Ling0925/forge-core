@@ -347,7 +347,7 @@ describe("cross-session retrieval and memory synthesis", () => {
     // Escaped text cannot fit the expanded input budget, so it remains read-only.
     await memories.update({
       id: 0,
-      details: "forge " + "\n".repeat(30000) + "tail",
+      details: `forge ${"\n".repeat(30000)}tail`,
     });
     const truncated = fakeProvider((messages) => ({
       memories: [

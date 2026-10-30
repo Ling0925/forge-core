@@ -33,11 +33,11 @@ it
       }
       response.setHeader("Content-Type", "text/html; charset=utf-8");
       response.end(
-        "<!doctype html><html><body><h1>Native browser fixture</h1><input id='name'><button id='go'>Go</button>" +
-          (request.url === "/cross-page"
+        `<!doctype html><html><body><h1>Native browser fixture</h1><input id='name'><button id='go'>Go</button>${
+          request.url === "/cross-page"
             ? `<script src="http://127.0.0.1:${port}/cross.js"></script>`
-            : "") +
-          "</body></html>",
+            : ""
+        }</body></html>`,
       );
     });
     site.listen(0, "127.0.0.1");

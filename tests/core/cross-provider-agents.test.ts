@@ -52,7 +52,9 @@ async function fixture(
     mode: ProviderConfig["apiMode"];
     sessionId: string | undefined;
   }[] = [];
+  // biome-ignore lint/suspicious/noExplicitAny: untyped JSON tool payload inspected by assertions.
   let discovered: any;
+  // biome-ignore lint/suspicious/noExplicitAny: untyped JSON tool payload inspected by assertions.
   let admission: any;
   const service = await createHarness({
     stateDir: join(directory, "state"),

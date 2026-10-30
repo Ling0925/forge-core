@@ -20,6 +20,7 @@ const calls = (...tools: ReturnType<typeof call>[]) => ({
 const answer = (content: string) => ({
   message: { role: "assistant" as const, content },
 });
+// biome-ignore lint/suspicious/noExplicitAny: untyped JSON tool payload inspected by assertions.
 const lastResult = (messages: readonly Message[]): any => {
   const message = messages.findLast((m) => m.role === "tool");
   return JSON.parse(JSON.parse(message?.content ?? "{}").content ?? "{}");

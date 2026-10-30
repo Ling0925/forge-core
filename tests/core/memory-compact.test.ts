@@ -251,7 +251,7 @@ describe("compact memory evidence", () => {
       ...current,
       messages: ["first", "second"].map((tail) => ({
         role: "user" as const,
-        content: "forge " + "x".repeat(1500) + tail,
+        content: `forge ${"x".repeat(1500)}${tail}`,
       })),
     };
     const result = await retrieve();
@@ -261,7 +261,7 @@ describe("compact memory evidence", () => {
   });
 
   it("completes a selected 32k memory within the old input ceiling so updates preserve its tail", async () => {
-    const details = "forge " + "x".repeat(31850) + " IMPORTANT_TAIL";
+    const details = `forge ${"x".repeat(31850)} IMPORTANT_TAIL`;
     const old = await memories.update({
       tags: ["forge"],
       summary: "Long memory",
@@ -281,7 +281,7 @@ describe("compact memory evidence", () => {
         memories: [
           proposal(
             evidence.map((item) => item.ref),
-            { id: old.id, details: details + " UPDATED" },
+            { id: old.id, details: `${details} UPDATED` },
           ),
         ],
       });
@@ -294,7 +294,7 @@ describe("compact memory evidence", () => {
     expect(result.coverage.evidenceChars).toBeLessThanOrEqual(
       memoryRetrievalLimits.expandedInputChars,
     );
-    expect((await memories.get(0))?.details).toBe(details + " UPDATED");
+    expect((await memories.get(0))?.details).toBe(`${details} UPDATED`);
     expect((await memories.get(0))?.version).toBe(2);
   });
 
@@ -303,7 +303,7 @@ describe("compact memory evidence", () => {
       await memories.update({
         tags: ["forge"],
         summary: `Long ${index}`,
-        details: "forge " + "x".repeat(31900),
+        details: `forge ${"x".repeat(31900)}`,
       });
     const model = provider((messages) => {
       const evidence = payload(messages).evidence;

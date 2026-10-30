@@ -85,10 +85,7 @@ it("bounds patch storage while preserving exact totals and ordered retained rows
   diffPatchSchema.parse(patch);
 });
 it("caps escaped JSON bytes and never invents a partial source line", () => {
-  const patch = createDiffPatch(
-    "",
-    ("\u0000".repeat(1000) + "😀\n").repeat(20),
-  );
+  const patch = createDiffPatch("", `${"\u0000".repeat(1000)}😀\n`.repeat(20));
   expect(patch.status).toBe("truncated");
   expect(Buffer.byteLength(JSON.stringify(patch))).toBeLessThanOrEqual(
     MAX_PATCH_BYTES,

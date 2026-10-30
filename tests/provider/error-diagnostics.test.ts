@@ -40,7 +40,7 @@ it("separates malformed SSE JSON from invalid tool arguments and leaks neither b
     message: expect.stringContaining("stage=sse_event"),
   });
   const tool = run(
-    event(
+    `${event(
       {
         tool_calls: [
           {
@@ -52,7 +52,7 @@ it("separates malformed SSE JSON from invalid tool arguments and leaks neither b
         ],
       },
       "tool_calls",
-    ) + "data: [DONE]\n\n",
+    )}data: [DONE]\n\n`,
   );
   const error = await tool.result.catch((error) => error);
   expect(error).toMatchObject({
@@ -101,7 +101,7 @@ it("includes JSON size and nesting bounds while rejecting arbitrary diagnostics"
     }),
   );
   expect(() =>
-    parseProviderJson("[".repeat(65) + "0" + "]".repeat(65), "tool_arguments"),
+    parseProviderJson(`${"[".repeat(65)}0${"]".repeat(65)}`, "tool_arguments"),
   ).toThrow(
     expect.objectContaining({
       reason: "invalid_tool_call",

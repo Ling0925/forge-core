@@ -126,7 +126,7 @@ it.each(["chat-completions", "responses"] as const)(
         Array(5).fill(": heartbeat\n\n"),
         apiMode === "responses"
           ? responsesAnswer()
-          : chat({ content: "ok" }) + chat({}, "stop") + "data: [DONE]\n\n",
+          : `${chat({ content: "ok" }) + chat({}, "stop")}data: [DONE]\n\n`,
       );
     }, apiMode);
     expect((await run(f.provider)).message.content).toBe("ok");
@@ -157,7 +157,7 @@ it("renews on reasoning and fragmented tool arguments without requiring visible 
         chat({ tool_calls: [{ index: 0, function: { arguments: ':"a"' } }] }),
         chat({ tool_calls: [{ index: 0, function: { arguments: "}" } }] }),
       ],
-      chat({}, "tool_calls") + "data: [DONE]\n\n",
+      `${chat({}, "tool_calls")}data: [DONE]\n\n`,
     );
   });
   const result = await run(f.provider, undefined, (text) => seen.push(text));
@@ -184,7 +184,7 @@ it("renews on partial SSE frames before a complete event is available", async ()
         body.slice(30, 40),
         body.slice(40),
       ],
-      "\n\n" + chat({}, "stop"),
+      `\n\n${chat({}, "stop")}`,
     );
   });
   expect((await run(f.provider)).message.content).toBe("ok");

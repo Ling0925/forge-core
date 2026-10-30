@@ -490,6 +490,7 @@ it("wires real runtime publication, authenticated RPC, forks and reopen", async 
     input: object,
     extra: Record<string, string> = {},
   ) =>
+    // biome-ignore lint/suspicious/noExplicitAny: untyped JSON HTTP response inspected by assertions.
     new Promise<{ status: number; data: any }>((done, reject) => {
       const req = httpRequest(
         `http://127.0.0.1:${address.port}${path}`,

@@ -196,6 +196,7 @@ describe("automatic title metadata", () => {
       '# "password=abc https://private/path private-key\n\u001b title"',
       ["private-key"],
     );
+    // biome-ignore lint/suspicious/noControlCharactersInRegex: asserts the ESC byte was stripped.
     expect(title).not.toMatch(/abc|private|\u001b/);
     expect(Array.from(cleanTitle("字".repeat(100))).length).toBe(60);
   });

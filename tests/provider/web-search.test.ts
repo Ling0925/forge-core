@@ -475,8 +475,8 @@ it("records open/find actions and offsets citations across multiple messages, wi
     id: "ws_2",
     action: { type: "find_in_page", url: citation.url, pattern: "news" },
   };
-  const a = message("m_1", "First", []),
-    b = message("m_2");
+  const a = message("m_1", "First", []);
+  const b = message("m_2");
   const data =
     searchStream(open) +
     messageStream(1, a) +

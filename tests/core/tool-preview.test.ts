@@ -70,13 +70,13 @@ function fixture(
 }
 
 it("publishes metadata before generation ends and start before a slow tool ends, without persisting drafts", async () => {
-  const generation = gate(),
-    firstPreview = gate(),
-    execution = gate(),
-    toolStarted = gate();
+  const generation = gate();
+  const firstPreview = gate();
+  const execution = gate();
+  const toolStarted = gate();
   const events: AgentEvent[] = [];
-  let requests = 0,
-    executed = 0;
+  let requests = 0;
+  let executed = 0;
   const provider: ModelProvider = {
     listModels: async () => [],
     complete: async (_m, _d, options) => {
@@ -145,8 +145,8 @@ it("publishes metadata before generation ends and start before a slow tool ends,
 });
 
 it("passes live write and edit line estimates through the preview event", async () => {
-  const arrived = gate(),
-    generation = gate();
+  const arrived = gate();
+  const generation = gate();
   const events: AgentEvent[] = [];
   let requests = 0;
   const provider: ModelProvider = {
@@ -204,8 +204,8 @@ it("passes live write and edit line estimates through the preview event", async 
 });
 
 it("omits line estimates from preview events for tools that cannot be estimated", async () => {
-  const arrived = gate(),
-    generation = gate();
+  const arrived = gate();
+  const generation = gate();
   const events: AgentEvent[] = [];
   let requests = 0;
   const provider: ModelProvider = {
@@ -244,8 +244,8 @@ it("omits line estimates from preview events for tools that cannot be estimated"
 
 it("clears failed attempt drafts and scopes replacement previews without executing failed drafts", async () => {
   const events: AgentEvent[] = [];
-  let requests = 0,
-    executed = 0;
+  let requests = 0;
+  let executed = 0;
   const f = fixture(
     {
       listModels: async () => [],
@@ -288,8 +288,8 @@ it("clears failed attempt drafts and scopes replacement previews without executi
 });
 
 it("does not execute or publish late previews after cancellation", async () => {
-  const arrived = gate(),
-    generation = gate();
+  const arrived = gate();
+  const generation = gate();
   const controller = new AbortController();
   let late: (() => void) | undefined;
   const events: AgentEvent[] = [];

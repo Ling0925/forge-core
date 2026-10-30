@@ -206,7 +206,7 @@ describe("OfficeCLI registration and publication", () => {
     const f = await fixture();
     const { registry } = await f.enable();
     f.execute.mockResolvedValueOnce({
-      ...result("test-private-secret " + "x".repeat(30000)),
+      ...result(`test-private-secret ${"x".repeat(30000)}`),
       stderr: "failed",
       exitCode: 2,
     });

@@ -215,9 +215,11 @@ describe("agent-browser backend", () => {
       // check() is a protocol/tool discovery probe only.
       expect(await test.cleanup()).toBeUndefined();
     } finally {
+      // biome-ignore lint/performance/noDelete: assigning undefined would store the string "undefined" in process.env.
       if (previous === undefined) delete process.env.FORGE_BACKEND_TEST_SECRET;
       else process.env.FORGE_BACKEND_TEST_SECRET = previous;
       if (previousProfile === undefined)
+        // biome-ignore lint/performance/noDelete: assigning undefined would store the string "undefined" in process.env.
         delete process.env.AGENT_BROWSER_PROFILE;
       else process.env.AGENT_BROWSER_PROFILE = previousProfile;
     }

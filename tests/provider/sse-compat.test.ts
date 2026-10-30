@@ -94,9 +94,11 @@ it.each(["\n", "\r\n", "\r"])(
 it.each(["\n", "\r\n", "\r"])(
   "does not let trailing comments hide an unterminated data event %j",
   async (ending) => {
-    const data = (
-      textStream() + 'data: {"type":"response.metadata"}\n: keepalive\n'
-    ).replaceAll("\n", ending);
+    const data =
+      `${textStream()}data: {"type":"response.metadata"}\n: keepalive\n`.replaceAll(
+        "\n",
+        ending,
+      );
     await expect(fixture(data).run()).rejects.toMatchObject({
       reason: "unterminated_event",
     });
@@ -105,7 +107,7 @@ it.each(["\n", "\r\n", "\r"])(
 
 it("still rejects nonempty malformed JSON without replaying the request", async () => {
   const f = fixture(
-    "event: response.output_text.delta\ndata: {broken}\n\n" + textStream(),
+    `event: response.output_text.delta\ndata: {broken}\n\n${textStream()}`,
   );
   await expect(f.run()).rejects.toMatchObject({
     reason: "invalid_json",
