@@ -1,4 +1,5 @@
 import { QueueAdmissionError } from "../shared/input-queue";
+import { narrowestPermission } from "../shared/permissions";
 import { settingsFields } from "../shared/schemas";
 import type { SessionId } from "../shared/schemas";
 import type { openSessionStore } from "../store/sessions";
@@ -66,18 +67,12 @@ export const openHarnessInputQueue = ({
         providerSourceId,
         routeGroupId,
       );
-      const levels = ["readonly", "workspace", "unrestricted"] as const;
-      const permission =
-        levels[
-          Math.min(
-            levels.indexOf(
-              input.mode === "plan"
-                ? "readonly"
-                : (input.permission ?? settings.defaultPermission),
-            ),
-            levels.indexOf(snapshot.permissionCeiling ?? "unrestricted"),
-          )
-        ] ?? "readonly";
+      const permission = narrowestPermission(
+        input.mode === "plan"
+          ? "readonly"
+          : (input.permission ?? settings.defaultPermission),
+        snapshot.permissionCeiling,
+      );
       return {
         input: {
           ...input,

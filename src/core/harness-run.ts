@@ -10,6 +10,7 @@ import type {
 } from "../shared/contracts";
 import { ForgeError } from "../shared/errors";
 import { QueueAdmissionError } from "../shared/input-queue";
+import { narrowestPermission } from "../shared/permissions";
 import type { RootRunBudget } from "../shared/run-budget";
 import { settingsFields } from "../shared/schemas";
 import type {
@@ -135,22 +136,15 @@ export const createHarnessRun = (deps: HarnessRunDeps) => {
           throw new QueueAdmissionError();
       }
       if (asyncPermissions.has(input.sessionId)) {
-        const levels = ["readonly", "workspace", "unrestricted"] as const;
-        asyncPermissions.set(
-          input.sessionId,
-          () =>
-            levels[
-              Math.min(
-                levels.indexOf(
-                  input.mode === "plan"
-                    ? "readonly"
-                    : (control?.getPermission?.() ??
-                        input.permission ??
-                        settings.defaultPermission),
-                ),
-                levels.indexOf(snapshot.permissionCeiling ?? "unrestricted"),
-              )
-            ] ?? "readonly",
+        asyncPermissions.set(input.sessionId, () =>
+          narrowestPermission(
+            input.mode === "plan"
+              ? "readonly"
+              : (control?.getPermission?.() ??
+                  input.permission ??
+                  settings.defaultPermission),
+            snapshot.permissionCeiling,
+          ),
         );
       }
       rootBudget = createRootRunBudget({ rootSessionId: input.sessionId });

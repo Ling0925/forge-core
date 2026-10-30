@@ -1,4 +1,5 @@
 import type { AgentRuntimeDependencies, RunControl } from "../shared/contracts";
+import { narrowestPermission } from "../shared/permissions";
 import type { AgentEvent, Permission, RunInput } from "../shared/schemas";
 import type { RunState } from "./runtime-state";
 
@@ -29,7 +30,6 @@ export const createEffectivePermission = (
   deps: Pick<AgentRuntimeDependencies, "settings">,
   control: RunControl | undefined,
 ) => {
-  const levels = ["readonly", "workspace", "unrestricted"] as const;
   const effectivePermission = () => {
     // A background notification is an internal continuation, not a new grant.
     // Pin its cap once from the last actual run/permission change so neither a
@@ -53,17 +53,11 @@ export const createEffectivePermission = (
         : (control?.getPermission?.() ??
           input.permission ??
           deps.settings.defaultPermission);
-    return (
-      levels[
-        Math.min(
-          levels.indexOf(requested),
-          levels.indexOf(run.snapshot?.permissionCeiling ?? "unrestricted"),
-          levels.indexOf(
-            run.snapshot?.agentProfile?.permission ?? "unrestricted",
-          ),
-          levels.indexOf(run.notificationCap ?? "unrestricted"),
-        )
-      ] ?? "readonly"
+    return narrowestPermission(
+      requested,
+      run.snapshot?.permissionCeiling,
+      run.snapshot?.agentProfile?.permission,
+      run.notificationCap,
     );
   };
   return effectivePermission;
