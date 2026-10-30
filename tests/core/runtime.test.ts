@@ -1456,7 +1456,10 @@ it("applies newly observed calibration before the next generation in the same ru
     },
     {
       ...emptyTools,
-      execute: async () => ({ content: "x".repeat(6000), isError: false }),
+      // Sized for the native tool definitions grown by 8cfef20: the required
+      // tail (instructions, tools, this exchange) must still fit the budget
+      // once the doubled calibration applies.
+      execute: async () => ({ content: "x".repeat(2000), isError: false }),
     },
     { ...initial(), messages: previous },
   );
