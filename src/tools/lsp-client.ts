@@ -1,7 +1,6 @@
 import { type ChildProcess, spawn } from "node:child_process";
 import { homedir } from "node:os";
-import { minimalEnv } from "../shared/child-env";
-import { cleanupProcess } from "../shared/process-cleanup";
+import { cleanupProcess, minimalEnv } from "../store";
 
 export const LSP_MESSAGE_LIMIT = 1024 * 1024;
 const HEADER_LIMIT = 8192;

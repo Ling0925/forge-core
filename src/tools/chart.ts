@@ -1,12 +1,13 @@
 import { z } from "zod";
 import {
   type ChartValidation,
+  type LocalToolRegistry,
+  type ToolCall,
+  type ToolResult,
   chartFence,
+  defineTool,
   validateChartSpec,
-} from "../shared/chart-spec";
-import type { LocalToolRegistry } from "../shared/contracts";
-import type { ToolCall, ToolResult } from "../shared/schemas";
-import { defineTool } from "../shared/tool-definition";
+} from "../shared";
 
 export const RENDER_CHART_TOOL_NAME = "render_chart";
 

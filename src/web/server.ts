@@ -8,31 +8,28 @@ import {
 import { resolve } from "node:path";
 import { WebSocket, WebSocketServer } from "ws";
 import { z } from "zod";
-import { resolveStateDirectory } from "../core/state-directory";
-import { createRuntimeHub } from "../host/runtime";
-import type { HarnessService } from "../shared/contracts";
+import { resolveStateDirectory } from "../core";
+import { createRuntimeHub } from "../host";
 import {
   type AuthorizedDevice,
   type DeviceAuthorization,
-  pairingExchangeSchema,
-} from "../shared/device-authorization";
-import {
   HTML_PREVIEW_CSP,
   HTML_PREVIEW_MAX_BYTES,
-  htmlPreviewRequestSchema,
-  htmlPreviewResponseSchema,
-} from "../shared/html-preview";
-import {
+  type HarnessService,
   type RpcRequest,
   type RpcResponse,
   type RunEvent,
+  type RuntimeHost,
+  type SessionSnapshot,
+  htmlPreviewRequestSchema,
+  htmlPreviewResponseSchema,
+  paginateSession,
+  pairingExchangeSchema,
   rpcRequestSchema,
-} from "../shared/ipc";
-import type { RuntimeHost } from "../shared/runtime-host";
-import type { SessionSnapshot } from "../shared/schemas";
-import { paginateSession } from "../shared/session-page";
-import { workspaceBrowseRequestSchema } from "../shared/workspaces";
-import { openDeviceAuthorization } from "../store/devices";
+  workspaceBrowseRequestSchema,
+} from "../shared";
+
+import { openDeviceAuthorization } from "../store";
 import {
   BUILD_HEADERS,
   applyBuildHeaders,

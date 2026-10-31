@@ -1,10 +1,10 @@
 import { spawn } from "node:child_process";
-import { ForgeError } from "../shared/errors";
+import { ForgeError } from "../shared";
 import {
   type WorkspacePathGuard,
+  createProcessGroup,
   createWorkspacePathGuard,
-} from "../shared/path-guard";
-import { createProcessGroup } from "../shared/process-cleanup";
+} from "../store";
 
 export type GitAction = "status" | "diff" | "log";
 export interface GitInspection {

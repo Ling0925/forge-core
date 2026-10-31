@@ -3,11 +3,12 @@ import { lstat, open } from "node:fs/promises";
 import { relative } from "node:path";
 import { TextDecoder } from "node:util";
 import {
+  MAX_EDITABLE_FILE_BYTES as FILE_LIMIT,
   containsSensitiveText,
   isSensitivePath,
-} from "../shared/content-safety";
-import { MAX_EDITABLE_FILE_BYTES as FILE_LIMIT } from "../shared/file-limits";
-import type { WorkspacePathGuard } from "../shared/path-guard";
+} from "../shared";
+
+import type { WorkspacePathGuard } from "../store";
 import { check, fail, signature } from "./local-common";
 import { CACHE_LIMIT } from "./local-schemas";
 

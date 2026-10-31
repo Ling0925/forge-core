@@ -3,21 +3,23 @@ import { constants } from "node:fs";
 import { lstat, mkdir, open, rename, unlink } from "node:fs/promises";
 import { dirname, join, relative } from "node:path";
 import type { z } from "zod";
-import { isSensitivePath } from "../shared/content-safety";
-import type { ToolContext } from "../shared/contracts";
-import { createDiffPatch } from "../shared/diff";
-import { ForgeError } from "../shared/errors";
 import {
+  type FileChange,
+  ForgeError,
+  type JsonValue,
+  type ToolCall,
+  type ToolContext,
+  type ToolResult,
+  createDiffPatch,
+  isSensitivePath,
+} from "../shared";
+
+import {
+  type CheckpointStore,
   WorkspacePathError,
   type WorkspacePathGuard,
-} from "../shared/path-guard";
-import type {
-  FileChange,
-  JsonValue,
-  ToolCall,
-  ToolResult,
-} from "../shared/schemas";
-import type { CheckpointStore } from "../store/checkpoints";
+} from "../store";
+
 import {
   createLineMatcher,
   globMatcher,

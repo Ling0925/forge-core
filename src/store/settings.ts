@@ -1,7 +1,10 @@
 import { join } from "node:path";
-import type { SettingsStore } from "../shared/contracts";
-import { accountTokensSchema } from "../shared/model-access";
-import { modelProtocol } from "../shared/model-protocol";
+import {
+  type SettingsStore,
+  accountTokensSchema,
+  modelProtocol,
+} from "../shared";
+
 import { atomicJson, privateDirectory, readJson, storageError } from "./io";
 import { createSettingsProvider } from "./settings-provider";
 import {

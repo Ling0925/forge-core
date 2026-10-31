@@ -3,7 +3,7 @@ import {
   type WebCitation,
   type WebSearchRecord,
   webSourceUrlSchema,
-} from "../shared/web-search";
+} from "../shared";
 
 export const urlCitation = z
   .object({

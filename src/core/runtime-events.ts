@@ -1,8 +1,12 @@
-import type { EventSink } from "../shared/contracts";
-import { ForgeError } from "../shared/errors";
-import { agentEventSchema } from "../shared/schemas";
-import type { AgentEvent, SessionId } from "../shared/schemas";
-import type { ToolHookDiagnostic } from "../shared/tool-hooks";
+import {
+  type AgentEvent,
+  type EventSink,
+  ForgeError,
+  type SessionId,
+  type ToolHookDiagnostic,
+  agentEventSchema,
+} from "../shared";
+
 import type { RunState } from "./runtime-state";
 
 export type EventBody = {

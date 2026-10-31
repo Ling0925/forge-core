@@ -1,5 +1,5 @@
 import type { Socket } from "node:net";
-import { PUBLISHED_FILE_MAX_BASE64_BYTES } from "../shared/published-files";
+import { PUBLISHED_FILE_MAX_BASE64_BYTES } from "../shared";
 import { hostError } from "./errors";
 
 export const MAX_REQUEST_BYTES = 16 * 1024 * 1024;

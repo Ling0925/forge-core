@@ -1,7 +1,14 @@
 import { execFileSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { chmod, mkdir, readdir, rename, rm, writeFile } from "node:fs/promises";
-import { dirname, join, resolve } from "node:path";
+import {
+  chmod,
+  mkdir,
+  readFile,
+  rename,
+  rm,
+  writeFile,
+} from "node:fs/promises";
+import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { build } from "esbuild";
 
@@ -13,29 +20,22 @@ const buildInfo = {
   id: `${Date.now().toString(36)}-${randomUUID().slice(0, 8)}`,
   builtAt: new Date().toISOString(),
 };
-async function sources(directory) {
-  const entries = await readdir(directory, { withFileTypes: true });
-  return (
-    await Promise.all(
-      entries.map((entry) => {
-        const path = join(directory, entry.name);
-        return entry.isDirectory()
-          ? sources(path)
-          : entry.name.endsWith(".ts") &&
-              !entry.name.endsWith(".test.ts") &&
-              !entry.name.endsWith(".d.ts")
-            ? [path]
-            : [];
-      }),
-    )
-  ).flat();
-}
+const pkg = JSON.parse(await readFile("package.json", "utf8"));
+const entryPoints = [
+  ...new Set([
+    ...Object.values(pkg.exports).flatMap((entry) =>
+      typeof entry === "object" ? [entry.types] : [],
+    ),
+    ...Object.values(pkg.bin).map((entry) =>
+      entry.replace(/^dist\//, "./src/").replace(/\.js$/, ".ts"),
+    ),
+  ]),
+];
 
-// Each source module remains an explicit package subpath. Code splitting keeps
-// shared schemas and stateful modules singletons instead of bundling duplicates.
+// Code splitting keeps shared schemas and stateful modules singletons.
 await rm("dist", { recursive: true, force: true });
 const result = await build({
-  entryPoints: await sources("src"),
+  entryPoints,
   outbase: "src",
   outdir: "dist",
   bundle: true,

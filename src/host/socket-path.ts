@@ -1,6 +1,6 @@
 import { lstat, realpath } from "node:fs/promises";
 import { dirname, isAbsolute, resolve } from "node:path";
-import { privateDirectory } from "../store/io";
+import { privateDirectory } from "../store";
 import { hostError } from "./errors";
 
 /**

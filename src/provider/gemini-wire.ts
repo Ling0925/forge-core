@@ -1,7 +1,6 @@
 import { z } from "zod";
-import { ProviderError } from "../shared/errors";
-import { toolCallSchema } from "../shared/schemas";
-import type { Usage } from "../shared/schemas";
+import { ProviderError, type Usage, toolCallSchema } from "../shared";
+
 import { httpError } from "./errors";
 
 export const MAX_TEXT = 2_000_000;

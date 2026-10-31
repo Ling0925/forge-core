@@ -1,6 +1,10 @@
 import type { lstat } from "node:fs/promises";
-import { ForgeError } from "../shared/errors";
-import type { FileChange, JsonValue, ToolResult } from "../shared/schemas";
+import {
+  type FileChange,
+  ForgeError,
+  type JsonValue,
+  type ToolResult,
+} from "../shared";
 
 export function fail(
   message: string,

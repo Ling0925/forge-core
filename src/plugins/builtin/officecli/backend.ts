@@ -2,8 +2,8 @@ import { type ChildProcess, spawn } from "node:child_process";
 import { constants } from "node:fs";
 import { access, mkdir, mkdtemp, rm, stat } from "node:fs/promises";
 import { delimiter, isAbsolute, join, resolve } from "node:path";
-import { ForgeError } from "../../../shared/errors";
-import { createProcessGroup } from "../../../shared/process-cleanup";
+import { ForgeError } from "../../../shared";
+import { createProcessGroup } from "../../../store";
 
 /**
  * Result of one stateless OfficeCLI invocation.

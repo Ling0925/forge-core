@@ -1,13 +1,15 @@
 import { createHash } from "node:crypto";
-import type { RunControl } from "../shared/contracts";
-import { ForgeError } from "../shared/errors";
 import {
+  ForgeError,
+  type PublicSettings,
+  type RunControl,
+  type SessionSnapshot,
   modelProtocol,
   modelProtocolEndpoint,
   modelProtocolOverride,
-} from "../shared/model-protocol";
-import type { PublicSettings, SessionSnapshot } from "../shared/schemas";
-import type { openSettingsStore } from "../store/settings";
+} from "../shared";
+
+import type { openSettingsStore } from "../store";
 import { inputProviderBinding } from "./input-queue";
 import type { createModelAccessService } from "./model-access";
 

@@ -1,12 +1,12 @@
-import type { createPluginHost } from "../plugins/host";
-import { ForgeError } from "../shared/errors";
+import type { createPluginHost } from "../plugins";
 import {
+  ForgeError,
   collectPublishedFiles,
   publishedFileIdSchema,
-} from "../shared/published-files";
-import { sessionIdSchema } from "../shared/schemas";
-import type { openPublishedFileStore } from "../store/published-files";
-import type { openSessionStore } from "../store/sessions";
+  sessionIdSchema,
+} from "../shared";
+
+import type { openPublishedFileStore, openSessionStore } from "../store";
 
 type PublishedFileStore = Awaited<ReturnType<typeof openPublishedFileStore>>;
 

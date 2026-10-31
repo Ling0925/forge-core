@@ -1,12 +1,10 @@
 import { type ChildProcess, spawn } from "node:child_process";
 import { z } from "zod";
-import { minimalEnv } from "../shared/child-env";
-import { ForgeError } from "../shared/errors";
-import { cleanupProcess } from "../shared/process-cleanup";
 import {
   type AfterToolHookEvent,
   type BeforeToolHookEvent,
   type BeforeToolHookResult,
+  ForgeError,
   type RunEndHookEvent,
   TOOL_HOOK_MAX_ARGUMENT_BYTES,
   TOOL_HOOK_MAX_CONTENT_PREVIEW_BYTES,
@@ -20,7 +18,8 @@ import {
   type ToolHookStatus,
   toolHooksConfigSchema,
   truncateToolHookText,
-} from "../shared/tool-hooks";
+} from "../shared";
+import { cleanupProcess, minimalEnv } from "../store";
 
 /**
  * Host-configured executable tool lifecycle hooks.

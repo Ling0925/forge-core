@@ -1,17 +1,21 @@
-import { withCancellation } from "../shared/cancellation";
-import type { ApprovalHandler, LocalToolRegistry } from "../shared/contracts";
-import { ForgeError, toErrorInfo } from "../shared/errors";
 import {
+  type ApprovalHandler,
+  ForgeError,
+  type LocalToolRegistry,
   type Permission,
   type SessionId,
   type ToolCall,
+  type ToolHookDiagnostic,
+  type ToolHookService,
   type ToolResult,
   type Usage,
   agentEventSchema,
+  invalidToolInput,
+  toErrorInfo,
   toolResultSchema,
-} from "../shared/schemas";
-import type { ToolHookDiagnostic, ToolHookService } from "../shared/tool-hooks";
-import { invalidToolInput } from "../shared/tool-input";
+  withCancellation,
+} from "../shared";
+
 import { nativeDefinitions } from "./agents";
 import { toToolHookOutcome } from "./tool-hooks";
 

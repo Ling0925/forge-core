@@ -1,4 +1,4 @@
-import type { AgentEvent, SessionId } from "../shared/schemas";
+import type { AgentEvent, SessionId } from "../shared";
 
 type ProgressBody = Omit<
   Extract<AgentEvent, { type: "agent_progress" }>,

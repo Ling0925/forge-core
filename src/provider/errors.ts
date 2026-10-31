@@ -1,4 +1,4 @@
-import { type ProtocolReason, ProviderError } from "../shared/errors";
+import { type ProtocolReason, ProviderError } from "../shared";
 
 const diagnosticStages = [
   "json_response",

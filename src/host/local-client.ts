@@ -1,12 +1,14 @@
 import { createConnection } from "node:net";
-import { ForgeError } from "../shared/errors";
-import { HOST_PROTOCOL_VERSION, type HostState } from "../shared/host";
 import {
+  ForgeError,
+  HOST_PROTOCOL_VERSION,
+  type HostState,
   type RpcRequest,
   type RpcResponse,
   type RunEvent,
   rpcRequestSchema,
-} from "../shared/ipc";
+} from "../shared";
+
 import { hostError } from "./errors";
 import {
   MAX_REQUEST_BYTES,

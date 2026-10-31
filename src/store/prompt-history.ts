@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { realpath } from "node:fs/promises";
 import { join } from "node:path";
 import { z } from "zod";
-import { ForgeError } from "../shared/errors";
+import { ForgeError } from "../shared";
 import { atomicJson, checkEntry, privateDirectory, readJson } from "./io";
 import { fileLock } from "./lock";
 

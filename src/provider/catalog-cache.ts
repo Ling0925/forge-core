@@ -1,9 +1,6 @@
-import type { ModelProvider, ProviderFactory } from "../shared/contracts";
-import type { ProviderConfig } from "../shared/schemas";
-import {
-  type ModelCatalogStore,
-  modelCatalogCacheKey,
-} from "../store/model-catalog";
+import type { ModelProvider, ProviderConfig, ProviderFactory } from "../shared";
+
+import { type ModelCatalogStore, modelCatalogCacheKey } from "../store";
 
 /** Shared by CLI, desktop, runtime metadata and the list_models agent tool. */
 export function createCachedProviderFactory(

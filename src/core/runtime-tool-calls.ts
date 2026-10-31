@@ -1,19 +1,19 @@
-import { advisorRequestSchema } from "../shared/agent-coordination";
-import type {
-  AgentRuntimeDependencies,
-  ApprovalHandler,
-} from "../shared/contracts";
-import { ForgeError, toErrorInfo } from "../shared/errors";
-import { recordPlan } from "../shared/plans";
-import type { RootRunBudget } from "../shared/run-budget";
-import { sessionIdSchema } from "../shared/schemas";
-import type {
-  Permission,
-  ProviderResponse,
-  RunInput,
-  ToolCall,
-  Usage,
-} from "../shared/schemas";
+import {
+  type AgentRuntimeDependencies,
+  type ApprovalHandler,
+  ForgeError,
+  type Permission,
+  type ProviderResponse,
+  type RootRunBudget,
+  type RunInput,
+  type ToolCall,
+  type Usage,
+  advisorRequestSchema,
+  recordPlan,
+  sessionIdSchema,
+  toErrorInfo,
+} from "../shared";
+
 import type { createAgentSupervisor } from "./agent-supervisor";
 import { executeNative, nativeDefinitions } from "./agents";
 import type { createApprovalQueue } from "./approval-queue";
@@ -167,9 +167,7 @@ export const executeResponseToolCalls = async (
     });
     if (readBatch.length > 1) {
       const reservation = rootBudget.reserve(input.sessionId, readBatch.length);
-      let outcomes: PromiseSettledResult<
-        import("../shared/schemas").ToolResult
-      >[];
+      let outcomes: PromiseSettledResult<import("../shared").ToolResult>[];
       try {
         for (const [offset, read] of readBatch.entries()) {
           const previewId = previews.id(callIndex + offset);

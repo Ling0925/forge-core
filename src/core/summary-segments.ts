@@ -1,4 +1,4 @@
-import type { Message } from "../shared/schemas";
+import type { Message } from "../shared";
 
 /** Maximum summary requests per compaction. Kept identical to the historical
  * chunk ceiling so a source that would exceed it fails loudly instead of

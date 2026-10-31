@@ -1,36 +1,32 @@
 import { createHash, randomUUID } from "node:crypto";
 import { join } from "node:path";
 import { z } from "zod";
-import { ForgeError, toErrorInfo } from "../shared/errors";
 import {
+  ForgeError,
+  type InputQueueHost,
+  type InputQueueRunner,
+  type ProviderConfig,
   QueueAdmissionError,
+  type QueuedInput,
+  type RunInput,
+  type SessionId,
+  type SessionSnapshot,
   enqueueInputSchema,
+  errorMessageSchema,
   inputQueueSnapshotSchema,
   queuedInputSchema,
-} from "../shared/input-queue";
-import type {
-  InputQueueHost,
-  InputQueueRunner,
-  QueuedInput,
-} from "../shared/input-queue";
-import {
-  errorMessageSchema,
   runInputSchema,
   sessionIdSchema,
-} from "../shared/schemas";
-import type {
-  ProviderConfig,
-  RunInput,
-  SessionId,
-  SessionSnapshot,
-} from "../shared/schemas";
+  toErrorInfo,
+} from "../shared";
+
 import {
   atomicJson,
+  fileLock,
   privateDirectory,
   readJson,
   storageError,
-} from "../store/io";
-import { fileLock } from "../store/lock";
+} from "../store";
 
 const MAX_PENDING = 500;
 const MAX_SESSION_PENDING = 100;

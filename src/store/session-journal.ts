@@ -2,13 +2,15 @@ import { createHash, randomUUID } from "node:crypto";
 import { lstat, readFile, readdir } from "node:fs/promises";
 import { join } from "node:path";
 import { z } from "zod";
-import { ForgeError } from "../shared/errors";
 import {
+  ForgeError,
+  type SessionChange,
   type SessionId,
+  type SessionMutation,
   type SessionSnapshot,
   sessionSummarySchema,
-} from "../shared/schemas";
-import type { SessionChange, SessionMutation } from "../shared/session-store";
+} from "../shared";
+
 import {
   atomicJson,
   hasCode,

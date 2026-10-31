@@ -1,13 +1,14 @@
 import { stat } from "node:fs/promises";
 import { isAbsolute, resolve } from "node:path";
-import { ForgeError } from "../shared/errors";
-import type {
-  CreateSessionInput,
-  PublicSettings,
-  SessionId,
-  SessionSnapshot,
-} from "../shared/schemas";
-import type { openSessionStore } from "../store/sessions";
+import {
+  type CreateSessionInput,
+  ForgeError,
+  type PublicSettings,
+  type SessionId,
+  type SessionSnapshot,
+} from "../shared";
+
+import type { openSessionStore } from "../store";
 import { assertBoundary } from "./context";
 import { fallbackSourceId, inferSourceId } from "./harness-provider-selection";
 

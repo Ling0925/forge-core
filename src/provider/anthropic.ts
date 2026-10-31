@@ -3,28 +3,25 @@ import type {
   MessageParam,
 } from "@anthropic-ai/sdk/resources/messages";
 import { z } from "zod";
-import type { ModelProvider } from "../shared/contracts";
 import {
   ForgeError,
+  type JsonValue,
+  type Message,
+  type ModelCatalog,
+  type ModelProvider,
   type ProtocolReason,
+  type ProviderConfig,
   ProviderError,
-} from "../shared/errors";
-import type { ModelCatalog } from "../shared/model-catalog";
-import {
+  type Usage,
+  estimateToolCallLines,
   jsonObjectSchema,
   messageSchema,
   providerResponseSchema,
   settingsFields,
   toolCallSchema,
   toolDefinitionSchema,
-} from "../shared/schemas";
-import type {
-  JsonValue,
-  Message,
-  ProviderConfig,
-  Usage,
-} from "../shared/schemas";
-import { estimateToolCallLines } from "../shared/tool-preview-lines";
+} from "../shared";
+
 import { normalizeModelCatalog } from "./catalog";
 import { httpError, protocol } from "./errors";
 import { createRequestOptions } from "./request-options";

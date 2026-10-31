@@ -5,20 +5,21 @@ import { extname, relative } from "node:path";
 import { fileURLToPath } from "node:url";
 import { z } from "zod";
 import {
-  containsSensitiveText,
-  isSensitivePath,
-} from "../shared/content-safety";
-import type { LocalToolRegistry, ToolContext } from "../shared/contracts";
-import { NON_LAYOUT_CONTROLS } from "../shared/control-characters";
-import { createWorkspacePathGuard } from "../shared/path-guard";
-import {
+  type LocalToolRegistry,
+  NON_LAYOUT_CONTROLS,
   type ToolCall,
+  type ToolContext,
   type ToolDefinition,
   type ToolResult,
+  containsSensitiveText,
+  defineTool,
+  isSensitivePath,
   lspServersSchema,
-} from "../shared/schemas";
-import { defineTool } from "../shared/tool-definition";
-import { recoverToolInputError } from "../shared/tool-input";
+  recoverToolInputError,
+} from "../shared";
+
+import { createWorkspacePathGuard } from "../store";
+
 import {
   LspCleanupError,
   type LspServerConfig,

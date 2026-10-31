@@ -1,10 +1,11 @@
 import { z } from "zod";
-import { HOST_PROTOCOL_VERSION, hostStateSchema } from "../shared/host";
 import {
+  HOST_PROTOCOL_VERSION,
+  hostStateSchema,
   rpcRequestSchema,
   rpcResponseSchema,
   runEventSchema,
-} from "../shared/ipc";
+} from "../shared";
 
 export const helloSchema = z
   .object({

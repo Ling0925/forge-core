@@ -1,8 +1,8 @@
-import { ForgeError } from "../shared/errors";
-import type { McpToolOutcome } from "../shared/mcp";
+import { ForgeError, type McpToolOutcome } from "../shared";
+
 import { checkDiscovery } from "./bounds";
 import { toolOutcome } from "./content";
-export type { McpToolOutcome } from "../shared/mcp";
+export type { McpToolOutcome } from "../shared";
 import {
   MCP_DISCOVERY_LIMIT,
   MCP_MAX_MESSAGE_BYTES,
@@ -13,7 +13,7 @@ import {
   type McpToolInfo,
   isSupportedProtocolVersion,
   mcpToolInfoSchema,
-} from "./types";
+} from "../shared";
 
 export type Json = Record<string, unknown>;
 

@@ -1,12 +1,16 @@
-import type { AsyncTaskService } from "../shared/async-tasks";
-import type { ModelProvider } from "../shared/contracts";
-import { narrowestPermission } from "../shared/permissions";
-import type { Permission, SessionId } from "../shared/schemas";
-import type { openMemoryStore } from "../store/memory";
-import type { openSessionStore } from "../store/sessions";
-import { createMemoryToolRegistry } from "../tools/memory";
+import {
+  type AsyncTaskService,
+  type ModelProvider,
+  type Permission,
+  type SessionId,
+  narrowestPermission,
+  redactMemoryText,
+} from "../shared";
+
+import type { openMemoryStore, openSessionStore } from "../store";
+
+import { createMemoryToolRegistry } from "../tools";
 import { forgeMemory } from "./forge-memory";
-import { redactMemoryText } from "./memory-retrieval";
 
 export type HarnessMemoryToolDeps = {
   store: Awaited<ReturnType<typeof openSessionStore>>;

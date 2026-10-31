@@ -4,13 +4,16 @@ import { lstat, realpath } from "node:fs/promises";
 import { homedir } from "node:os";
 import { delimiter, dirname, isAbsolute } from "node:path";
 import type { z } from "zod";
-import { withCancellation } from "../shared/cancellation";
-import { isSensitivePath } from "../shared/content-safety";
-import type { ToolContext } from "../shared/contracts";
-import { ForgeError } from "../shared/errors";
-import type { WorkspacePathGuard } from "../shared/path-guard";
-import { createProcessGroup } from "../shared/process-cleanup";
-import type { ToolResult } from "../shared/schemas";
+import {
+  ForgeError,
+  type ToolContext,
+  type ToolResult,
+  isSensitivePath,
+  withCancellation,
+} from "../shared";
+
+import { type WorkspacePathGuard, createProcessGroup } from "../store";
+
 import { createCommandOutputStore } from "./command-output";
 import { check, errorCode, fail, result, toolCancelled } from "./local-common";
 import type { createLocalPolicy } from "./local-policy";

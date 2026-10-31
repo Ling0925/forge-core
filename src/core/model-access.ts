@@ -1,50 +1,47 @@
 import { createHash, randomUUID } from "node:crypto";
-import { createAccountService } from "../provider/accounts";
-import type { AccountFetch, AccountTokens } from "../provider/accounts/types";
-import { catalogFromIds, mergeCatalog } from "../provider/catalog";
-import { createCachedProviderFactory } from "../provider/catalog-cache";
 import {
-  type VertexAuth,
-  createVertexAuth,
-  normalizeAzureBase,
-} from "../provider/cloud";
-import {
+  type AccountFetch,
+  type AccountTokens,
   type MagpieImportResult,
+  type RouteQuota,
+  type RouteRequest,
+  type VertexAuth,
+  bedrockReferenceCatalog,
+  catalogFromIds,
+  createAccountService,
+  createCachedProviderFactory,
+  createRequestOptions,
+  createVertexAuth,
+  mergeCatalog,
+  normalizeAzureBase,
   parseMagpieImport,
-} from "../provider/import-magpie";
-import { bedrockReferenceCatalog, providerPresets } from "../provider/presets";
-import { createRequestOptions } from "../provider/request-options";
-import type { RouteQuota, RouteRequest } from "../provider/routing";
-import type {
-  ModelProvider,
-  ProviderFactory,
-  SettingsStore,
-} from "../shared/contracts";
-import { ForgeError } from "../shared/errors";
-import type { RouteGroup, RouteMember } from "../shared/model-access";
+  providerPresets,
+} from "../provider";
+
 import {
   type CredentialInput,
+  ForgeError,
   type ModelAccessRequest,
   type ModelAccessResult,
+  type ModelCatalog,
+  type ModelProvider,
+  type ProviderConfig,
+  type ProviderFactory,
   type ProviderProtocol,
+  type PublicProviderSource,
+  type RouteGroup,
+  type RouteMember,
+  type SettingsStore,
+  accountProtocolCompatible,
   modelAccessRequestSchema,
   modelAccessResultSchema,
-} from "../shared/model-access";
-import { type ModelCatalog, modelCatalogSchema } from "../shared/model-catalog";
-import {
-  accountProtocolCompatible,
+  modelCatalogSchema,
   modelProtocol,
   modelProtocolOverride,
-} from "../shared/model-protocol";
-import {
-  type ProviderConfig,
-  type PublicProviderSource,
   providerConfigSchema,
-} from "../shared/schemas";
-import {
-  type ModelCatalogStore,
-  modelCatalogCacheKey,
-} from "../store/model-catalog";
+} from "../shared";
+
+import { type ModelCatalogStore, modelCatalogCacheKey } from "../store";
 
 /** Narrow the optional catalog capability with an authored error instead of a non-null assertion. */
 function requireCatalog(

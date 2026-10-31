@@ -1,9 +1,13 @@
 import { createHash } from "node:crypto";
 import { join } from "node:path";
 import { z } from "zod";
-import { ForgeError } from "../shared/errors";
-import { type ModelCatalog, modelCatalogSchema } from "../shared/model-catalog";
-import type { ProviderConfig } from "../shared/schemas";
+import {
+  ForgeError,
+  type ModelCatalog,
+  type ProviderConfig,
+  modelCatalogSchema,
+} from "../shared";
+
 import { atomicJson, privateDirectory, readJson } from "./io";
 import { fileLock } from "./lock";
 

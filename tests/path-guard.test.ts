@@ -12,8 +12,8 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   WorkspacePathError,
   createWorkspacePathGuard,
-} from "../src/shared/path-guard";
-import type { WorkspacePathGuard } from "../src/shared/path-guard";
+} from "../src/store/path-guard";
+import type { WorkspacePathGuard } from "../src/store/path-guard";
 
 interface Fixture {
   readonly temporary: string;

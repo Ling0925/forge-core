@@ -1,17 +1,16 @@
 import { z } from "zod";
-import type { SessionStore } from "../shared/contracts";
-import { ForgeError } from "../shared/errors";
 import {
+  type CommandTaskAccess,
+  ForgeError,
   type SessionId,
   type SessionSnapshot,
+  type SessionStore,
+  type TaskService,
+  type TaskView,
+  redactCommandArguments,
   sessionIdSchema,
-} from "../shared/schemas";
-import type {
-  CommandTaskAccess,
-  TaskService,
-  TaskView,
-} from "../shared/task-view";
-import { redactCommandArguments, toolActivity } from "../shared/tool-activity";
+  toolActivity,
+} from "../shared";
 
 interface Options {
   store: SessionStore;
@@ -60,7 +59,7 @@ export function createTaskService(options: Options): TaskService {
     const events = snapshot.events.slice(Math.max(0, lastRun));
     const finished = events.findLast((event) => event.type === "run_finished");
     const started = events.find((event) => event.type === "run_started");
-    const pending = new Map<string, import("../shared/schemas").ToolCall>();
+    const pending = new Map<string, import("../shared").ToolCall>();
     for (const event of events) {
       if (event.type === "tool_started") pending.set(event.call.id, event.call);
       if (event.type === "tool_finished") pending.delete(event.toolCallId);

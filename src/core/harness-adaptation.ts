@@ -1,33 +1,30 @@
 import { randomUUID } from "node:crypto";
 import { resolve } from "node:path";
 import { z } from "zod";
-import { withCancellation } from "../shared/cancellation";
-import type {
-  HarnessAdaptationHost,
-  LocalToolRegistry,
-  ModelProvider,
-} from "../shared/contracts";
-import { ForgeError } from "../shared/errors";
 import {
   BASELINE_HARNESS_STRATEGY,
+  ForgeError,
   HARNESS_ADAPTATION_DEFAULTS,
+  type HarnessAdaptationHost,
   type HarnessAdaptationOptions,
   type HarnessAdaptationProgress,
   type HarnessAdaptationReport,
   type HarnessProbe,
   type HarnessStrategy,
+  type LocalToolRegistry,
+  type Message,
+  type ModelProvider,
+  type SessionId,
+  type ToolDefinition,
+  type Usage,
   harnessAdaptationOptionsSchema,
   harnessAdaptationReportSchema,
   harnessExperienceSchema,
   harnessStrategySchema,
-} from "../shared/harness-adaptation";
-import {
-  type Message,
-  type SessionId,
-  type ToolDefinition,
-  type Usage,
   providerResponseSchema,
-} from "../shared/schemas";
+  withCancellation,
+} from "../shared";
+
 import { executeToolCall } from "./tool-executor";
 
 export const HARNESS_PROBE_TOOLS = Object.freeze([

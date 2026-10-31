@@ -1,4 +1,4 @@
-import { type Message, toolResultSchema } from "../shared/schemas";
+import { type Message, toolResultSchema } from "../shared";
 
 /** Cache-friendly request projection: each result has the same representation
  * from its first send onward. Appending messages cannot rewrite an old prefix.

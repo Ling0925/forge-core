@@ -1,8 +1,8 @@
 import { spawn } from "node:child_process";
 import { rm } from "node:fs/promises";
 import { join } from "node:path";
-import { ForgeError } from "../../../shared/errors";
-import { createProcessGroup } from "../../../shared/process-cleanup";
+import { ForgeError } from "../../../shared";
+import { createProcessGroup } from "../../../store";
 import { type CliCommand, exists } from "./cli-layout";
 import { parseToolResult, redact } from "./result";
 import type { Session } from "./session";

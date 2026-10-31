@@ -1,5 +1,9 @@
-import type { AgentRuntimeDependencies } from "../shared/contracts";
-import type { ProviderResponse, RunInput } from "../shared/schemas";
+import type {
+  AgentRuntimeDependencies,
+  ProviderResponse,
+  RunInput,
+} from "../shared";
+
 import type { createAgentSupervisor } from "./agent-supervisor";
 import type { createRunEvents } from "./runtime-events";
 import type { createGenerationStream } from "./runtime-generation";

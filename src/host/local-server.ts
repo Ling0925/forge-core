@@ -1,10 +1,14 @@
 import { randomUUID } from "node:crypto";
 import { chmod, lstat } from "node:fs/promises";
 import { type Socket, createServer } from "node:net";
-import { toErrorInfo } from "../shared/errors";
-import { type RunEvent, workerRequestSchema } from "../shared/ipc";
-import type { RuntimeHost } from "../shared/runtime-host";
-import { hasCode } from "../store/io";
+import {
+  type RunEvent,
+  type RuntimeHost,
+  toErrorInfo,
+  workerRequestSchema,
+} from "../shared";
+
+import { hasCode } from "../store";
 import { hostError } from "./errors";
 import { MAX_REQUEST_BYTES, readFrames, sendFrame } from "./frames";
 import { helloSchema, localRequestSchema } from "./protocol";

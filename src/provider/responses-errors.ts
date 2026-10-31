@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { ProviderError, type ProviderReason } from "../shared/errors";
+import { ProviderError, type ProviderReason } from "../shared";
 
 const detail = z.object({
   code: z.string().nullish(),

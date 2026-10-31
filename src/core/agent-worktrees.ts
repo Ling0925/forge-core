@@ -1,20 +1,20 @@
-import type {
-  AgentWorktree,
-  AgentWorktreeCreateInput,
-  AgentWorktreeService,
-} from "../shared/agent-worktrees";
-import { minimalEnv } from "../shared/child-env";
-import { createProcessGroup } from "../shared/process-cleanup";
+import {
+  type AgentWorktree,
+  type AgentWorktreeCreateInput,
+  type AgentWorktreeService,
+  ForgeError,
+  sessionIdSchema,
+} from "../shared";
+import { createProcessGroup, minimalEnv } from "../store";
+
 export type {
   AgentWorktreeCreateInput,
   AgentWorktree,
   AgentWorktreeService,
-} from "../shared/agent-worktrees";
+} from "../shared";
 import { type ChildProcess, spawn } from "node:child_process";
 import { lstat, mkdir, realpath, stat } from "node:fs/promises";
 import { isAbsolute, join, relative, resolve } from "node:path";
-import { ForgeError } from "../shared/errors";
-import { sessionIdSchema } from "../shared/schemas";
 
 /**
  * Opt-in Git worktree isolation for child agents.

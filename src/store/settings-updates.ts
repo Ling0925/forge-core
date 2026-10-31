@@ -1,13 +1,12 @@
-import type {
-  AgentProfile,
-  AgentProfileOperation,
-} from "../shared/agent-profiles";
-import { ForgeError } from "../shared/errors";
-import { configureInputSchema } from "../shared/schemas";
-import type {
-  ConfigureInput,
-  ProviderSourceOperation,
-} from "../shared/schemas";
+import {
+  type AgentProfile,
+  type AgentProfileOperation,
+  type ConfigureInput,
+  ForgeError,
+  type ProviderSourceOperation,
+  configureInputSchema,
+} from "../shared";
+
 import type { createSettingsProvider } from "./settings-provider";
 import {
   NEW_SOURCE_ID,

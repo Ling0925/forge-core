@@ -1,27 +1,23 @@
-import { withCancellation } from "../shared/cancellation";
-import type {
-  ModelProvider,
-  SessionStore,
-  ToolContext,
-} from "../shared/contracts";
 import {
   ForgeError,
-  ProviderError,
-  providerFailures,
-  providerReasons,
-} from "../shared/errors";
-import {
   type ForgeMemoryInput,
   type MemoryChange,
   type MemoryRecord,
   type MemoryStore,
-  memorySynthesisSchema,
-} from "../shared/memory";
-import {
+  type ModelProvider,
+  ProviderError,
   type ProviderResponse,
+  type SessionStore,
+  type ToolContext,
+  memorySynthesisSchema,
+  providerFailures,
+  providerReasons,
   providerResponseSchema,
-} from "../shared/schemas";
-import { redactMemoryText, retrieveMemoryEvidence } from "./memory-retrieval";
+  redactMemoryText,
+  withCancellation,
+} from "../shared";
+
+import { retrieveMemoryEvidence } from "./memory-retrieval";
 
 const synthesisPrompt = (
   maxMemories: number,
@@ -75,7 +71,7 @@ export async function forgeMemory(
     readonly context: ToolContext;
     readonly secrets?: readonly string[];
     /** Launch-time session/model snapshot for a host-owned background operation. */
-    readonly current?: import("../shared/schemas").SessionSnapshot;
+    readonly current?: import("../shared").SessionSnapshot;
   },
 ) {
   const { sessions, memories, provider, context } = options;

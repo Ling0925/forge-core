@@ -1,4 +1,4 @@
-import type { Permission, RunInput, SessionSnapshot } from "../shared/schemas";
+import type { Permission, RunInput, SessionSnapshot } from "../shared";
 
 // Stable sections precede run data so tool turns can reuse the same prefix.
 const CORE_INSTRUCTIONS = `You are Forge, a local coding assistant. Deliver the user's requested result, not just a description of work you could do.

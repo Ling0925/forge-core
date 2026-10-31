@@ -1,5 +1,5 @@
 import { afterEach, expect, it, vi } from "vitest";
-import { minimalEnv } from "../../src/shared/child-env";
+import { minimalEnv } from "../../src/store/child-env";
 
 afterEach(() => vi.unstubAllEnvs());
 

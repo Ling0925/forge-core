@@ -1,14 +1,15 @@
-import type { McpHealth, McpService, McpToolInfo } from "../shared/mcp";
-export type { McpService } from "../shared/mcp";
+import {
+  ForgeError,
+  type McpHealth,
+  type McpService,
+  type McpToolInfo,
+} from "../shared";
+export type { McpService } from "../shared";
 import { join } from "node:path";
 import { z } from "zod";
-import { ForgeError } from "../shared/errors";
-import { atomicJson, privateDirectory, readJson } from "../store/io";
-import { fileLock } from "../store/lock";
-import { checkDiscovery } from "./bounds";
-import { createRemoteConnection } from "./http";
-import { StdioMcpConnection } from "./protocol";
-import type { McpConnection } from "./rpc";
+
+import { atomicJson, fileLock, privateDirectory, readJson } from "../store";
+
 import {
   MCP_MAX_SERVERS,
   type McpRegisterAnyInput,
@@ -19,7 +20,11 @@ import {
   mcpRemoteServerConfigSchema,
   mcpServerConfigSchema,
   mcpStdioServerConfigSchema,
-} from "./types";
+} from "../shared";
+import { checkDiscovery } from "./bounds";
+import { createRemoteConnection } from "./http";
+import { StdioMcpConnection } from "./protocol";
+import type { McpConnection } from "./rpc";
 
 const catalogSchema = z
   .object({ version: z.literal(1), servers: z.array(mcpServerConfigSchema) })

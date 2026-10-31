@@ -1,5 +1,5 @@
 import { Worker } from "node:worker_threads";
-import { ForgeError } from "../shared/errors";
+import { ForgeError } from "../shared";
 
 export function globMatcher(pattern?: string): (path: string) => boolean {
   if (pattern === undefined) return () => true;

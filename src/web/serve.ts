@@ -6,16 +6,14 @@ enableCompileCache();
 
 const [
   { createHarness },
-  { createLocalHost },
-  { createRuntimeHub },
+  { createLocalHost, createRuntimeHub },
   { coreBuildInfo },
   { ENDPOINT_REQUIREMENT, canonicalIpHost, validListenEndpoint },
   { createWebHost },
 ] = await Promise.all([
-  import("../core/harness"),
-  import("../host/local-server"),
-  import("../host/runtime"),
-  import("../shared/build-info"),
+  import("../core"),
+  import("../host"),
+  import("../shared"),
   import("./endpoint"),
   import("./server"),
 ]);

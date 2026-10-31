@@ -1,5 +1,4 @@
-import type { ProviderProtocol } from "../shared/model-access";
-import type { ModelCatalog } from "../shared/model-catalog";
+import type { ModelCatalog, ProviderProtocol } from "../shared";
 
 /**
  * Public provider preset. This type deliberately has no key, token, header

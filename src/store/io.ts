@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { constants } from "node:fs";
 import { chmod, lstat, mkdir, open, rename, unlink } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
-import { ForgeError } from "../shared/errors";
+import { ForgeError } from "../shared";
 
 export const MAX_SNAPSHOT_BYTES = 64 * 1024 * 1024;
 export const storageError = (): ForgeError =>

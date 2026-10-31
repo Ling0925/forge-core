@@ -1,28 +1,29 @@
 import { randomUUID } from "node:crypto";
-import type { HarnessService, SteeringHandler } from "../shared/contracts";
-import { ForgeError, toErrorInfo } from "../shared/errors";
-import { HOST_PROTOCOL_VERSION, type HostState } from "../shared/host";
-import { QueueAdmissionError } from "../shared/input-queue";
-import {
-  type RpcRequest,
-  type RunEvent,
-  type RunId,
-  type WorkerMessage,
-  projectContextDtoSchema,
-  runIdSchema,
-  workerMessageSchema,
-  workerRequestSchema,
-} from "../shared/ipc";
-import { permissionRank } from "../shared/permissions";
 import {
   type AgentEvent,
   type ApprovalRequest,
   type ErrorInfo,
+  ForgeError,
+  HOST_PROTOCOL_VERSION,
+  type HarnessService,
+  type HostState,
   type Permission,
+  QueueAdmissionError,
+  type RpcRequest,
+  type RunEvent,
+  type RunId,
   type RunInput,
+  type SteeringHandler,
+  type WorkerMessage,
   approvalRequestSchema,
-} from "../shared/schemas";
-import { paginateSession } from "../shared/session-page";
+  paginateSession,
+  permissionRank,
+  projectContextDtoSchema,
+  runIdSchema,
+  toErrorInfo,
+  workerMessageSchema,
+  workerRequestSchema,
+} from "../shared";
 
 export const safeError = {
   code: "internal",

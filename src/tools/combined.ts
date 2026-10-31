@@ -1,5 +1,10 @@
-import type { LocalToolRegistry, ToolContext } from "../shared/contracts";
-import type { ToolCall, ToolDefinition, ToolResult } from "../shared/schemas";
+import type {
+  LocalToolRegistry,
+  ToolCall,
+  ToolContext,
+  ToolDefinition,
+  ToolResult,
+} from "../shared";
 
 export function createCombinedToolRegistry(
   ...registries: readonly LocalToolRegistry[]
@@ -25,10 +30,10 @@ export function createCombinedToolRegistry(
     ...(commandAccess.length
       ? {
           commandTasks: {
-            list: (id: import("../shared/schemas").SessionId) =>
+            list: (id: import("../shared").SessionId) =>
               commandAccess.flatMap((access) => [...access.list(id)]),
             read: (
-              id: import("../shared/schemas").SessionId,
+              id: import("../shared").SessionId,
               taskId: string,
               offset: number,
               limit: number,
@@ -36,10 +41,7 @@ export function createCombinedToolRegistry(
               commandAccess
                 .map((access) => access.read(id, taskId, offset, limit))
                 .find(Boolean),
-            async stop(
-              id: import("../shared/schemas").SessionId,
-              taskId: string,
-            ) {
+            async stop(id: import("../shared").SessionId, taskId: string) {
               for (const access of commandAccess)
                 if (await access.stop(id, taskId)) return true;
               return false;

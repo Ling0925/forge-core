@@ -1,12 +1,13 @@
 import { rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { ForgeError } from "../../../shared/errors";
 import {
   type BrowserCommand,
   type BrowserCommandResult,
   type BrowserPluginConfig,
+  ForgeError,
   browserPluginConfigSchema,
-} from "../../../shared/plugins";
+} from "../../../shared";
+
 import { cliFor, createLayout, exists } from "./cli-layout";
 import { createLifecycle } from "./lifecycle";
 import { Session } from "./session";

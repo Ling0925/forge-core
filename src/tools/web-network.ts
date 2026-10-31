@@ -5,7 +5,7 @@ import { isIP } from "node:net";
 import { type Readable, Transform } from "node:stream";
 import { createBrotliDecompress, createGunzip, createInflate } from "node:zlib";
 import ipaddr from "ipaddr.js";
-import { withCancellation } from "../shared/cancellation";
+import { withCancellation } from "../shared";
 
 const BYTE_LIMIT = 2 * 1024 * 1024;
 const TIMEOUT_MS = 20000;

@@ -2,30 +2,25 @@ import { posix } from "node:path";
 import { z } from "zod";
 import {
   type AdvisorCoordinator,
-  advisorAnswerInputSchema,
-  advisorInputSchema,
-} from "../shared/agent-coordination";
-import {
-  agentProfileIdSchema,
-  agentProfileSchema,
-} from "../shared/agent-profiles";
-import type {
-  AgentRuntimeDependencies,
-  ApprovalHandler,
-  RunControl,
-} from "../shared/contracts";
-import { C0_CONTROL } from "../shared/control-characters";
-import { ForgeError } from "../shared/errors";
-import {
+  type AgentRuntimeDependencies,
+  type ApprovalHandler,
+  C0_CONTROL,
+  ForgeError,
   type Permission,
+  type RunControl,
   type RunInput,
   type SessionSnapshot,
   type ToolResult,
   type Usage,
+  advisorAnswerInputSchema,
+  advisorInputSchema,
+  agentProfileIdSchema,
+  agentProfileSchema,
   providerSourceIdSchema,
   sessionIdSchema,
   settingsFields,
-} from "../shared/schemas";
+} from "../shared";
+
 import { agentProfileSummary } from "./agent-profiles";
 
 /** Default for settings.maxActiveAgents. */

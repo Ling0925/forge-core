@@ -3,8 +3,8 @@ import { lstat, open } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import type { DatabaseSync } from "node:sqlite";
 import { z } from "zod";
-import { ForgeError } from "../shared/errors";
 import {
+  ForgeError,
   type MemoryChange,
   type MemoryRecord,
   type MemoryStore,
@@ -15,7 +15,8 @@ import {
   memoryVersionSchema,
   searchMemorySchema,
   updateMemorySchema,
-} from "../shared/memory";
+} from "../shared";
+
 import { hasCode, privateDirectory, storageError } from "./io";
 
 const check = (signal?: AbortSignal) => {

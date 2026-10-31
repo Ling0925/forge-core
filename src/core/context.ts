@@ -1,6 +1,10 @@
-import type { ModelProvider } from "../shared/contracts";
-import { ForgeError } from "../shared/errors";
-import type { Message, SessionSnapshot } from "../shared/schemas";
+import {
+  ForgeError,
+  type Message,
+  type ModelProvider,
+  type SessionSnapshot,
+} from "../shared";
+
 import {
   SUMMARY_REQUEST_LIMIT,
   type SummaryShard,

@@ -2,8 +2,8 @@ import http from "node:http";
 import https from "node:https";
 import { Readable } from "node:stream";
 import tls from "node:tls";
-import { ForgeError, ProviderError } from "../shared/errors";
-import type { ProviderConfig } from "../shared/schemas";
+import { ForgeError, type ProviderConfig, ProviderError } from "../shared";
+
 import { prepareCodexBody } from "./accounts/codex";
 import * as copilotAccounts from "./accounts/copilot";
 

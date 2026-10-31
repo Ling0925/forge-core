@@ -1,17 +1,16 @@
-import type { AdvisorCoordinator } from "../shared/agent-coordination";
-import { withCancellation } from "../shared/cancellation";
-import type {
-  AgentRuntime,
-  AgentRuntimeDependencies,
-  ApprovalHandler,
-} from "../shared/contracts";
-import type {
-  AgentEvent,
-  ApprovalRequest,
-  SessionId,
-  SessionSnapshot,
-} from "../shared/schemas";
-import { toolActivity } from "../shared/tool-activity";
+import {
+  type AdvisorCoordinator,
+  type AgentEvent,
+  type AgentRuntime,
+  type AgentRuntimeDependencies,
+  type ApprovalHandler,
+  type ApprovalRequest,
+  type SessionId,
+  type SessionSnapshot,
+  toolActivity,
+  withCancellation,
+} from "../shared";
+
 import {
   type AgentEnvironment,
   type ChildOperation,

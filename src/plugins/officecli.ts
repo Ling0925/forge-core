@@ -4,33 +4,30 @@ import { basename, extname, resolve } from "node:path";
 import { z } from "zod";
 import { zodToJsonSchema } from "zod-to-json-schema";
 import {
+  ForgeError,
+  HTML_PREVIEW_MAX_BYTES,
+  type OfficeCliPluginConfig,
+  PUBLISHED_FILE_MAX_BYTES,
+  type PublishedFile,
+  type SessionId,
+  type ToolContext,
+  type ToolResult,
   containsSensitiveText,
+  defineTool,
+  invalidToolInput,
   isSensitivePath,
-} from "../shared/content-safety";
-import type { ToolContext } from "../shared/contracts";
-import { ForgeError } from "../shared/errors";
-import { HTML_PREVIEW_MAX_BYTES } from "../shared/html-preview";
+  jsonObjectSchema,
+  officecliPluginConfigSchema,
+  publishedFileNameSchema,
+  recoverToolInputError,
+} from "../shared";
+
 import {
   WorkspacePathError,
   type WorkspacePathGuard,
   createWorkspacePathGuard,
-} from "../shared/path-guard";
-import {
-  type OfficeCliPluginConfig,
-  officecliPluginConfigSchema,
-} from "../shared/plugins";
-import {
-  PUBLISHED_FILE_MAX_BYTES,
-  type PublishedFile,
-  publishedFileNameSchema,
-} from "../shared/published-files";
-import {
-  type SessionId,
-  type ToolResult,
-  jsonObjectSchema,
-} from "../shared/schemas";
-import { defineTool } from "../shared/tool-definition";
-import { invalidToolInput, recoverToolInputError } from "../shared/tool-input";
+} from "../store";
+
 import type {
   OfficeCliBackend,
   OfficeCliResult,

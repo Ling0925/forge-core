@@ -1,7 +1,10 @@
-import type { AdvisorCoordinator } from "../shared/agent-coordination";
-import type { RunControl } from "../shared/contracts";
-import { ForgeError } from "../shared/errors";
-import { BASELINE_HARNESS_STRATEGY } from "../shared/harness-adaptation";
+import {
+  type AdvisorCoordinator,
+  BASELINE_HARNESS_STRATEGY,
+  ForgeError,
+  type RunControl,
+} from "../shared";
+
 import type { createRunEvents } from "./runtime-events";
 import type { createRuntimeJournal } from "./runtime-journal";
 import type { RunState } from "./runtime-state";

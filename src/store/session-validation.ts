@@ -1,11 +1,12 @@
 import { isAbsolute } from "node:path";
-import { ForgeError } from "../shared/errors";
 import {
+  ForgeError,
   type Message,
+  type RecordDelta,
   type SessionSnapshot,
   sessionSnapshotSchema,
-} from "../shared/schemas";
-import type { RecordDelta } from "../shared/session-store";
+} from "../shared";
+
 import { storageError } from "./io";
 
 const shape = sessionSnapshotSchema.unwrap();

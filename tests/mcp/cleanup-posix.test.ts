@@ -4,7 +4,7 @@ import {
   cleanupProcess,
   parsePsMembers,
   psMembers,
-} from "../../src/shared/process-cleanup";
+} from "../../src/store/process-cleanup";
 
 describe("POSIX process-group cleanup", () => {
   it("parses BSD/macOS ps output with lstart identities", () => {

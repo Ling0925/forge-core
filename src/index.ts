@@ -1,15 +1,12 @@
-export { createHarness } from "./core/harness";
-export { createAgentRuntime } from "./core/runtime";
-export { createRuntimeHub } from "./host/runtime";
+export { createHarness, createAgentRuntime } from "./core";
+export { createRuntimeHub } from "./host";
 export type {
   HarnessOptions,
   HarnessService,
   AgentRuntimeDependencies,
-} from "./shared/contracts";
-export type { RuntimeHost } from "./shared/runtime-host";
-export type {
+  RuntimeHost,
   HarnessAdaptationOptions,
   HarnessAdaptationReport,
   HarnessStrategy,
   HarnessExperienceStore,
-} from "./shared/harness-adaptation";
+} from "./shared";

@@ -1,6 +1,12 @@
-import type { AgentRuntimeDependencies, RunControl } from "../shared/contracts";
-import { narrowestPermission } from "../shared/permissions";
-import type { AgentEvent, Permission, RunInput } from "../shared/schemas";
+import {
+  type AgentEvent,
+  type AgentRuntimeDependencies,
+  type Permission,
+  type RunControl,
+  type RunInput,
+  narrowestPermission,
+} from "../shared";
+
 import type { RunState } from "./runtime-state";
 
 /**

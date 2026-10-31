@@ -1,17 +1,16 @@
-import { ForgeError } from "../shared/errors";
 import {
+  ForgeError,
+  type PublicSettings,
+  configureInputSchema,
+  defaultPublicSettings,
   exclusiveModelProtocol,
   modelProtocol,
   modelProtocolEndpoint,
   modelProtocolOverride,
-} from "../shared/model-protocol";
-import {
-  configureInputSchema,
-  defaultPublicSettings,
   providerConfigSchema,
   publicSettingsSchema,
-} from "../shared/schemas";
-import type { PublicSettings } from "../shared/schemas";
+} from "../shared";
+
 import type { StoredState } from "./settings-schema";
 import {
   invalid,

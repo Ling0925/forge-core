@@ -1,5 +1,5 @@
-import { mcpRegisterInputSchema } from "../../src/mcp/types";
 import type { HarnessService } from "../../src/shared/contracts";
+import { mcpRegisterInputSchema } from "../../src/shared/mcp";
 
 /**
  * Neutral host-test defaults for public service methods that the local host

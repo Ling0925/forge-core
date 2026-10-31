@@ -1,6 +1,9 @@
-import type { AgentRuntimeDependencies } from "../shared/contracts";
-import { ForgeError } from "../shared/errors";
-import type { PublicProviderSource, PublicSettings } from "../shared/schemas";
+import {
+  type AgentRuntimeDependencies,
+  ForgeError,
+  type PublicProviderSource,
+  type PublicSettings,
+} from "../shared";
 
 type Selection = { id: string; providerSourceId?: string };
 const check = (signal: AbortSignal) => {

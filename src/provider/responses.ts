@@ -5,8 +5,10 @@ import type {
   ProviderResponse,
   ToolCallPreview,
   ToolDefinition,
-} from "../shared/schemas";
-import type { WebSearchMode, WebSearchProgress } from "../shared/web-search";
+  WebSearchMode,
+  WebSearchProgress,
+} from "../shared";
+
 import type { Helpers } from "./responses-events";
 import { body } from "./responses-input";
 import { createResponsesStream } from "./responses-stream";

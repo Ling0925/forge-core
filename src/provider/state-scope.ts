@@ -1,6 +1,5 @@
 import { createHash } from "node:crypto";
-import type { ModelProvider } from "../shared/contracts";
-import type { ProviderConfig } from "../shared/schemas";
+import type { ModelProvider, ProviderConfig } from "../shared";
 
 /** Bind opaque signatures/encrypted items to the actual authenticated principal. */
 export function providerStateScope(config: ProviderConfig): string {

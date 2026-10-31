@@ -1,7 +1,4 @@
-import type {
-  AccountTokens,
-  ProviderProtocol,
-} from "../../shared/model-access";
+import type { AccountTokens, ProviderProtocol } from "../../shared";
 
 // Subscription account adapters adapted from Magpie's provider account code.
 // Source provenance and MIT license: THIRD_PARTY_NOTICES.md.

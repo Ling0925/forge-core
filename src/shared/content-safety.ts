@@ -22,3 +22,26 @@ export function containsSensitiveText(text: string): boolean {
     )
   );
 }
+
+/** Known credentials and common secret shapes only; not arbitrary-secret detection. */
+export function redactMemoryText(
+  text: string,
+  secrets: readonly string[] = [],
+): string {
+  let value = text;
+  for (const secret of secrets)
+    if (secret) value = value.split(secret).join("[REDACTED]");
+  return value
+    .replace(
+      /-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?(?:-----END [A-Z ]*PRIVATE KEY-----|$)/g,
+      "[REDACTED PRIVATE KEY]",
+    )
+    .replace(
+      /\b(?:sk-[\w-]{8,}|gh[pousr]_[\w]{20,}|AKIA[A-Z0-9]{16}|Bearer\s+[^\s"\\]+)/gi,
+      "[REDACTED]",
+    )
+    .replace(
+      /((?:["']?(?:api[_-]?key|access[_-]?token|client[_-]?secret|password)["']?)\s*[:=]\s*)(?:"[^"\r\n]*"|'[^'\r\n]*'|[^\s,}]+)/gi,
+      "$1[REDACTED]",
+    );
+}

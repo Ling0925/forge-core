@@ -1,33 +1,39 @@
 import { stat } from "node:fs/promises";
 import { join } from "node:path";
-import { createProjectContext } from "../context/index";
-import { createMcpService } from "../mcp/registry";
-import { createPluginHost } from "../plugins/host";
-import { createModelProvider } from "../provider/openai";
-import { createRouteState } from "../provider/routing";
-import type { AsyncTaskService } from "../shared/async-tasks";
-import type { HarnessOptions, HarnessService } from "../shared/contracts";
-import { ForgeError } from "../shared/errors";
-import { QueueAdmissionError } from "../shared/input-queue";
-import { browserRequestSchema } from "../shared/plugins";
+import { createProjectContext } from "../context";
+import { createMcpService } from "../mcp";
+import { createPluginHost } from "../plugins";
+import { createModelProvider, createRouteState } from "../provider";
+
 import {
+  type AsyncTaskService,
+  type CommandTaskAccess,
+  ForgeError,
+  type HarnessOptions,
+  type HarnessService,
+  QueueAdmissionError,
+  type SessionId,
+  type SessionSnapshot,
+  browserRequestSchema,
   configureInputSchema,
   createSessionInputSchema,
   runInputSchema,
   sessionIdSchema,
   sessionTitleSchema,
   settingsFields,
-} from "../shared/schemas";
-import type { SessionId, SessionSnapshot } from "../shared/schemas";
-import type { CommandTaskAccess } from "../shared/task-view";
-import { openHarnessExperienceStore } from "../store/harness-experiences";
-import { openMemoryStore } from "../store/memory";
-import { openModelCatalogStore } from "../store/model-catalog";
-import { openPublishedFileStore } from "../store/published-files";
-import { openSessionStore } from "../store/sessions";
-import { openSettingsStore } from "../store/settings";
-import { openToolHooksStore } from "../store/tool-hooks";
-import { LspServerPool } from "../tools/lsp-pool";
+} from "../shared";
+
+import {
+  openHarnessExperienceStore,
+  openMemoryStore,
+  openModelCatalogStore,
+  openPublishedFileStore,
+  openSessionStore,
+  openSettingsStore,
+  openToolHooksStore,
+} from "../store";
+
+import { LspServerPool } from "../tools";
 import { createAgentWorktreeService } from "./agent-worktrees";
 import { openAsyncTaskService } from "./async-tasks";
 import { projectSummary } from "./context";
@@ -107,7 +113,7 @@ export const createHarness = async (
     // Later runs replace the reader so pending commits observe current grants.
     const asyncPermissions = new Map<
       SessionId,
-      { read: () => import("../shared/schemas").Permission; tasks: number }
+      { read: () => import("../shared").Permission; tasks: number }
     >();
     const getAsyncTasks = () => {
       check();

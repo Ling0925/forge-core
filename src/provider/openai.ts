@@ -1,24 +1,24 @@
 import type OpenAI from "openai";
 import { z } from "zod";
-import type { ModelProvider } from "../shared/contracts";
-import { ForgeError, ProviderError } from "../shared/errors";
-import type { ModelCatalog } from "../shared/model-catalog";
 import {
+  ForgeError,
+  type ModelCatalog,
+  type ModelProvider,
+  type ProviderConfig,
+  ProviderError,
+  type ProviderResponse,
+  type ToolCall,
+  type ToolCallPreview,
+  type Usage,
+  estimateToolCallLines,
   messageSchema,
   providerConfigSchema,
   providerResponseSchema,
   settingsFields,
   toolCallSchema,
   toolDefinitionSchema,
-} from "../shared/schemas";
-import type {
-  ProviderConfig,
-  ProviderResponse,
-  ToolCall,
-  ToolCallPreview,
-  Usage,
-} from "../shared/schemas";
-import { estimateToolCallLines } from "../shared/tool-preview-lines";
+} from "../shared";
+
 import { createAnthropicProvider } from "./anthropic";
 import { parseProviderJson } from "./bounded-json";
 import { normalizeModelCatalog } from "./catalog";

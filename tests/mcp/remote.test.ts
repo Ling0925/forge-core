@@ -13,7 +13,7 @@ import { createMcpService } from "../../src/mcp/registry";
 import {
   mcpRegisterAnyInputSchema,
   mcpRemoteServerConfigSchema,
-} from "../../src/mcp/types";
+} from "../../src/shared/mcp";
 import { mcpRegisterDtoSchema } from "../../src/shared/mcp";
 
 const initResult = {

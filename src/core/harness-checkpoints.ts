@@ -1,10 +1,10 @@
-import { ForgeError } from "../shared/errors";
-import type { SessionId } from "../shared/schemas";
+import { ForgeError, type SessionId } from "../shared";
+
 import {
   createCheckpointStore,
+  type openSessionStore,
   workspaceCheckpointDirectory,
-} from "../store/checkpoints";
-import type { openSessionStore } from "../store/sessions";
+} from "../store";
 
 /**
  * Session-scoped checkpoint access. Checkpoints live per workspace, so every

@@ -10,7 +10,7 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
-import { createWorkspacePathGuard } from "../../src/shared/path-guard";
+import { createWorkspacePathGuard } from "../../src/store/path-guard";
 import { signature } from "../../src/tools/local-common";
 import { createLocalPolicy } from "../../src/tools/local-policy";
 

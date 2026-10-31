@@ -1,14 +1,20 @@
 import { randomUUID } from "node:crypto";
 import { z } from "zod";
-import type { LocalToolRegistry, ToolContext } from "../shared/contracts";
-import { C0_CONTROL_OR_DELETE } from "../shared/control-characters";
-import { ForgeError } from "../shared/errors";
-import type { ToolCall, ToolDefinition, ToolResult } from "../shared/schemas";
-import { jsonObjectSchema } from "../shared/schemas";
-import type { CommandTaskAccess, TaskView } from "../shared/task-view";
-import { redactCommandArguments } from "../shared/tool-activity";
-import { defineTool } from "../shared/tool-definition";
-import { invalidToolInput } from "../shared/tool-input";
+import {
+  C0_CONTROL_OR_DELETE,
+  type CommandTaskAccess,
+  ForgeError,
+  type LocalToolRegistry,
+  type TaskView,
+  type ToolCall,
+  type ToolContext,
+  type ToolDefinition,
+  type ToolResult,
+  defineTool,
+  invalidToolInput,
+  jsonObjectSchema,
+  redactCommandArguments,
+} from "../shared";
 
 const RESULT_LIMIT = 128 * 1024;
 const taskArguments = z

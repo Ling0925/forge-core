@@ -1,6 +1,11 @@
-import type { ModelProvider } from "../shared/contracts";
-import type { SessionId, SessionSnapshot, Usage } from "../shared/schemas";
-import type { openSessionStore } from "../store/sessions";
+import type {
+  ModelProvider,
+  SessionId,
+  SessionSnapshot,
+  Usage,
+} from "../shared";
+
+import type { openSessionStore } from "../store";
 import { autoTitle } from "./session-title";
 import { createSessionWriter } from "./session-writer";
 

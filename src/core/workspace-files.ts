@@ -3,16 +3,15 @@ import { lstat, open, opendir } from "node:fs/promises";
 import { dirname, join, relative } from "node:path";
 import { TextDecoder } from "node:util";
 import {
+  ForgeError,
+  type WorkspaceDirectoryListingDto,
+  type WorkspaceFileEntryDto,
+  type WorkspaceFilePreviewDto,
   containsSensitiveText,
   isSensitivePath,
-} from "../shared/content-safety";
-import { ForgeError } from "../shared/errors";
-import type {
-  WorkspaceDirectoryListingDto,
-  WorkspaceFileEntryDto,
-  WorkspaceFilePreviewDto,
-} from "../shared/ipc";
-import { createWorkspacePathGuard } from "../shared/path-guard";
+} from "../shared";
+
+import { createWorkspacePathGuard } from "../store";
 
 const MAX_DIRECTORY_ENTRIES = 500;
 const MAX_PREVIEW_BYTES = 64 * 1024;

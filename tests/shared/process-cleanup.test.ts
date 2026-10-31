@@ -1,6 +1,6 @@
 import { ChildProcess } from "node:child_process";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
-import { createProcessGroup } from "../../src/shared/process-cleanup";
+import { createProcessGroup } from "../../src/store/process-cleanup";
 
 const ps = vi.hoisted(() => vi.fn());
 vi.mock("node:child_process", async (original) => ({

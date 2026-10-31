@@ -9,7 +9,110 @@
   "exports": {
     ".": { "types": "./src/index.ts", "import": "./dist/index.js" },
     "./package.json": "./package.json",
-    "./*": { "types": "./src/*.ts", "import": "./dist/*.js" }
+    "./core": {
+      "types": "./src/core/index.ts",
+      "import": "./dist/core/index.js"
+    },
+    "./provider": {
+      "types": "./src/provider/index.ts",
+      "import": "./dist/provider/index.js"
+    },
+    "./store": {
+      "types": "./src/store/index.ts",
+      "import": "./dist/store/index.js"
+    },
+    "./tools": {
+      "types": "./src/tools/index.ts",
+      "import": "./dist/tools/index.js"
+    },
+    "./context": {
+      "types": "./src/context/index.ts",
+      "import": "./dist/context/index.js"
+    },
+    "./mcp": {
+      "types": "./src/mcp/index.ts",
+      "import": "./dist/mcp/index.js"
+    },
+    "./plugins": {
+      "types": "./src/plugins/index.ts",
+      "import": "./dist/plugins/index.js"
+    },
+    "./host": {
+      "types": "./src/host/index.ts",
+      "import": "./dist/host/index.js"
+    },
+    "./web": {
+      "types": "./src/web/index.ts",
+      "import": "./dist/web/index.js"
+    },
+    "./shared": {
+      "types": "./src/shared/index.ts",
+      "import": "./dist/shared/index.js"
+    },
+    "./core/harness": {
+      "types": "./src/core/harness.ts",
+      "import": "./dist/core/harness.js"
+    },
+    "./provider/openai": {
+      "types": "./src/provider/openai.ts",
+      "import": "./dist/provider/openai.js"
+    },
+    "./store/lock": {
+      "types": "./src/store/lock.ts",
+      "import": "./dist/store/lock.js"
+    },
+    "./web/serve": {
+      "types": "./src/web/serve.ts",
+      "import": "./dist/web/serve.js"
+    },
+    "./shared/agent-profiles": {
+      "types": "./src/shared/agent-profiles.ts",
+      "import": "./dist/shared/agent-profiles.js"
+    },
+    "./shared/agent-coordination": {
+      "types": "./src/shared/agent-coordination.ts",
+      "import": "./dist/shared/agent-coordination.js"
+    },
+    "./shared/harness-adaptation": {
+      "types": "./src/shared/harness-adaptation.ts",
+      "import": "./dist/shared/harness-adaptation.js"
+    },
+    "./shared/ipc": {
+      "types": "./src/shared/ipc.ts",
+      "import": "./dist/shared/ipc.js"
+    },
+    "./shared/bridge": {
+      "types": "./src/shared/bridge.ts",
+      "import": "./dist/shared/bridge.js"
+    },
+    "./shared/project-context": {
+      "types": "./src/shared/project-context.ts",
+      "import": "./dist/shared/project-context.js"
+    },
+    "./shared/build-info": {
+      "types": "./src/shared/build-info.ts",
+      "import": "./dist/shared/build-info.js"
+    },
+    "./shared/schemas": {
+      "types": "./src/shared/schemas.ts",
+      "import": "./dist/shared/schemas.js"
+    },
+    "./shared/mcp": {
+      "types": "./src/shared/mcp.ts",
+      "import": "./dist/shared/mcp.js"
+    },
+    "./shared/checkpoints": {
+      "types": "./src/shared/checkpoints.ts",
+      "import": "./dist/shared/checkpoints.js"
+    },
+    "./shared/agent-worktrees": {
+      "types": "./src/shared/agent-worktrees.ts",
+      "import": "./dist/shared/agent-worktrees.js"
+    },
+    "./shared/runtime-host": {
+      "types": "./src/shared/runtime-host.ts",
+      "import": "./dist/shared/runtime-host.js"
+    }
   },
   "bin": { "forge-core": "dist/web/serve.js" },
   "files": ["dist", "src", "README.md", "THIRD_PARTY_NOTICES.md"],

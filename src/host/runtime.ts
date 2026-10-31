@@ -1,6 +1,11 @@
-import type { HarnessService } from "../shared/contracts";
-import type { RpcRequest, RpcResponse, WorkerMessage } from "../shared/ipc";
-import type { RuntimeHost } from "../shared/runtime-host";
+import type {
+  HarnessService,
+  RpcRequest,
+  RpcResponse,
+  RuntimeHost,
+  WorkerMessage,
+} from "../shared";
+
 import { createWorkerController, safeError } from "./controller";
 
 // A single request may legitimately cover a long provider turn; this is the

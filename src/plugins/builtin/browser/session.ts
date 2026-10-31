@@ -1,9 +1,10 @@
-import { StdioMcpConnection } from "../../../mcp/protocol";
-import { ForgeError } from "../../../shared/errors";
-import type {
-  BrowserCommand,
-  BrowserPluginConfig,
-} from "../../../shared/plugins";
+import { StdioMcpConnection } from "../../../mcp";
+import {
+  type BrowserCommand,
+  type BrowserPluginConfig,
+  ForgeError,
+} from "../../../shared";
+
 import { type CliCommand, type PrivateLayout, privateEnv } from "./cli-layout";
 import { cancelled } from "./result";
 

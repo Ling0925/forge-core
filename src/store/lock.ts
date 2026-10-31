@@ -4,7 +4,7 @@ import { type FileHandle, open } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { isAbsolute } from "node:path";
 import { fileURLToPath } from "node:url";
-import { ForgeError } from "../shared/errors";
+import { ForgeError } from "../shared";
 import { checkEntry, hasCode, storageError } from "./io";
 
 const require = createRequire(import.meta.url);

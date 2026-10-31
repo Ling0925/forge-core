@@ -3,9 +3,8 @@ import { access, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
-import { minimalEnv } from "../../../shared/child-env";
-import { ForgeError } from "../../../shared/errors";
-import type { BrowserPluginConfig } from "../../../shared/plugins";
+import { type BrowserPluginConfig, ForgeError } from "../../../shared";
+import { minimalEnv } from "../../../store";
 
 export interface CliCommand {
   readonly command: string;

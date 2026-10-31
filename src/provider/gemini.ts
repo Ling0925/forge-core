@@ -1,14 +1,17 @@
 import { z } from "zod";
-import type { ModelProvider } from "../shared/contracts";
-import { ForgeError, ProviderError } from "../shared/errors";
-import type { ModelCatalog, ModelCatalogEntry } from "../shared/model-catalog";
 import {
+  ForgeError,
+  type ModelCatalog,
+  type ModelCatalogEntry,
+  type ModelProvider,
+  type ProviderConfig,
+  ProviderError,
   messageSchema,
   providerConfigSchema,
   settingsFields,
   toolDefinitionSchema,
-} from "../shared/schemas";
-import type { ProviderConfig } from "../shared/schemas";
+} from "../shared";
+
 import { MAX_PROVIDER_JSON_CHARS, parseProviderJson } from "./bounded-json";
 import { httpError, protocol } from "./errors";
 import { thinkingConfig, wireContents } from "./gemini-request";

@@ -2,29 +2,31 @@ import { randomUUID } from "node:crypto";
 import { readdir, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { z } from "zod";
-import type {
-  AsyncTaskService,
-  AsyncTaskStart,
-  AsyncTaskView,
-} from "../shared/async-tasks";
-import { asyncTaskArguments } from "../shared/async-tasks";
-import { ForgeError } from "../shared/errors";
 import {
+  type AsyncTaskService,
+  type AsyncTaskStart,
+  type AsyncTaskView,
+  ForgeError,
+  type RunInput,
+  type SessionId,
+  type ToolResult,
+  type Usage,
+  addUsage,
+  asyncTaskArguments,
   permissionSchema,
   sessionIdSchema,
   toolResultSchema,
   usageSchema,
-} from "../shared/schemas";
-import type { RunInput, SessionId, ToolResult, Usage } from "../shared/schemas";
-import { addUsage } from "../shared/usage-totals";
+} from "../shared";
+
 import {
   atomicJson,
+  fileLock,
   privateDirectory,
   readJson,
   storageError,
   syncDirectory,
-} from "../store/io";
-import { fileLock } from "../store/lock";
+} from "../store";
 
 const MAX_TASKS = 256;
 const MAX_ACTIVE = 16;

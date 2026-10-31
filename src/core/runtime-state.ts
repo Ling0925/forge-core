@@ -1,5 +1,10 @@
-import type { HarnessAdaptationReport } from "../shared/harness-adaptation";
-import type { Permission, SessionSnapshot, Usage } from "../shared/schemas";
+import type {
+  HarnessAdaptationReport,
+  Permission,
+  SessionSnapshot,
+  Usage,
+} from "../shared";
+
 import { CONTEXT_SCALE_FLOOR } from "./runtime-context";
 
 /** Which subsystem a failure is attributed to when it is not a ForgeError. */

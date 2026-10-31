@@ -1,10 +1,17 @@
 import { randomUUID } from "node:crypto";
 import { z } from "zod";
-import { withCancellation } from "../shared/cancellation";
-import type { LocalToolRegistry, ToolContext } from "../shared/contracts";
-import type { ToolCall, ToolDefinition, ToolResult } from "../shared/schemas";
-import { defineTool } from "../shared/tool-definition";
-import { invalidToolInput, recoverToolInputError } from "../shared/tool-input";
+import {
+  type LocalToolRegistry,
+  type ToolCall,
+  type ToolContext,
+  type ToolDefinition,
+  type ToolResult,
+  defineTool,
+  invalidToolInput,
+  recoverToolInputError,
+  withCancellation,
+} from "../shared";
+
 import {
   type WebContent,
   cleanWebText,

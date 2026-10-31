@@ -1,6 +1,6 @@
 import { join } from "node:path";
-import { ForgeError } from "../shared/errors";
-import { toolHooksConfigSchema } from "../shared/tool-hooks";
+import { ForgeError, toolHooksConfigSchema } from "../shared";
+
 import { atomicJson, privateDirectory, readJson } from "./io";
 import { fileLock } from "./lock";
 

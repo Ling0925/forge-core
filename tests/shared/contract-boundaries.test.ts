@@ -89,6 +89,29 @@ function imports(source: string): string[] {
 }
 
 describe("neutral contract ownership", () => {
+  it("routes cross-module imports through explicit module barrels", async () => {
+    const source = resolve(root, "src");
+    for (const file of await sources(source)) {
+      const content = await readFile(file, "utf8");
+      const module = file.slice(source.length + 1).split("/")[0];
+      for (const dependency of imports(content)) {
+        if (!dependency.startsWith(".")) continue;
+        const target = resolve(dirname(file), dependency);
+        const targetModule = target.slice(source.length + 1).split("/")[0];
+        if (module === targetModule) continue;
+        expect(target, `${file}: ${dependency}`).toBe(
+          resolve(source, targetModule ?? ""),
+        );
+      }
+      if (file.endsWith("/index.ts")) {
+        const tree = ts.createSourceFile(file, content, ts.ScriptTarget.Latest);
+        for (const statement of tree.statements)
+          if (ts.isExportDeclaration(statement))
+            expect(statement.exportClause, file).toBeDefined();
+      }
+    }
+  });
+
   it("keeps shared imports independent of higher layers", async () => {
     const shared = resolve(root, "src/shared");
     for (const file of await sources(shared))

@@ -3,18 +3,19 @@ import { lstat, open, realpath } from "node:fs/promises";
 import { basename, extname } from "node:path";
 import { TextDecoder } from "node:util";
 import { z } from "zod";
-import type { LocalToolRegistry } from "../shared/contracts";
-import { ForgeError } from "../shared/errors";
-import { createWorkspacePathGuard } from "../shared/path-guard";
 import {
+  ForgeError,
+  type LocalToolRegistry,
   PUBLISHED_FILE_MAX_BYTES,
   PUBLISHED_FILE_MAX_MIB,
   type PublishedFile,
+  defineTool,
+  invalidToolInput,
   publishedFileNameSchema,
-} from "../shared/published-files";
-import { defineTool } from "../shared/tool-definition";
-import { invalidToolInput, recoverToolInputError } from "../shared/tool-input";
-import type { PublishedFileStore } from "../store/published-files";
+  recoverToolInputError,
+} from "../shared";
+
+import { type PublishedFileStore, createWorkspacePathGuard } from "../store";
 
 const argumentsSchema = z
   .object({

@@ -1,9 +1,12 @@
-import { QueueAdmissionError } from "../shared/input-queue";
-import { narrowestPermission } from "../shared/permissions";
-import { settingsFields } from "../shared/schemas";
-import type { SessionId } from "../shared/schemas";
-import type { openSessionStore } from "../store/sessions";
-import type { openSettingsStore } from "../store/settings";
+import {
+  QueueAdmissionError,
+  type SessionId,
+  narrowestPermission,
+  settingsFields,
+} from "../shared";
+
+import type { openSessionStore, openSettingsStore } from "../store";
+
 import {
   type createProviderSelection,
   selectSessionSource,

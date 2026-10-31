@@ -1,9 +1,8 @@
 import { type ChildProcess, spawn } from "node:child_process";
-import { minimalEnv } from "../shared/child-env";
-import { ForgeError } from "../shared/errors";
-import { cleanupProcess } from "../shared/process-cleanup";
+import { ForgeError, MCP_MAX_MESSAGE_BYTES } from "../shared";
+import { cleanupProcess, minimalEnv } from "../store";
+
 import { type Json, JsonRpcConnection, invalid } from "./rpc";
-import { MCP_MAX_MESSAGE_BYTES } from "./types";
 
 /**
  * A real stdio MCP connection: newline-framed JSON-RPC 2.0 over the child's
