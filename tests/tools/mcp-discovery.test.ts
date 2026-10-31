@@ -165,6 +165,45 @@ it("preserves tool schemas, titles and annotations and routes the original tool 
   );
 });
 
+it("keeps aliases and redaction local to each turn and does not dispose the shared service", async () => {
+  const f = fixture();
+  const dispose = vi.spyOn(f.service, "dispose");
+  const first = await createMcpToolRegistry(f.service, {
+    redactValues: ["first"],
+  });
+  const second = await createMcpToolRegistry(f.service, {
+    redactValues: ["second"],
+  });
+  const alias = mcpToolName(server.id, tool.name);
+  await execute(first, "mcp_list_tools", { server: server.id });
+  await execute(second, "mcp_call_tool", { toolName: alias });
+  expect(f.callTool).toHaveBeenLastCalledWith(
+    server.id,
+    alias.slice(`mcp__${server.id}__`.length),
+    {},
+    { signal: context.signal, redactValues: ["second"] },
+  );
+  await execute(first, "mcp_call_tool", { toolName: alias });
+  expect(f.callTool).toHaveBeenLastCalledWith(
+    server.id,
+    tool.name,
+    {},
+    { signal: context.signal, redactValues: ["first"] },
+  );
+  await first.dispose();
+  expect(dispose).not.toHaveBeenCalled();
+  await execute(second, "mcp_list_tools", { server: server.id });
+  await execute(second, "mcp_call_tool", { toolName: alias });
+  expect(f.callTool).toHaveBeenLastCalledWith(
+    server.id,
+    tool.name,
+    {},
+    { signal: context.signal, redactValues: ["second"] },
+  );
+  await second.dispose();
+  expect(dispose).not.toHaveBeenCalled();
+});
+
 it("does not execute against a changed endpoint after workspace approval", async () => {
   const f = fixture();
   const registry = await createMcpToolRegistry(f.service);

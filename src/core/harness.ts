@@ -94,7 +94,6 @@ export const createHarness = async (
     );
     const mcp = await createMcpService({ home: directory });
     startup.defer(() => mcp.dispose());
-    const liveMcp = new Set<Awaited<ReturnType<typeof createMcpService>>>();
     // Keep live access and a bounded recent history without retaining disposed tools.
     const taskAccess = new Set<CommandTaskAccess>();
     const recentTaskAccess: CommandTaskAccess[] = [];
@@ -129,7 +128,7 @@ export const createHarness = async (
       store,
       getAsyncTasks,
       asyncPermissions,
-      liveMcp,
+      mcp,
       taskAccess,
       recentTaskAccess,
       taskSecrets,
@@ -381,16 +380,11 @@ export const createHarness = async (
       },
       async setMcpEnabled(id, enabled) {
         check();
-        const result = await mcp.setEnabled(id, enabled);
-        if (!enabled)
-          await Promise.all([...liveMcp].map((service) => service.revoke(id)));
-        return result;
+        return mcp.setEnabled(id, enabled);
       },
       async removeMcpServer(id) {
         check();
-        const result = await mcp.remove(id);
-        await Promise.all([...liveMcp].map((service) => service.revoke(id)));
-        return result;
+        return mcp.remove(id);
       },
       getMcpHealth(id) {
         check();

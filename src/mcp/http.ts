@@ -138,7 +138,7 @@ interface RemoteOptions {
 export class HttpMcpConnection extends JsonRpcConnection {
   private readonly endpoint: URL;
   private sessionId: string | undefined;
-  private readonly controllers = new Set<AbortController>();
+  private readonly controllers = new Map<AbortController, number | undefined>();
   private readonly inflight = new Set<Promise<void>>();
   private disposed = false;
 
@@ -190,6 +190,11 @@ export class HttpMcpConnection extends JsonRpcConnection {
     return task;
   }
 
+  protected override cancelRequest(id: number): void {
+    for (const [controller, requestId] of this.controllers)
+      if (requestId === id) controller.abort();
+  }
+
   private async doSend(payload: Json): Promise<void> {
     if (this.closed || this.disposed)
       throw new ForgeError(
@@ -200,13 +205,13 @@ export class HttpMcpConnection extends JsonRpcConnection {
     if (Buffer.byteLength(text, "utf8") > MCP_MAX_MESSAGE_BYTES)
       throw transportError("MCP request exceeds the message ceiling.");
     const controller = new AbortController();
-    this.controllers.add(controller);
     const id =
       typeof payload.method === "string" &&
       typeof payload.id === "number" &&
       Number.isSafeInteger(payload.id)
         ? payload.id
         : undefined;
+    this.controllers.set(controller, id);
     // Every network send is bounded, including notifications, so a server that
     // never answers `notifications/initialized` cannot hang connect.
     let timedOut = false;
@@ -266,7 +271,7 @@ export class HttpMcpConnection extends JsonRpcConnection {
         transportError("MCP server returned an unsupported content type."),
       );
     } catch (error) {
-      if (this.closed) return;
+      if (this.closed || (controller.signal.aborted && !timedOut)) return;
       if (timedOut) this.shutdown(transportError("MCP request timed out."));
       else if (error instanceof ForgeError) this.shutdown(error);
       else if ((error as { name?: string }).name === "AbortError")
@@ -319,7 +324,7 @@ export class HttpMcpConnection extends JsonRpcConnection {
     // Session termination via DELETE is optional in MCP; skipping it guarantees
     // close() never leaves an unjoined request behind.
     this.sessionId = undefined;
-    for (const controller of this.controllers) controller.abort();
+    for (const controller of this.controllers.keys()) controller.abort();
     this.controllers.clear();
     await Promise.allSettled([...this.inflight]);
   }
@@ -336,7 +341,7 @@ export class SseMcpConnection extends JsonRpcConnection {
   private streamController: AbortController | undefined;
   private ready: Promise<void> | undefined;
   private disposed = false;
-  private readonly controllers = new Set<AbortController>();
+  private readonly controllers = new Map<AbortController, number | undefined>();
   private readonly inflight = new Set<Promise<void>>();
 
   constructor(private readonly options: RemoteOptions) {
@@ -354,22 +359,17 @@ export class SseMcpConnection extends JsonRpcConnection {
     void observed.finally(() => this.inflight.delete(observed));
   }
 
-  protected start(signal?: AbortSignal): Promise<void> {
+  protected start(): Promise<void> {
     if (!this.ready) {
-      this.ready = this.openStream(signal);
+      this.ready = this.openStream();
       this.track(this.ready);
     }
     return this.ready;
   }
 
-  private async openStream(signal?: AbortSignal): Promise<void> {
+  private async openStream(): Promise<void> {
     const controller = new AbortController();
     this.streamController = controller;
-    const abort = () => controller.abort();
-    if (signal) {
-      if (signal.aborted) throw invalid("Tool execution cancelled.");
-      signal.addEventListener("abort", abort, { once: true });
-    }
     let resolveReady: () => void = () => undefined;
     let rejectReady: (error: Error) => void = () => undefined;
     const ready = new Promise<void>((resolve, reject) => {
@@ -491,7 +491,6 @@ export class SseMcpConnection extends JsonRpcConnection {
       throw transportError("MCP SSE connection failed.");
     } finally {
       clearTimeout(timer);
-      if (signal) signal.removeEventListener("abort", abort);
     }
   }
 
@@ -499,6 +498,11 @@ export class SseMcpConnection extends JsonRpcConnection {
     const task = this.doSend(payload);
     this.track(task);
     return task;
+  }
+
+  protected override cancelRequest(id: number): void {
+    for (const [controller, requestId] of this.controllers)
+      if (requestId === id) controller.abort();
   }
 
   private async doSend(payload: Json): Promise<void> {
@@ -514,7 +518,13 @@ export class SseMcpConnection extends JsonRpcConnection {
     if (Buffer.byteLength(text, "utf8") > MCP_MAX_MESSAGE_BYTES)
       throw transportError("MCP request exceeds the message ceiling.");
     const controller = new AbortController();
-    this.controllers.add(controller);
+    const id =
+      typeof payload.method === "string" &&
+      typeof payload.id === "number" &&
+      Number.isSafeInteger(payload.id)
+        ? payload.id
+        : undefined;
+    this.controllers.set(controller, id);
     // Every network send is bounded, including notifications, so a stalled
     // POST cannot hang connect forever.
     let timedOut = false;
@@ -551,7 +561,7 @@ export class SseMcpConnection extends JsonRpcConnection {
           ),
         );
     } catch (error) {
-      if (this.closed) return;
+      if (this.closed || (controller.signal.aborted && !timedOut)) return;
       if (timedOut) this.shutdown(transportError("MCP SSE request timed out."));
       else if (error instanceof ForgeError) this.shutdown(error);
       else if ((error as { name?: string }).name === "AbortError")
@@ -567,7 +577,7 @@ export class SseMcpConnection extends JsonRpcConnection {
     this.disposed = true;
     this.postEndpoint = undefined;
     this.streamController?.abort();
-    for (const controller of this.controllers) controller.abort();
+    for (const controller of this.controllers.keys()) controller.abort();
     this.controllers.clear();
     // Join owned requests and the event stream so dispose/revoke is settled.
     await Promise.allSettled([...this.inflight]);

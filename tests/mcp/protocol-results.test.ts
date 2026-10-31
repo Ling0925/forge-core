@@ -270,6 +270,85 @@ it("answers server ping, rejects unsupported requests and detects dead live conn
   await fixture.close();
 });
 
+it("multiplexes out-of-order replies and keeps cancellation and redaction per call", async () => {
+  const fixture = new Fixture();
+  const controller = new AbortController();
+  try {
+    const cancelled = fixture.callTool("echo", {}, controller.signal);
+    const rejection = expect(cancelled).rejects.toMatchObject({
+      code: "cancelled",
+      message: "Tool execution cancelled.",
+    });
+    const first = fixture.callTool("echo", {}, undefined, ["first"]);
+    const second = fixture.callTool("echo", {}, undefined, ["second"]);
+    const [cancelledRequest, firstRequest, secondRequest] = fixture.sent;
+    expect(cancelledRequest).toBeDefined();
+    expect(firstRequest).toBeDefined();
+    expect(secondRequest).toBeDefined();
+    controller.abort();
+    await rejection;
+    expect(fixture.sent.at(-1)).toMatchObject({
+      method: "notifications/cancelled",
+      params: { requestId: cancelledRequest?.id },
+    });
+    const result = { content: [{ type: "text", text: "first second" }] };
+    fixture.receiveMessage({ jsonrpc: "2.0", id: secondRequest?.id, result });
+    fixture.receiveMessage({
+      jsonrpc: "2.0",
+      id: cancelledRequest?.id,
+      result,
+    });
+    fixture.receiveMessage({ jsonrpc: "2.0", id: firstRequest?.id, result });
+    await expect(first).resolves.toMatchObject({ text: "[REDACTED] second" });
+    await expect(second).resolves.toMatchObject({ text: "first [REDACTED]" });
+    expect(fixture.isClosed).toBe(false);
+    fixture.handler = (message) => fixture.reply(message, {});
+    await fixture.ping();
+    fixture.receiveMessage({ jsonrpc: "2.0", id: -1, result: {} });
+    expect(fixture.isClosed).toBe(true);
+  } finally {
+    await fixture.close();
+  }
+});
+
+it("shares initialization without binding it to either caller's abort signal", async () => {
+  const fixture = new Fixture();
+  const controller = new AbortController();
+  let initialize: Json | undefined;
+  fixture.handler = (message) => {
+    if (message.method === "initialize") initialize = message;
+  };
+  try {
+    const first = fixture.connect(controller.signal);
+    const rejection = expect(first).rejects.toMatchObject({
+      code: "cancelled",
+    });
+    const second = fixture.connect();
+    await Promise.resolve();
+    controller.abort();
+    await rejection;
+    expect(initialize).toBeDefined();
+    fixture.receiveMessage({
+      jsonrpc: "2.0",
+      id: initialize?.id,
+      result: {
+        protocolVersion: "2025-11-25",
+        capabilities: {},
+        serverInfo: { name: "fixture", version: "1" },
+      },
+    });
+    await second;
+    await fixture.connect();
+    expect(fixture.sent.map((message) => message.method)).toEqual([
+      "initialize",
+      "notifications/initialized",
+    ]);
+    expect(fixture.isClosed).toBe(false);
+  } finally {
+    await fixture.close();
+  }
+});
+
 it("consumes tool changes and rejects inconsistent pagination without replaying calls", async () => {
   const fixture = new Fixture();
   let changed = false;

@@ -59,12 +59,12 @@ interface Pending {
 /**
  * JSON-RPC 2.0 request/response correlation shared by every MCP transport.
  *
- * Pending requests are capped, timed out and aborted as a unit: cancellation
- * or a malformed frame terminates the transport instead of leaving a stream
- * or process alive, and an uncertain request is never retried.
+ * Responses are correlated by id; cancellation settles only that request.
+ * Timeouts and malformed frames terminate the transport.
  */
 export abstract class JsonRpcConnection implements McpConnection {
   protected readonly pending = new Map<number, Pending>();
+  private readonly cancelledRequests = new Set<number>();
   private nextId = 1;
   private toolsRevision = 0;
   protected closed = false;
@@ -85,7 +85,9 @@ export abstract class JsonRpcConnection implements McpConnection {
   protected abstract terminate(): void | Promise<void>;
 
   /** Start the transport so `initialize` can be sent. */
-  protected abstract start(signal?: AbortSignal): Promise<void>;
+  protected abstract start(): Promise<void>;
+
+  protected cancelRequest?(id: number): void;
 
   protected clean(input: string): string {
     let text = input;
@@ -108,6 +110,7 @@ export abstract class JsonRpcConnection implements McpConnection {
       pending.reject(error);
     }
     this.pending.clear();
+    this.cancelledRequests.clear();
     try {
       this.termination = Promise.resolve(this.terminate());
     } catch (failure) {
@@ -218,6 +221,7 @@ export abstract class JsonRpcConnection implements McpConnection {
     }
     const pending = this.pending.get(message.id);
     if (!pending) {
+      if (this.cancelledRequests.delete(message.id)) return;
       fail();
       return;
     }
@@ -248,9 +252,14 @@ export abstract class JsonRpcConnection implements McpConnection {
     const id = this.nextId++;
     return new Promise<Json>((resolve, reject) => {
       const abort = () => {
-        if (!this.pending.has(id)) return;
-        // Best-effort cancellation notification, then close the transport so
-        // no stream or request is left running. Never replay the call.
+        const pending = this.pending.get(id);
+        if (!pending) return;
+        this.pending.delete(id);
+        this.cancelledRequests.add(id);
+        clearTimeout(pending.timer);
+        pending.onAbort?.();
+        pending.reject(cancelled());
+        this.cancelRequest?.(id);
         try {
           void Promise.resolve(
             this.send({
@@ -262,7 +271,6 @@ export abstract class JsonRpcConnection implements McpConnection {
         } catch {
           /* transport already gone */
         }
-        this.shutdown(cancelled());
       };
       const timer = setTimeout(
         () => this.shutdown(new ForgeError("tool", "MCP request timed out.")),
@@ -304,16 +312,12 @@ export abstract class JsonRpcConnection implements McpConnection {
           "tool",
           this.failure ?? "MCP server connection is closed.",
         );
-      await this.start(signal);
-      const result = await this.request(
-        "initialize",
-        {
-          protocolVersion: MCP_PROTOCOL_VERSION,
-          capabilities: {},
-          clientInfo: { name: "forge-desktop-harness", version: "0.1.0" },
-        },
-        signal === undefined ? undefined : { signal },
-      );
+      await this.start();
+      const result = await this.request("initialize", {
+        protocolVersion: MCP_PROTOCOL_VERSION,
+        capabilities: {},
+        clientInfo: { name: "forge-desktop-harness", version: "0.1.0" },
+      });
       const version = result.protocolVersion;
       if (!isSupportedProtocolVersion(version))
         throw invalid("Unsupported MCP protocol version.");
@@ -352,17 +356,27 @@ export abstract class JsonRpcConnection implements McpConnection {
         )
           throw invalid("Invalid MCP capability flag.");
       }
-      if (signal?.aborted) throw cancelled();
       this.negotiatedProtocolVersion = version;
       await this.notify("notifications/initialized", {});
-    })();
-    try {
-      await this.connectPromise;
-    } catch (error) {
+    })().catch((error: unknown) => {
       this.shutdown(
         error instanceof Error ? error : invalid("Initialization failed."),
       );
       throw error;
+    });
+    if (!signal) return this.connectPromise;
+    let abort: () => void = () => undefined;
+    try {
+      await Promise.race([
+        this.connectPromise,
+        new Promise<void>((_, reject) => {
+          abort = () => reject(cancelled());
+          if (signal.aborted) abort();
+          else signal.addEventListener("abort", abort, { once: true });
+        }),
+      ]);
+    } finally {
+      signal.removeEventListener("abort", abort);
     }
   }
 
