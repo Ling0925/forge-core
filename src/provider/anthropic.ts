@@ -1,4 +1,3 @@
-import Anthropic from "@anthropic-ai/sdk";
 import type {
   ContentBlockParam,
   MessageParam,
@@ -27,6 +26,12 @@ import { ProviderError, httpError, protocol } from "./errors";
 import { createRequestOptions } from "./request-options";
 import { sdkEvents, withSdkRequest } from "./sdk-transport";
 import { scopeProviderState } from "./state-scope";
+
+let sdk: Promise<typeof import("@anthropic-ai/sdk")> | undefined;
+const anthropic = () => {
+  sdk ??= import("@anthropic-ai/sdk");
+  return sdk;
+};
 
 const contentSchema = z
   .array(
@@ -238,7 +243,10 @@ export function createAnthropicProvider(
 ): ModelProvider {
   const baseUrl = settings.baseUrl.replace(/\/+$/, "").replace(/\/v1$/, "");
   const requestOptions = createRequestOptions(settings);
-  const clientFor = (fetch: typeof globalThis.fetch) =>
+  const clientFor = (
+    Anthropic: typeof import("@anthropic-ai/sdk").default,
+    fetch: typeof globalThis.fetch,
+  ) =>
     new Anthropic({
       apiKey: null,
       authToken: null,
@@ -251,13 +259,14 @@ export function createAnthropicProvider(
     });
   let windows = new Map<string, number | null>();
   let catalog: ModelCatalog | undefined;
-  const loadCatalog = (signal?: AbortSignal) =>
-    withSdkRequest(
+  const loadCatalog = async (signal?: AbortSignal) => {
+    const { default: Anthropic } = await anthropic();
+    return withSdkRequest(
       settings,
       { signal, idle: false, fetch: requestOptions.fetch },
       async ({ signal, fetch }) => {
         const raw: unknown[] = [];
-        for await (const model of clientFor(fetch).models.list(
+        for await (const model of clientFor(Anthropic, fetch).models.list(
           { limit: 100 },
           { signal },
         )) {
@@ -281,6 +290,7 @@ export function createAnthropicProvider(
         return next;
       },
     );
+  };
   // Always ask the source; the catalog store owns sharing and refresh.
   const listModels = async (signal?: AbortSignal) => {
     const models = await loadCatalog(signal);
@@ -309,6 +319,7 @@ export function createAnthropicProvider(
             "invalid_input",
             "Provide a valid model, message history and tool definitions.",
           );
+        const { default: Anthropic } = await anthropic();
         return withSdkRequest(
           settings,
           { signal: options.signal, idle: true, fetch: requestOptions.fetch },
@@ -382,7 +393,7 @@ export function createAnthropicProvider(
               options.sessionId,
             );
             const requestBody = { ...body, stream: true as const };
-            const response = await clientFor(fetch)
+            const response = await clientFor(Anthropic, fetch)
               .messages.create(requestBody, {
                 signal,
                 headers: requestOptions.headersFor(requestBody),
