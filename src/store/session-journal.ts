@@ -147,6 +147,10 @@ export function createSessionJournal(
   validate: (value: unknown, persisted: boolean) => SessionSnapshot,
 ) {
   const cache = new Map<SessionId, Loaded>();
+  const summaryCache = new Map<
+    SessionId,
+    { stamp: Stamp; index: z.infer<typeof summaryIndexSchema> }
+  >();
   const basePath = (id: SessionId) => join(folder, `${id}.json`);
   const journalPath = (id: SessionId, baseHash: string) =>
     join(folder, `${id}.${baseHash}.journal`);
@@ -544,9 +548,13 @@ export function createSessionJournal(
     },
     async summary(id: SessionId) {
       try {
-        const index = summaryIndexSchema.parse(
-          await readJson(indexPath(id), 65536),
-        );
+        // Capture the stamp before reading so replacement cannot stamp old contents.
+        const indexStamp = await stamp(indexPath(id)).catch(() => null);
+        const cached = summaryCache.get(id);
+        const index =
+          cached && same(cached.stamp, indexStamp)
+            ? cached.index
+            : summaryIndexSchema.parse(await readJson(indexPath(id), 65536));
         if (
           index.summary.id === id &&
           same(index.base, await stamp(basePath(id))) &&
@@ -554,12 +562,15 @@ export function createSessionJournal(
             index.journal,
             await stamp(journalPath(id, index.baseHash), true),
           )
-        )
+        ) {
+          if (indexStamp) summaryCache.set(id, { stamp: indexStamp, index });
           return index.summary;
+        }
       } catch (error) {
         if (!(error instanceof ForgeError) && !(error instanceof z.ZodError))
           throw error;
       }
+      summaryCache.delete(id);
       return writeIndex(await load(id, true));
     },
   };
