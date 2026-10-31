@@ -1,10 +1,22 @@
-import { writeFileSync } from "node:fs";
+import {
+  appendFileSync,
+  existsSync,
+  readFileSync,
+  watch,
+  writeFileSync,
+} from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
 const mode = process.argv[2] ?? "normal";
+const record = (value) =>
+  appendFileSync(
+    join(process.cwd(), "server.jsonl"),
+    `${JSON.stringify(value)}\n`,
+  );
+record({ method: "spawn", pid: process.pid });
 let buffer = Buffer.alloc(0);
-let document;
+const documents = new Map();
 let initialized = false;
 const rejected = new Set();
 let waitingQuery;
@@ -20,6 +32,11 @@ const send = (value) => {
 };
 const reply = (id, result) => send({ jsonrpc: "2.0", id, result });
 function handle(message) {
+  record(message);
+  if (message.method === "$/cancelRequest") {
+    reply(message.params.id, null);
+    return;
+  }
   if ("error" in message) {
     rejected.add(message.id);
     if (waitingQuery && rejected.has("edit") && rejected.has("exec")) {
@@ -43,6 +60,14 @@ function handle(message) {
       return;
     }
     if (mode === "hang") return;
+    if (mode === "initialize-wait") {
+      const watcher = watch(process.cwd(), (_event, name) => {
+        if (name !== "initialize.ready") return;
+        watcher.close();
+        reply(message.id, { capabilities: { textDocumentSync: 1 } });
+      });
+      return;
+    }
     reply(message.id, {
       capabilities: {
         textDocumentSync: 1,
@@ -56,7 +81,8 @@ function handle(message) {
     return;
   }
   if (message.method === "textDocument/didOpen") {
-    document = message.params.textDocument;
+    const document = message.params.textDocument;
+    documents.set(document.uri, document);
     if (mode === "requests") {
       send({
         jsonrpc: "2.0",
@@ -73,13 +99,82 @@ function handle(message) {
     }
     return;
   }
+  if (message.method === "textDocument/didChange") {
+    const uri = message.params.textDocument.uri;
+    documents.set(uri, {
+      ...documents.get(uri),
+      version: message.params.textDocument.version,
+      text: message.params.contentChanges[0].text,
+    });
+    return;
+  }
+  if (message.method === "textDocument/didClose") {
+    documents.delete(message.params.textDocument.uri);
+    return;
+  }
   if (!message.method?.startsWith("textDocument/")) return;
+  const document = documents.get(message.params.textDocument.uri);
   if (mode === "requests" && (!rejected.has("edit") || !rejected.has("exec"))) {
     waitingQuery = message;
     return;
   }
-  if (mode === "query-hang") {
+  if (mode === "query-hang" && message.method === "textDocument/hover") {
     writeFileSync(join(process.cwd(), "server.pid"), String(process.pid));
+    return;
+  }
+  if (mode === "crash" && !existsSync(join(process.cwd(), "crashed"))) {
+    writeFileSync(join(process.cwd(), "crashed"), "");
+    process.exit(1);
+  }
+  if (
+    mode === "query-malformed" &&
+    !existsSync(join(process.cwd(), "failed"))
+  ) {
+    writeFileSync(join(process.cwd(), "failed"), "");
+    process.stdout.write("Content-Length: 2\r\n\r\nxx");
+    return;
+  }
+  if (mode === "notifications") {
+    for (let i = 0; i < 200; i++)
+      send({
+        jsonrpc: "2.0",
+        method: "window/logMessage",
+        params: { message: "x".repeat(16 * 1024) },
+      });
+  }
+  if (mode === "imports") {
+    const imported = /from "([^"]+)"/.exec(document.text);
+    const uri = imported
+      ? new URL(imported[1], document.uri).href
+      : document.uri;
+    reply(message.id, {
+      contents:
+        documents.get(uri)?.text ?? readFileSync(fileURLToPath(uri), "utf8"),
+    });
+    return;
+  }
+  if (mode === "query-reject") {
+    send({
+      jsonrpc: "2.0",
+      id: message.id,
+      error: { code: -32602, message: "Query rejected" },
+    });
+    return;
+  }
+  if (mode === "sync" || mode === "sync-hang") {
+    if (mode === "sync-hang" && message.method === "textDocument/definition")
+      return;
+    reply(message.id, { contents: JSON.stringify(document) });
+    return;
+  }
+  if (mode === "concurrent") {
+    if (!waitingQuery) {
+      waitingQuery = message;
+    } else {
+      reply(message.id, { contents: "second" });
+      reply(waitingQuery.id, { contents: "first" });
+      waitingQuery = undefined;
+    }
     return;
   }
   if (

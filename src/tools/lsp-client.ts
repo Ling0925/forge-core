@@ -7,10 +7,15 @@ const HEADER_LIMIT = 8192;
 const TRAFFIC_LIMIT = 8 * LSP_MESSAGE_LIMIT;
 
 type ObjectValue = Record<string, unknown>;
+type Invocation = {
+  traffic: number;
+  messages: number;
+  stderrBytes: number;
+  pending: number;
+};
 const object = (value: unknown): value is ObjectValue =>
   typeof value === "object" && value !== null && !Array.isArray(value);
 
-/** One invocation, one child: no implicit reconnect, retry, or server fallback. */
 export class StdioLspClient {
   private child: ChildProcess | undefined;
   private joined: Promise<void> = Promise.resolve();
@@ -18,35 +23,33 @@ export class StdioLspClient {
   private failure: Error | undefined;
   private buffer: Buffer = Buffer.alloc(0);
   private expected: number | undefined;
-  private traffic = 0;
-  private messages = 0;
-  private stderrBytes = 0;
+  private frameBytes = 0;
+  private invocations = new Map<Invocation, (error: Error) => void>();
+  private cancelled = new Set<number>();
   private nextId = 1;
   private pending = new Map<
     number,
     {
+      invocation: Invocation;
+      method: string;
       resolve: (result: unknown) => void;
       reject: (error: Error) => void;
     }
   >();
-  private timer: ReturnType<typeof setTimeout> | undefined;
-  private abort: (() => void) | undefined;
 
   constructor(
     private readonly options: Readonly<{
       command: string;
       args: readonly string[];
       cwd: string;
-      signal: AbortSignal;
       timeoutMs?: number;
+      onFailure?: () => void;
     }>,
   ) {}
 
   start(): void {
     if (this.child || this.disposal)
       throw new Error("LSP client already used.");
-    if (this.options.signal.aborted)
-      throw new Error("LSP invocation cancelled.");
     const env: NodeJS.ProcessEnv = { HOME: homedir() };
     // Deliberately do not forward tokens, proxy settings, NODE_OPTIONS or config.
     if (process.env.PATH) env.PATH = process.env.PATH;
@@ -68,34 +71,29 @@ export class StdioLspClient {
     child.stdout?.on("data", (chunk: Buffer) => this.consume(chunk));
     // Never disclose stderr: it may contain source text, credentials or paths.
     child.stderr?.on("data", (chunk: Buffer) => {
-      this.stderrBytes += chunk.length;
-      if (this.stderrBytes > LSP_MESSAGE_LIMIT)
-        this.fail("LSP stderr limit exceeded.");
+      for (const invocation of this.invocations.keys()) {
+        invocation.stderrBytes += chunk.length;
+        if (invocation.stderrBytes > LSP_MESSAGE_LIMIT)
+          this.fail("LSP stderr limit exceeded.");
+      }
     });
-    this.abort = () => this.fail("LSP invocation cancelled.");
-    this.options.signal.addEventListener("abort", this.abort, { once: true });
-    this.timer = setTimeout(
-      () => this.fail("LSP invocation timed out."),
-      this.options.timeoutMs ?? 10_000,
-    );
-    if (this.options.signal.aborted) this.abort();
   }
 
-  private fail(message: string): void {
-    if (!this.failure) this.failure = new Error(message);
+  private fail(message: string): Error {
+    if (!this.failure) {
+      this.failure = new Error(message);
+      this.options.onFailure?.();
+    }
     for (const pending of this.pending.values()) pending.reject(this.failure);
     this.pending.clear();
+    for (const reject of this.invocations.values()) reject(this.failure);
     // Store cleanup and surface any error through the caller's awaited dispose.
     void this.dispose().catch(() => undefined);
+    return this.failure;
   }
 
   private consume(chunk: Buffer): void {
-    if (this.failure || this.disposal) return;
-    this.traffic += chunk.length;
-    if (this.traffic > TRAFFIC_LIMIT) {
-      this.fail("LSP traffic limit exceeded.");
-      return;
-    }
+    if (this.failure) return;
     this.buffer = Buffer.concat([this.buffer, chunk]);
     for (;;) {
       if (this.expected === undefined) {
@@ -128,16 +126,13 @@ export class StdioLspClient {
           return;
         }
         this.expected = size;
+        this.frameBytes = end + 4 + size;
         this.buffer = this.buffer.subarray(end + 4);
       }
       if (this.buffer.length < this.expected) return;
       const bytes = this.buffer.subarray(0, this.expected);
       this.buffer = this.buffer.subarray(this.expected);
       this.expected = undefined;
-      if (++this.messages > 256) {
-        this.fail("LSP message count exceeded.");
-        return;
-      }
       let message: unknown;
       try {
         message = JSON.parse(
@@ -147,15 +142,34 @@ export class StdioLspClient {
         this.fail("LSP message is not valid UTF-8 JSON.");
         return;
       }
-      this.handle(message);
-      if (this.failure || this.disposal) return;
+      this.handle(message, this.frameBytes);
+      if (this.failure) return;
     }
   }
 
-  private handle(value: unknown): void {
+  private handle(value: unknown, bytes: number): void {
     if (!object(value) || value.jsonrpc !== "2.0") {
       this.fail("Invalid LSP JSON-RPC message.");
       return;
+    }
+    const pending =
+      typeof value.id === "number" ? this.pending.get(value.id) : undefined;
+    const invocations =
+      typeof value.method === "string" || pending?.method === "initialize"
+        ? this.invocations.keys()
+        : pending
+          ? [pending.invocation]
+          : [];
+    for (const invocation of invocations) {
+      invocation.traffic += bytes;
+      if (invocation.traffic > TRAFFIC_LIMIT) {
+        this.fail("LSP traffic limit exceeded.");
+        return;
+      }
+      if (++invocation.messages > 256) {
+        this.fail("LSP message count exceeded.");
+        return;
+      }
     }
     if (typeof value.method === "string") {
       // No server-initiated edits, command execution, registration or prompts.
@@ -187,8 +201,8 @@ export class StdioLspClient {
       this.fail("Invalid LSP response.");
       return;
     }
-    const pending = this.pending.get(value.id);
     if (!pending) {
+      if (this.cancelled.delete(value.id)) return;
       this.fail("Unexpected LSP response id.");
       return;
     }
@@ -200,46 +214,123 @@ export class StdioLspClient {
 
   private send(value: ObjectValue): void {
     if (this.failure) throw this.failure;
-    if (this.disposal || !this.child?.stdin?.writable)
-      throw new Error("LSP transport is closed.");
+    if (!this.child?.stdin?.writable)
+      throw this.fail("LSP transport is closed.");
     const body = Buffer.from(JSON.stringify(value), "utf8");
     // didOpen may contain a 2 MiB file with JSON escaping.
     if (body.length > 16 * LSP_MESSAGE_LIMIT)
-      throw new Error("LSP outgoing message limit exceeded.");
+      throw this.fail("LSP outgoing message limit exceeded.");
     this.child.stdin.write(`Content-Length: ${body.length}\r\n\r\n`);
     this.child.stdin.write(body);
   }
 
   notify(method: string, params: ObjectValue): void {
+    if (this.disposal) throw new Error("LSP transport is closed.");
     this.send({ jsonrpc: "2.0", method, params });
   }
 
-  request(method: string, params: ObjectValue): Promise<unknown> {
-    if (this.failure) return Promise.reject(this.failure);
-    if (this.pending.size >= 4)
+  closeDocument(uri: string): void {
+    if (!this.failure && !this.disposal)
+      this.notify("textDocument/didClose", { textDocument: { uri } });
+  }
+
+  private sendRequest(
+    method: string,
+    params: ObjectValue,
+    signal: AbortSignal,
+    invocation: Invocation,
+  ): Promise<unknown> {
+    if (this.disposal)
+      return Promise.reject(new Error("LSP transport is closed."));
+    if (signal.aborted)
+      return Promise.reject(new Error("LSP invocation cancelled."));
+    if (invocation.pending >= 4)
       return Promise.reject(new Error("LSP pending limit exceeded."));
     const id = this.nextId++;
+    invocation.pending++;
     return new Promise((resolve, reject) => {
-      this.pending.set(id, { resolve, reject });
+      const abort = () => {
+        this.pending.delete(id);
+        invocation.pending--;
+        this.cancelled.add(id);
+        signal.removeEventListener("abort", abort);
+        reject(new Error("LSP invocation cancelled."));
+        try {
+          this.notify("$/cancelRequest", { id });
+        } catch {
+          this.fail("LSP transport write failed.");
+        }
+      };
+      this.pending.set(id, {
+        invocation,
+        method,
+        resolve: (result) => {
+          invocation.pending--;
+          signal.removeEventListener("abort", abort);
+          resolve(result);
+        },
+        reject: (error) => {
+          invocation.pending--;
+          signal.removeEventListener("abort", abort);
+          reject(error);
+        },
+      });
       try {
         this.send({ jsonrpc: "2.0", id, method, params });
+        signal.addEventListener("abort", abort, { once: true });
       } catch (error) {
-        this.pending.delete(id);
+        if (this.pending.delete(id)) invocation.pending--;
         reject(error);
       }
     });
   }
 
-  dispose(): Promise<void> {
+  async invoke<T>(
+    signal: AbortSignal,
+    action: (
+      request: (method: string, params: ObjectValue) => Promise<unknown>,
+    ) => Promise<T>,
+  ): Promise<T> {
+    if (signal.aborted) throw new Error("LSP invocation cancelled.");
+    if (this.failure) throw this.failure;
+    const invocation = { traffic: 0, messages: 0, stderrBytes: 0, pending: 0 };
+    let abort = () => {};
+    const timer = setTimeout(
+      () => this.fail("LSP invocation timed out."),
+      this.options.timeoutMs ?? 10_000,
+    );
+    try {
+      return await Promise.race([
+        new Promise<never>((_resolve, reject) => {
+          this.invocations.set(invocation, reject);
+          abort = () => reject(new Error("LSP invocation cancelled."));
+          signal.addEventListener("abort", abort, { once: true });
+        }),
+        action((method, params) =>
+          this.sendRequest(method, params, signal, invocation),
+        ),
+      ]);
+    } finally {
+      clearTimeout(timer);
+      signal.removeEventListener("abort", abort);
+      this.invocations.delete(invocation);
+    }
+  }
+
+  async joinFailure(): Promise<void> {
+    if (this.failure || this.disposal) await this.dispose();
+  }
+
+  dispose(reason?: Error): Promise<void> {
     if (!this.disposal) {
       this.disposal = Promise.resolve().then(async () => {
-        if (this.timer) clearTimeout(this.timer);
-        if (this.abort)
-          this.options.signal.removeEventListener("abort", this.abort);
-        if (!this.failure) this.failure = new Error("LSP client disposed.");
-        for (const pending of this.pending.values())
-          pending.reject(this.failure);
+        const error =
+          this.failure ?? reason ?? new Error("LSP client disposed.");
+        for (const pending of this.pending.values()) pending.reject(error);
         this.pending.clear();
+        for (const reject of this.invocations.values()) reject(error);
+        this.failure ??= error;
+        this.cancelled.clear();
         this.buffer = Buffer.alloc(0);
         if (this.child) {
           await cleanupProcess(this.child);

@@ -27,6 +27,7 @@ import { openPublishedFileStore } from "../store/published-files";
 import { openSessionStore } from "../store/sessions";
 import { openSettingsStore } from "../store/settings";
 import { openToolHooksStore } from "../store/tool-hooks";
+import { LspServerPool } from "../tools/lsp-pool";
 import { createAgentWorktreeService } from "./agent-worktrees";
 import { openAsyncTaskService } from "./async-tasks";
 import { projectSummary } from "./context";
@@ -94,6 +95,8 @@ export const createHarness = async (
     );
     const mcp = await createMcpService({ home: directory });
     startup.defer(() => mcp.dispose());
+    const lspPool = new LspServerPool();
+    startup.defer(() => lspPool.dispose());
     // Keep live access and a bounded recent history without retaining disposed tools.
     const taskAccess = new Set<CommandTaskAccess>();
     const recentTaskAccess: CommandTaskAccess[] = [];
@@ -129,6 +132,7 @@ export const createHarness = async (
       getAsyncTasks,
       asyncPermissions,
       mcp,
+      lspPool,
       taskAccess,
       recentTaskAccess,
       taskSecrets,
@@ -585,7 +589,11 @@ export const createHarness = async (
                 try {
                   await mcp.dispose();
                 } finally {
-                  await plugins.dispose();
+                  try {
+                    await plugins.dispose();
+                  } finally {
+                    await lspPool.dispose();
+                  }
                 }
               }
             }

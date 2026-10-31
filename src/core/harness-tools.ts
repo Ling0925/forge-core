@@ -22,6 +22,7 @@ import { createCombinedToolRegistry } from "../tools/combined";
 import { withCommandTasks } from "../tools/command-tasks";
 import { createLocalToolRegistry } from "../tools/local";
 import { createLspToolRegistry } from "../tools/lsp";
+import type { LspServerPool } from "../tools/lsp-pool";
 import { createMcpToolRegistry } from "../tools/mcp";
 import { createPublishedFileTool } from "../tools/published-files";
 import { createSkillTool } from "../tools/skills";
@@ -39,6 +40,7 @@ export type HarnessToolDeps = {
   getAsyncTasks: () => Promise<AsyncTaskService>;
   asyncPermissions: Map<SessionId, () => Permission>;
   mcp: McpService;
+  lspPool: LspServerPool;
   taskAccess: Set<CommandTaskAccess>;
   recentTaskAccess: CommandTaskAccess[];
   taskSecrets: Set<string>;
@@ -55,6 +57,7 @@ const createDefaultTools = async (
   checkpointDirectory: string,
   stateDirectory: string,
   mcp: McpService,
+  lspPool: LspServerPool,
   extensions: Awaited<
     ReturnType<Awaited<ReturnType<typeof createPluginHost>>["createTools"]>
   >,
@@ -76,13 +79,13 @@ const createDefaultTools = async (
     registries.push(withCommandTasks(local, { redactValues: [apiKey] }));
     // Public-text tools require no browser configuration and do no I/O until called.
     registries.push(createWebToolRegistry({ redactValues: [apiKey] }));
-    if (settings.lspServers?.length)
-      registries.push(
-        await createLspToolRegistry(workspace, settings.lspServers, {
-          protectedRoots: [stateDirectory],
-          redactValues: [apiKey],
-        }),
-      );
+    registries.push(
+      await createLspToolRegistry(workspace, settings.lspServers ?? [], {
+        pool: lspPool,
+        protectedRoots: [stateDirectory],
+        redactValues: [apiKey],
+      }),
+    );
     registries.push(
       await createMcpToolRegistry(mcp, { redactValues: [apiKey] }),
     );
@@ -105,6 +108,7 @@ export const createHarnessTools = (deps: HarnessToolDeps) => {
     getAsyncTasks,
     asyncPermissions,
     mcp,
+    lspPool,
     taskAccess,
     recentTaskAccess,
     taskSecrets,
@@ -130,6 +134,7 @@ export const createHarnessTools = (deps: HarnessToolDeps) => {
           workspaceCheckpointDirectory(directory, workspace),
           directory,
           mcp,
+          lspPool,
           extensions,
         );
       }

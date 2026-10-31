@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { constants } from "node:fs";
 import { lstat, open } from "node:fs/promises";
 import { extname, relative, sep } from "node:path";
-import { fileURLToPath, pathToFileURL } from "node:url";
+import { fileURLToPath } from "node:url";
 import { z } from "zod";
 import {
   containsSensitiveText,
@@ -18,16 +18,15 @@ import {
 } from "../shared/schemas";
 import { defineTool } from "../shared/tool-definition";
 import { recoverToolInputError } from "../shared/tool-input";
-import { StdioLspClient } from "./lsp-client";
+import {
+  LspCleanupError,
+  type LspServerConfig,
+  type LspServerPool,
+} from "./lsp-pool";
 import { createWorkspacePathGuard } from "./path-guard";
 
-export interface LspServerConfig {
-  readonly id: string;
-  readonly command: string;
-  readonly args: readonly string[];
-  readonly extensions: readonly string[];
-}
 export interface LspToolOptions {
+  readonly pool: LspServerPool;
   readonly protectedRoots?: readonly string[];
   readonly redactValues?: readonly string[];
 }
@@ -125,7 +124,7 @@ function range(value: unknown) {
 export async function createLspToolRegistry(
   workspace: string,
   configurations: readonly LspServerConfig[],
-  options: LspToolOptions = {},
+  options: LspToolOptions,
 ): Promise<LocalToolRegistry> {
   const configs = lspServersSchema.parse(configurations);
   const guard = await createWorkspacePathGuard(
@@ -144,6 +143,7 @@ export async function createLspToolRegistry(
     )
   )
     throw new Error("Sensitive LSP server configuration is not permitted.");
+  await options.pool.reconcile(guard.root, configs);
   const clean = (text: string, max = 4096): string => {
     // Redact before truncating, so a secret straddling the boundary cannot leak.
     let value = text;
@@ -165,9 +165,12 @@ export async function createLspToolRegistry(
   const active = new Set<Promise<ToolResult>>();
   let disposal: Promise<void> | undefined;
 
-  async function read(
-    path: string,
-  ): Promise<{ absolute: string; text: string; path: string }> {
+  async function read(path: string): Promise<{
+    absolute: string;
+    text: string;
+    path: string;
+    stamp: { size: number; mtimeMs: number; ino: number };
+  }> {
     if (isSensitivePath(path) || containsKnown(path))
       throw new Error("Sensitive paths are not permitted.");
     const absolute = await guard.resolveRead(path);
@@ -215,7 +218,12 @@ export async function createLspToolRegistry(
         containsKnown(text)
       )
         throw new Error("Binary or sensitive content is not permitted.");
-      return { absolute, text, path: local };
+      return {
+        absolute,
+        text,
+        path: local,
+        stamp: { size: after.size, mtimeMs: after.mtimeMs, ino: after.ino },
+      };
     } finally {
       await handle.close();
     }
@@ -301,7 +309,6 @@ export async function createLspToolRegistry(
     call: ToolCall,
     ctx: ToolContext,
   ): Promise<ToolResult> {
-    let client: StdioLspClient | undefined;
     try {
       if (shutdown.signal.aborted) throw new Error("LSP registry disposed.");
       if (call.function.name !== "lsp" || configs.length === 0)
@@ -343,63 +350,32 @@ export async function createLspToolRegistry(
         )
           throw new Error("LSP position is outside the document.");
       }
-      client = new StdioLspClient({
-        command: server.command,
-        args: server.args,
-        cwd: guard.root,
-        signal,
-      });
-      client.start();
-      const rootUri = pathToFileURL(guard.root).href;
-      const initialized = await client.request("initialize", {
-        processId: null,
-        rootUri,
-        workspaceFolders: [{ uri: rootUri, name: "workspace" }],
-        capabilities: {
-          general: { positionEncodings: ["utf-16"] },
-          workspace: { applyEdit: false },
-          textDocument: {
-            documentSymbol: { hierarchicalDocumentSymbolSupport: true },
-          },
-        },
-      });
-      if (!object(initialized) || !object(initialized.capabilities))
-        throw new Error("Invalid LSP initialize result.");
-      if (
-        initialized.capabilities.positionEncoding !== undefined &&
-        initialized.capabilities.positionEncoding !== "utf-16"
-      )
-        throw new Error("LSP server must use UTF-16 positions.");
-      client.notify("initialized", {});
-      const uri = pathToFileURL(document.absolute).href;
-      client.notify("textDocument/didOpen", {
-        textDocument: {
-          uri,
-          languageId: languageIds[extension] ?? extension,
-          version: 1,
-          text: document.text,
-        },
-      });
       const method = {
         symbols: "documentSymbol",
         definition: "definition",
         references: "references",
         hover: "hover",
       }[args.operation];
-      const response = await client.request(`textDocument/${method}`, {
-        textDocument: { uri },
-        ...(position
-          ? {
-              position: {
-                line: position.line - 1,
-                character: position.character - 1,
-              },
-            }
-          : {}),
-        ...(args.operation === "references"
-          ? { context: { includeDeclaration: true } }
-          : {}),
-      });
+      const response = await options.pool.request(
+        guard.root,
+        server,
+        { ...document, languageId: languageIds[extension] ?? extension },
+        `textDocument/${method}`,
+        {
+          ...(position
+            ? {
+                position: {
+                  line: position.line - 1,
+                  character: position.character - 1,
+                },
+              }
+            : {}),
+          ...(args.operation === "references"
+            ? { context: { includeDeclaration: true } }
+            : {}),
+        },
+        signal,
+      );
       const items: unknown[] = [];
       let truncated = false;
       const boundedText = (text: string, max: number) => {
@@ -494,17 +470,10 @@ export async function createLspToolRegistry(
         nextOffset,
         truncated: truncated || nextOffset !== null,
       };
-      await client.dispose();
       return result(payload);
     } catch (error) {
-      try {
-        await client?.dispose();
-      } catch {
-        return result(
-          { error: "LSP process cleanup failed; execution stopped." },
-          true,
-        );
-      }
+      if (error instanceof LspCleanupError)
+        return result({ error: error.message }, true);
       const invalid = recoverToolInputError(error);
       if (invalid) return invalid;
       return result(
