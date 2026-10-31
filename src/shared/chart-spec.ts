@@ -214,21 +214,20 @@ export type RawJson =
   | readonly RawJson[]
   | { readonly [key: string]: RawJson };
 
-const rawJsonSchema: z.ZodType<RawJson> = z.lazy(() =>
-  z.union([
-    z.string().max(RAW_STRING_LIMIT),
-    z.number().finite(),
-    z.boolean(),
-    z.null(),
-    z.array(rawJsonSchema).max(4096),
-    z
-      .record(rawJsonSchema)
-      .refine(
-        (value) => Object.keys(value).length <= 256,
-        "raw option objects accept at most 256 keys per level.",
-      ),
-  ]),
-);
+const rawJsonSchema: z.ZodType<RawJson> = z.lazy(() => rawJsonUnion);
+const rawJsonUnion = z.union([
+  z.string().max(RAW_STRING_LIMIT),
+  z.number().finite(),
+  z.boolean(),
+  z.null(),
+  z.array(rawJsonSchema).max(4096),
+  z
+    .record(rawJsonSchema)
+    .refine(
+      (value) => Object.keys(value).length <= 256,
+      "raw option objects accept at most 256 keys per level.",
+    ),
+]);
 
 function rawNodeCount(value: RawJson): number {
   if (Array.isArray(value))
