@@ -73,5 +73,6 @@ export interface AsyncTaskService {
   ): Promise<ToolResult>;
   /** Stop owned work and work delegated to this main session, joining real completion. */
   cancelSession(sessionId: SessionId): Promise<boolean>;
+  reapSession(sessionId: SessionId): Promise<void>;
   dispose(): Promise<void>;
 }

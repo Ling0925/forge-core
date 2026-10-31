@@ -360,7 +360,14 @@ export const createHarness = async (
         }));
       },
       archiveSession(id, archived) {
-        return mutate(id, async (s) => ({ ...s, archived }));
+        return mutate(id, async (s) => {
+          if (archived) {
+            const tasks = await getAsyncTasks();
+            await tasks.cancelSession(id);
+            await tasks.reapSession(id);
+          }
+          return { ...s, archived };
+        });
       },
       async getDiagnostics(id) {
         check();

@@ -1,17 +1,21 @@
 import { randomUUID } from "node:crypto";
-import { mkdtemp, readFile, readdir, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, readdir, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { openAsyncTaskService } from "../../src/core/async-tasks";
+import * as asyncTasks from "../../src/core/async-tasks";
+import { createHarness } from "../../src/core/harness";
+import * as harnessTools from "../../src/core/harness-tools";
 import {
   type AsyncTaskService,
   type AsyncTaskStart,
   asyncTaskArguments,
 } from "../../src/shared/async-tasks";
+import type { HarnessService } from "../../src/shared/contracts";
 import { ForgeError } from "../../src/shared/errors";
 import { parseSessionId } from "../../src/shared/schemas";
-import type { ToolResult } from "../../src/shared/schemas";
+import type { SessionId, ToolResult } from "../../src/shared/schemas";
 import { atomicJson } from "../../src/store/io";
 import * as io from "../../src/store/io";
 import { createAsyncTaskToolRegistry } from "../../src/tools/async-tasks";
@@ -103,6 +107,43 @@ describe("host-owned async task lifecycle", () => {
     }
     expect((await manage("list")).total).toBe(0);
   });
+
+  it.each([false, true])(
+    "joins a recovered pending notification before reaping session receipts (delivery fails=%s)",
+    async (fails) => {
+      const task = await start();
+      await manage("wait", task.id);
+      await service.dispose();
+      const path = join(root, "async-tasks", `${task.id}.json`);
+      const disk = JSON.parse(await readFile(path, "utf8"));
+      await atomicJson(path, { ...disk, notification: "pending" });
+      const notifying = deferred<void>();
+      const delivery = deferred<void>();
+      notify.mockImplementation(async () => {
+        notifying.resolve();
+        await delivery.promise;
+        if (fails) throw new ForgeError("provider", "Fixture delivery failed.");
+      });
+      service = await openAsyncTaskService({ directory: root, notify });
+      await notifying.promise;
+      let reaped = false;
+      try {
+        const reaping = service.reapSession(sessionId).then(() => {
+          reaped = true;
+        });
+        await Promise.resolve();
+        expect(reaped).toBe(false);
+        delivery.resolve();
+        await reaping;
+        expect((await manage("list")).total).toBe(0);
+        expect(await readdir(join(root, "async-tasks"))).not.toContain(
+          `${task.id}.json`,
+        );
+      } finally {
+        delivery.resolve();
+      }
+    },
+  );
   it("returns before work completes, persists before notification, accounts usage and paginates results", async () => {
     const done = deferred<ToolResult>();
     const task = await start({
@@ -460,5 +501,215 @@ describe("host-owned async task lifecycle", () => {
         )
       ).isError,
     ).toBe(true);
+  });
+});
+
+describe("session archive async receipts", () => {
+  let harness: HarnessService;
+  let ownerId: SessionId;
+
+  beforeEach(async () => {
+    vi.stubEnv("FORGE_HOME", root);
+    vi.spyOn(asyncTasks, "openAsyncTaskService").mockResolvedValue(service);
+    harness = await createHarness({ stateDir: root });
+    const workspace = join(root, "workspace");
+    await mkdir(workspace);
+    ownerId = (
+      await harness.createSession({
+        workspace,
+        model: "fixture-model",
+        title: "Archive fixture",
+      })
+    ).id;
+  });
+  afterEach(async () => {
+    await harness.dispose();
+    vi.unstubAllEnvs();
+  });
+
+  const startOwned = (extra: Partial<AsyncTaskStart> = {}) =>
+    start({ sessionId: ownerId, wakeSessionId: ownerId, ...extra });
+  const waitOwned = (id: string) => manage("wait", id, {}, context(ownerId));
+  const listOwned = () => manage("list", undefined, {}, context(ownerId));
+
+  it("frees full unread receipt capacity when the session is archived", async () => {
+    for (let index = 0; index < 256; index++) {
+      const task = await startOwned();
+      await waitOwned(task.id);
+    }
+    await expect(start()).rejects.toMatchObject({ code: "busy" });
+    expect(await harness.archiveSession(ownerId, true)).toMatchObject({
+      archived: true,
+    });
+    const next = await start();
+    expect((await listOwned()).total).toBe(0);
+    expect(
+      (await readdir(join(root, "async-tasks"))).filter((file) =>
+        file.endsWith(".json"),
+      ),
+    ).toEqual([`${next.id}.json`]);
+  });
+
+  it.each([false, true])(
+    "reclaims a previous harness's receipts on archive (receipts exist at new harness startup=%s)",
+    async (receiptsAtStartup) => {
+      await harness.dispose();
+      vi.mocked(asyncTasks.openAsyncTaskService).mockRestore();
+      const createTools = harnessTools.createHarnessTools;
+      let getAsyncTasks!: () => Promise<AsyncTaskService>;
+      vi.spyOn(harnessTools, "createHarnessTools").mockImplementation(
+        (deps) => {
+          getAsyncTasks = deps.getAsyncTasks;
+          return createTools(deps);
+        },
+      );
+      const directory = join(root, "restart");
+      harness = await createHarness({ stateDir: directory });
+      ownerId = (
+        await harness.createSession({
+          workspace: join(root, "workspace"),
+          model: "fixture-model",
+          title: "Restart archive fixture",
+        })
+      ).id;
+      const previous = harness;
+      const getPreviousTasks = getAsyncTasks;
+      try {
+        if (!receiptsAtStartup)
+          harness = await createHarness({ stateDir: directory });
+        service = await getPreviousTasks();
+        for (let index = 0; index < 256; index++) {
+          const task = await startOwned({
+            execute: async () => {
+              throw new ForgeError("cancelled", "Fixture cancelled.");
+            },
+          });
+          await waitOwned(task.id);
+        }
+        await expect(startOwned()).rejects.toMatchObject({ code: "busy" });
+        await previous.dispose();
+        if (receiptsAtStartup)
+          harness = await createHarness({ stateDir: directory });
+        await harness.archiveSession(ownerId, true);
+        service = await getAsyncTasks();
+        const next = await start();
+        expect((await listOwned()).total).toBe(0);
+        expect(
+          (await readdir(join(directory, "async-tasks"))).filter((file) =>
+            file.endsWith(".json"),
+          ),
+        ).toEqual([`${next.id}.json`]);
+      } finally {
+        await previous.dispose();
+      }
+    },
+  );
+
+  it.each(["initiating", "main"])(
+    "reaps the %s owner's receipts and preserves another session's receipts",
+    async (owner) => {
+      const task = await startOwned(
+        owner === "main"
+          ? { sessionId: childId }
+          : { wakeSessionId: sessionId },
+      );
+      const other = await start({ sessionId: otherId, wakeSessionId: otherId });
+      await waitOwned(task.id);
+      await manage("wait", other.id, {}, context(otherId));
+      const otherPath = join(root, "async-tasks", `${other.id}.json`);
+      const otherReceipt = await readFile(otherPath, "utf8");
+      await harness.archiveSession(ownerId, false);
+      expect((await listOwned()).tasks).toMatchObject([{ id: task.id }]);
+      await harness.archiveSession(ownerId, true);
+      expect((await listOwned()).total).toBe(0);
+      expect(await readdir(join(root, "async-tasks"))).not.toContain(
+        `${task.id}.json`,
+      );
+      expect(await readFile(otherPath, "utf8")).toBe(otherReceipt);
+      expect(
+        (await manage("list", undefined, {}, context(otherId))).tasks,
+      ).toMatchObject([{ id: other.id }]);
+    },
+  );
+
+  it("cancels and joins a child's detached task before archiving its main session", async () => {
+    const aborted = deferred<void>();
+    const cleanup = deferred<void>();
+    const settled = vi.fn();
+    const task = await startOwned({
+      sessionId: childId,
+      onSettled: settled,
+      execute: async (signal) => {
+        signal.addEventListener("abort", () => aborted.resolve(), {
+          once: true,
+        });
+        await cleanup.promise;
+        throw new ForgeError("cancelled", "Fixture cancelled.");
+      },
+    });
+    let archived = false;
+    try {
+      const archiving = harness.archiveSession(ownerId, true).then(() => {
+        archived = true;
+      });
+      expect(
+        await Promise.race([
+          aborted.promise.then(() => true),
+          archiving.then(() => false),
+        ]),
+      ).toBe(true);
+      expect(archived).toBe(false);
+      expect(settled).not.toHaveBeenCalled();
+      expect(await readdir(join(root, "async-tasks"))).toContain(
+        `${task.id}.json`,
+      );
+      cleanup.resolve();
+      await archiving;
+      expect(settled).toHaveBeenCalledOnce();
+      expect((await listOwned()).total).toBe(0);
+      expect(await readdir(join(root, "async-tasks"))).not.toContain(
+        `${task.id}.json`,
+      );
+      expect(notify).not.toHaveBeenCalled();
+    } finally {
+      cleanup.resolve();
+    }
+  });
+
+  it("reaps failed and suppressed notifications without requiring a read", async () => {
+    notify.mockRejectedValueOnce(new ForgeError("provider", "Offline"));
+    const failed = await startOwned();
+    expect(await waitOwned(failed.id)).toMatchObject({
+      notification: "failed",
+    });
+    const suppressed = await startOwned({
+      execute: async () => {
+        throw new ForgeError("cancelled", "Fixture cancelled.");
+      },
+    });
+    expect(await waitOwned(suppressed.id)).toMatchObject({
+      notification: "suppressed",
+    });
+    await harness.archiveSession(ownerId, true);
+    expect((await listOwned()).total).toBe(0);
+    const files = await readdir(join(root, "async-tasks"));
+    expect(files).not.toContain(`${failed.id}.json`);
+    expect(files).not.toContain(`${suppressed.id}.json`);
+  });
+
+  it("reports receipt removal failures through the existing storage error", async () => {
+    const task = await startOwned();
+    await waitOwned(task.id);
+    const path = join(root, "async-tasks", `${task.id}.json`);
+    await rm(path);
+    await mkdir(path);
+    await expect(harness.archiveSession(ownerId, true)).rejects.toEqual(
+      io.storageError(),
+    );
+    expect((await harness.getSession(ownerId)).archived).not.toBe(true);
+    expect((await listOwned()).tasks).toMatchObject([{ id: task.id }]);
+    await rm(path, { recursive: true });
+    await harness.archiveSession(ownerId, true);
+    expect((await listOwned()).total).toBe(0);
   });
 });

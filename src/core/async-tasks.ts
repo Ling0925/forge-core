@@ -505,6 +505,13 @@ export async function openAsyncTaskService(options: {
       await Promise.all(owned.map((task) => task.done));
       return owned.length > 0;
     },
+    async reapSession(id) {
+      const owned = [...tasks.values()].filter((task) => owns(task, id));
+      await Promise.allSettled(
+        owned.flatMap((task) => [task.done, task.notifying]),
+      );
+      for (const task of owned) await reap(task);
+    },
     dispose() {
       if (closing) return closing;
       stopped = true;
