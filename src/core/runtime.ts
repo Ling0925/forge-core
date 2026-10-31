@@ -271,19 +271,20 @@ export const createAgentRuntime = (
           canDelegate: run.canDelegate,
         });
       let currentInstructions = instructions(effectivePermission());
+      let systemMessage: Message = {
+        role: "system",
+        content: currentInstructions,
+      };
       const project = (state: SessionSnapshot) => {
+        if (systemMessage.content !== currentInstructions)
+          systemMessage = { role: "system", content: currentInstructions };
         const projected = projectSummary(state).map((message, index) =>
-          index === 0 && message.role === "system"
-            ? { role: "system" as const, content: currentInstructions }
-            : message,
+          index === 0 && message.role === "system" ? systemMessage : message,
         );
         const messages =
           projected[0]?.role === "system"
             ? projected
-            : [
-                { role: "system" as const, content: currentInstructions },
-                ...projected,
-              ];
+            : [systemMessage, ...projected];
         const guidance =
           run.adaptation?.status === "adopted"
             ? harnessStrategyMessage(run.adaptation.strategy)

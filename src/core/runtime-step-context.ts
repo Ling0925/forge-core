@@ -72,6 +72,10 @@ export const prepareStepContext = async (
 }> => {
   const before = project(run.snapshot);
   if (calibratedSize(before) > budget.limit) {
+    const systemMessage: Message = {
+      role: "system",
+      content: currentInstructions,
+    };
     // Search for a boundary in raw-estimate units: that is what the
     // estimator reports, and the hard trim below uses the same units.
     let boundary = summaryBoundary(
@@ -79,9 +83,7 @@ export const prepareStepContext = async (
       (messages) =>
         contextSize(
           messages.map((m, i) =>
-            i === 0 && m.role === "system"
-              ? { role: "system", content: currentInstructions }
-              : m,
+            i === 0 && m.role === "system" ? systemMessage : m,
           ),
         ),
       rawTarget,
