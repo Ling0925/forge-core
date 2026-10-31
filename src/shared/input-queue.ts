@@ -1,6 +1,12 @@
 import { z } from "zod";
 import { ForgeError } from "./errors";
-import { permissionSchema, runInputSchema, sessionIdSchema } from "./schemas";
+import {
+  errorInfoSchema,
+  errorMessageSchema,
+  permissionSchema,
+  runInputSchema,
+  sessionIdSchema,
+} from "./schemas";
 import type { RunInput, SessionId, SessionStatus } from "./schemas";
 
 export const enqueueInputSchema = z
@@ -37,7 +43,8 @@ export const queuedInputSchema = z
     outcome: z
       .enum(["completed", "failed", "cancelled", "interrupted"])
       .optional(),
-    reason: z.string().max(1024).optional(),
+    reason: errorMessageSchema.optional(),
+    error: errorInfoSchema.optional(),
   })
   .strict()
   .readonly();
@@ -46,7 +53,7 @@ export const inputQueueSnapshotSchema = z
   .object({
     sessionId: sessionIdSchema,
     paused: z.boolean(),
-    reason: z.string().max(1024).optional(),
+    reason: errorMessageSchema.optional(),
     items: z.array(queuedInputSchema).max(4096).readonly(),
   })
   .strict()

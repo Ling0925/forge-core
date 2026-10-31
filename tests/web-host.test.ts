@@ -227,7 +227,7 @@ describe("Web host with default personal LAN direct access", () => {
       expect(await observed.json()).toMatchObject({
         ok: true,
         result: {
-          items: [{ inputId, state: "consumed", outcome: "completed" }],
+          items: [],
         },
       });
     });

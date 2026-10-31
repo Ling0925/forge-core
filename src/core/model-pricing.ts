@@ -13,6 +13,7 @@ import {
   resolveRequestRates,
 } from "../shared/model-pricing";
 import { atomicJson, privateDirectory, readJson } from "../store/io";
+import { withCancellation } from "./cancellation";
 
 export {
   estimateAggregateCostUsd,
@@ -52,8 +53,9 @@ export function createModelPricingService(
     readonly now?: () => number;
     /** Only the public price catalog is persisted here, never provider configuration. */
     readonly cacheDirectory?: string;
+    readonly signal?: AbortSignal;
   } = {},
-): ModelPricingService {
+): ModelPricingService & { dispose(): Promise<void> } {
   const fetcher = options.fetch ?? globalThis.fetch;
   const now = options.now ?? Date.now;
   const cachePath =
@@ -64,7 +66,11 @@ export function createModelPricingService(
   let cacheLoaded = false;
   let refreshAt = 0;
   let pending: Promise<ModelPrices> | undefined;
+  let cacheWrite: Promise<void> | undefined;
   return {
+    async dispose() {
+      await cacheWrite;
+    },
     getStatus: () => status,
     async getPrices(refresh = false) {
       if (pending) return pending;
@@ -99,15 +105,23 @@ export function createModelPricingService(
         }
         if (!refresh && now() < refreshAt) return prices;
         try {
-          const response = await fetcher(MODEL_PRICES_URL, {
-            headers: { Accept: "application/json" },
-            // The full catalog is several MB; the deadline includes the body,
-            // not just response headers. A 10s cap discarded healthy slow loads.
-            signal: AbortSignal.timeout(60_000),
-          });
-          if (!response.ok)
-            throw new Error(`Model prices HTTP ${response.status}`);
-          const catalog: unknown = await response.json();
+          const signal = AbortSignal.any([
+            AbortSignal.timeout(60_000),
+            ...(options.signal ? [options.signal] : []),
+          ]);
+          const catalog: unknown = await withCancellation(
+            fetcher(MODEL_PRICES_URL, {
+              headers: { Accept: "application/json" },
+              // The full catalog is several MB; the deadline includes the body,
+              // not just response headers. A 10s cap discarded healthy slow loads.
+              signal,
+            }).then((response) => {
+              if (!response.ok)
+                throw new Error(`Model prices HTTP ${response.status}`);
+              return response.json();
+            }),
+            signal,
+          );
           const updated = parseModelPrices(catalog);
           if (updated.size === 0) throw new Error("No model prices in catalog");
           const fetchedAt = now();
@@ -118,18 +132,24 @@ export function createModelPricingService(
             fetchedAt: new Date(fetchedAt).toISOString(),
           };
           if (cachePath && options.cacheDirectory) {
-            try {
-              await privateDirectory(options.cacheDirectory);
-              await atomicJson(
-                cachePath,
-                { version: 1, source: MODEL_PRICES_URL, fetchedAt, catalog },
-                maxCacheBytes,
-              );
-            } catch {
-              // A cache write failure must not discard usable downloaded prices.
-            }
+            const directory = options.cacheDirectory;
+            cacheWrite = (async () => {
+              try {
+                await privateDirectory(directory);
+                options.signal?.throwIfAborted();
+                await atomicJson(
+                  cachePath,
+                  { version: 1, source: MODEL_PRICES_URL, fetchedAt, catalog },
+                  maxCacheBytes,
+                );
+              } catch {
+                // A cache write failure must not discard usable downloaded prices.
+              }
+            })();
+            await cacheWrite;
           }
-        } catch {
+        } catch (error) {
+          if (options.signal?.aborted) throw error;
           // Preserve last known prices across outages AND process restarts.
           status = {
             ...status,

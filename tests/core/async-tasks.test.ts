@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdtemp, readFile, readdir, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -71,6 +71,38 @@ afterEach(async () => {
 });
 
 describe("host-owned async task lifecycle", () => {
+  it("reaps a delivered result only after its final page, including on restart", async () => {
+    const task = await start();
+    await manage("wait", task.id);
+    const path = join(root, "async-tasks", `${task.id}.json`);
+    const disk = JSON.parse(await readFile(path, "utf8"));
+    const first = await manage("read", task.id, { limit: 1 });
+    expect(first.nextOffset).toBe(1);
+    expect((await manage("list")).total).toBe(1);
+    expect(
+      await manage("read", task.id, { offset: first.nextOffset }),
+    ).toMatchObject({ nextOffset: null });
+    expect((await manage("list")).total).toBe(0);
+    expect(await readdir(join(root, "async-tasks"))).not.toContain(
+      `${task.id}.json`,
+    );
+    await service.dispose();
+    await atomicJson(path, { ...disk, delivered: true });
+    service = await openAsyncTaskService({ directory: root, notify });
+    expect((await manage("list")).total).toBe(0);
+    expect(await readdir(join(root, "async-tasks"))).not.toContain(
+      `${task.id}.json`,
+    );
+  });
+
+  it("reuses receipt capacity after more than 256 delivered tasks", async () => {
+    for (let index = 0; index <= 256; index++) {
+      const task = await start();
+      await manage("wait", task.id);
+      await manage("read", task.id);
+    }
+    expect((await manage("list")).total).toBe(0);
+  });
   it("returns before work completes, persists before notification, accounts usage and paginates results", async () => {
     const done = deferred<ToolResult>();
     const task = await start({
@@ -99,8 +131,10 @@ describe("host-owned async task lifecycle", () => {
       isError: false,
     });
     await vi.waitFor(async () =>
-      expect((await manage("read", task.id)).notification).toBe("queued"),
+      expect((await manage("list")).tasks[0]?.notification).toBe("queued"),
     );
+    await manage("wake", task.id);
+    await manage("wake", task.id);
     const first = await manage("read", task.id, { limit: 7 });
     const second = await manage("read", task.id, { offset: first.nextOffset });
     expect(JSON.parse(first.output + second.output)).toMatchObject({
@@ -122,8 +156,6 @@ describe("host-owned async task lifecycle", () => {
         }),
       }),
     );
-    await manage("wake", task.id);
-    await manage("wake", task.id);
     expect(notify).toHaveBeenCalledOnce();
   });
 
@@ -333,7 +365,7 @@ describe("host-owned async task lifecycle", () => {
     notify.mockClear();
     service = await openAsyncTaskService({ directory: root, notify });
     await vi.waitFor(async () =>
-      expect((await manage("read", task.id)).notification).toBe("queued"),
+      expect((await manage("list")).tasks[0]?.notification).toBe("queued"),
     );
     expect(notify).toHaveBeenCalledOnce();
     await service.dispose();

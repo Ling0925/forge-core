@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { readdir } from "node:fs/promises";
+import { readdir, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { z } from "zod";
 import type {
@@ -22,6 +22,7 @@ import {
   privateDirectory,
   readJson,
   storageError,
+  syncDirectory,
 } from "../store/io";
 import { fileLock } from "../store/lock";
 
@@ -64,6 +65,7 @@ const recordSchema = z
     resultIsError: z.boolean().optional(),
     usage: usageSchema,
     usageComplete: z.boolean(),
+    delivered: z.boolean().optional(),
   })
   .strict();
 type Record = z.infer<typeof recordSchema>;
@@ -130,13 +132,23 @@ export async function openAsyncTaskService(options: {
       );
     return task;
   };
+  const reap = async (task: Task) => {
+    try {
+      await rm(join(directory, `${task.record.id}.json`), { force: true });
+      await syncDirectory(directory);
+    } catch {
+      throw storageError();
+    }
+    tasks.delete(task.record.id);
+  };
   function notify(
     task: Task,
     automatic = false,
     guard?: () => void,
   ): Promise<void> {
     if (task.notifying) return task.notifying;
-    if (task.record.notification === "queued") return Promise.resolve();
+    if (task.record.notification === "queued" || task.record.delivered)
+      return Promise.resolve();
     check();
     if (task.record.status === "running")
       throw new ForgeError(
@@ -190,7 +202,6 @@ export async function openAsyncTaskService(options: {
     const files = (await readdir(directory)).filter((name) =>
       name.endsWith(".json"),
     );
-    if (files.length > MAX_TASKS) throw storageError();
     for (const file of files) {
       const parsed = recordSchema.safeParse(
         await readJson(join(directory, file), RECORD_BYTES),
@@ -202,6 +213,10 @@ export async function openAsyncTaskService(options: {
       )
         throw storageError();
       const task: Task = { record: parsed.data, persisted: true };
+      if (task.record.delivered) {
+        await reap(task);
+        continue;
+      }
       if (task.record.status === "running") {
         task.record = {
           ...task.record,
@@ -218,6 +233,7 @@ export async function openAsyncTaskService(options: {
         await persist(task);
       }
       tasks.set(task.record.id, task);
+      if (tasks.size > MAX_TASKS) throw storageError();
     }
   } catch (error) {
     await release();
@@ -424,6 +440,7 @@ export async function openAsyncTaskService(options: {
       })().finally(() => {
         input.signal.removeEventListener("abort", abort);
         task.controller = undefined;
+        input.onSettled?.();
       });
       await started;
       return view(task);
@@ -462,7 +479,21 @@ export async function openAsyncTaskService(options: {
           });
       } else if (input.action === "wait")
         await wait(task, input.timeout_ms, context.signal);
-      return page(task, input.offset, input.limit);
+      const response = page(task, input.offset, input.limit);
+      if (
+        input.action === "read" &&
+        task.record.status !== "running" &&
+        input.offset + input.limit >= (task.record.output?.length ?? 0)
+      ) {
+        await task.done;
+        while (task.notifying) await task.notifying;
+        if (["queued", "suppressed"].includes(task.record.notification)) {
+          task.record = { ...task.record, delivered: true };
+          await persist(task);
+          await reap(task);
+        }
+      }
+      return response;
     },
     async cancelSession(id) {
       const owned = [...tasks.values()].filter(

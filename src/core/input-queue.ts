@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import { join } from "node:path";
 import { z } from "zod";
-import { ForgeError } from "../shared/errors";
+import { ForgeError, toErrorInfo } from "../shared/errors";
 import {
   QueueAdmissionError,
   enqueueInputSchema,
@@ -13,7 +13,11 @@ import type {
   InputQueueRunner,
   QueuedInput,
 } from "../shared/input-queue";
-import { runInputSchema, sessionIdSchema } from "../shared/schemas";
+import {
+  errorMessageSchema,
+  runInputSchema,
+  sessionIdSchema,
+} from "../shared/schemas";
 import type {
   ProviderConfig,
   RunInput,
@@ -76,7 +80,7 @@ const ledgerSchema = z
       z
         .object({
           paused: z.boolean(),
-          reason: z.string().max(1024).optional(),
+          reason: errorMessageSchema.optional(),
         })
         .strict(),
     ),
@@ -107,6 +111,45 @@ export async function openInputQueue(options: {
     join(options.directory, "input-queue"),
   );
   const path = join(directory, "queue.json");
+  const receipts = await privateDirectory(join(directory, "receipts"));
+  const ledgerIO = async <T>(work: Promise<T>): Promise<T> => {
+    try {
+      return await work;
+    } catch (error) {
+      if (error instanceof ForgeError && error.code === "storage") {
+        stopped = true;
+        storageFailed = true;
+      }
+      throw error;
+    }
+  };
+  const compact = async (ledger: Ledger) => {
+    for (const item of ledger.items) {
+      if (item.state === "consumed" || item.state === "cancelled")
+        await ledgerIO(
+          atomicJson(join(receipts, `${item.inputId}.json`), item),
+        );
+    }
+    ledger.items = ledger.items.filter(pending);
+    const sessions = new Set<string>(
+      ledger.items.map((item) => item.sessionId),
+    );
+    for (const [id, state] of Object.entries(ledger.sessions))
+      if (!state.paused && !sessions.has(id)) delete ledger.sessions[id];
+  };
+  const receipt = async (id: string): Promise<StoredItem | undefined> => {
+    try {
+      const parsed = storedItemSchema.safeParse(
+        await ledgerIO(readJson(join(receipts, `${id}.json`))),
+      );
+      if (!parsed.success || parsed.data.inputId !== id) throw storageError();
+      return parsed.data;
+    } catch (error) {
+      if (error instanceof ForgeError && error.code === "not_found")
+        return undefined;
+      throw error;
+    }
+  };
   let serial: Promise<unknown> = Promise.resolve();
   const acquireLedger = async () => {
     const deadline = Date.now() + 5000;
@@ -130,11 +173,11 @@ export async function openInputQueue(options: {
     write = true,
   ): Promise<T> => {
     const work = serial.then(async () => {
-      const release = write ? await acquireLedger() : async () => {};
+      const release = write ? await ledgerIO(acquireLedger()) : async () => {};
       try {
         let ledger: Ledger;
         try {
-          const parsed = ledgerSchema.safeParse(await readJson(path));
+          const parsed = ledgerSchema.safeParse(await ledgerIO(readJson(path)));
           if (!parsed.success) throw storageError();
           ledger = parsed.data;
           const ids = new Set<string>();
@@ -163,28 +206,57 @@ export async function openInputQueue(options: {
             sequence = item.sequence;
           }
         } catch (error) {
-          if (!(error instanceof ForgeError) || error.code !== "not_found")
+          if (!(error instanceof ForgeError) || error.code !== "not_found") {
+            if (error instanceof ForgeError && error.code === "storage") {
+              stopped = true;
+              storageFailed = true;
+            }
             throw error;
+          }
           ledger = { version: 1, nextSequence: 1, items: [], sessions: {} };
         }
+        if (write) await compact(ledger);
         const result = await change(ledger);
-        if (write) await atomicJson(path, ledger, 48 * 1024 * 1024);
+        if (write) {
+          await compact(ledger);
+          await ledgerIO(atomicJson(path, ledger, 48 * 1024 * 1024));
+        }
         return result;
       } finally {
-        await release();
+        await ledgerIO(release());
       }
     });
     serial = work.catch(() => undefined);
     return work;
   };
-  const snapshot = (ledger: Ledger, sessionId: SessionId) =>
-    inputQueueSnapshotSchema.parse({
+  const snapshot = (ledger: Ledger, sessionId: SessionId) => {
+    const blocked = ledger.items.find(
+      (item) =>
+        item.sessionId === sessionId &&
+        (item.state === "blocked" ||
+          (item.state === "uncertain" &&
+            ledger.sessions[sessionId]?.paused !== false)),
+    );
+    return inputQueueSnapshotSchema.parse({
       sessionId,
       ...(ledger.sessions[sessionId] ?? { paused: false }),
+      ...(blocked ? { paused: true, reason: blocked.reason } : {}),
       items: ledger.items
         .filter((item) => item.sessionId === sessionId)
         .map(publicItem),
     });
+  };
+  const block = (ledger: Ledger, item: StoredItem, error: unknown) => {
+    item.error = toErrorInfo(error);
+    item.reason = item.error.message;
+    item.state = item.runId ? "uncertain" : "blocked";
+    item.updatedAt = new Date().toISOString();
+    const state = ledger.sessions[item.sessionId];
+    if (state) {
+      state.paused = true;
+      state.reason = item.reason;
+    }
+  };
   let runner: InputQueueRunner | undefined;
   let ownerRelease: (() => Promise<void>) | undefined;
   let attaching: Promise<void> | undefined;
@@ -222,7 +294,6 @@ export async function openInputQueue(options: {
       dirty.add(sessionId);
       return;
     }
-    if (runner.isBusy(sessionId)) return;
     const host = runner;
     const operation = Promise.resolve()
       .then(async () => {
@@ -230,37 +301,37 @@ export async function openInputQueue(options: {
           const item = await transaction(async (ledger) => {
             if (stopped || ledger.sessions[sessionId]?.paused) return undefined;
             const item = ledger.items.find(
-              (item) => item.sessionId === sessionId && item.state === "queued",
+              (item) =>
+                item.sessionId === sessionId &&
+                pending(item) &&
+                (item.state !== "uncertain" ||
+                  ledger.sessions[sessionId]?.paused !== false),
             );
-            if (!item?.input) return undefined;
-            const predecessor = await options.predecessor?.(sessionId);
-            if (
-              predecessor?.unsafe &&
-              item.acknowledgedPredecessor !== predecessor.token
-            ) {
-              item.state = "blocked";
-              item.reason =
-                "Previous execution needs review. Explicit resume is required.";
-              item.updatedAt = new Date().toISOString();
-              setState(ledger, sessionId, {
-                paused: true,
-                reason: item.reason,
-              });
-              return undefined;
-            }
+            if (!item?.input || item.state !== "queued") return undefined;
             try {
+              const predecessor = await options.predecessor?.(sessionId);
+              if (
+                predecessor?.unsafe &&
+                item.acknowledgedPredecessor !== predecessor.token
+              ) {
+                item.state = "blocked";
+                item.reason =
+                  "Previous execution needs review. Explicit resume is required.";
+                item.updatedAt = new Date().toISOString();
+                setState(ledger, sessionId, {
+                  paused: true,
+                  reason: item.reason,
+                });
+                return undefined;
+              }
               const prepared = await options.prepare(item.input);
               if (prepared.providerBinding !== item.providerBinding)
-                throw new Error("Provider selection changed");
-            } catch {
-              item.state = "blocked";
-              item.reason =
-                "The accepted provider or model is unavailable or changed. Restore the selection and explicitly resume.";
-              item.updatedAt = new Date().toISOString();
-              setState(ledger, sessionId, {
-                paused: true,
-                reason: item.reason,
-              });
+                throw new ForgeError(
+                  "provider",
+                  "The accepted provider or model is unavailable or changed. Restore the selection and explicitly resume.",
+                );
+            } catch (error) {
+              block(ledger, item, error);
               return undefined;
             }
             // Bind durably BEFORE calling any runtime code. Recovery never replays a bound item.
@@ -288,29 +359,20 @@ export async function openInputQueue(options: {
             )
               status = result;
           } catch (error) {
-            if (error instanceof QueueAdmissionError) {
-              await transaction((ledger) => {
-                const entry = ledger.items.find(
-                  (candidate) => candidate.inputId === item.inputId,
-                );
-                if (
-                  !entry ||
-                  entry.state !== "bound" ||
-                  entry.runId !== item.runId
-                )
-                  throw storageError();
-                entry.state = "blocked";
-                entry.runId = null;
-                entry.reason = error.message;
-                entry.updatedAt = new Date().toISOString();
-                setState(ledger, sessionId, {
-                  paused: true,
-                  reason: error.message,
-                });
-              });
-              return;
-            }
-            /* Any other bound attempt is never automatically replayed. */
+            await transaction((ledger) => {
+              const entry = ledger.items.find(
+                (candidate) => candidate.inputId === item.inputId,
+              );
+              if (
+                !entry ||
+                entry.state !== "bound" ||
+                entry.runId !== item.runId
+              )
+                throw storageError();
+              if (error instanceof QueueAdmissionError) entry.runId = null;
+              block(ledger, entry, error);
+            });
+            return;
           }
           await transaction((ledger) => {
             const entry = ledger.items.find(
@@ -333,17 +395,21 @@ export async function openInputQueue(options: {
           if (status !== "completed") return;
         }
       })
-      .catch(() => {
-        // Storage failure leaves a durable bound/queued record. Do not retry an
-        // uncertain effect. A new host recovers bound records as uncertain.
-        stopped = true;
-        storageFailed = true;
+      .catch(async (error) => {
+        if (storageFailed) return;
+        await transaction((ledger) => {
+          const item = ledger.items.find(
+            (item) => item.sessionId === sessionId && pending(item),
+          );
+          if (item) block(ledger, item, error);
+        });
       })
       .finally(() => {
         active.delete(sessionId);
         if (dirty.delete(sessionId)) schedule(sessionId);
       });
     active.set(sessionId, operation);
+    void operation.catch(() => undefined);
   };
   /** One durable acceptance path; origin is host-owned and never caller-supplied. */
   const accept = async (
@@ -355,9 +421,9 @@ export async function openInputQueue(options: {
     // can never be swapped for, or reused as, ordinary explicit input.
     const requestHash = digest(request.input);
     const item = await transaction(async (ledger) => {
-      const existing = ledger.items.find(
-        (item) => item.inputId === request.inputId,
-      );
+      const existing =
+        ledger.items.find((item) => item.inputId === request.inputId) ??
+        (await receipt(request.inputId));
       if (existing) {
         if (
           existing.sessionId !== request.input.sessionId ||
@@ -509,6 +575,7 @@ export async function openInputQueue(options: {
             item.state = "queued";
             if (predecessor) item.acknowledgedPredecessor = predecessor.token;
             Reflect.deleteProperty(item, "reason");
+            Reflect.deleteProperty(item, "error");
           }
         return snapshot(ledger, sessionId);
       });
@@ -527,27 +594,12 @@ export async function openInputQueue(options: {
                 item.reason =
                   "The host stopped after binding this input. Inspect the associated run before creating a new input ID; it will not be replayed.";
                 item.updatedAt = new Date().toISOString();
-                setState(ledger, item.sessionId, {
-                  paused: true,
-                  reason: item.reason,
-                });
+                const state = ledger.sessions[item.sessionId];
+                if (state) {
+                  state.paused = true;
+                  state.reason = item.reason;
+                }
               }
-            const checked = new Set<SessionId>();
-            for (const item of ledger.items) {
-              if (item.state !== "queued" || checked.has(item.sessionId))
-                continue;
-              checked.add(item.sessionId);
-              const predecessor = await options.predecessor?.(item.sessionId);
-              if (
-                predecessor?.unsafe &&
-                item.acknowledgedPredecessor !== predecessor.token
-              )
-                setState(ledger, item.sessionId, {
-                  paused: true,
-                  reason:
-                    "Previous execution needs review. Explicit resume is required.",
-                });
-            }
             return [
               ...new Set(
                 ledger.items
@@ -569,20 +621,30 @@ export async function openInputQueue(options: {
     async finished(sessionId, status) {
       if (status !== "completed")
         await transaction((ledger) => {
+          // The bound item's scheduler owns its terminal transition.
+          if (
+            ledger.items.some(
+              (item) => item.sessionId === sessionId && item.state === "bound",
+            )
+          )
+            return;
           if (
             !ledger.items.some(
               (item) => item.sessionId === sessionId && pending(item),
             )
           )
             return;
-          setState(ledger, sessionId, {
-            paused: true,
-            reason: `Previous run ${status}. Explicit resume is required.`,
-          });
-        }).catch((error) => {
-          stopped = true;
-          storageFailed = true;
-          throw error;
+          try {
+            setState(ledger, sessionId, {
+              paused: true,
+              reason: `Previous run ${status}. Explicit resume is required.`,
+            });
+          } catch (error) {
+            const item = ledger.items.find(
+              (item) => item.sessionId === sessionId && pending(item),
+            );
+            if (item) block(ledger, item, error);
+          }
         });
       schedule(sessionId);
     },

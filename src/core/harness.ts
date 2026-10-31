@@ -87,12 +87,13 @@ export const createHarness = async (
       createPluginPublishers(publishedFiles),
     );
     startup.defer(() => plugins.dispose());
-    const usageStatsService = createUsageStatsService(
-      store,
-      createModelPricingService({
-        cacheDirectory: directory,
-      }),
-    );
+    const disposal = new AbortController();
+    startup.defer(() => disposal.abort());
+    const pricing = createModelPricingService({
+      cacheDirectory: directory,
+      signal: disposal.signal,
+    });
+    const usageStatsService = createUsageStatsService(store, pricing);
     const mcp = await createMcpService({ home: directory });
     startup.defer(() => mcp.dispose());
     const lspPool = new LspServerPool();
@@ -100,13 +101,13 @@ export const createHarness = async (
     // Keep live access and a bounded recent history without retaining disposed tools.
     const taskAccess = new Set<CommandTaskAccess>();
     const recentTaskAccess: CommandTaskAccess[] = [];
-    const taskSecrets = new Set<string>();
+    const taskSecrets = new Map<string, { registries: number }>();
     let asyncTasks: Promise<AsyncTaskService> | undefined;
     // Only sessions which actually launch retained async receipts enter this map.
     // Later runs replace the reader so pending commits observe current grants.
     const asyncPermissions = new Map<
       SessionId,
-      () => import("../shared/schemas").Permission
+      { read: () => import("../shared/schemas").Permission; tasks: number }
     >();
     const getAsyncTasks = () => {
       check();
@@ -140,8 +141,6 @@ export const createHarness = async (
     const checkpoints = createHarnessCheckpoints(store, directory);
     const catalogStore = await openModelCatalogStore(directory);
     const routeState = createRouteState();
-    const disposal = new AbortController();
-    startup.defer(() => disposal.abort());
     const modelAccess = createModelAccessService({
       settingsStore,
       catalogStore,
@@ -254,7 +253,7 @@ export const createHarness = async (
       },
       redact: (text) => {
         let result = text;
-        for (const secret of taskSecrets)
+        for (const secret of taskSecrets.keys())
           result = result.split(secret).join("[REDACTED]");
         return result;
       },
@@ -278,6 +277,12 @@ export const createHarness = async (
       )
         throw error;
     }
+    const management = new Set<Promise<unknown>>();
+    const trackManagement = <T>(work: Promise<T>): Promise<T> => {
+      management.add(work);
+      void work.finally(() => management.delete(work)).catch(() => undefined);
+      return work;
+    };
     return {
       inputQueue,
       tasks: {
@@ -376,23 +381,23 @@ export const createHarness = async (
       },
       listMcpServers() {
         check();
-        return mcp.list();
+        return trackManagement(mcp.list());
       },
       registerMcpServer(input) {
         check();
-        return mcp.register(input);
+        return trackManagement(mcp.register(input));
       },
       async setMcpEnabled(id, enabled) {
         check();
-        return mcp.setEnabled(id, enabled);
+        return trackManagement(mcp.setEnabled(id, enabled));
       },
       async removeMcpServer(id) {
         check();
-        return mcp.remove(id);
+        return trackManagement(mcp.remove(id));
       },
       getMcpHealth(id) {
         check();
-        return mcp.health(id);
+        return trackManagement(mcp.health(id));
       },
       async listCheckpoints(id) {
         check();
@@ -501,7 +506,7 @@ export const createHarness = async (
         const session = await store.get(sessionIdSchema.parse(id));
         return listWorkspaceDirectory(session.workspace, path, {
           protectedRoots: [directory],
-          redactValues: [...taskSecrets],
+          redactValues: [...taskSecrets.keys()],
         });
       },
       async readWorkspaceFile(id, path) {
@@ -509,7 +514,7 @@ export const createHarness = async (
         const session = await store.get(sessionIdSchema.parse(id));
         return readWorkspaceFilePreview(session.workspace, path, {
           protectedRoots: [directory],
-          redactValues: [...taskSecrets],
+          redactValues: [...taskSecrets.keys()],
         });
       },
       async getPublishedFile(rawSessionId, rawFileId) {
@@ -569,9 +574,13 @@ export const createHarness = async (
         disposed = true;
         inputQueue.stop();
         disposal.abort();
-        closing = Promise.allSettled(
-          [...controls.values()].map((c) => c.work),
-        ).then(async () => {
+        const mcpDisposal = mcp.dispose();
+        closing = Promise.allSettled([
+          ...[...controls.values()].map((c) => c.work),
+          ...management,
+          mcpDisposal,
+          pricing.dispose(),
+        ]).then(async () => {
           try {
             try {
               if (asyncTasks) await (await asyncTasks).dispose();
@@ -587,7 +596,7 @@ export const createHarness = async (
                 await memories.close();
               } finally {
                 try {
-                  await mcp.dispose();
+                  await mcpDisposal;
                 } finally {
                   try {
                     await plugins.dispose();

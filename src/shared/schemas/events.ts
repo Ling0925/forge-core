@@ -24,6 +24,7 @@ export const sessionStatusSchema = z.enum([
   "interrupted",
 ]);
 export type SessionStatus = z.infer<typeof sessionStatusSchema>;
+export const errorMessageSchema = z.string().max(4096);
 export const errorInfoSchema = z
   .object({
     code: z.enum([
@@ -37,7 +38,7 @@ export const errorInfoSchema = z
       "budget",
       "internal",
     ]),
-    message: z.string().max(4096),
+    message: errorMessageSchema,
     retryable: z.boolean(),
   })
   .strict()

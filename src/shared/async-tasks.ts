@@ -62,6 +62,7 @@ export interface AsyncTaskStart {
     onUsage: (usage: Usage | undefined) => void,
   ) => Promise<ToolResult>;
   readonly redact?: (text: string) => string;
+  readonly onSettled?: () => void;
 }
 export interface AsyncTaskService {
   start(input: AsyncTaskStart): Promise<AsyncTaskView>;

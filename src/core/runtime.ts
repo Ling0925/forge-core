@@ -95,11 +95,11 @@ export const createAgentRuntime = (
         deps.toolHooks.afterTool,
         deps.toolHooks.toolError,
       ].some((entries) => entries.length > 0);
-    let release: () => Promise<void>;
+    let release: (() => Promise<void>) | undefined;
     try {
       release =
         deps.sessionLock?.id === input.sessionId
-          ? deps.sessionLock.release
+          ? undefined
           : await deps.store.acquire(input.sessionId, signal);
     } catch (error) {
       if (!deps.rootBudget) rootBudget.close();
@@ -566,7 +566,7 @@ export const createAgentRuntime = (
         } finally {
           try {
             await journal.pendingWrite;
-            await release();
+            await release?.();
           } finally {
             if (!deps.rootBudget) rootBudget.close();
           }

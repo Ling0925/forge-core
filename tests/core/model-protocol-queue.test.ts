@@ -90,7 +90,7 @@ it.each([false, true])(
           await rpc("listInputs", { sessionId: session.id }),
         ).toMatchObject({
           ok: true,
-          result: { items: [{ state: "consumed", outcome: "completed" }] },
+          result: { items: [] },
         });
       });
       expect(seen).toHaveLength(1);
@@ -145,7 +145,7 @@ it.each([false, true])(
           ok: true,
           result: {
             paused: true,
-            items: [{ state: "consumed" }, { state: "blocked" }],
+            items: [{ state: "blocked" }],
           },
         });
       });

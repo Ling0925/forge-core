@@ -136,6 +136,7 @@ interface RemoteOptions {
  * message or an SSE stream whose events are routed by JSON-RPC id.
  */
 export class HttpMcpConnection extends JsonRpcConnection {
+  protected override readonly responsesInSend = true;
   private readonly endpoint: URL;
   private sessionId: string | undefined;
   private readonly controllers = new Map<AbortController, number | undefined>();

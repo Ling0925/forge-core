@@ -19,7 +19,11 @@ import type {
 import { parseSessionId } from "../../src/shared/schemas";
 import { createLspToolRegistry } from "../../src/tools/lsp";
 import { StdioLspClient } from "../../src/tools/lsp-client";
-import { type LspServerConfig, LspServerPool } from "../../src/tools/lsp-pool";
+import {
+  LspCleanupError,
+  type LspServerConfig,
+  LspServerPool,
+} from "../../src/tools/lsp-pool";
 
 const fixture = resolve("tests/tools/fixtures/lsp-server.mjs");
 const roots: string[] = [];
@@ -96,6 +100,35 @@ async function registry(root: string, mode = "normal", resident = pool()) {
 }
 
 describe("LSP semantic tools", () => {
+  it("propagates cleanup failure and refuses to spawn a replacement", async () => {
+    const root = await workspace();
+    const resident = new LspServerPool();
+    const tools = await createLspToolRegistry(root, [config("crash")], {
+      pool: resident,
+    });
+    const dispose = StdioLspClient.prototype.dispose;
+    vi.spyOn(StdioLspClient.prototype, "dispose").mockImplementation(
+      async function (this: StdioLspClient, reason) {
+        await dispose.call(this, reason);
+        throw new Error("fixture cleanup failure");
+      },
+    );
+    const start = vi.spyOn(StdioLspClient.prototype, "start");
+    try {
+      await expect(
+        tools.execute(call("hover"), context(root)),
+      ).rejects.toBeInstanceOf(LspCleanupError);
+      await expect(
+        tools.execute(call("hover"), context(root)),
+      ).rejects.toBeInstanceOf(LspCleanupError);
+      expect(start).toHaveBeenCalledOnce();
+    } finally {
+      await tools.dispose();
+      await expect(resident.dispose()).rejects.toThrow(
+        "fixture cleanup failure",
+      );
+    }
+  });
   it("is opt-in, exposes one concise tool and flattens/paginates real UTF-8 symbols", async () => {
     const root = await workspace();
     const empty = await createLspToolRegistry(root, [], { pool: pool() });

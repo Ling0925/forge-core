@@ -2,6 +2,7 @@ import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
+import { createHarness } from "../../src/core/harness";
 import {
   MODEL_PRICES_URL,
   createModelPricingService,
@@ -11,6 +12,15 @@ import {
   normalizePricingModelId,
   parseModelPrices,
 } from "../../src/core/model-pricing";
+import * as io from "../../src/store/io";
+
+const deferred = () => {
+  let resolve!: () => void;
+  const promise = new Promise<void>((done) => {
+    resolve = done;
+  });
+  return { promise, resolve };
+};
 
 const catalog = {
   relay: {
@@ -58,6 +68,109 @@ const usage = {
 };
 
 describe("models.dev request pricing", () => {
+  it("joins a price-cache commit already in progress before disposal returns", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "forge-prices-commit-"));
+    const entered = deferred();
+    const finish = deferred();
+    const write = io.atomicJson;
+    const persist = vi
+      .spyOn(io, "atomicJson")
+      .mockImplementation(async (...args) => {
+        if (args[0] === join(directory, "model-prices.json")) {
+          entered.resolve();
+          await finish.promise;
+        }
+        return write(...args);
+      });
+    const fetcher = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValue(Response.json(catalog));
+    const harness = await createHarness({ stateDir: directory });
+    const work = harness.getUsageStats!({ models: ["model-v1"] }).catch(
+      (error: unknown) => error,
+    );
+    try {
+      await entered.promise;
+      let disposed = false;
+      const closing = harness.dispose().then(() => {
+        disposed = true;
+      });
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      const waited = !disposed;
+      finish.resolve();
+      await closing;
+      expect(waited).toBe(true);
+      expect(
+        JSON.parse(
+          await readFile(join(directory, "model-prices.json"), "utf8"),
+        ),
+      ).toMatchObject({ catalog });
+      await work;
+    } finally {
+      finish.resolve();
+      await work;
+      await harness.dispose();
+      persist.mockRestore();
+      fetcher.mockRestore();
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+  it.each(["headers", "body"])(
+    "cancels pricing at %s on harness disposal without a late cache write",
+    async (phase) => {
+      const directory = await mkdtemp(join(tmpdir(), "forge-prices-disposal-"));
+      const entered = deferred();
+      const finish = deferred();
+      let signal: AbortSignal | null | undefined;
+      const fetcher = vi
+        .spyOn(globalThis, "fetch")
+        .mockImplementation(async (_url, init) => {
+          signal = init?.signal;
+          if (phase === "headers") {
+            entered.resolve();
+            await finish.promise;
+          }
+          const response = Response.json(catalog);
+          if (phase === "body")
+            vi.spyOn(response, "json").mockImplementation(async () => {
+              entered.resolve();
+              await finish.promise;
+              return catalog;
+            });
+          return response;
+        });
+      const harness = await createHarness({ stateDir: directory });
+      const work = harness.getUsageStats!({ models: ["model-v1"] });
+      const outcome = work.then(
+        () => "completed",
+        (error: unknown) => error,
+      );
+      try {
+        await entered.promise;
+        await harness.dispose();
+        const settled = await Promise.race([
+          outcome,
+          new Promise((resolve) =>
+            setImmediate(() => resolve("still waiting")),
+          ),
+        ]);
+        expect(settled).toMatchObject({ code: "cancelled" });
+        expect(signal?.aborted).toBe(true);
+        finish.resolve();
+        await outcome;
+        await new Promise<void>((resolve) => setImmediate(resolve));
+        await expect(
+          readFile(join(directory, "model-prices.json")),
+        ).rejects.toMatchObject({ code: "ENOENT" });
+      } finally {
+        finish.resolve();
+        await outcome;
+        await harness.dispose();
+        fetcher.mockRestore();
+        await rm(directory, { recursive: true, force: true });
+      }
+    },
+  );
   it.each([
     ["model-v1", "model-v1"],
     ["source:model-v1", "model-v1"],

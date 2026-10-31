@@ -472,8 +472,7 @@ export async function createLspToolRegistry(
       };
       return result(payload);
     } catch (error) {
-      if (error instanceof LspCleanupError)
-        return result({ error: error.message }, true);
+      if (error instanceof LspCleanupError) throw error;
       const invalid = recoverToolInputError(error);
       if (invalid) return invalid;
       return result(

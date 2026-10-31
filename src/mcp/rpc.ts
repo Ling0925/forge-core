@@ -88,6 +88,7 @@ export abstract class JsonRpcConnection implements McpConnection {
   protected abstract start(): Promise<void>;
 
   protected cancelRequest?(id: number): void;
+  protected readonly responsesInSend: boolean = false;
 
   protected clean(input: string): string {
     let text = input;
@@ -250,12 +251,13 @@ export abstract class JsonRpcConnection implements McpConnection {
         new ForgeError("busy", "Too many pending MCP requests."),
       );
     const id = this.nextId++;
+    let sending = true;
     return new Promise<Json>((resolve, reject) => {
       const abort = () => {
         const pending = this.pending.get(id);
         if (!pending) return;
         this.pending.delete(id);
-        this.cancelledRequests.add(id);
+        if (!this.responsesInSend || sending) this.cancelledRequests.add(id);
         clearTimeout(pending.timer);
         pending.onAbort?.();
         pending.reject(cancelled());
@@ -284,13 +286,16 @@ export abstract class JsonRpcConnection implements McpConnection {
       });
       options?.signal?.addEventListener("abort", abort, { once: true });
       try {
-        void Promise.resolve(
-          this.send({ jsonrpc: "2.0", id, method, params }),
-        ).catch((error: unknown) =>
-          this.shutdown(
-            error instanceof Error ? error : invalid("MCP transport failed."),
-          ),
-        );
+        void Promise.resolve(this.send({ jsonrpc: "2.0", id, method, params }))
+          .finally(() => {
+            sending = false;
+            if (this.responsesInSend) this.cancelledRequests.delete(id);
+          })
+          .catch((error: unknown) =>
+            this.shutdown(
+              error instanceof Error ? error : invalid("MCP transport failed."),
+            ),
+          );
       } catch (error) {
         this.shutdown(
           error instanceof Error ? error : invalid("MCP send failed."),

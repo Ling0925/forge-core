@@ -114,7 +114,7 @@ it("uses the environment provider instead of the stored active source", async ()
     await vi.waitFor(async () => {
       expect(await rpc("listInputs", { sessionId: session.id })).toMatchObject({
         ok: true,
-        result: { items: [{ state: "consumed", outcome: "completed" }] },
+        result: { items: [] },
       });
     });
     expect(seen).toEqual(["https://env.invalid/v1"]);

@@ -61,7 +61,7 @@ export type HarnessRunDeps = {
   toolHooksStore: Awaited<ReturnType<typeof openToolHooksStore>>;
   agentWorktrees: ReturnType<typeof createAgentWorktreeService>;
   getHarnessExperiences: () => ReturnType<typeof openHarnessExperienceStore>;
-  asyncPermissions: Map<SessionId, () => Permission>;
+  asyncPermissions: Map<SessionId, { read: () => Permission; tasks: number }>;
   track: (
     id: SessionId,
     controller: AbortController,
@@ -133,8 +133,9 @@ export const createHarnessRun = (deps: HarnessRunDeps) => {
         )
           throw new QueueAdmissionError();
       }
-      if (asyncPermissions.has(input.sessionId)) {
-        asyncPermissions.set(input.sessionId, () =>
+      const asyncPermission = asyncPermissions.get(input.sessionId);
+      if (asyncPermission) {
+        asyncPermission.read = () =>
           narrowestPermission(
             input.mode === "plan"
               ? "readonly"
@@ -142,8 +143,7 @@ export const createHarnessRun = (deps: HarnessRunDeps) => {
                   input.permission ??
                   settings.defaultPermission),
             snapshot.permissionCeiling,
-          ),
-        );
+          );
       }
       rootBudget = createRootRunBudget({ rootSessionId: input.sessionId });
       const { providerSourceId, routeGroupId } = selectSessionSource(
@@ -333,8 +333,8 @@ export const createHarnessRun = (deps: HarnessRunDeps) => {
           active.delete(input.sessionId);
           const reader = asyncPermissions.get(input.sessionId);
           if (reader) {
-            const permission = reader();
-            asyncPermissions.set(input.sessionId, () => permission);
+            const permission = reader.read();
+            reader.read = () => permission;
           }
         }
       }

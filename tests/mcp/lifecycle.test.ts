@@ -10,11 +10,21 @@ import { JsonRpcConnection } from "../../src/mcp/rpc";
 import type { ModelProvider } from "../../src/shared/contracts";
 import { mcpServerConfigSchema } from "../../src/shared/mcp";
 import { toolResultSchema } from "../../src/shared/schemas";
+import * as io from "../../src/store/io";
+import { fileLock } from "../../src/store/lock";
 
 vi.mock("node:child_process", async (importOriginal) => {
   const actual = await importOriginal<typeof import("node:child_process")>();
   return { ...actual, spawn: vi.fn(actual.spawn) };
 });
+
+const deferred = () => {
+  let resolve!: () => void;
+  const promise = new Promise<void>((done) => {
+    resolve = done;
+  });
+  return { promise, resolve };
+};
 
 const serverPath = fileURLToPath(
   new URL("../../examples/mcp/echo-server.mjs", import.meta.url),
@@ -109,6 +119,85 @@ beforeEach(async () => {
 afterEach(async () => {
   await harness.dispose();
   await rm(directory, { recursive: true, force: true });
+});
+
+it("rejects connections waiting on the catalog lock when the service is disposed", async () => {
+  const service = await createMcpService({ home: stateDir });
+  const unlock = await fileLock(join(stateDir, "mcp/servers.lock"));
+  const work = service.listTools("echo").then(
+    () => undefined,
+    (error: unknown) => error,
+  );
+  try {
+    await service.dispose();
+    await unlock();
+    expect(await work).toMatchObject({ code: "cancelled" });
+    await expect(service.listTools("echo")).rejects.toMatchObject({
+      code: "cancelled",
+    });
+    expect(children()).toHaveLength(0);
+  } finally {
+    await unlock();
+    await service.dispose();
+  }
+});
+
+it("does not spawn after disposal races an authoritative catalog read", async () => {
+  const service = await createMcpService({ home: stateDir });
+  const reading = deferred();
+  const finish = deferred();
+  const read = io.readJson;
+  vi.spyOn(io, "readJson").mockImplementation(async (...args) => {
+    const value = await read(...args);
+    if (args[0] === join(stateDir, "mcp/servers.json")) {
+      reading.resolve();
+      await finish.promise;
+    }
+    return value;
+  });
+  const work = service.listTools("echo").then(
+    () => undefined,
+    (error: unknown) => error,
+  );
+  try {
+    await reading.promise;
+    await service.dispose();
+    finish.resolve();
+    expect(await work).toMatchObject({ code: "cancelled" });
+    expect(children()).toHaveLength(0);
+  } finally {
+    finish.resolve();
+    await work;
+    await service.dispose();
+  }
+});
+
+it("joins in-flight MCP management calls during harness disposal", async () => {
+  const reading = deferred();
+  const finish = deferred();
+  const read = io.readJson;
+  vi.spyOn(io, "readJson").mockImplementation(async (...args) => {
+    const value = await read(...args);
+    if (args[0] === join(stateDir, "mcp/servers.json")) {
+      reading.resolve();
+      await finish.promise;
+    }
+    return value;
+  });
+  const work = harness.listMcpServers();
+  await reading.promise;
+  let closed = false;
+  const closing = harness.dispose().then(() => {
+    closed = true;
+  });
+  try {
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(closed).toBe(false);
+  } finally {
+    finish.resolve();
+    await work;
+    await closing;
+  }
 });
 
 it("reuses one process across management and consecutive turns, then closes on harness disposal", async () => {

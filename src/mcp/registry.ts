@@ -88,6 +88,11 @@ export async function createMcpService(options: {
   const folder = await privateDirectory(join(options.home, "mcp"));
   const catalogPath = join(folder, "servers.json");
   const lockPath = join(folder, "servers.lock");
+  let closed = false;
+  let disposal: Promise<void> | undefined;
+  const check = () => {
+    if (closed) throw new ForgeError("cancelled", "MCP service is disposed.");
+  };
   // Each live connection remembers the exact definition signature it was
   // opened under, so any authoritative change (disable, removal, re-point,
   // env/header change) is detected as a revocation even when the *current*
@@ -118,6 +123,7 @@ export async function createMcpService(options: {
   // is retried with bounded backoff; two instances (or two in-process callers)
   // never fail a read just because another holds the lock momentarily.
   const locked = async <T>(operation: () => Promise<T>): Promise<T> => {
+    check();
     let release: (() => Promise<void>) | undefined;
     for (
       let attempt = 0;
@@ -227,6 +233,7 @@ export async function createMcpService(options: {
         return { open: existing.connection, config };
       }
       if (existing) await closeConnection(config.id);
+      check();
       let created: McpConnection;
       if (isRemote(config)) {
         created = createRemoteConnection(config.transport, {
@@ -389,10 +396,15 @@ export async function createMcpService(options: {
         return outcome;
       });
     },
-    async dispose() {
+    dispose() {
+      if (disposal) return disposal;
+      closed = true;
       const open = [...connections.values()];
       connections.clear();
-      await Promise.all(open.map((entry) => entry.connection.close()));
+      disposal = Promise.all(
+        open.map((entry) => entry.connection.close()),
+      ).then(() => undefined);
+      return disposal;
     },
   };
 }

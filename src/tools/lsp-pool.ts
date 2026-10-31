@@ -25,6 +25,7 @@ interface Server {
   client: StdioLspClient;
   ready: Promise<void>;
   documents: Map<string, Document & { version: number; uses: number }>;
+  cleanup?: Promise<void>;
 }
 
 const identity = (config: LspServerConfig) =>
@@ -42,12 +43,17 @@ export class LspServerPool {
     client: StdioLspClient,
     reason?: Error,
   ): Promise<void> {
-    if (this.servers.get(key)?.client === client) this.servers.delete(key);
+    const server = this.servers.get(key);
+    if (server?.client === client && server.cleanup) return server.cleanup;
     const cleanup = client.dispose(reason);
+    if (server?.client === client) server.cleanup = cleanup;
     this.cleanups.add(cleanup);
     // Keep failed cleanup for pool disposal, including failures while idle.
     void cleanup.then(
-      () => this.cleanups.delete(cleanup),
+      () => {
+        this.cleanups.delete(cleanup);
+        if (this.servers.get(key)?.client === client) this.servers.delete(key);
+      },
       () => undefined,
     );
     return cleanup;
@@ -75,10 +81,18 @@ export class LspServerPool {
     params: Record<string, unknown>,
     signal: AbortSignal,
   ): Promise<unknown> {
-    if (signal.aborted) throw new Error("LSP invocation cancelled.");
-    if (this.disposal) throw new Error("LSP client disposed.");
     const configIdentity = identity(config);
     const key = JSON.stringify([workspace, configIdentity]);
+    const cleanup = this.servers.get(key)?.cleanup;
+    if (cleanup) {
+      try {
+        await cleanup;
+      } catch {
+        throw new LspCleanupError();
+      }
+    }
+    if (signal.aborted) throw new Error("LSP invocation cancelled.");
+    if (this.disposal) throw new Error("LSP client disposed.");
     let server = this.servers.get(key);
     if (!server) {
       const client = new StdioLspClient({
