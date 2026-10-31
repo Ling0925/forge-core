@@ -110,7 +110,7 @@ export function createLocalPolicy({
       const opened = await handle.stat();
       if (!opened.isFile() || signature(opened) !== stamp)
         fail("File changed while opening; retry.");
-      const buffer = Buffer.alloc(FILE_LIMIT + 1);
+      const buffer = Buffer.alloc(info.size + 1);
       let length = 0;
       while (length < buffer.length) {
         check(signal);
