@@ -28,10 +28,10 @@ pnpm install --frozen-lockfile
 pnpm build
 ```
 
-Linux 使用系统 `flock`；macOS 构建需要 Xcode Command Line Tools（`/usr/bin/cc`），
-会生成 `dist/native/forge-flock`，运行时不再需要编译器。两者都在已验证的文件描述符上
-取得内核互斥锁，锁随最后一个描述符关闭/进程退出释放，不靠超时删锁。
-嵌入打包时如移动 helper，可用绝对路径 `FORGE_FLOCK_EXECUTABLE` 指定随包提供的可信二进制。
+Linux 和 macOS 构建均需 C 编译器 `/usr/bin/cc`，生成 `dist/native/forge-flock.node`，
+在进程内对已验证的文件描述符加锁。运行时若 addon 缺失，Linux 回退到系统 `flock`，macOS 回退到 `dist/native/forge-flock`。
+锁随最后一个描述符关闭/进程退出释放，不靠超时删锁。
+嵌入打包时可用绝对路径 `FORGE_FLOCK_EXECUTABLE` 和 `FORGE_FLOCK_ADDON` 分别指定随包提供的可信 helper 和 addon。
 Windows 的文件锁仍不受支持。构建后的聚焦验证：`node --test tests/store/posix-lock.test.mjs`。
 
 将下面的工作区替换成实际存在的绝对路径，再启动 API 服务：

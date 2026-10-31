@@ -1,7 +1,7 @@
 import { execFileSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { chmod, mkdir, readdir, rename, rm, writeFile } from "node:fs/promises";
-import { join } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { build } from "esbuild";
 
@@ -54,8 +54,33 @@ const result = await build({
   },
   logLevel: "info",
 });
-if (process.platform === "darwin") {
+if (process.platform === "linux" || process.platform === "darwin") {
   await mkdir("dist/native", { recursive: true });
+  execFileSync(
+    "/usr/bin/cc",
+    [
+      ...(process.platform === "darwin"
+        ? [
+            "-mmacosx-version-min=13.0",
+            "-bundle",
+            "-undefined",
+            "dynamic_lookup",
+          ]
+        : ["-shared", "-fPIC"]),
+      "-O2",
+      "-Wall",
+      "-Wextra",
+      "-Werror",
+      "-I",
+      resolve(dirname(process.execPath), "../include/node"),
+      "native/flock-addon.c",
+      "-o",
+      "dist/native/forge-flock.node",
+    ],
+    { stdio: "inherit" },
+  );
+}
+if (process.platform === "darwin") {
   // Do not inherit the build host's OS version: the desktop bundle targets macOS 13.
   execFileSync(
     "/usr/bin/cc",
