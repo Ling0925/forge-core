@@ -41,7 +41,6 @@ export class StdioMcpConnection extends JsonRpcConnection {
       ...(this.options.cwd === undefined ? {} : { cwd: this.options.cwd }),
       // New process group so the whole tree can be terminated on disposal.
       detached: true,
-      windowsHide: true,
     });
     this.child = child;
     child.stdin?.on("error", (error) => this.shutdown(error));

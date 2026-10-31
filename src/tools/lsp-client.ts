@@ -57,7 +57,6 @@ export class StdioLspClient {
       env,
       stdio: ["pipe", "pipe", "pipe"],
       detached: true,
-      windowsHide: true,
     });
     this.child = child;
     this.joined = new Promise<void>((resolve) => child.once("close", resolve));

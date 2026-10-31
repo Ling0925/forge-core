@@ -67,13 +67,6 @@ export function psMembers(group: number): Promise<Member[]> {
   });
 }
 
-/** Process-group cleanup needs POSIX groups and a way to verify membership. */
-export function groupCleanupSupported(
-  platform: NodeJS.Platform = process.platform,
-): boolean {
-  return platform !== "win32";
-}
-
 const members = (group: number) =>
   process.platform === "linux" ? procMembers(group) : psMembers(group);
 
@@ -87,10 +80,6 @@ export function createProcessGroup(child: ChildProcess) {
     const work = pending.then(async () => {
       const group = child.pid;
       if (!group) return false;
-      if (!groupCleanupSupported())
-        return signal === 0
-          ? child.exitCode === null && child.signalCode === null
-          : child.kill(signal);
       const previous = owned ?? (await members(group));
       const current = await members(group);
       // Retain ownership across signals only while a start-time identity survives.
@@ -127,14 +116,6 @@ export function createProcessGroup(child: ChildProcess) {
 export async function cleanupProcess(child: ChildProcess): Promise<void> {
   const group = child.pid;
   if (!group) return;
-  if (!groupCleanupSupported()) {
-    // Windows has no POSIX process groups: direct-child cleanup only.
-    child.kill("SIGTERM");
-    await delay(2000);
-    if (child.exitCode === null && child.signalCode === null)
-      child.kill("SIGKILL");
-    return;
-  }
   const signalProcess = createProcessGroup(child);
   if (!(await signalProcess(0))) return;
   const started = Date.now();

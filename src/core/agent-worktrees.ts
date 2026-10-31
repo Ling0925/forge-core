@@ -129,7 +129,7 @@ function runGit(
         {
           env: gitEnvironment(),
           stdio: ["ignore", "pipe", "pipe"],
-          detached: process.platform !== "win32",
+          detached: true,
         },
       );
     } catch {

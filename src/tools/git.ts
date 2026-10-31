@@ -93,7 +93,7 @@ async function run(
       {
         env,
         stdio: ["ignore", "pipe", "pipe"],
-        detached: process.platform !== "win32",
+        detached: true,
       },
     );
     const signalProcess = createProcessGroup(child);

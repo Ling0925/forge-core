@@ -68,8 +68,7 @@ function hasHiddenComponent(path: string): boolean {
  * One bounded, read-only directory page.
  *
  * Security rules, all fail-closed:
- * - Only absolute paths are accepted, using this platform's `node:path`
- *   semantics (no drive enumeration, no drive-relative spellings).
+ * - Only absolute POSIX paths are accepted.
  * - The target is canonicalized; it may not be a symlink itself, and listing
  *   never follows or returns symlinked directories.
  * - Only real directories are returned: no ordinary files, no hidden entries.

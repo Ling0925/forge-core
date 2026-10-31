@@ -81,7 +81,6 @@ export function createLifecycle(session: Session, cli: CliCommand) {
         env: session.env,
         stdio: ["ignore", "pipe", "pipe"],
         detached: true,
-        windowsHide: true,
       },
     );
     const signalProcess = createProcessGroup(child);

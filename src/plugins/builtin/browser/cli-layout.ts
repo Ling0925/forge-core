@@ -86,12 +86,9 @@ export function privateEnv(
   const env: Record<string, string> = {
     ...minimalEnv(),
     HOME: layout.home,
-    USERPROFILE: layout.home,
     TMPDIR: layout.tmp,
     TMP: layout.tmp,
     TEMP: layout.tmp,
-    APPDATA: join(layout.root, "config"),
-    LOCALAPPDATA: join(layout.root, "data"),
     XDG_CACHE_HOME: join(layout.root, "cache"),
     XDG_CONFIG_HOME: join(layout.root, "config"),
     XDG_DATA_HOME: join(layout.root, "data"),
@@ -160,10 +157,7 @@ export async function createLayout(homeInput: string): Promise<PrivateLayout> {
     const tmpFinal = (base: string) =>
       join(base, "com.google.Chrome.XXXXXX", "SingletonSocket");
     let tmp = tmpBase;
-    if (
-      process.platform !== "win32" &&
-      Buffer.byteLength(tmpFinal(tmp), "utf8") > 100
-    ) {
+    if (Buffer.byteLength(tmpFinal(tmp), "utf8") > 100) {
       const candidates = [tmpdir(), "/tmp"];
       let chosen: string | undefined;
       for (const base of candidates) {
@@ -197,10 +191,7 @@ export async function createLayout(homeInput: string): Promise<PrivateLayout> {
     let socket = join(root, "socket");
     const finalPath = (base: string) =>
       join(base, "namespaces", namespace, "run", `${session}.sock`);
-    if (
-      process.platform !== "win32" &&
-      Buffer.byteLength(finalPath(socket), "utf8") > 100
-    ) {
+    if (Buffer.byteLength(finalPath(socket), "utf8") > 100) {
       const candidates = [tmpdir(), "/tmp"];
       let chosen: string | undefined;
       for (const base of candidates) {

@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import { constants } from "node:fs";
 import { lstat, mkdir, open, rename, unlink } from "node:fs/promises";
-import { dirname, join, relative, sep } from "node:path";
+import { dirname, join, relative } from "node:path";
 import type { z } from "zod";
 import { isSensitivePath } from "../shared/content-safety";
 import type { ToolContext } from "../shared/contracts";
@@ -206,8 +206,7 @@ export function createLocalFiles({
     check(signal);
     if (isSensitivePath(relativePath))
       fail("Sensitive paths are not permitted.");
-    if (relativePath.includes("\\") && sep !== "\\")
-      fail("Backslash paths are not supported.");
+    if (relativePath.includes("\\")) fail("Backslash paths are not supported.");
     // The guard parses the entire lexical spelling before inspecting any entry.
     // Missing parents are expected here; all other failures must precede mkdir.
     try {
@@ -216,7 +215,7 @@ export function createLocalFiles({
       if (!(error instanceof WorkspacePathError) || error.code !== "MISSING")
         throw error;
     }
-    const parts = relativePath.split(/[\\/]/);
+    const parts = relativePath.split("/");
     let current = ".";
     for (const part of parts) {
       if (part === "" || part === ".") continue;

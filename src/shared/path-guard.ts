@@ -1,5 +1,5 @@
 import { lstat, realpath } from "node:fs/promises";
-import { isAbsolute, join, resolve, sep, win32 } from "node:path";
+import { isAbsolute, join, resolve } from "node:path";
 
 import { createProtectedRootMatcher } from "./protected-roots";
 
@@ -44,16 +44,11 @@ function parseRelative(relative: string): readonly string[] {
   if (relative.length === 0 || relative.includes("\0")) {
     throw new WorkspacePathError("INVALID_PATH", null);
   }
-  // Reject foreign-platform absolute spellings as well as native ones.
-  if (isAbsolute(relative) || win32.isAbsolute(relative)) {
+  if (isAbsolute(relative)) {
     throw new WorkspacePathError("OUTSIDE_WORKSPACE", null);
   }
-  // Windows drive-relative paths have ambient drive state; they are not accepted.
-  if (/^[A-Za-z]:/.test(relative)) {
-    throw new WorkspacePathError("INVALID_PATH", null);
-  }
   const components = relative
-    .split(sep === "\\" ? /[\\/]/ : /\//)
+    .split("/")
     .filter((component) => component !== "" && component !== ".");
   let depth = 0;
   for (const component of components) {
@@ -109,7 +104,7 @@ export async function createWorkspacePathGuard(
         normalized.push(component);
       }
     }
-    const safeRelative = normalized.length === 0 ? "." : normalized.join(sep);
+    const safeRelative = normalized.length === 0 ? "." : normalized.join("/");
     let current = root;
     // Do not normalize away components before inspecting them: a/../b must
     // still reject a symlink (or missing/non-directory entry) at a.

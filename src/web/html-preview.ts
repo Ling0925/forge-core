@@ -84,7 +84,7 @@ function sensitive(relativePath: string): boolean {
 
 /**
  * Read one workspace HTML file for preview. The path guard rejects traversal,
- * foreign absolute paths, symlinks and protected state roots; the reader
+ * absolute paths, symlinks and protected state roots; the reader
  * rejects non-HTML, oversized and non-UTF-8 content. The result is still
  * untrusted markup and is only ever framed with a sandbox.
  */

@@ -1,6 +1,6 @@
 import { constants } from "node:fs";
 import { lstat, open } from "node:fs/promises";
-import { relative, sep } from "node:path";
+import { relative } from "node:path";
 import { TextDecoder } from "node:util";
 import {
   containsSensitiveText,
@@ -81,7 +81,7 @@ export function createLocalPolicy({
     cacheBytes = 0;
   }
   function targetName(path: string): string {
-    const name = relative(guard.root, path).split(sep).join("/") || ".";
+    const name = relative(guard.root, path) || ".";
     if (isSensitivePath(name) || containsKnown(name))
       fail("Sensitive paths are not permitted.");
     return name;

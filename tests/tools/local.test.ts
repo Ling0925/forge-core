@@ -288,18 +288,8 @@ describe("original local tools", () => {
       (await execute("write_file", { path: "sub/deep/file", content: "ok" }))
         .isError,
     ).toBe(false);
-    await symlink(
-      root,
-      join(root, "link"),
-      process.platform === "win32" ? "junction" : "dir",
-    );
-    for (const path of [
-      "../escape",
-      "/outside",
-      "C:\\outside",
-      "link/file",
-      "link/../file",
-    ]) {
+    await symlink(root, join(root, "link"), "dir");
+    for (const path of ["../escape", "/outside", "link/file", "link/../file"]) {
       expect(
         (await execute("write_file", { path, content: "no" })).isError,
       ).toBe(true);
@@ -614,44 +604,41 @@ describe("original local tools", () => {
     });
   });
 
-  it.skipIf(process.platform === "win32")(
-    "cancellation kills the whole POSIX child group and waits for real close",
-    async () => {
-      const code =
-        "const {spawn}=require('node:child_process');const child=spawn(process.execPath,['-e',\"setInterval(()=>{},1000)\"],{stdio:'inherit'});require('node:fs').writeFileSync('child-pid',String(child.pid));setInterval(()=>{},1000)";
-      const run = node(code, 10000);
-      const assertion = expect(run).rejects.toMatchObject({
-        code: "cancelled",
-      });
-      let pid: number | undefined;
-      for (let attempt = 0; attempt < 100; attempt += 1) {
-        try {
-          pid = Number(await readFile(join(root, "child-pid"), "utf8"));
-          break;
-        } catch {
-          await new Promise<void>((resolve) => setTimeout(resolve, 10));
-        }
-      }
-      expect(pid).toBeDefined();
-      controller.abort();
-      await assertion;
-      if (pid === undefined) throw new Error("Child did not start");
-      // A killed orphan can briefly be a zombie until the host reaps it. It must
-      // not be running; /proc state distinguishes that from kill(pid, 0).
-      let running = true;
-      for (let attempt = 0; attempt < 100; attempt += 1) {
-        try {
-          const status = await readFile(`/proc/${pid}/status`, "utf8");
-          running = !/^State:\s+Z/m.test(status);
-        } catch {
-          running = false;
-        }
-        if (!running) break;
+  it("cancellation kills the whole POSIX child group and waits for real close", async () => {
+    const code =
+      "const {spawn}=require('node:child_process');const child=spawn(process.execPath,['-e',\"setInterval(()=>{},1000)\"],{stdio:'inherit'});require('node:fs').writeFileSync('child-pid',String(child.pid));setInterval(()=>{},1000)";
+    const run = node(code, 10000);
+    const assertion = expect(run).rejects.toMatchObject({
+      code: "cancelled",
+    });
+    let pid: number | undefined;
+    for (let attempt = 0; attempt < 100; attempt += 1) {
+      try {
+        pid = Number(await readFile(join(root, "child-pid"), "utf8"));
+        break;
+      } catch {
         await new Promise<void>((resolve) => setTimeout(resolve, 10));
       }
-      expect(running).toBe(false);
-    },
-  );
+    }
+    expect(pid).toBeDefined();
+    controller.abort();
+    await assertion;
+    if (pid === undefined) throw new Error("Child did not start");
+    // A killed orphan can briefly be a zombie until the host reaps it. It must
+    // not be running; /proc state distinguishes that from kill(pid, 0).
+    let running = true;
+    for (let attempt = 0; attempt < 100; attempt += 1) {
+      try {
+        const status = await readFile(`/proc/${pid}/status`, "utf8");
+        running = !/^State:\s+Z/m.test(status);
+      } catch {
+        running = false;
+      }
+      if (!running) break;
+      await new Promise<void>((resolve) => setTimeout(resolve, 10));
+    }
+    expect(running).toBe(false);
+  });
 
   it("disposal aborts active commands, awaits settlement, and is idempotent", async () => {
     const run = node("setInterval(() => {}, 1000)", 10000, "unrestricted");

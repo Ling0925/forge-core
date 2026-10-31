@@ -30,12 +30,10 @@ export function createLocalCommands({
   const { containsKnown, redact, targetName } = policy;
   const commandOutput = createCommandOutputStore(redact);
   async function commandPath(): Promise<string> {
-    const defaults =
-      process.platform === "win32"
-        ? ["C:\\Windows\\System32"]
-        : ["/usr/local/bin", "/usr/bin", "/bin"];
     const candidates = [
-      ...defaults,
+      "/usr/local/bin",
+      "/usr/bin",
+      "/bin",
       dirname(process.execPath),
       ...(process.env.PATH ?? "").split(delimiter),
     ];
@@ -50,12 +48,7 @@ export function createLocalCommands({
         continue;
       try {
         const local = await realpath(candidate);
-        if (
-          containsKnown(local) ||
-          isSensitivePath(local) ||
-          (process.platform === "win32" && local.startsWith("\\\\"))
-        )
-          continue;
+        if (containsKnown(local) || isSensitivePath(local)) continue;
         if ((await lstat(local)).isDirectory()) paths.add(local);
       } catch {
         // An invalid or inaccessible PATH entry contributes no search directory.
@@ -116,7 +109,7 @@ export function createLocalCommands({
       const child = spawn(executable, args.argv.slice(1), {
         cwd,
         shell: false,
-        detached: process.platform !== "win32",
+        detached: true,
         stdio: ["ignore", "pipe", "pipe"],
         env: {
           PATH: path,

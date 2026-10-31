@@ -155,8 +155,7 @@ export function withCommandTasks(
       const safe = redactCommandArguments(argv.map(redact));
       const parts: string[] = [];
       for (const [index, arg] of safe.entries()) {
-        const item =
-          index === 0 ? (arg.split(/[\\/]/).at(-1) ?? "Command") : arg;
+        const item = index === 0 ? (arg.split("/").at(-1) ?? "Command") : arg;
         if (
           item.length > 40 ||
           /\s/.test(item) ||

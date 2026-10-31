@@ -526,7 +526,7 @@ it("does not forward provider credentials or arbitrary host variables", async ()
     ).toEqual([]);
     expect(
       keys.every((key) =>
-        ["PATH", "TMPDIR", "SYSTEMROOT", "PWD", "SHLVL", "_"].includes(key),
+        ["PATH", "TMPDIR", "PWD", "SHLVL", "_"].includes(key),
       ),
     ).toBe(true);
     await service.dispose();

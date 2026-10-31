@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { constants } from "node:fs";
 import { lstat, open } from "node:fs/promises";
-import { extname, relative, sep } from "node:path";
+import { extname, relative } from "node:path";
 import { fileURLToPath } from "node:url";
 import { z } from "zod";
 import {
@@ -174,7 +174,7 @@ export async function createLspToolRegistry(
     if (isSensitivePath(path) || containsKnown(path))
       throw new Error("Sensitive paths are not permitted.");
     const absolute = await guard.resolveRead(path);
-    const local = relative(guard.root, absolute).split(sep).join("/");
+    const local = relative(guard.root, absolute);
     if (isSensitivePath(local) || containsKnown(local))
       throw new Error("Sensitive paths are not permitted.");
     const handle = await open(
@@ -242,7 +242,7 @@ export async function createLspToolRegistry(
       if (url.protocol !== "file:" || url.search || url.hash || url.hostname)
         return undefined;
       const absolute = fileURLToPath(url);
-      const local = relative(guard.root, absolute).split(sep).join("/");
+      const local = relative(guard.root, absolute);
       if (!local || isSensitivePath(local) || containsKnown(local))
         return undefined;
       if (

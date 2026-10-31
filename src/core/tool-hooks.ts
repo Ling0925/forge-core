@@ -2,10 +2,7 @@ import { type ChildProcess, spawn } from "node:child_process";
 import { z } from "zod";
 import { minimalEnv } from "../shared/child-env";
 import { ForgeError } from "../shared/errors";
-import {
-  cleanupProcess,
-  groupCleanupSupported,
-} from "../shared/process-cleanup";
+import { cleanupProcess } from "../shared/process-cleanup";
 import {
   type AfterToolHookEvent,
   type BeforeToolHookEvent,
@@ -34,7 +31,7 @@ import {
  * - Hooks run as real child processes with `argv` and no shell. Input is a
  *   single JSON document on stdin; stdout is only interpreted for an explicit
  *   before-hook allow/deny decision and is otherwise not surfaced.
- * - Environment is minimal (PATH/TMPDIR, plus SYSTEMROOT on Windows); no
+ * - Environment is minimal (PATH/TMPDIR); no
  *   provider credentials or arbitrary host variables are forwarded.
  * - Hooks never alter tool arguments, grant permissions, replay tools or
  *   replace the original tool outcome. A failing before hook fails closed.
@@ -153,16 +150,6 @@ function cleanupOnce(
   if (existing) return existing;
   const pending = (async () => {
     try {
-      // Without process groups (Windows) cleanup only signals the direct
-      // child; once that child has exited there is nothing left to join.
-      if (
-        !groupCleanupSupported() &&
-        (child.exitCode !== null || child.signalCode !== null)
-      ) {
-        cleaned.add(child);
-        active.delete(child);
-        return true;
-      }
       await cleanupProcess(child);
       cleaned.add(child);
       active.delete(child);
@@ -337,7 +324,6 @@ export function createToolHookService(
           env: minimalEnv(),
           shell: false,
           detached: true,
-          windowsHide: true,
         });
       } catch {
         failedToStart = true;

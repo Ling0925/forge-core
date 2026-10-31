@@ -57,10 +57,6 @@ const HOST_ENV_KEYS = [
   "LC_CTYPE",
   "LC_MESSAGES",
   "TZ",
-  "SYSTEMROOT",
-  "WINDIR",
-  "COMSPEC",
-  "PATHEXT",
 ] as const;
 
 interface RuntimeLayout {
@@ -185,40 +181,14 @@ function validateOptions(options: {
   };
 }
 
-function hasPathSeparator(value: string): boolean {
-  return (
-    value.includes("/") ||
-    (process.platform === "win32" && value.includes("\\"))
-  );
-}
-
 async function isExecutableFile(path: string): Promise<boolean> {
   try {
     if (!(await stat(path)).isFile()) return false;
-    await access(
-      path,
-      process.platform === "win32" ? constants.F_OK : constants.X_OK,
-    );
+    await access(path, constants.X_OK);
     return true;
   } catch {
     return false;
   }
-}
-
-function windowsExtensions(
-  executable: string,
-  pathExt: string | undefined,
-): readonly string[] {
-  if (process.platform !== "win32") return [""];
-  const extensions = (pathExt ?? process.env.PATHEXT ?? ".COM;.EXE;.BAT;.CMD")
-    .split(";")
-    .map((item) => item.trim())
-    .filter(Boolean);
-  const lower = executable.toLowerCase();
-  return [
-    "",
-    ...extensions.filter((item) => !lower.endsWith(item.toLowerCase())),
-  ];
 }
 
 async function resolveExecutable(
@@ -231,7 +201,7 @@ async function resolveExecutable(
     throw missingExecutable();
   }
 
-  if (hasPathSeparator(configured)) {
+  if (configured.includes("/")) {
     const candidate = resolve(workspace, configured);
     if (await isExecutableFile(candidate)) return candidate;
     throw missingExecutable();
@@ -243,12 +213,10 @@ async function resolveExecutable(
     // resolution depends only on the explicit workspace and PATH values.
     if (!entry) continue;
     const base = isAbsolute(entry) ? entry : resolve(workspace, entry);
-    for (const extension of windowsExtensions(configured, env.PATHEXT)) {
-      const candidate = join(base, `${configured}${extension}`);
-      if (seen.has(candidate)) continue;
-      seen.add(candidate);
-      if (await isExecutableFile(candidate)) return candidate;
-    }
+    const candidate = join(base, configured);
+    if (seen.has(candidate)) continue;
+    seen.add(candidate);
+    if (await isExecutableFile(candidate)) return candidate;
   }
   throw missingExecutable();
 }
@@ -268,14 +236,9 @@ function privateEnvironment(
   return Object.freeze({
     ...env,
     HOME: home,
-    USERPROFILE: home,
-    // Linux/macOS XDG special folders and Windows roaming/local app data all
-    // point into this run's private tree, never the user's real profile.
     XDG_CACHE_HOME: cache,
     XDG_CONFIG_HOME: config,
     XDG_DATA_HOME: data,
-    APPDATA: config,
-    LOCALAPPDATA: data,
     TMPDIR: temp,
     TMP: temp,
     TEMP: temp,
@@ -377,7 +340,6 @@ async function waitForOwnedGroupExit(
   graceMs: number,
   timeoutMs: number,
 ): Promise<void> {
-  if (process.platform === "win32") return;
   const started = Date.now();
   let escalated = false;
   for (;;) {
@@ -525,8 +487,7 @@ class Backend implements OfficeCliBackend {
         child = spawn(executable, [...args], {
           cwd: this.workspace,
           shell: false,
-          detached: process.platform !== "win32",
-          windowsHide: true,
+          detached: true,
           stdio: ["ignore", "pipe", "pipe"],
           env: this.layout.env,
         });

@@ -22,8 +22,6 @@ const qaRoot = testScratch("officecli", "backend-tests");
 const fixturePath = fileURLToPath(
   new URL("../fixtures/officecli-process.mjs", import.meta.url),
 );
-const posix = process.platform !== "win32";
-const describeBackend = posix ? describe : describe.skip;
 
 interface FixtureRecord {
   readonly pid: number;
@@ -159,10 +157,20 @@ async function errorOf(promise: Promise<unknown>): Promise<unknown> {
   );
 }
 
-describeBackend("stateless OfficeCLI process backend", () => {
+describe("stateless OfficeCLI process backend", () => {
   it("does not launch on creation and passes explicit argv, workspace cwd and a clean private environment", async () => {
     setEnv("FORGE_OFFICECLI_TEST_TOKEN", "must-not-leak");
     setEnv("NODE_OPTIONS", "--no-warnings");
+    const windowsEnvKeys = [
+      "SYSTEMROOT",
+      "WINDIR",
+      "COMSPEC",
+      "PATHEXT",
+      "USERPROFILE",
+      "APPDATA",
+      "LOCALAPPDATA",
+    ];
+    for (const key of windowsEnvKeys) setEnv(key, "unused-host-value");
     const h = await harness();
     await expect(access(h.recordPath)).rejects.toThrow();
 
@@ -194,15 +202,13 @@ describeBackend("stateless OfficeCLI process backend", () => {
     const env = record.env;
     const privateRoot = dirname(env.HOME ?? "");
     expect(env.HOME).toBeDefined();
-    expect(env.USERPROFILE).toBe(env.HOME);
+    for (const key of windowsEnvKeys) expect(env[key]).toBeUndefined();
     expect(resolve(env.HOME ?? "")).toContain(resolve(h.home));
     expect(privateRoot).toContain(resolve(h.home));
-    expect(privateRoot.split(/[\\/]/).at(-1)).toMatch(/^officecli-/);
+    expect(privateRoot.split("/").at(-1)).toMatch(/^officecli-/);
     expect(env.XDG_CACHE_HOME).toBe(join(privateRoot, "cache"));
     expect(env.XDG_CONFIG_HOME).toBe(join(privateRoot, "config"));
     expect(env.XDG_DATA_HOME).toBe(join(privateRoot, "data"));
-    expect(env.APPDATA).toBe(join(privateRoot, "config"));
-    expect(env.LOCALAPPDATA).toBe(join(privateRoot, "data"));
     expect(env.TMPDIR).toBe(join(privateRoot, "tmp"));
     expect(env.TMP).toBe(env.TMPDIR);
     expect(env.TEMP).toBe(env.TMPDIR);

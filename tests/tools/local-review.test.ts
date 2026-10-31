@@ -111,9 +111,7 @@ describe("original local tools", () => {
       "/created-before-reject",
       "first/../../outside",
       "../../",
-      "C:\\created-before-reject",
-      "C:relative",
-      "\\\\server\\share",
+      "first\\..\\outside",
       "first/\0bad",
     ]) {
       expect((await execute("make_directory", { path })).isError).toBe(true);
@@ -130,11 +128,7 @@ describe("original local tools", () => {
   });
 
   it("inspects cancelled components rather than normalizing away symlinks", async () => {
-    await symlink(
-      root,
-      join(root, "link"),
-      process.platform === "win32" ? "junction" : "dir",
-    );
+    await symlink(root, join(root, "link"), "dir");
     for (const name of ["read_file", "write_file", "make_directory"]) {
       const args =
         name === "write_file"
@@ -447,43 +441,40 @@ describe("original local tools", () => {
     await assertion;
   });
 
-  it.skipIf(process.platform === "win32")(
-    "cancellation kills descendants and waits for real close",
-    async () => {
-      const code =
-        "const {spawn}=require('node:child_process');const child=spawn(process.execPath,['-e','setInterval(()=>{},1000)'],{stdio:'inherit'});require('node:fs').writeFileSync('child-pid',String(child.pid));setInterval(()=>{},1000)";
-      const run = node(code, 10000);
-      const assertion = expect(run).rejects.toMatchObject({
-        code: "cancelled",
-      });
-      let pid: number | undefined;
-      for (let attempt = 0; attempt < 100; attempt += 1) {
-        try {
-          pid = Number(await readFile(join(root, "child-pid"), "utf8"));
-          break;
-        } catch {
-          await new Promise<void>((resolve) => setTimeout(resolve, 10));
-        }
-      }
-      controller.abort();
-      await assertion;
-      if (pid === undefined) throw new Error("Child did not start");
-      // A killed orphan can be a zombie until the host reaps it, but cannot run.
-      let running = true;
-      for (let attempt = 0; attempt < 100; attempt += 1) {
-        try {
-          running = !/^State:\s+Z/m.test(
-            await readFile(`/proc/${pid}/status`, "utf8"),
-          );
-        } catch {
-          running = false;
-        }
-        if (!running) break;
+  it("cancellation kills descendants and waits for real close", async () => {
+    const code =
+      "const {spawn}=require('node:child_process');const child=spawn(process.execPath,['-e','setInterval(()=>{},1000)'],{stdio:'inherit'});require('node:fs').writeFileSync('child-pid',String(child.pid));setInterval(()=>{},1000)";
+    const run = node(code, 10000);
+    const assertion = expect(run).rejects.toMatchObject({
+      code: "cancelled",
+    });
+    let pid: number | undefined;
+    for (let attempt = 0; attempt < 100; attempt += 1) {
+      try {
+        pid = Number(await readFile(join(root, "child-pid"), "utf8"));
+        break;
+      } catch {
         await new Promise<void>((resolve) => setTimeout(resolve, 10));
       }
-      expect(running).toBe(false);
-    },
-  );
+    }
+    controller.abort();
+    await assertion;
+    if (pid === undefined) throw new Error("Child did not start");
+    // A killed orphan can be a zombie until the host reaps it, but cannot run.
+    let running = true;
+    for (let attempt = 0; attempt < 100; attempt += 1) {
+      try {
+        running = !/^State:\s+Z/m.test(
+          await readFile(`/proc/${pid}/status`, "utf8"),
+        );
+      } catch {
+        running = false;
+      }
+      if (!running) break;
+      await new Promise<void>((resolve) => setTimeout(resolve, 10));
+    }
+    expect(running).toBe(false);
+  });
 
   it("disposal waits for active command close and prevents later output/effects", async () => {
     const run = node(
