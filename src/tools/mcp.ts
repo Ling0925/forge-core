@@ -290,7 +290,7 @@ export async function createMcpToolRegistry(
       }
     },
     async dispose() {
-      await service.dispose();
+      routes.clear();
     },
   };
   return registry;

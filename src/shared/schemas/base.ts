@@ -7,16 +7,17 @@ export type JsonValue =
   | string
   | readonly JsonValue[]
   | { readonly [key: string]: JsonValue };
-export const jsonValueSchema: z.ZodType<JsonValue> = z.lazy(() =>
-  z.union([
-    z.null(),
-    z.boolean(),
-    z.number().finite(),
-    z.string(),
-    z.array(jsonValueSchema).readonly(),
-    z.record(jsonValueSchema).readonly(),
-  ]),
+export const jsonValueSchema: z.ZodType<JsonValue> = z.lazy(
+  () => jsonValueUnion,
 );
+const jsonValueUnion = z.union([
+  z.null(),
+  z.boolean(),
+  z.number().finite(),
+  z.string(),
+  z.array(jsonValueSchema).readonly(),
+  z.record(jsonValueSchema).readonly(),
+]);
 export const jsonObjectSchema = z.record(jsonValueSchema).readonly();
 export const sessionIdSchema = z.string().uuid().brand<"SessionId">();
 export type SessionId = z.infer<typeof sessionIdSchema>;

@@ -80,6 +80,19 @@ vi.mock("../../src/store/model-catalog", async (importOriginal) => {
     },
   };
 });
+vi.mock("../../src/tools/lsp-pool", async (importOriginal) => {
+  const original =
+    await importOriginal<typeof import("../../src/tools/lsp-pool")>();
+  return {
+    ...original,
+    LspServerPool: class extends original.LspServerPool {
+      override dispose() {
+        probe.released.push("lsp");
+        return super.dispose();
+      }
+    },
+  };
+});
 vi.mock("../../src/core/model-access", async (importOriginal) => {
   const original =
     await importOriginal<typeof import("../../src/core/model-access")>();
@@ -140,10 +153,13 @@ const cases: [stage: string, released: string[]][] = [
   ["memory", []],
   ["plugins", ["memory"]],
   ["mcp", ["plugins", "memory"]],
-  ["catalog", ["mcp", "plugins", "memory"]],
-  ["inputQueue", ["modelAccess", "mcp", "plugins", "memory"]],
+  ["catalog", ["lsp", "mcp", "plugins", "memory"]],
+  ["inputQueue", ["modelAccess", "lsp", "mcp", "plugins", "memory"]],
   // Async-task recovery previously skipped plugins.dispose().
-  ["asyncTasks", ["inputQueue", "modelAccess", "mcp", "plugins", "memory"]],
+  [
+    "asyncTasks",
+    ["inputQueue", "modelAccess", "lsp", "mcp", "plugins", "memory"],
+  ],
 ];
 for (const [stage, released] of cases)
   it(`releases resources opened before a failing ${stage} stage in reverse order`, async () => {
@@ -169,6 +185,6 @@ it("releases nothing when startup succeeds until dispose", async () => {
   expect(probe.released).toEqual([]);
   await harness.dispose();
   expect(new Set(probe.released)).toEqual(
-    new Set(["modelAccess", "inputQueue", "memory", "mcp", "plugins"]),
+    new Set(["modelAccess", "inputQueue", "memory", "mcp", "plugins", "lsp"]),
   );
 });

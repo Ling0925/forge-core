@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { once } from "node:events";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdtemp, readFile, readdir, rm } from "node:fs/promises";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -11,6 +11,95 @@ import { fileURLToPath } from "node:url";
 import { build } from "esbuild";
 
 const root = fileURLToPath(new URL("../", import.meta.url));
+
+async function runNode(args, directory, env = {}) {
+  const child = spawn(process.execPath, args, {
+    cwd: directory,
+    env: {
+      PATH: process.env.PATH,
+      HOME: directory,
+      FORGE_HOME: join(directory, "state"),
+      ...env,
+    },
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+  let stdout = "";
+  let stderr = "";
+  child.stdout.on("data", (chunk) => {
+    stdout += chunk;
+  });
+  child.stderr.on("data", (chunk) => {
+    stderr += chunk;
+  });
+  const [code, signal] = await once(child, "close");
+  return { code, signal, stdout, stderr };
+}
+
+for (const apiMode of [
+  "chat-completions",
+  "responses",
+  "anthropic",
+  "gemini",
+]) {
+  test(`packaged harness defers SDK loading until ${apiMode} needs it`, async () => {
+    const directory = await mkdtemp(join(tmpdir(), "forge-package-sdk-"));
+    try {
+      const result = await runNode(
+        [join(root, "tests/fixtures/package-provider-loading.mjs"), apiMode],
+        directory,
+      );
+      assert.equal(result.code, 0, result.stderr);
+      assert.equal(result.signal, null);
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+}
+
+test("only the bin enables compile caching before loading the runtime", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "forge-package-cache-"));
+  try {
+    const cache = join(directory, "compile-cache");
+    const entry = [
+      "--import",
+      join(root, "tests/fixtures/package-compile-cache.mjs"),
+      join(root, "dist/web/serve.js"),
+    ];
+    const help = await runNode([...entry, "--help"], directory, {
+      NODE_COMPILE_CACHE: cache,
+    });
+    assert.equal(help.code, 0, help.stderr);
+    assert.equal(help.stderr, "");
+    assert.equal(
+      help.stdout,
+      "Forge Core: --host <IPv4|IPv6> --port <1024..65535> --workspace <directory> [--socket <private Unix socket>] [--renderer <built Web UI directory>] [--multi-workspace]\nDefaults: host 127.0.0.1, port 5173. API-only unless --renderer is supplied. Personal LAN direct access; no device pairing required. HTTP has no transport secrecy.\n",
+    );
+    assert((await readdir(cache, { recursive: true })).length > 0);
+    const disabled = await runNode([...entry, "--help"], directory, {
+      NODE_DISABLE_COMPILE_CACHE: "1",
+    });
+    assert.equal(disabled.code, 0, disabled.stderr);
+    assert.equal(disabled.stdout, help.stdout);
+    assert.equal(disabled.stderr, "");
+    for (const [args, error] of [
+      [[], "Missing --workspace."],
+      [["--port"], "Missing value for --port."],
+      [
+        ["--workspace", directory, "--port", "invalid"],
+        "Use one concrete IPv4 or IPv6 address (not 0.0.0.0 or ::) and a port between 1024 and 65535.",
+      ],
+    ]) {
+      const result = await runNode([...entry, ...args], directory, {
+        NODE_COMPILE_CACHE: cache,
+      });
+      assert.equal(result.code, 1);
+      assert(result.stderr.includes(error), result.stderr);
+      assert.equal(result.stdout, "");
+    }
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
 
 test("Core declares no application dependency and builds only its own sources", async () => {
   const pkg = JSON.parse(

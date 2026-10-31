@@ -196,7 +196,7 @@ export async function createMcpService(options: {
    * never proceeds on stale state.
    */
   const resolveForEffect = async (id: string): Promise<McpServerConfig> => {
-    const config = await authoritative(id);
+    const config = (await readCatalog()).find((entry) => entry.id === id);
     if (!config || !config.enabled) {
       await closeConnection(id);
       throw revoked();
@@ -210,52 +210,48 @@ export async function createMcpService(options: {
   };
 
   const connection = async (
-    config: McpServerConfig,
+    id: string,
     signal?: AbortSignal,
-  ): Promise<McpConnection> => {
-    if (signal?.aborted)
-      throw new ForgeError("cancelled", "Tool execution cancelled.");
-    const expected = signature(config);
-    const existing = connections.get(config.id);
-    if (
-      existing &&
-      !existing.connection.isClosed &&
-      existing.signature === expected
-    ) {
-      await existing.connection.connect(signal);
-      return existing.connection;
-    }
-    if (existing) await closeConnection(config.id);
-    let created: McpConnection;
-    if (isRemote(config)) {
-      created = createRemoteConnection(config.transport, {
-        url: config.url,
-        headers: config.headers,
-        requestTimeoutMs: config.requestTimeoutMs,
-      });
-    } else {
-      const env: Record<string, string> = {};
-      for (const [child, host] of Object.entries(config.envNames)) {
-        const value = process.env[host];
-        if (value !== undefined) env[child] = value;
+  ): Promise<{ open: McpConnection; config: McpServerConfig }> =>
+    locked(async () => {
+      if (signal?.aborted)
+        throw new ForgeError("cancelled", "Tool execution cancelled.");
+      const config = await resolveForEffect(id);
+      const expected = signature(config);
+      const existing = connections.get(config.id);
+      if (
+        existing &&
+        !existing.connection.isClosed &&
+        existing.signature === expected
+      ) {
+        return { open: existing.connection, config };
       }
-      for (const [name, value] of Object.entries(config.env)) env[name] = value;
-      created = new StdioMcpConnection({
-        command: config.command,
-        args: config.args,
-        env,
-        requestTimeoutMs: config.requestTimeoutMs,
-      });
-    }
-    connections.set(config.id, { connection: created, signature: expected });
-    try {
-      await created.connect(signal);
-    } catch (error) {
-      await closeConnection(config.id);
-      throw error;
-    }
-    return created;
-  };
+      if (existing) await closeConnection(config.id);
+      let created: McpConnection;
+      if (isRemote(config)) {
+        created = createRemoteConnection(config.transport, {
+          url: config.url,
+          headers: config.headers,
+          requestTimeoutMs: config.requestTimeoutMs,
+        });
+      } else {
+        const env: Record<string, string> = {};
+        for (const [child, host] of Object.entries(config.envNames)) {
+          const value = process.env[host];
+          if (value !== undefined) env[child] = value;
+        }
+        for (const [name, value] of Object.entries(config.env))
+          env[name] = value;
+        created = new StdioMcpConnection({
+          command: config.command,
+          args: config.args,
+          env,
+          requestTimeoutMs: config.requestTimeoutMs,
+        });
+      }
+      connections.set(config.id, { connection: created, signature: expected });
+      return { open: created, config };
+    });
 
   const effect = async <T>(
     id: string,
@@ -266,13 +262,12 @@ export async function createMcpService(options: {
   ): Promise<T> => {
     if (opts?.signal?.aborted)
       throw new ForgeError("cancelled", "Tool execution cancelled.");
-    const config = await resolveForEffect(id);
+    const { open, config } = await connection(id, opts?.signal);
     const values = [...secretValues(config), ...(opts?.redactValues ?? [])];
     try {
-      const open = await connection(config, opts?.signal);
+      await open.connect(opts?.signal);
       return await action(open, values);
     } catch (error) {
-      if (opts?.signal?.aborted) await closeConnection(id);
       throw new ForgeError(
         error instanceof ForgeError ? error.code : "tool",
         redact(
@@ -354,7 +349,8 @@ export async function createMcpService(options: {
         };
       }
       try {
-        const open = await connection(config);
+        const { open } = await connection(id);
+        await open.connect();
         await open.ping();
         return {
           id,

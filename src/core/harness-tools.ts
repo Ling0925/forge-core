@@ -1,5 +1,5 @@
 import { createProjectContext } from "../context/index";
-import { createMcpService } from "../mcp/registry";
+import type { McpService } from "../mcp/registry";
 import type { createPluginHost } from "../plugins/host";
 import type { AsyncTaskService } from "../shared/async-tasks";
 import type {
@@ -7,7 +7,6 @@ import type {
   LocalToolRegistry,
   ModelProvider,
 } from "../shared/contracts";
-import { ForgeError } from "../shared/errors";
 import type { Permission, PublicSettings, SessionId } from "../shared/schemas";
 import type { CommandTaskAccess } from "../shared/task-view";
 import {
@@ -23,13 +22,12 @@ import { createCombinedToolRegistry } from "../tools/combined";
 import { withCommandTasks } from "../tools/command-tasks";
 import { createLocalToolRegistry } from "../tools/local";
 import { createLspToolRegistry } from "../tools/lsp";
+import type { LspServerPool } from "../tools/lsp-pool";
 import { createMcpToolRegistry } from "../tools/mcp";
 import { createPublishedFileTool } from "../tools/published-files";
 import { createSkillTool } from "../tools/skills";
 import { createWebToolRegistry } from "../tools/web";
 import { createHarnessMemoryTools } from "./harness-memory-tools";
-
-type McpService = Awaited<ReturnType<typeof createMcpService>>;
 
 /** Harness-owned state shared by every per-run tool registry. */
 export type HarnessToolDeps = {
@@ -41,7 +39,8 @@ export type HarnessToolDeps = {
   store: Awaited<ReturnType<typeof openSessionStore>>;
   getAsyncTasks: () => Promise<AsyncTaskService>;
   asyncPermissions: Map<SessionId, () => Permission>;
-  liveMcp: Set<McpService>;
+  mcp: McpService;
+  lspPool: LspServerPool;
   taskAccess: Set<CommandTaskAccess>;
   recentTaskAccess: CommandTaskAccess[];
   taskSecrets: Set<string>;
@@ -57,7 +56,8 @@ const createDefaultTools = async (
   apiKey: string,
   checkpointDirectory: string,
   stateDirectory: string,
-  mcp: Awaited<ReturnType<typeof createMcpService>>,
+  mcp: McpService,
+  lspPool: LspServerPool,
   extensions: Awaited<
     ReturnType<Awaited<ReturnType<typeof createPluginHost>>["createTools"]>
   >,
@@ -79,13 +79,13 @@ const createDefaultTools = async (
     registries.push(withCommandTasks(local, { redactValues: [apiKey] }));
     // Public-text tools require no browser configuration and do no I/O until called.
     registries.push(createWebToolRegistry({ redactValues: [apiKey] }));
-    if (settings.lspServers?.length)
-      registries.push(
-        await createLspToolRegistry(workspace, settings.lspServers, {
-          protectedRoots: [stateDirectory],
-          redactValues: [apiKey],
-        }),
-      );
+    registries.push(
+      await createLspToolRegistry(workspace, settings.lspServers ?? [], {
+        pool: lspPool,
+        protectedRoots: [stateDirectory],
+        redactValues: [apiKey],
+      }),
+    );
     registries.push(
       await createMcpToolRegistry(mcp, { redactValues: [apiKey] }),
     );
@@ -107,7 +107,8 @@ export const createHarnessTools = (deps: HarnessToolDeps) => {
     store,
     getAsyncTasks,
     asyncPermissions,
-    liveMcp,
+    mcp,
+    lspPool,
     taskAccess,
     recentTaskAccess,
     taskSecrets,
@@ -121,15 +122,10 @@ export const createHarnessTools = (deps: HarnessToolDeps) => {
   ) => {
     let local: LocalToolRegistry | undefined;
     let context: Awaited<ReturnType<typeof createProjectContext>> | undefined;
-    let service: Awaited<ReturnType<typeof createMcpService>> | undefined;
     let extensions: Awaited<ReturnType<typeof plugins.createTools>> | undefined;
     try {
       if (options.toolFactory) local = await options.toolFactory(workspace);
       else {
-        if (liveMcp.size >= 64)
-          throw new ForgeError("busy", "Too many active tool services");
-        service = await createMcpService({ home: directory });
-        liveMcp.add(service);
         extensions = await plugins.createTools(workspace, [apiKey]);
         local = await createDefaultTools(
           workspace,
@@ -137,7 +133,8 @@ export const createHarnessTools = (deps: HarnessToolDeps) => {
           apiKey,
           workspaceCheckpointDirectory(directory, workspace),
           directory,
-          service,
+          mcp,
+          lspPool,
           extensions,
         );
       }
@@ -166,7 +163,6 @@ export const createHarnessTools = (deps: HarnessToolDeps) => {
         // Web host stamps uiHost, so CLI/desktop runs never advertise it.
         ...(uiHost === "web" ? [createChartToolRegistry()] : []),
       );
-      const ownedService = service;
       const ownedContext = context;
       const access = combined.commandTasks;
       if (access) taskAccess.add(access);
@@ -194,14 +190,7 @@ export const createHarnessTools = (deps: HarnessToolDeps) => {
                 recentTaskAccess.push(access);
                 if (recentTaskAccess.length > 8) recentTaskAccess.shift();
               }
-              try {
-                await ownedContext.dispose();
-              } finally {
-                if (ownedService) {
-                  liveMcp.delete(ownedService);
-                  await ownedService.dispose();
-                }
-              }
+              await ownedContext.dispose();
             }
           },
         } satisfies LocalToolRegistry,
@@ -211,9 +200,7 @@ export const createHarnessTools = (deps: HarnessToolDeps) => {
         local?.dispose(),
         extensions?.registry.dispose(),
         context?.dispose(),
-        service?.dispose(),
       ]);
-      if (service) liveMcp.delete(service);
       throw error;
     }
   };

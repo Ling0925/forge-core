@@ -101,7 +101,8 @@ export async function readJson(
     let depth = 0;
     let quoted = false;
     let escaped = false;
-    for (const char of text) {
+    for (let index = 0; index < text.length; index += 1) {
+      const char = text[index];
       if (quoted) {
         if (escaped) escaped = false;
         else if (char === "\\") escaped = true;

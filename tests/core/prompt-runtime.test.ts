@@ -1,7 +1,16 @@
-import { expect, it } from "vitest";
+import { expect, it, vi } from "vitest";
 import { nativeDefinitions, nativeDefinitionsFor } from "../../src/core/agents";
+import { projectSummary, summaryBoundary } from "../../src/core/context";
 import { buildSystemInstructions } from "../../src/core/prompts";
+import { createRootRunBudget } from "../../src/core/run-budget";
 import { createAgentRuntime } from "../../src/core/runtime";
+import { createRunState } from "../../src/core/runtime-state";
+import { prepareStepContext } from "../../src/core/runtime-step-context";
+import {
+  DEFAULT_CONTEXT_WINDOW_TOKENS,
+  measureContext,
+  resolveContextBudget,
+} from "../../src/shared/context-usage";
 import type { ModelProvider, SessionStore } from "../../src/shared/contracts";
 import {
   type Message,
@@ -261,3 +270,167 @@ it("projects registry-specific guidance unchanged across tool turns", async () =
   expect(f.received[0]?.[0]?.content).not.toContain("web_fetch");
   expect(f.received[1]?.[0]).toEqual(f.received[0]?.[0]);
 });
+
+it.each([false, true])(
+  "reuses projected instructions until their text changes (leading system: %s)",
+  async (leadingSystem) => {
+    const messages: Message[] = [
+      ...(leadingSystem
+        ? [{ role: "system" as const, content: "obsolete rules" }]
+        : []),
+      { role: "user", content: "old request" },
+      { role: "system", content: "additional rules" },
+      { role: "assistant", content: "old result" },
+    ];
+    const f = fixture({
+      ...fixture().state,
+      messages,
+      contextSummary: {
+        boundary: leadingSystem ? 1 : 0,
+        content: "prior work",
+        fallback: false,
+      },
+    });
+    f.deps.provider.complete = async (incoming) => {
+      const currentInstructions = buildSystemInstructions({
+        session: f.current(),
+        permission: "workspace",
+        mode: "build",
+        projectInstructions: f.deps.projectInstructions,
+        toolNames: nativeDefinitionsFor(false, false).map(
+          (definition) => definition.function.name,
+        ),
+        canDelegate: true,
+      });
+      const projected = projectSummary(f.current()).map((message, index) =>
+        index === 0 && message.role === "system"
+          ? { role: "system" as const, content: currentInstructions }
+          : message,
+      );
+      expect(incoming).toEqual(
+        projected[0]?.role === "system"
+          ? projected
+          : [{ role: "system", content: currentInstructions }, ...projected],
+      );
+      f.received.push(incoming);
+      return f.received.length < 4
+        ? {
+            message: {
+              role: "assistant",
+              content: null,
+              tool_calls: [
+                {
+                  id: `inspect-${f.received.length}`,
+                  type: "function",
+                  function: { name: "inspect", arguments: "{}" },
+                },
+              ],
+            },
+          }
+        : { message: { role: "assistant", content: "done" } };
+    };
+    f.deps.tools.execute = async () => {
+      if (f.received.length === 2) f.deps.projectInstructions = "PROJECT_V2";
+      return { content: "ok", isError: false };
+    };
+    const result = await f.runtime.run(
+      {
+        sessionId: f.state.id,
+        prompt: "continue",
+        mode: "build",
+        permission: "workspace",
+      },
+      () => {},
+      async () => false,
+      new AbortController().signal,
+    );
+    expect(result.status).toBe("completed");
+    expect(f.received).toHaveLength(4);
+    expect(f.received[1]?.[0]).toBe(f.received[0]?.[0]);
+    expect(f.received[2]?.[0]).not.toBe(f.received[1]?.[0]);
+    expect(f.received[3]?.[0]).toBe(f.received[2]?.[0]);
+    expect(f.received[0]?.[0]?.content).toContain("PROJECT_V1");
+    expect(f.received[2]?.[0]?.content).toContain("PROJECT_V2");
+    expect(result.messages.slice(0, messages.length)).toEqual(messages);
+  },
+);
+
+it.each([false, true])(
+  "reuses instructions across compaction candidates (leading system: %s)",
+  async (leadingSystem) => {
+    const messages: Message[] = leadingSystem
+      ? [
+          { role: "system", content: "obsolete rules" },
+          { role: "system", content: "additional rules" },
+        ]
+      : [];
+    for (let index = 0; index < 6; index++)
+      messages.push(
+        { role: "user", content: `request-${index}` },
+        { role: "assistant", content: `result-${index}` },
+      );
+    const f = fixture({ ...fixture().state, messages });
+    const windowTokens = DEFAULT_CONTEXT_WINDOW_TOKENS;
+    const budget = resolveContextBudget(windowTokens, defaultPublicSettings);
+    const rootBudget = createRootRunBudget({ rootSessionId: f.state.id });
+    let previousSystem: Message | undefined;
+    for (const currentInstructions of ["current rules", ""]) {
+      const replace = (messages: readonly Message[]): Message[] =>
+        messages.map((message, index) =>
+          index === 0 && message.role === "system"
+            ? { role: "system", content: currentInstructions }
+            : message,
+        );
+      const expected: Message[][] = [];
+      const boundary = summaryBoundary(
+        f.state,
+        (candidate) => {
+          const projected = replace(candidate);
+          expected.push(projected);
+          return measureContext(projected, windowTokens).usedTokens;
+        },
+        0,
+      );
+      const contextSize = vi.fn(
+        (messages: readonly Message[]) =>
+          measureContext(messages, windowTokens).usedTokens,
+      );
+      const run = { ...createRunState(), snapshot: f.state };
+      await prepareStepContext(
+        {
+          run,
+          deps: f.deps,
+          signal: new AbortController().signal,
+          rootBudget,
+          save: async () => {},
+          event: () => {},
+          onModelUsage: () => {},
+        },
+        {
+          project: (state) => replace(projectSummary(state)),
+          contextSize,
+          calibratedSize: () => budget.limit + 1,
+          rawLimit: budget.limit,
+          rawTarget: 0,
+          budget,
+          windowTokens,
+          definitions: [],
+          currentInstructions,
+        },
+      );
+      const candidates = contextSize.mock.calls
+        .slice(0, expected.length)
+        .map(([messages]) => messages);
+      expect(candidates.length).toBeGreaterThan(1);
+      expect(candidates).toEqual(expected);
+      expect(run.snapshot.contextSummary?.boundary).toBe(boundary);
+      if (leadingSystem) {
+        const system = candidates[0]?.[0];
+        expect(system).not.toBe(previousSystem);
+        for (const candidate of candidates) expect(candidate[0]).toBe(system);
+        previousSystem = system;
+      }
+    }
+    rootBudget.close();
+  },
+);

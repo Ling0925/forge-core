@@ -26,15 +26,17 @@ const scratchRoot = process.env.FORGE_TEST_TMP_DIR
 const base = join(scratchRoot, "posix-lock");
 
 test(
-  "macOS lock helper keeps a macOS 13 deployment target",
+  "macOS lock helper and addon keep a macOS 13 deployment target",
   { skip: process.platform !== "darwin" },
   () => {
-    const commands = execFileSync(
-      "/usr/bin/otool",
-      ["-l", join(root, "dist/native/forge-flock")],
-      { encoding: "utf8" },
-    );
-    assert.match(commands, /\bminos 13\.0(?:\.0)?\s/);
+    for (const name of ["forge-flock", "forge-flock.node"]) {
+      const commands = execFileSync(
+        "/usr/bin/otool",
+        ["-l", join(root, "dist/native", name)],
+        { encoding: "utf8" },
+      );
+      assert.match(commands, /\bminos 13\.0(?:\.0)?\s/);
+    }
   },
 );
 

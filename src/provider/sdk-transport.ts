@@ -1,10 +1,18 @@
-import Anthropic from "@anthropic-ai/sdk";
-import OpenAI from "openai";
-import { type ServerSentEvent, _iterSSEMessages } from "openai/core/streaming";
+import type { ServerSentEvent } from "openai/core/streaming";
 import { z } from "zod";
 import { ForgeError } from "../shared/errors";
 import type { ProviderConfig } from "../shared/schemas";
 import { ProviderError, httpError, protocol } from "./errors";
+
+let sdkErrors:
+  | Promise<
+      [
+        typeof import("openai/core/error"),
+        typeof import("@anthropic-ai/sdk/core/error"),
+      ]
+    >
+  | undefined;
+let sdkStreaming: Promise<typeof import("openai/core/streaming")> | undefined;
 
 type Request = {
   readonly signal: AbortSignal;
@@ -158,6 +166,11 @@ export async function withSdkRequest<T>(
     const error =
       caught instanceof ForgeError ? caught : (bodyFailure ?? caught);
     if (error instanceof ForgeError) throw error;
+    sdkErrors ??= Promise.all([
+      import("openai/core/error"),
+      import("@anthropic-ai/sdk/core/error"),
+    ]);
+    const [OpenAI, Anthropic] = await sdkErrors;
     if (
       error instanceof OpenAI.APIError ||
       error instanceof Anthropic.APIError
@@ -200,6 +213,8 @@ export async function* sdkEvents(
 ): AsyncIterable<ServerSentEvent> {
   const controller = new AbortController();
   try {
+    sdkStreaming ??= import("openai/core/streaming");
+    const { _iterSSEMessages } = await sdkStreaming;
     for await (const event of _iterSSEMessages(response, controller)) {
       const chars = event.raw.reduce(
         (maximum, line) => Math.max(maximum, line.length),

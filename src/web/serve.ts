@@ -1,15 +1,24 @@
 #!/usr/bin/env node
+import { enableCompileCache } from "node:module";
 import { resolve } from "node:path";
-import { createHarness } from "../core/harness";
-import { createLocalHost } from "../host/local-server";
-import { createRuntimeHub } from "../host/runtime";
-import { coreBuildInfo } from "../shared/build-info";
-import {
-  ENDPOINT_REQUIREMENT,
-  canonicalIpHost,
-  validListenEndpoint,
-} from "./endpoint";
-import { createWebHost } from "./server";
+
+enableCompileCache();
+
+const [
+  { createHarness },
+  { createLocalHost },
+  { createRuntimeHub },
+  { coreBuildInfo },
+  { ENDPOINT_REQUIREMENT, canonicalIpHost, validListenEndpoint },
+  { createWebHost },
+] = await Promise.all([
+  import("../core/harness"),
+  import("../host/local-server"),
+  import("../host/runtime"),
+  import("../shared/build-info"),
+  import("./endpoint"),
+  import("./server"),
+]);
 
 const args = process.argv.slice(2);
 function argument(name: string, fallback?: string): string | undefined {

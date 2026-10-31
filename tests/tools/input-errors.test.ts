@@ -14,6 +14,7 @@ import { openPublishedFileStore } from "../../src/store/published-files";
 import { withCommandTasks } from "../../src/tools/command-tasks";
 import { createLocalToolRegistry } from "../../src/tools/local";
 import { createLspToolRegistry } from "../../src/tools/lsp";
+import { LspServerPool } from "../../src/tools/lsp-pool";
 import { createMcpToolRegistry } from "../../src/tools/mcp";
 import { createPublishedFileTool } from "../../src/tools/published-files";
 import { createSkillTool } from "../../src/tools/skills";
@@ -24,6 +25,7 @@ let context: ToolContext;
 let project: Awaited<ReturnType<typeof createProjectContext>>;
 let registries: LocalToolRegistry[] = [];
 let plugins: Awaited<ReturnType<typeof createPluginHost>>;
+const lspPool = new LspServerPool();
 beforeAll(async () => {
   root = await mkdtemp(join(tmpdir(), "forge-input-errors-"));
   context = {
@@ -44,14 +46,18 @@ beforeAll(async () => {
   });
   registries = [
     withCommandTasks(await createLocalToolRegistry(root)),
-    await createLspToolRegistry(root, [
-      {
-        id: "fixture",
-        command: process.execPath,
-        args: [resolve("tests/tools/fixtures/lsp-server.mjs")],
-        extensions: [".ts"],
-      },
-    ]),
+    await createLspToolRegistry(
+      root,
+      [
+        {
+          id: "fixture",
+          command: process.execPath,
+          args: [resolve("tests/tools/fixtures/lsp-server.mjs")],
+          extensions: [".ts"],
+        },
+      ],
+      { pool: lspPool },
+    ),
     (await plugins.createTools(root)).registry,
     await createMcpToolRegistry(await createMcpService({ home: root })),
     createSkillTool(project),
@@ -61,6 +67,7 @@ beforeAll(async () => {
 });
 afterAll(async () => {
   await Promise.all(registries.map((registry) => registry.dispose()));
+  await lspPool.dispose();
   await plugins.dispose();
   await project.dispose();
   await rm(root, { recursive: true, force: true });

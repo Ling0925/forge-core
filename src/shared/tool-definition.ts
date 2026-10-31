@@ -7,6 +7,8 @@ import {
   toolDefinitionSchema,
 } from "./schemas";
 
+const definitionCache = new WeakMap<z.ZodType, Map<string, ToolDefinition>>();
+
 /** Derive the provider contract from the executable input schema. Refinements
  * remain runtime checks; omitted fields are explicitly legacy-only inputs. */
 export function defineTool(
@@ -15,6 +17,10 @@ export function defineTool(
   input: z.ZodType,
   legacyFields: readonly string[] = [],
 ): ToolDefinition {
+  const key = JSON.stringify([name, description, legacyFields]);
+  let definitions = definitionCache.get(input);
+  const cached = definitions?.get(key);
+  if (cached) return cached;
   const { $schema: _dialect, ...generated } = zodToJsonSchema(input, {
     target: "jsonSchema7",
     $refStrategy: "none",
@@ -25,7 +31,7 @@ export function defineTool(
     throw new ForgeError("internal", "Tool input must be an object schema.");
   const properties = jsonObjectSchema.parse(parameters.properties ?? {});
   const omitted = new Set(legacyFields);
-  return toolDefinitionSchema.parse({
+  const definition = toolDefinitionSchema.parse({
     type: "function",
     function: {
       name,
@@ -43,4 +49,10 @@ export function defineTool(
       },
     },
   });
+  if (!definitions) {
+    definitions = new Map();
+    definitionCache.set(input, definitions);
+  }
+  definitions.set(key, definition);
+  return definition;
 }

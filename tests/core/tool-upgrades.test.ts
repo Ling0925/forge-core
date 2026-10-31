@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { expect, it } from "vitest";
@@ -8,12 +8,14 @@ import { createCombinedToolRegistry } from "../../src/tools/combined";
 import { withCommandTasks } from "../../src/tools/command-tasks";
 import { createLocalToolRegistry } from "../../src/tools/local";
 import { createLspToolRegistry } from "../../src/tools/lsp";
+import { LspServerPool } from "../../src/tools/lsp-pool";
 
 it("publishes no redundant aliases, with one background control and a conditional LSP tool", async () => {
   const dir = await mkdtemp(join(tmpdir(), "forge-tool-surface-"));
   const local = await createLocalToolRegistry(dir);
   const tasks = withCommandTasks(local);
-  const lsp = await createLspToolRegistry(dir, []);
+  const pool = new LspServerPool();
+  const lsp = await createLspToolRegistry(dir, [], { pool });
   const combined = createCombinedToolRegistry(tasks, lsp);
   try {
     const names = combined.definitions.map((d) => d.function.name);
@@ -32,9 +34,11 @@ it("publishes no redundant aliases, with one background control and a conditiona
       expect(names).not.toContain(alias);
     expect(names).toContain("append_file");
     expect(names).toHaveLength(13);
-    const configured = await createLspToolRegistry(dir, [
-      { id: "ts", command: "not-started", args: [], extensions: [".ts"] },
-    ]);
+    const configured = await createLspToolRegistry(
+      dir,
+      [{ id: "ts", command: "not-started", args: [], extensions: [".ts"] }],
+      { pool },
+    );
     expect(configured.definitions.map((d) => d.function.name)).toEqual(["lsp"]);
     await configured.dispose();
     // Bound description growth separately from schemas: no full duplicate tool catalogs.
@@ -44,6 +48,7 @@ it("publishes no redundant aliases, with one background control and a conditiona
     expect(descriptions.length).toBeLessThan(6500);
   } finally {
     await combined.dispose();
+    await pool.dispose();
     await rm(dir, { recursive: true, force: true });
   }
 });
@@ -61,7 +66,7 @@ it("persists LSP configuration and routes an approved semantic query through the
       expect(definitions.filter((d) => d.function.name === "lsp")).toHaveLength(
         1,
       );
-      if (++turn === 1)
+      if (++turn % 2 === 1)
         return {
           message: {
             role: "assistant",
@@ -122,6 +127,31 @@ it("persists LSP configuration and routes an approved semantic query through the
     );
     expect(result.status).toBe("completed");
     expect(approvals).toBe(1);
+    const again = await service.run(
+      {
+        sessionId: session.id,
+        prompt: "symbols again",
+        permission: "workspace",
+      },
+      () => {},
+      async () => {
+        approvals++;
+        return true;
+      },
+      new AbortController().signal,
+    );
+    expect(again.status).toBe("completed");
+    expect(approvals).toBe(2);
+    const messages = (await readFile(join(workspace, "server.jsonl"), "utf8"))
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line));
+    const starts = messages.filter((message) => message.method === "spawn");
+    expect(starts).toHaveLength(1);
+    const pid = starts[0].pid;
+    expect(() => process.kill(pid, 0)).not.toThrow();
+    await service.dispose();
+    expect(() => process.kill(pid, 0)).toThrow();
   } finally {
     await service.dispose();
     await rm(dir, { recursive: true, force: true });

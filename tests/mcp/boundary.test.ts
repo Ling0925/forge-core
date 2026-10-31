@@ -42,7 +42,7 @@ for (const [name, payload] of Object.entries({
     }
   });
 }
-it("pre-abort never spawns or writes; discovery and init abort close the connection", async () => {
+it("pre-abort never spawns or writes; discovery and init abort preserve the connection", async () => {
   const home = await mkdtemp(join(tmpdir(), "mcp-abort-"));
   const marker = join(home, "spawned");
   const c = new StdioMcpConnection({
@@ -89,7 +89,7 @@ it("pre-abort never spawns or writes; discovery and init abort close the connect
           : conn.listTools(abort.signal);
       setTimeout(() => abort.abort(), 50);
       await expect(pending).rejects.toMatchObject({ code: "cancelled" });
-      expect(conn.isClosed).toBe(true);
+      expect(conn.isClosed).toBe(false);
     } finally {
       await conn.close();
     }

@@ -1,4 +1,4 @@
-import OpenAI from "openai";
+import type OpenAI from "openai";
 import type { ModelCatalog } from "../shared/model-catalog";
 import { createAnthropicProvider } from "./anthropic";
 import { parseProviderJson } from "./bounded-json";
@@ -30,6 +30,12 @@ import type {
 import { estimateToolCallLines } from "../shared/tool-preview-lines";
 import { createResponsesAdapter } from "./responses";
 import { scopeProviderState } from "./state-scope";
+
+let sdk: Promise<typeof import("openai")> | undefined;
+const openai = () => {
+  sdk ??= import("openai");
+  return sdk;
+};
 
 const MAX_TEXT = 2_000_000;
 // Persisted display-only reasoning preview; bounded so a chatty gateway cannot
@@ -376,7 +382,10 @@ export function createModelProvider(config: ProviderConfig): ModelProvider {
     },
     base,
   );
-  const clientFor = (fetch: typeof globalThis.fetch) =>
+  const clientFor = (
+    OpenAI: typeof import("openai").default,
+    fetch: typeof globalThis.fetch,
+  ) =>
     new OpenAI({
       apiKey: settings.apiKey || "forge-no-auth",
       adminAPIKey: null,
@@ -391,12 +400,13 @@ export function createModelProvider(config: ProviderConfig): ModelProvider {
     });
   const windows = new Map<string, number | null>();
   let catalog: ModelCatalog | undefined;
-  const loadCatalog = (signal?: AbortSignal) =>
-    withSdkRequest(
+  const loadCatalog = async (signal?: AbortSignal) => {
+    const { default: OpenAI } = await openai();
+    return withSdkRequest(
       settings,
       { signal, idle: false, fetch: requestOptions.fetch },
       async ({ signal: combined, fetch }) => {
-        const response = await clientFor(fetch)
+        const response = await clientFor(OpenAI, fetch)
           .models.list({ signal: combined, maxRetries: 1 })
           .asResponse();
         if (!response.ok) {
@@ -416,6 +426,7 @@ export function createModelProvider(config: ProviderConfig): ModelProvider {
         return next;
       },
     );
+  };
   // A listing always asks the source: the catalog store and wrappers decide
   // when a request can be shared, so this adapter never reports a stale list.
   const listModels = async (signal?: AbortSignal) => {
@@ -433,7 +444,7 @@ export function createModelProvider(config: ProviderConfig): ModelProvider {
         if (!catalog) await loadCatalog(signal);
         return windows.get(model) ?? null;
       },
-      complete: (messages, tools, options) => {
+      complete: async (messages, tools, options) => {
         const hostedSearch =
           options.webSearch !== undefined && options.webSearch !== "disabled";
         if (hostedSearch && settings.apiMode !== "responses")
@@ -453,11 +464,12 @@ export function createModelProvider(config: ProviderConfig): ModelProvider {
             "Provide a valid model, message history and tool definitions.",
             false,
           );
+        const { default: OpenAI } = await openai();
         return withSdkRequest(
           settings,
           { signal: options.signal, idle: true, fetch: requestOptions.fetch },
           async ({ signal: combined, fetch }) => {
-            const client = clientFor(fetch);
+            const client = clientFor(OpenAI, fetch);
             if (settings.apiMode === "responses") {
               const body = requestOptions.applyBody(
                 {

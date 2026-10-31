@@ -81,6 +81,7 @@ const until = async (check: () => boolean, timeout = 2000): Promise<void> => {
 function streamableFixture(options: Readonly<{ initProtocol?: string }> = {}) {
   const state = {
     posts: 0,
+    initializations: 0,
     calls: 0,
     deletes: 0,
     active: 0,
@@ -92,7 +93,7 @@ function streamableFixture(options: Readonly<{ initProtocol?: string }> = {}) {
     serverRequests: 0,
     stallInitialized: false,
     replyErrors: [] as unknown[],
-    held: [] as import("node:http").ServerResponse[],
+    held: [] as { id: unknown; response: import("node:http").ServerResponse }[],
   };
   const base = {
     server: undefined as unknown as Server,
@@ -163,7 +164,7 @@ function streamableFixture(options: Readonly<{ initProtocol?: string }> = {}) {
       const name = params?.name;
       const text = String(params?.arguments?.text ?? "");
       if (name === "slow") {
-        state.held.push(response);
+        state.held.push({ id, response });
         return;
       }
       if (name === "malformed") {
@@ -228,6 +229,7 @@ function streamableFixture(options: Readonly<{ initProtocol?: string }> = {}) {
       return;
     }
     if (method === "initialize") {
+      state.initializations += 1;
       response.writeHead(200, {
         "content-type": "application/json",
         "mcp-session-id": "session-1",
@@ -369,7 +371,14 @@ function legacySseControlFixture(
  * endpoint; responses are pushed onto that stream and routed by JSON-RPC id.
  */
 function legacySseFixture(originOverride?: string) {
-  const state = { posts: 0, calls: 0, authSeen: [] as string[] };
+  const state = {
+    posts: 0,
+    calls: 0,
+    initializations: 0,
+    gets: 0,
+    held: [] as unknown[],
+    authSeen: [] as string[],
+  };
   const streams = new Set<import("node:http").ServerResponse>();
   const handler = async (
     request: IncomingMessage,
@@ -378,6 +387,7 @@ function legacySseFixture(originOverride?: string) {
     const auth = request.headers.authorization;
     if (typeof auth === "string") state.authSeen.push(auth);
     if (request.method === "GET") {
+      state.gets += 1;
       response.writeHead(200, {
         "content-type": "text/event-stream",
         "cache-control": "no-cache",
@@ -409,11 +419,19 @@ function legacySseFixture(originOverride?: string) {
         payload = result(id, {});
       } else if (message.method === "tools/call") {
         state.calls += 1;
-        const params = message.params as { arguments?: { text?: unknown } };
+        const params = message.params as {
+          name?: string;
+          arguments?: { text?: unknown };
+        };
+        if (params.name === "slow") {
+          state.held.push(id);
+          return;
+        }
         payload = callResult(id, String(params?.arguments?.text ?? ""));
       } else if (message.method === "tools/list") {
         payload = result(id, { tools });
       } else if (message.method === "initialize") {
+        state.initializations += 1;
         payload = result(id, initResult);
       }
       if (payload !== undefined)
@@ -801,6 +819,70 @@ describe("legacy SSE transport", () => {
 });
 
 describe("lifecycle: cancellation, disable and revoke", () => {
+  it.each(["http", "sse"] as const)(
+    "shares %s initialization, routes concurrent replies, and cancels only one request",
+    async (transport) => {
+      const http = streamableFixture();
+      const sse = legacySseFixture();
+      const fixture = transport === "http" ? http : sse;
+      const listening = await listen(fixture.handler);
+      servers.push(listening.server);
+      const mcp = await service();
+      open.push({ server: listening.server, service: mcp });
+      const id = `shared-${transport}`;
+      await mcp.register({
+        id,
+        label: id,
+        transport,
+        url: `${listening.base}/mcp`,
+        enabled: true,
+      });
+      expect(await Promise.all([mcp.listTools(id), mcp.listTools(id)])).toEqual(
+        [tools, tools],
+      );
+      const controller = new AbortController();
+      const cancelled = mcp.callTool(
+        id,
+        "slow",
+        {},
+        { signal: controller.signal },
+      );
+      const rejection = expect(cancelled).rejects.toMatchObject({
+        code: "cancelled",
+        message: "Tool execution cancelled.",
+      });
+      await until(() => fixture.state.held.length === 1);
+      const first = mcp.callTool(id, "slow", {}, { redactValues: ["first"] });
+      await until(() => fixture.state.held.length === 2);
+      const second = mcp.callTool(id, "slow", {}, { redactValues: ["second"] });
+      await until(() => fixture.state.held.length === 3);
+      controller.abort();
+      await rejection;
+      if (transport === "http") {
+        await until(() => http.state.held[0]?.response.destroyed === true);
+        for (const held of http.state.held.slice(1).reverse()) {
+          held.response.writeHead(200, { "content-type": "application/json" });
+          held.response.end(callResult(held.id, "first second"));
+        }
+      } else {
+        expect(sse.streams.size).toBe(1);
+        for (const requestId of [...sse.state.held].reverse())
+          for (const stream of sse.streams)
+            stream.write(
+              `event: message\ndata: ${callResult(requestId, "first second")}\n\n`,
+            );
+      }
+      await expect(first).resolves.toMatchObject({ text: "[REDACTED] second" });
+      await expect(second).resolves.toMatchObject({ text: "first [REDACTED]" });
+      await expect(
+        mcp.callTool(id, "echo", { text: "after abort" }),
+      ).resolves.toMatchObject({ text: "after abort" });
+      expect(await mcp.health(id)).toMatchObject({ connected: true });
+      expect(fixture.state.initializations).toBe(1);
+      if (transport === "sse") expect(sse.state.gets).toBe(1);
+    },
+  );
+
   it("cancels a pending call, never replays it, and disable/remove close live streams", async () => {
     const fixture = streamableFixture();
     const listening = await listen(fixture.handler);

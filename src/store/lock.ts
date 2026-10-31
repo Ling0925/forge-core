@@ -1,10 +1,33 @@
 import { spawn } from "node:child_process";
-import { constants } from "node:fs";
+import { constants, statSync } from "node:fs";
 import { type FileHandle, open } from "node:fs/promises";
+import { createRequire } from "node:module";
 import { isAbsolute } from "node:path";
 import { fileURLToPath } from "node:url";
 import { ForgeError } from "../shared/errors";
-import { checkEntry, storageError } from "./io";
+import { checkEntry, hasCode, storageError } from "./io";
+
+const require = createRequire(import.meta.url);
+
+function flockAddon():
+  | { lock(fd: number): "ok" | "busy" | "error" }
+  | undefined {
+  const path =
+    process.env.FORGE_FLOCK_ADDON ??
+    fileURLToPath(new URL("../native/forge-flock.node", import.meta.url));
+  if (!isAbsolute(path)) throw storageError();
+  try {
+    return require(path);
+  } catch (error) {
+    if (!hasCode(error, "MODULE_NOT_FOUND")) throw storageError();
+  }
+  try {
+    statSync(path);
+  } catch (error) {
+    if (hasCode(error, "ENOENT")) return undefined;
+  }
+  throw storageError();
+}
 
 const cancelled = () =>
   new ForgeError("cancelled", "Lock acquisition was cancelled.");
@@ -44,53 +67,58 @@ export async function fileLock(
     const info = await handle.stat();
     if (!info.isFile() || (info.mode & 0o777) !== 0o600) throw storageError();
     if (signal?.aborted) throw cancelled();
-    const child = spawn(
-      helper,
-      process.platform === "darwin" ? [] : ["-n", "-E", "75", "3"],
-      {
-        stdio: ["ignore", "ignore", "ignore", handle.fd],
-      },
-    );
-    const result = await new Promise<"ok" | "busy" | "error" | "cancelled">(
-      (resolve) => {
-        let settled = false;
-        let aborted = false;
-        let failed = false;
-        const timer = setTimeout(() => {
-          failed = true;
-          child.kill("SIGKILL");
-        }, 5000);
-        const finish = (value: "ok" | "busy" | "error" | "cancelled") => {
-          if (settled) return;
-          settled = true;
-          clearTimeout(timer);
-          signal?.removeEventListener("abort", abort);
-          resolve(value);
-        };
-        const abort = () => {
-          aborted = true;
-          child.kill("SIGKILL");
-        };
-        signal?.addEventListener("abort", abort, { once: true });
-        if (signal?.aborted) abort();
-        child.once("error", () => {
-          failed = true;
-        });
-        child.once("close", (code) =>
-          finish(
-            aborted
-              ? "cancelled"
-              : failed
-                ? "error"
-                : code === 0
-                  ? "ok"
-                  : code === 75
-                    ? "busy"
-                    : "error",
-          ),
-        );
-      },
-    );
+    const addon = flockAddon();
+    let result: "ok" | "busy" | "error" | "cancelled";
+    if (addon) result = addon.lock(handle.fd);
+    else {
+      const child = spawn(
+        helper,
+        process.platform === "darwin" ? [] : ["-n", "-E", "75", "3"],
+        {
+          stdio: ["ignore", "ignore", "ignore", handle.fd],
+        },
+      );
+      result = await new Promise<"ok" | "busy" | "error" | "cancelled">(
+        (resolve) => {
+          let settled = false;
+          let aborted = false;
+          let failed = false;
+          const timer = setTimeout(() => {
+            failed = true;
+            child.kill("SIGKILL");
+          }, 5000);
+          const finish = (value: "ok" | "busy" | "error" | "cancelled") => {
+            if (settled) return;
+            settled = true;
+            clearTimeout(timer);
+            signal?.removeEventListener("abort", abort);
+            resolve(value);
+          };
+          const abort = () => {
+            aborted = true;
+            child.kill("SIGKILL");
+          };
+          signal?.addEventListener("abort", abort, { once: true });
+          if (signal?.aborted) abort();
+          child.once("error", () => {
+            failed = true;
+          });
+          child.once("close", (code) =>
+            finish(
+              aborted
+                ? "cancelled"
+                : failed
+                  ? "error"
+                  : code === 0
+                    ? "ok"
+                    : code === 75
+                      ? "busy"
+                      : "error",
+            ),
+          );
+        },
+      );
+    }
     if (result !== "ok" || signal?.aborted) {
       if (result === "cancelled" || signal?.aborted) throw cancelled();
       if (result === "busy") throw busy();
@@ -108,7 +136,7 @@ export async function fileLock(
     } finally {
       await verify.close();
     }
-    // Verification awaits can observe an abort after the helper has exited.
+    // Verification awaits can observe an abort after the lock is acquired.
     // Transfer ownership only after the final await and cancellation check.
     if (signal?.aborted) throw cancelled();
     retained = true;
