@@ -114,6 +114,7 @@ MCP 支持 **stdio、Streamable HTTP、Legacy SSE**。注册不会连接；启�
 - `maxActiveAgents`：每个父运行同时活跃的子 Agent 数（4，范围 1–32）。
 - `maxAgentDepth`：委派深度（1 = 只有主 Agent 能派子任务，最大 4）。
 - `maxSessionPlans`：每个会话的计划数（10000；持久化格式上限也是 10000，只能调低）。
+- Host 选项 `createRuntimeHub(service, { requestTimeoutMs })` 和 `connectLocalHost({ requestTimeoutMs, ... })`：短 RPC 的传输超时（120000 毫秒）。压缩、模型发现/管理、浏览器、运行启动/插话、队列启动、会话取消、等待运行取消、MCP 健康检查/启停/删除、插件配置/检查和用量统计不设传输超时，沿用操作自己的期限及取消机制；请求断开会取消支持 `AbortSignal` 的操作，已接受的运行独立继续。
 - Vertex 来源：`vertex.models` 用自己的模型列表替换内置参考列表；`vertex.discoverModels: true` 会调用 Vertex `publishers.models.list` 获取 Gemini 模型，失败时回退到 `models` 或内置列表。
 
 ## 作为包使用

@@ -51,8 +51,16 @@ export function sendFrame(
   value: unknown,
   limit = MAX_RESPONSE_BYTES,
 ): boolean {
+  return sendSerializedFrame(socket, JSON.stringify(value), limit);
+}
+
+export function sendSerializedFrame(
+  socket: Socket,
+  json: string,
+  limit = MAX_RESPONSE_BYTES,
+): boolean {
   if (socket.destroyed) return false;
-  const frame = `${JSON.stringify(value)}\n`;
+  const frame = `${json}\n`;
   const bytes = Buffer.byteLength(frame);
   if (bytes > limit || socket.writableLength + bytes > MAX_RESPONSE_BYTES) {
     socket.destroy();

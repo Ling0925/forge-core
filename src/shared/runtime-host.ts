@@ -15,7 +15,7 @@ import type { RpcRequest, RpcResponse, RunEvent, WorkerMessage } from "./ipc";
  */
 export interface RuntimeHost {
   handle(raw: unknown): Promise<void>;
-  request(request: RpcRequest): Promise<RpcResponse>;
+  request(request: RpcRequest, signal?: AbortSignal): Promise<RpcResponse>;
   subscribe(listener: (message: WorkerMessage) => void): () => void;
   recoveryEvents(): RunEvent[];
   hostState(): HostState;

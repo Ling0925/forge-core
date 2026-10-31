@@ -19,6 +19,7 @@ import {
   paginateSession,
   permissionRank,
   projectContextDtoSchema,
+  runEventSchema,
   runIdSchema,
   toErrorInfo,
   workerMessageSchema,
@@ -34,6 +35,7 @@ type Approval = {
   request: ApprovalRequest;
   answer?: boolean;
   resolve?: (answer: boolean) => void;
+  reject?: (error: unknown) => void;
   consumed: boolean;
   claimed: boolean;
 };
@@ -49,6 +51,7 @@ export function createWorkerController(
       input: RunInput;
       abort: AbortController;
       approvals: Map<string, Approval>;
+      approvalFailures: Map<string, { error: unknown }>;
       finished: boolean;
       permission: Permission | undefined;
       permissionChanged: boolean;
@@ -71,7 +74,7 @@ export function createWorkerController(
   let disposed = false;
   let closing: Promise<void> | undefined;
   const emit = (message: WorkerMessage): void => {
-    send(workerMessageSchema.parse(message));
+    send(message);
   };
   const respond = (
     request: RpcRequest,
@@ -99,15 +102,12 @@ export function createWorkerController(
           },
     );
   };
-  const event = (runId: RunId, value: AgentEvent): void => {
+  const acceptEvent = (runId: RunId, raw: AgentEvent): void => {
     const run = runs.get(runId);
-    if (
-      !run ||
-      run.finished ||
-      disposed ||
-      value.sessionId !== run.input.sessionId
-    )
-      return;
+    if (!run || run.finished || disposed) return;
+    const data = runEventSchema.parse({ runId, event: raw });
+    const value = data.event;
+    if (value.sessionId !== run.input.sessionId) return;
     if (value.type === "run_started") run.permission = value.permission;
     if (value.type === "run_finished") {
       run.terminal = value;
@@ -115,7 +115,7 @@ export function createWorkerController(
       return;
     }
     if (value.type === "approval_requested") {
-      const approval = approvalRequestSchema.parse(value.request);
+      const approval = value.request;
       if (
         approval.sessionId !== run.input.sessionId ||
         run.approvals.has(approval.id)
@@ -139,10 +139,6 @@ export function createWorkerController(
         return;
       }
     }
-    const parsed = workerMessageSchema.parse({
-      kind: "event",
-      data: { runId, event: value },
-    });
     if (
       value.type === "run_started" ||
       value.type === "state_changed" ||
@@ -219,7 +215,42 @@ export function createWorkerController(
         text: (text + value.text).slice(0, 131073),
       });
     }
-    emit(parsed);
+    emit({ kind: "event", data });
+  };
+  const event = (runId: RunId, value: AgentEvent): void => {
+    try {
+      acceptEvent(runId, value);
+    } catch (error) {
+      const run = runs.get(runId);
+      if (!run) return;
+      if (value?.type === "approval_requested" && value.request) {
+        run.approvalFailures.set(value.request.id, { error });
+        const approval = run.approvals.get(value.request.id);
+        if (approval) {
+          approval.consumed = true;
+          approval.reject?.(error);
+        }
+      }
+      try {
+        emit({
+          kind: "event",
+          data: {
+            runId,
+            event: {
+              type: "error",
+              sessionId: run.input.sessionId,
+              timestamp: new Date().toISOString(),
+              error: toErrorInfo(error),
+            },
+          },
+        });
+      } catch (deliveryError) {
+        console.error(
+          "Host event delivery failed.",
+          toErrorInfo(deliveryError),
+        );
+      }
+    }
   };
   // Every attached client (desktop window, Web, Android) shares this one
   // controller, so a settlement must be broadcast to all subscribers instead of
@@ -305,6 +336,7 @@ export function createWorkerController(
       input,
       abort: new AbortController(),
       approvals: new Map<string, Approval>(),
+      approvalFailures: new Map(),
       finished: false,
       permission: undefined,
       permissionChanged: false,
@@ -324,6 +356,8 @@ export function createWorkerController(
           (value) => event(runId, value),
           (rawApproval, signal) => {
             const approval = approvalRequestSchema.parse(rawApproval);
+            const failure = run.approvalFailures.get(approval.id);
+            if (failure) throw failure.error;
             if (
               signal.aborted ||
               run.abort.signal.aborted ||
@@ -343,16 +377,23 @@ export function createWorkerController(
               );
             entry.claimed = true;
             if (entry.consumed) return Promise.resolve(entry.answer === true);
-            return new Promise<boolean>((resolve) => {
+            return new Promise<boolean>((resolve, reject) => {
+              const cleanup = (): void => {
+                signal.removeEventListener("abort", abort);
+                run.abort.signal.removeEventListener("abort", abort);
+              };
               const settle = (answer: boolean): void => {
                 entry.consumed = true;
                 entry.answer = answer;
-                signal.removeEventListener("abort", abort);
-                run.abort.signal.removeEventListener("abort", abort);
+                cleanup();
                 resolve(answer);
               };
               const abort = (): void => settle(false);
               entry.resolve = settle;
+              entry.reject = (error) => {
+                cleanup();
+                reject(error);
+              };
               signal.addEventListener("abort", abort, { once: true });
               run.abort.signal.addEventListener("abort", abort, {
                 once: true,
@@ -452,7 +493,7 @@ export function createWorkerController(
       };
     }),
   });
-  const handle = async (raw: unknown): Promise<void> => {
+  const handle = async (raw: unknown, signal?: AbortSignal): Promise<void> => {
     const parsed = workerRequestSchema.safeParse(raw);
     if (!parsed.success) return;
     const request = parsed.data;
@@ -483,11 +524,7 @@ export function createWorkerController(
         case "listModels":
           respond(
             request,
-            await service.listModels(
-              undefined,
-              request.sourceId,
-              request.refresh,
-            ),
+            await service.listModels(signal, request.sourceId, request.refresh),
           );
           break;
         case "modelAccess":
@@ -496,7 +533,7 @@ export function createWorkerController(
               "not_found",
               "Model access is unavailable on this host.",
             );
-          respond(request, await service.modelAccess(request.input));
+          respond(request, await service.modelAccess(request.input, signal));
           break;
         case "listSessions":
           respond(request, await service.listSessions());
@@ -640,7 +677,10 @@ export function createWorkerController(
           );
           break;
         case "compactSession":
-          respond(request, await service.compactSession(request.sessionId));
+          respond(
+            request,
+            await service.compactSession(request.sessionId, signal),
+          );
           break;
         case "forkSession":
           respond(
@@ -833,8 +873,8 @@ export function createWorkerController(
     });
     return closing;
   };
-  const dispatch = (raw: unknown): Promise<void> => {
-    const operation = handle(raw);
+  const dispatch = (raw: unknown, signal?: AbortSignal): Promise<void> => {
+    const operation = handle(raw, signal);
     operations.add(operation);
     void operation
       .finally(() => operations.delete(operation))

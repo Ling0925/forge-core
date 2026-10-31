@@ -7,19 +7,19 @@ import type {
 } from "../shared";
 
 import { createWorkerController, safeError } from "./controller";
+import { requestTimeout } from "./request-timeout";
 
-// A single request may legitimately cover a long provider turn; this is the
-// transport bound, not a run bound. Timeouts are never retried automatically.
-const REQUEST_TIMEOUT_MS = 120_000;
-
-export function createRuntimeHub(service: HarnessService): RuntimeHost {
+export function createRuntimeHub(
+  service: HarnessService,
+  options: { requestTimeoutMs?: number } = {},
+): RuntimeHost {
   const listeners = new Set<(message: WorkerMessage) => void>();
   const pending = new Map<
     string,
     {
       request: RpcRequest;
       resolve: (response: RpcResponse) => void;
-      timer: ReturnType<typeof setTimeout>;
+      cleanup: () => void;
     }
   >();
   let disposed = false;
@@ -39,37 +39,55 @@ export function createRuntimeHub(service: HarnessService): RuntimeHost {
       const entry = pending.get(message.response.id);
       if (entry) {
         pending.delete(message.response.id);
-        clearTimeout(entry.timer);
+        entry.cleanup();
         entry.resolve(message.response);
         return;
       }
     }
     publish(message);
   });
-  const request = (rpc: RpcRequest): Promise<RpcResponse> => {
+  const request = (
+    rpc: RpcRequest,
+    signal?: AbortSignal,
+  ): Promise<RpcResponse> => {
     if (disposed)
       return Promise.reject(new Error("The shared runtime is closed."));
     if (pending.has(rpc.id))
       return Promise.reject(new Error("Duplicate runtime request id."));
+    if (signal?.aborted) return Promise.reject(signal.reason);
     return new Promise<RpcResponse>((resolveResponse, reject) => {
-      const timer = setTimeout(() => {
-        pending.delete(rpc.id);
-        reject(
-          new Error(
-            "The shared runtime did not answer in time; effects are uncertain. Do not retry automatically.",
-          ),
-        );
-      }, REQUEST_TIMEOUT_MS);
+      const timeout = requestTimeout(rpc, options.requestTimeoutMs);
+      const abort = () => {
+        cleanup();
+        reject(signal?.reason);
+      };
+      const timer =
+        timeout === undefined
+          ? undefined
+          : setTimeout(() => {
+              cleanup();
+              reject(
+                new Error(
+                  "The shared runtime did not answer in time; effects are uncertain. Do not retry automatically.",
+                ),
+              );
+            }, timeout);
+      const cleanup = () => {
+        clearTimeout(timer);
+        signal?.removeEventListener("abort", abort);
+      };
+      signal?.addEventListener("abort", abort, { once: true });
+      // Retain correlation until the reply arrives, including after timeout or abort.
       pending.set(rpc.id, {
         request: rpc,
         resolve: resolveResponse,
-        timer,
+        cleanup,
       });
-      void controller.handle(rpc).catch((error: unknown) => {
+      void controller.handle(rpc, signal).catch((error: unknown) => {
         const entry = pending.get(rpc.id);
         if (!entry) return;
         pending.delete(rpc.id);
-        clearTimeout(timer);
+        cleanup();
         reject(
           error instanceof Error ? error : new Error("Runtime request failed."),
         );
@@ -83,7 +101,7 @@ export function createRuntimeHub(service: HarnessService): RuntimeHost {
     // it tears down; any request that raced past that point is settled here.
     closing = controller.dispose().finally(() => {
       for (const entry of pending.values()) {
-        clearTimeout(entry.timer);
+        entry.cleanup();
         entry.resolve({
           id: entry.request.id,
           method: entry.request.method,

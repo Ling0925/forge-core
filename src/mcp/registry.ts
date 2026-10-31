@@ -5,10 +5,17 @@ import {
   type McpToolInfo,
 } from "../shared";
 export type { McpService } from "../shared";
+import { lstat } from "node:fs/promises";
 import { join } from "node:path";
 import { z } from "zod";
 
-import { atomicJson, fileLock, privateDirectory, readJson } from "../store";
+import {
+  atomicJson,
+  fileLock,
+  hasCode,
+  privateDirectory,
+  readJson,
+} from "../store";
 
 import {
   MCP_MAX_SERVERS,
@@ -69,6 +76,8 @@ const notFound = (): ForgeError =>
   new ForgeError("not_found", "MCP server was not found.");
 const revoked = (): ForgeError =>
   new ForgeError("tool", "MCP server is not registered or not enabled.");
+const unreadableCatalog = (): ForgeError =>
+  new ForgeError("storage", "MCP catalog could not be read.");
 
 const isRemote = (config: McpServerConfig): config is McpRemoteServerConfig =>
   config.transport === "http" || config.transport === "sse";
@@ -82,10 +91,10 @@ const redact = (text: string, values: readonly string[]): string => {
 
 /**
  * The user-owned private MCP catalog. Every operation that can produce an
- * effect (discovery or a call) re-reads this authoritative file under an
- * advisory flock *before* touching a live process, so that a disable/remove
- * performed by any other `McpService` instance in the same or another process
- * is observed before a stale instance can launch or use a server.
+ * effect (discovery or a call) stamp-validates the cached authoritative file,
+ * re-reading under an advisory flock only on a miss, before touching a live
+ * process. This observes disable/remove changes from other `McpService`
+ * instances before a stale instance can launch or use a server.
  */
 export async function createMcpService(options: {
   home: string;
@@ -106,6 +115,29 @@ export async function createMcpService(options: {
     string,
     Readonly<{ connection: McpConnection; signature: string }>
   >();
+  const connectionOperations = new Map<string, Promise<unknown>>();
+  const serializeConnection = <T>(id: string, operation: () => Promise<T>) => {
+    const previous = connectionOperations.get(id) ?? Promise.resolve();
+    const work = previous.then(operation, operation);
+    connectionOperations.set(id, work);
+    void work
+      .finally(() => {
+        if (connectionOperations.get(id) === work)
+          connectionOperations.delete(id);
+      })
+      .catch(() => undefined);
+    return work;
+  };
+  let catalog: { stamp: string; servers: McpServerConfig[] } | undefined;
+  const stamp = async () => {
+    try {
+      const info = await lstat(catalogPath);
+      return `${info.dev}:${info.ino}:${info.mode}:${info.size}:${info.mtimeMs}:${info.ctimeMs}`;
+    } catch (error) {
+      if (hasCode(error, "ENOENT")) return "missing";
+      throw unreadableCatalog();
+    }
+  };
 
   const readCatalog = async (): Promise<McpServerConfig[]> => {
     let parsed: unknown;
@@ -113,16 +145,15 @@ export async function createMcpService(options: {
       parsed = await readJson(catalogPath, 1 << 20);
     } catch (error) {
       if (error instanceof ForgeError && error.code === "not_found") return [];
-      throw new ForgeError("storage", "MCP catalog could not be read.");
+      throw unreadableCatalog();
     }
     const result = catalogSchema.safeParse(parsed);
-    if (!result.success)
-      throw new ForgeError("storage", "MCP catalog could not be read.");
+    if (!result.success) throw unreadableCatalog();
     return [...result.data.servers];
   };
 
   // Cross-process serialization: the writer lock guards every read-modify-write
-  // and every authoritative read. Reads therefore never observe a half-published
+  // and catalog reads on a stamp miss. Reads therefore never observe a half-published
   // status change, and an instance that has cached a now-revoked server is
   // corrected before it acts. The underlying lock is non-blocking, so `busy`
   // is retried with bounded backoff; two instances (or two in-process callers)
@@ -158,6 +189,19 @@ export async function createMcpService(options: {
     }
   };
 
+  const currentCatalog = async (): Promise<McpServerConfig[]> => {
+    check();
+    const cached = catalog;
+    if (cached && cached.stamp === (await stamp())) return cached.servers;
+    return locked(async () => {
+      const currentStamp = await stamp();
+      if (catalog && catalog.stamp === currentStamp) return catalog.servers;
+      const servers = await readCatalog();
+      catalog = { stamp: currentStamp, servers };
+      return servers;
+    });
+  };
+
   const persist = async (
     servers: readonly McpServerConfig[],
   ): Promise<void> => {
@@ -166,6 +210,7 @@ export async function createMcpService(options: {
       { version: 1, servers: [...servers] },
       1 << 20,
     );
+    catalog = undefined;
   };
 
   // Hold the kernel lock across the whole mutation so concurrent processes
@@ -192,22 +237,18 @@ export async function createMcpService(options: {
   const authoritative = async (
     id: string,
   ): Promise<McpServerConfig | undefined> =>
-    locked(async () => {
-      const servers = await readCatalog();
-      return servers.find((entry) => entry.id === id);
-    });
+    (await currentCatalog()).find((entry) => entry.id === id);
 
   /**
-   * Resolve a server for an *effectful* operation: re-read the authoritative
-   * catalog under the store lock, then compare the authoritative definition
-   * signature to the signature any *live* connection in this instance was
-   * opened under. If this instance holds a stale connection (the operator
-   * disabled, removed, re-pointed or edited the server through any other
-   * instance or process) it is closed before proceeding. A revoked server
-   * never proceeds on stale state.
+   * Resolve a server for an *effectful* operation: stamp-validate the cached
+   * catalog, re-reading under the store lock only on a miss, then compare its
+   * definition signature with the live connection's signature. If another
+   * instance disables, removes or edits the server, close the stale connection
+   * outside the catalog lock before proceeding. A revoked server never
+   * proceeds on stale state.
    */
   const resolveForEffect = async (id: string): Promise<McpServerConfig> => {
-    const config = (await readCatalog()).find((entry) => entry.id === id);
+    const config = await authoritative(id);
     if (!config || !config.enabled) {
       await closeConnection(id);
       throw revoked();
@@ -224,10 +265,12 @@ export async function createMcpService(options: {
     id: string,
     signal?: AbortSignal,
   ): Promise<{ open: McpConnection; config: McpServerConfig }> =>
-    locked(async () => {
+    serializeConnection(id, async () => {
+      check();
       if (signal?.aborted)
         throw new ForgeError("cancelled", "Tool execution cancelled.");
       const config = await resolveForEffect(id);
+      check();
       const expected = signature(config);
       const existing = connections.get(config.id);
       if (
@@ -309,7 +352,7 @@ export async function createMcpService(options: {
       });
     },
     async list() {
-      const servers = await locked(readCatalog);
+      const servers = await currentCatalog();
       return servers.map(record);
     },
     async setEnabled(id, enabled) {
@@ -324,7 +367,7 @@ export async function createMcpService(options: {
       });
       // The persisted status is authoritative immediately; close our live
       // connection on disable so no stale instance keeps a revoked server alive.
-      if (!enabled) await closeConnection(id);
+      if (!enabled) await serializeConnection(id, () => closeConnection(id));
       return record(result);
     },
     async remove(id) {
@@ -335,10 +378,10 @@ export async function createMcpService(options: {
           result: undefined,
         });
       });
-      await closeConnection(id);
+      await serializeConnection(id, () => closeConnection(id));
     },
     async revoke(id) {
-      await closeConnection(id);
+      await serializeConnection(id, () => closeConnection(id));
     },
     async health(id): Promise<McpHealth> {
       const config = await authoritative(id);
@@ -351,7 +394,7 @@ export async function createMcpService(options: {
           lastError: undefined,
         };
       if (!config.enabled) {
-        await closeConnection(id);
+        await serializeConnection(id, () => closeConnection(id));
         return {
           id,
           enabled: false,

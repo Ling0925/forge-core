@@ -4,7 +4,7 @@ import {
   ForgeError,
   type SessionId,
   type ToolHookDiagnostic,
-  agentEventSchema,
+  toErrorInfo,
 } from "../shared";
 
 import type { RunState } from "./runtime-state";
@@ -30,20 +30,20 @@ export const createRunEvents = (
   const notify = (event: AgentEvent): void => {
     try {
       onEvent(event);
-    } catch {
-      /* Notifications are not transactional participants. */
+    } catch (error) {
+      console.error("Event sink failed.", toErrorInfo(error));
     }
   };
   const event = (body: EventBody): void => {
     if (!run.snapshot)
       throw new ForgeError("internal", "Session has not loaded.");
-    const event = agentEventSchema.parse({
+    const event: AgentEvent = {
       ...(run.turn === undefined ? {} : { turn: run.turn }),
       ...(run.activeStep === undefined ? {} : { step: run.activeStep }),
       ...body,
       sessionId,
       timestamp: now(),
-    });
+    };
     run.snapshot = {
       ...run.snapshot,
       events: [...run.snapshot.events, event],
@@ -93,15 +93,13 @@ export const createRunEvents = (
   };
   // Display-only, never persisted: live reasoning preview is not transcript state.
   const ephemeral = (body: EventBody): void => {
-    notify(
-      agentEventSchema.parse({
-        ...(run.turn === undefined ? {} : { turn: run.turn }),
-        ...(run.activeStep === undefined ? {} : { step: run.activeStep }),
-        ...body,
-        sessionId,
-        timestamp: now(),
-      }),
-    );
+    notify({
+      ...(run.turn === undefined ? {} : { turn: run.turn }),
+      ...(run.activeStep === undefined ? {} : { step: run.activeStep }),
+      ...body,
+      sessionId,
+      timestamp: now(),
+    });
   };
   return {
     notify,

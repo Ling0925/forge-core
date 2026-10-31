@@ -17,6 +17,7 @@ import {
   sendFrame,
 } from "./frames";
 import { localMessageSchema } from "./protocol";
+import { requestTimeout } from "./request-timeout";
 import { localSocketPath, verifyLocalSocket } from "./socket-path";
 
 export interface LocalHostClient {
@@ -64,7 +65,7 @@ export async function connectLocalHost(options: {
       method: RpcRequest["method"];
       resolve(value: RpcResponse): void;
       reject(error: Error): void;
-      timer: ReturnType<typeof setTimeout>;
+      timer: ReturnType<typeof setTimeout> | undefined;
     }
   >();
   let resolveHello: () => void = () => {};
@@ -227,14 +228,18 @@ export async function connectLocalHost(options: {
         );
       used.add(request.id);
       return new Promise<RpcResponse>((resolve, reject) => {
-        const timer = setTimeout(() => {
-          pending.delete(request.id);
-          reject(
-            hostError(
-              `Host request ${request.id} timed out; its effects are uncertain. Nothing was replayed.`,
-            ),
-          );
-        }, options.requestTimeoutMs ?? 120000);
+        const timeout = requestTimeout(request, options.requestTimeoutMs);
+        const timer =
+          timeout === undefined
+            ? undefined
+            : setTimeout(() => {
+                pending.delete(request.id);
+                reject(
+                  hostError(
+                    `Host request ${request.id} timed out; its effects are uncertain. Nothing was replayed.`,
+                  ),
+                );
+              }, timeout);
         pending.set(request.id, {
           method: request.method,
           resolve,

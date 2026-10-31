@@ -1,16 +1,17 @@
 import { randomUUID } from "node:crypto";
 import { chmod, lstat } from "node:fs/promises";
 import { type Socket, createServer } from "node:net";
-import {
-  type RunEvent,
-  type RuntimeHost,
-  toErrorInfo,
-  workerRequestSchema,
-} from "../shared";
+import { type RuntimeHost, toErrorInfo, workerRequestSchema } from "../shared";
 
 import { hasCode } from "../store";
 import { hostError } from "./errors";
-import { MAX_REQUEST_BYTES, readFrames, sendFrame } from "./frames";
+import { EventRing } from "./event-ring";
+import {
+  MAX_REQUEST_BYTES,
+  readFrames,
+  sendFrame,
+  sendSerializedFrame,
+} from "./frames";
 import { helloSchema, localRequestSchema } from "./protocol";
 import { localSocketPath } from "./socket-path";
 
@@ -31,24 +32,14 @@ export async function createLocalHost(options: {
   }
   const runtime = options.runtime;
   const clients = new Map<Socket, { ready: boolean }>();
-  const events: { cursor: number; data: RunEvent; bytes: number }[] = [];
-  let cursor = 0;
-  let eventBytes = 0;
+  const events = new EventRing(MAX_EVENTS, MAX_EVENT_BYTES);
   let closing: Promise<void> | undefined;
   const unsubscribe = runtime.subscribe((message) => {
     if (message.kind !== "event") return;
-    const entry = {
-      cursor: ++cursor,
-      data: message.data,
-      bytes: Buffer.byteLength(JSON.stringify(message.data)),
-    };
-    events.push(entry);
-    eventBytes += entry.bytes;
-    while (events.length > MAX_EVENTS || eventBytes > MAX_EVENT_BYTES)
-      eventBytes -= events.shift()?.bytes ?? 0;
+    const entry = events.append(message.data);
+    const json = `{"kind":"event","cursor":${entry.cursor},"data":${entry.json}}`;
     for (const [socket, client] of clients)
-      if (client.ready)
-        sendFrame(socket, { kind: "event", cursor, data: entry.data });
+      if (client.ready) sendSerializedFrame(socket, json);
   });
   const server = createServer((socket) => {
     if (clients.size >= 32) {
@@ -61,6 +52,7 @@ export async function createLocalHost(options: {
     let hostId = "";
     let sequence = 0;
     let inFlight = 0;
+    const requests = new Set<AbortController>();
     let hello = false;
     const timer = setTimeout(() => socket.destroy(), 5000);
     const fail = (error: Error) => {
@@ -73,6 +65,7 @@ export async function createLocalHost(options: {
     };
     socket.on("error", () => socket.destroy());
     socket.on("close", () => {
+      for (const request of requests) request.abort();
       clearTimeout(timer);
       clients.delete(socket);
     });
@@ -94,28 +87,29 @@ export async function createLocalHost(options: {
             throw hostError(
               "Host instance changed. Reconnect deliberately without the old host ID; no request was executed.",
             );
-          const oldest = events[0]?.cursor ?? cursor + 1;
+          const { cursor, oldest } = events;
           const reset =
             greeting.cursor === undefined ||
             greeting.cursor < oldest - 1 ||
             greeting.cursor > cursor;
-          const replay = reset
-            ? []
-            : events
-                .filter((item) => item.cursor > (greeting.cursor ?? 0))
-                .map(({ bytes: _bytes, ...item }) => item);
+          const replay = reset ? [] : events.after(greeting.cursor ?? 0);
           // State, recovery and cursor are captured synchronously: no terminal event
           // can slip between a stale state snapshot and the start of live delivery.
           if (
-            sendFrame(socket, {
-              kind: "hello",
-              state,
-              connectionId,
-              cursor,
-              reset,
-              replay,
-              recovery: reset ? runtime.recoveryEvents() : [],
-            })
+            sendSerializedFrame(
+              socket,
+              `${JSON.stringify({
+                kind: "hello",
+                state,
+                connectionId,
+                cursor,
+                reset,
+                recovery: reset ? runtime.recoveryEvents() : [],
+              }).slice(
+                0,
+                -1,
+              )},"replay":[${replay.map((entry) => `{"cursor":${entry.cursor},"data":${entry.json}}`).join(",")}]}`,
+            )
           ) {
             client.ready = true;
             clearTimeout(timer);
@@ -140,22 +134,32 @@ export async function createLocalHost(options: {
           );
         if (++inFlight > 128)
           throw hostError("Too many concurrent local requests.");
-        // A closed socket never cancels the host operation. It only loses its reply.
+        const abort = new AbortController();
+        requests.add(abort);
         void runtime
-          .request(message.request)
+          .request(message.request, abort.signal)
           .then(
             (response) => {
               sendFrame(socket, { kind: "response", response });
             },
             () => {
-              fail(
-                hostError(
-                  "Host response unavailable; effects are uncertain. Do not retry automatically.",
-                ),
-              );
+              sendFrame(socket, {
+                kind: "response",
+                response: {
+                  id: message.request.id,
+                  method: message.request.method,
+                  ok: false,
+                  error: toErrorInfo(
+                    hostError(
+                      "Host response unavailable; effects are uncertain. Do not retry automatically.",
+                    ),
+                  ),
+                },
+              });
             },
           )
           .finally(() => {
+            requests.delete(abort);
             inFlight--;
           });
       },

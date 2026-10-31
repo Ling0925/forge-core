@@ -4,6 +4,8 @@ import { createConnection } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, expect, it, vi } from "vitest";
+import { createRunEvents } from "../../src/core/runtime-events";
+import { createRunState } from "../../src/core/runtime-state";
 import { readFrames, sendFrame } from "../../src/host/frames";
 import {
   type LocalHostClient,
@@ -17,9 +19,15 @@ import type {
   HarnessService,
   RunControl,
 } from "../../src/shared/contracts";
-import { type RunEvent, rpcRequestSchema } from "../../src/shared/ipc";
+import {
+  type RunEvent,
+  rpcRequestSchema,
+  runEventSchema,
+  workerMessageSchema,
+} from "../../src/shared/ipc";
 import {
   type SessionSnapshot,
+  agentEventSchema,
   defaultPublicSettings,
   parseSessionId,
 } from "../../src/shared/schemas";
@@ -42,6 +50,7 @@ const snapshot: SessionSnapshot = {
 };
 const cleanup: (() => Promise<unknown>)[] = [];
 afterEach(async () => {
+  vi.useRealTimers();
   for (const close of cleanup.reverse()) await close();
   cleanup.length = 0;
 });
@@ -70,10 +79,13 @@ function service(overrides: Partial<HarnessService> = {}): HarnessService {
     ...overrides,
   };
 }
-async function fixture(overrides: Partial<HarnessService> = {}) {
+async function fixture(
+  overrides: Partial<HarnessService> = {},
+  options: Parameters<typeof createRuntimeHub>[1] = {},
+) {
   const directory = await mkdtemp(join(tmpdir(), "forge-host-"));
   cleanup.push(() => rm(directory, { recursive: true, force: true }));
-  const runtime = createRuntimeHub(service(overrides));
+  const runtime = createRuntimeHub(service(overrides), options);
   cleanup.push(() => runtime.dispose());
   const socketPath = join(directory, "local.sock");
   const server = await createLocalHost({ runtime, socketPath });
@@ -96,6 +108,470 @@ const aborted = (signal: AbortSignal) =>
   });
 
 export function registerLocalHostTests() {
+  it.each(["compactSession", "listModels"] as const)(
+    "lets %s exceed both transport deadlines",
+    async (method) => {
+      let release!: () => void;
+      const gate = new Promise<void>((done) => {
+        release = done;
+      });
+      const entered = vi.fn();
+      const f = await fixture({
+        compactSession: async () => {
+          entered();
+          await gate;
+          return snapshot;
+        },
+        listModels: async () => {
+          entered();
+          await gate;
+          return [];
+        },
+      });
+      const client = await f.connect();
+      vi.useFakeTimers();
+      const result = request(client, {
+        method,
+        ...(method === "compactSession" ? { sessionId } : { refresh: true }),
+      });
+      const settled = vi.fn();
+      void result.then(settled, settled);
+      try {
+        await vi.waitFor(() => expect(entered).toHaveBeenCalled());
+        await vi.advanceTimersByTimeAsync(120001);
+        expect(settled).not.toHaveBeenCalled();
+      } finally {
+        vi.useRealTimers();
+        release();
+      }
+      expect(await result).toMatchObject({ ok: true, method });
+    },
+  );
+
+  it("discards a timed-out hub request's late response", async () => {
+    let release!: () => void;
+    const gate = new Promise<void>((done) => {
+      release = done;
+    });
+    const f = await fixture({
+      createSession: async () => {
+        await gate;
+        return snapshot;
+      },
+    });
+    const messages = vi.fn();
+    f.runtime.subscribe(messages);
+    vi.useFakeTimers();
+    const result = f.runtime
+      .request(
+        rpcRequestSchema.parse({
+          id: randomUUID(),
+          method: "createSession",
+          input: { workspace: "/tmp" },
+        }),
+      )
+      .catch((error) => error);
+    try {
+      await vi.advanceTimersByTimeAsync(120001);
+      expect(await result).toBeInstanceOf(Error);
+    } finally {
+      vi.useRealTimers();
+      release();
+    }
+    await new Promise<void>((done) => setImmediate(done));
+    expect(messages).not.toHaveBeenCalled();
+  });
+
+  it("reports malformed service events without throwing into the sink", async () => {
+    let emit!: EventSink;
+    const f = await fixture({
+      run: async (_input, sink, _approve, signal) => {
+        emit = sink;
+        await aborted(signal);
+        return snapshot;
+      },
+    });
+    await f.runtime.request(
+      rpcRequestSchema.parse({
+        id: randomUUID(),
+        method: "startRun",
+        input: { sessionId, prompt: "stream" },
+      }),
+    );
+    const received = vi.fn();
+    f.runtime.subscribe(received);
+    const value = {
+      type: "text_delta" as const,
+      sessionId,
+      timestamp,
+      text: "valid",
+    };
+    Reflect.set(value, "text", 42);
+    expect(() => emit(value)).not.toThrow();
+    expect(received).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          event: expect.objectContaining({
+            type: "error",
+            error: {
+              code: "invalid_input",
+              message: "Input failed validation.",
+              retryable: false,
+            },
+          }),
+        }),
+      }),
+    );
+  });
+
+  it("keeps the socket open on a hub timeout and does not publish its late response", async () => {
+    let release!: () => void;
+    const gate = new Promise<void>((done) => {
+      release = done;
+    });
+    const entered = vi.fn();
+    const f = await fixture(
+      {
+        createSession: async () => {
+          entered();
+          await gate;
+          return snapshot;
+        },
+      },
+      { requestTimeoutMs: 1 },
+    );
+    const messages = vi.fn();
+    f.runtime.subscribe(messages);
+    const client = await f.connect({ requestTimeoutMs: 240000 });
+    vi.useFakeTimers();
+    try {
+      const result = request(client, {
+        method: "createSession",
+        input: { workspace: "/tmp" },
+      }).catch(() => undefined);
+      await vi.waitFor(() => expect(entered).toHaveBeenCalled());
+      await vi.advanceTimersByTimeAsync(120001);
+      vi.useRealTimers();
+      expect(await result).toMatchObject({
+        ok: false,
+        error: {
+          message:
+            "Host response unavailable; effects are uncertain. Do not retry automatically.",
+        },
+      });
+      expect(await request(client, { method: "getHostState" })).toMatchObject({
+        ok: true,
+      });
+    } finally {
+      vi.useRealTimers();
+      release();
+    }
+    await new Promise<void>((done) => setImmediate(done));
+    expect(messages).not.toHaveBeenCalled();
+    await f.runtime.handle({ id: randomUUID(), method: "getHostState" });
+    expect(messages).toHaveBeenCalledWith(
+      expect.objectContaining({ kind: "response" }),
+    );
+  });
+
+  it.each(["compactSession", "listModels"] as const)(
+    "cancels %s when its local client disconnects",
+    async (method) => {
+      let signal: AbortSignal | undefined;
+      const wait = async (value?: AbortSignal) => {
+        signal = value;
+        if (value) await aborted(value);
+      };
+      const f = await fixture({
+        compactSession: async (_id, signal) => {
+          await wait(signal);
+          return snapshot;
+        },
+        listModels: async (signal) => {
+          await wait(signal);
+          return [];
+        },
+      });
+      const client = await f.connect();
+      const result = request(client, {
+        method,
+        ...(method === "compactSession" ? { sessionId } : {}),
+      }).catch(() => undefined);
+      await vi.waitFor(() => expect(signal).toBeDefined());
+      await client.close();
+      await vi.waitFor(() => expect(signal?.aborted).toBe(true));
+      await result;
+    },
+  );
+
+  it("waits for cancelled run teardown beyond the transport deadline", async () => {
+    let finish!: () => void;
+    const gate = new Promise<void>((done) => {
+      finish = done;
+    });
+    const stopping = vi.fn();
+    const f = await fixture(
+      {
+        run: async (_input, _sink, _approve, signal) => {
+          await aborted(signal);
+          stopping();
+          await gate;
+          return snapshot;
+        },
+      },
+      { requestTimeoutMs: 1 },
+    );
+    const client = await f.connect({ requestTimeoutMs: 1 });
+    const started = await request(client, {
+      method: "startRun",
+      input: { sessionId, prompt: "work" },
+    });
+    if (!started.ok || started.method !== "startRun")
+      throw new Error("Missing run");
+    const result = request(client, {
+      method: "cancelRun",
+      runId: started.result.runId,
+      wait: true,
+    });
+    const settled = vi.fn();
+    void result.then(settled, settled);
+    await vi.waitFor(() => expect(stopping).toHaveBeenCalled());
+    vi.useFakeTimers();
+    try {
+      await vi.advanceTimersByTimeAsync(120001);
+      expect(settled).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+      finish();
+    }
+    expect(await result).toMatchObject({ ok: true });
+  });
+
+  it.each(["duplicate", "mismatch", "schema"] as const)(
+    "surfaces a %s approval event failure and preserves the approval reason",
+    async (failure) => {
+      const rejected = vi.fn();
+      const throws = vi.fn();
+      const f = await fixture({
+        run: async (_input, sink, approve, signal) => {
+          const approval = {
+            id: randomUUID(),
+            sessionId:
+              failure === "mismatch" ? parseSessionId(randomUUID()) : sessionId,
+            toolCallId: "call",
+            toolName: "run_command",
+            description: "fixture",
+          };
+          if (failure === "schema") Reflect.set(approval, "description", 42);
+          const value = {
+            type: "approval_requested" as const,
+            sessionId,
+            timestamp,
+            request: approval,
+          };
+          if (failure === "duplicate") sink(value);
+          try {
+            sink(value);
+          } catch (error) {
+            throws(error);
+          }
+          try {
+            await approve(approval, signal);
+          } catch (error) {
+            rejected(error);
+          }
+          return snapshot;
+        },
+      });
+      const messages: RunEvent[] = [];
+      f.runtime.subscribe((message) => {
+        if (message.kind === "event") messages.push(message.data);
+      });
+      await f.runtime.request(
+        rpcRequestSchema.parse({
+          id: randomUUID(),
+          method: "startRun",
+          input: { sessionId, prompt: "approval" },
+        }),
+      );
+      await vi.waitFor(() => expect(rejected).toHaveBeenCalledOnce());
+      expect(throws).not.toHaveBeenCalled();
+      expect(messages).toContainEqual(
+        expect.objectContaining({
+          event: expect.objectContaining({
+            type: "error",
+            error: expect.objectContaining({
+              code: "invalid_input",
+              message:
+                failure === "schema"
+                  ? "Input failed validation."
+                  : "Invalid approval request.",
+            }),
+          }),
+        }),
+      );
+      expect(rejected.mock.calls[0]?.[0].message).not.toContain(
+        "does not match",
+      );
+    },
+  );
+
+  it("rejects an already claimed approval when a duplicate event arrives", async () => {
+    const failure = vi.fn();
+    const f = await fixture({
+      run: async (_input, sink, approve, signal) => {
+        const approval = {
+          id: randomUUID(),
+          sessionId,
+          toolCallId: "call",
+          toolName: "run_command",
+          description: "fixture",
+        };
+        const value = {
+          type: "approval_requested" as const,
+          sessionId,
+          timestamp,
+          request: approval,
+        };
+        sink(value);
+        const answer = approve(approval, signal).catch(failure);
+        expect(() => sink(value)).not.toThrow();
+        await answer;
+        return snapshot;
+      },
+    });
+    await f.runtime.request(
+      rpcRequestSchema.parse({
+        id: randomUUID(),
+        method: "startRun",
+        input: { sessionId, prompt: "approval" },
+      }),
+    );
+    await vi.waitFor(() =>
+      expect(failure).toHaveBeenCalledWith(
+        expect.objectContaining({ message: "Invalid approval request." }),
+      ),
+    );
+    expect(
+      f.runtime.hostState().runs.flatMap((run) => run.pendingApprovals),
+    ).toEqual([]);
+  });
+
+  it("forwards explicit request cancellation to model access without publishing the reply", async () => {
+    let received: AbortSignal | undefined;
+    const f = await fixture({
+      modelAccess: async (_input, signal) => {
+        received = signal;
+        if (signal) await aborted(signal);
+        return { type: "presets", presets: [] };
+      },
+    });
+    const abort = new AbortController();
+    const messages = vi.fn();
+    f.runtime.subscribe(messages);
+    const response = f.runtime
+      .request(
+        rpcRequestSchema.parse({
+          id: randomUUID(),
+          method: "modelAccess",
+          input: { type: "presets" },
+        }),
+        abort.signal,
+      )
+      .catch((error) => error);
+    await vi.waitFor(() => expect(received).toBe(abort.signal));
+    const reason = new Error("caller cancelled");
+    abort.abort(reason);
+    expect(await response).toBe(reason);
+    await new Promise<void>((done) => setImmediate(done));
+    expect(messages).not.toHaveBeenCalled();
+  });
+
+  it("validates each streamed event once between runtime and subscribers", async () => {
+    let emit!: ReturnType<typeof createRunEvents>;
+    const f = await fixture({
+      run: async (_input, sink, _approve, signal) => {
+        emit = createRunEvents(
+          createRunState(),
+          sessionId,
+          sink,
+          () => timestamp,
+        );
+        await aborted(signal);
+        return snapshot;
+      },
+    });
+    await f.runtime.request(
+      rpcRequestSchema.parse({
+        id: randomUUID(),
+        method: "startRun",
+        input: { sessionId, prompt: "stream" },
+      }),
+    );
+    const agentParse = vi.spyOn(agentEventSchema, "parse");
+    const workerParse = vi.spyOn(workerMessageSchema, "parse");
+    const runParse = vi.spyOn(runEventSchema, "parse");
+    const received = vi.fn();
+    f.runtime.subscribe(received);
+    emit.ephemeral({ type: "text_delta", text: '"你好\n' });
+    expect(
+      agentParse.mock.calls.length +
+        workerParse.mock.calls.length +
+        runParse.mock.calls.length,
+    ).toBe(1);
+    expect(received).toHaveBeenCalledWith({
+      kind: "event",
+      data: {
+        runId: expect.any(String),
+        event: { type: "text_delta", text: '"你好\n', sessionId, timestamp },
+      },
+    });
+  });
+
+  it("serializes an event once for local subscribers and replay", async () => {
+    let emit!: EventSink;
+    const f = await fixture({
+      run: async (_input, sink, _approve, signal) => {
+        emit = sink;
+        await aborted(signal);
+        return snapshot;
+      },
+    });
+    const firstEvents: RunEvent[] = [];
+    const secondEvents: RunEvent[] = [];
+    const first = await f.connect({
+      onEvent: (event) => firstEvents.push(event),
+    });
+    await f.connect({ onEvent: (event) => secondEvents.push(event) });
+    await request(first, {
+      method: "startRun",
+      input: { sessionId, prompt: "stream" },
+    });
+    const stringify = vi.spyOn(JSON, "stringify");
+    emit({
+      type: "text_delta",
+      sessionId,
+      timestamp,
+      text: 'serialized-local-你好"\n',
+    });
+    await vi.waitFor(() => expect(firstEvents).toHaveLength(1));
+    const replay: RunEvent[] = [];
+    await f.connect({
+      hostId: f.runtime.hostState().hostId,
+      cursor: 0,
+      onEvent: (event) => replay.push(event),
+    });
+    expect(replay).toEqual(firstEvents);
+    expect(secondEvents).toEqual(firstEvents);
+    expect(
+      stringify.mock.results.filter(
+        (result) =>
+          result.type === "return" &&
+          result.value?.includes("serialized-local-"),
+      ).length,
+    ).toBe(1);
+  });
+
   it.each(["listWorkspaceEntries", "readWorkspaceFile"] as const)(
     "does not bypass a missing service %s implementation",
     async (method) => {

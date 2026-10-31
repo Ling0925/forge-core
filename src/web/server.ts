@@ -9,7 +9,7 @@ import { resolve } from "node:path";
 import { WebSocket, WebSocketServer } from "ws";
 import { z } from "zod";
 import { resolveStateDirectory } from "../core";
-import { createRuntimeHub } from "../host";
+import { EventRing, createRuntimeHub } from "../host";
 import {
   type AuthorizedDevice,
   type DeviceAuthorization,
@@ -18,7 +18,6 @@ import {
   type HarnessService,
   type RpcRequest,
   type RpcResponse,
-  type RunEvent,
   type RuntimeHost,
   type SessionSnapshot,
   htmlPreviewRequestSchema,
@@ -148,9 +147,7 @@ export async function createWebHost(
   const ownsAuthorization = !trustedLan && options.authorization === undefined;
   const authority = hostAuthority(options.host, options.port);
   const origin = `http://${authority}`;
-  let sequence = 0;
-  let bytes = 0;
-  const events: { cursor: number; data: RunEvent; bytes: number }[] = [];
+  const events = new EventRing(5000, MAX_EVENT_BYTES);
   interface Client {
     socket: WebSocket | undefined;
     heartbeat: number;
@@ -169,29 +166,20 @@ export async function createWebHost(
   const ownsRuntime = injected === undefined;
   const unsubscribe = runtime.subscribe((message) => {
     if (message.kind !== "event") return;
-    const length = Buffer.byteLength(JSON.stringify(message.data));
-    events.push({ cursor: ++sequence, data: message.data, bytes: length });
-    bytes += length;
-    while (
-      events.length > 0 &&
-      (events.length > 5000 || bytes > MAX_EVENT_BYTES)
-    ) {
-      const dropped = events.shift();
-      if (dropped) bytes -= dropped.bytes;
-    }
-    sendEvents([message.data]);
+    const entry = events.append(message.data);
+    sendEvents(`[${entry.json}]`);
   });
   const sendTo = (
     socket: WebSocket,
-    batch: RunEvent[],
-    cursor = sequence,
+    batch: string,
+    cursor = events.cursor,
   ): void => {
     if (socket.readyState !== WebSocket.OPEN) return;
     if (socket.bufferedAmount > MAX_EVENT_BYTES) {
       socket.terminate();
       return;
     }
-    socket.send(JSON.stringify({ cursor, events: batch }), (error) => {
+    socket.send(`{"cursor":${cursor},"events":${batch}}`, (error) => {
       if (error) socket.terminate();
     });
   };
@@ -271,16 +259,15 @@ export async function createWebHost(
           return;
         }
         if (clients.get(id) !== client || client.socket !== socket) continue;
-        if (client.lastSent < (events[0]?.cursor ?? sequence + 1) - 1) {
+        if (client.lastSent < events.oldest - 1) {
           socket.close(4009, "Event history expired");
           return;
         }
-        const cursor = sequence;
-        const batch = events
-          .filter(
-            (entry) => entry.cursor > client.lastSent && entry.cursor <= cursor,
-          )
-          .map((entry) => entry.data);
+        const cursor = events.cursor;
+        const batch = `[${events
+          .after(client.lastSent, cursor)
+          .map((entry) => entry.json)
+          .join(",")}]`;
         sendTo(socket, batch, cursor);
         client.lastSent = cursor;
       }
@@ -292,7 +279,7 @@ export async function createWebHost(
           pump(id, client);
       });
   };
-  function sendEvents(batch: RunEvent[]): void {
+  function sendEvents(batch: string): void {
     for (const [id, client] of clients)
       if (client.socket) {
         if (trustedLan) sendTo(client.socket, batch);
@@ -322,13 +309,13 @@ export async function createWebHost(
       const client = requestedClient ? clients.get(requestedClient) : undefined;
       const rawCursor = url.searchParams.get("cursor");
       const cursor = rawCursor === null ? Number.NaN : Number(rawCursor);
-      const oldest = events[0]?.cursor ?? sequence + 1;
+      const oldest = events.oldest;
       if (
         !client ||
         (!trustedLan && client.deviceId !== device?.id) ||
         !Number.isSafeInteger(cursor) ||
         cursor < oldest - 1 ||
-        cursor > sequence ||
+        cursor > events.cursor ||
         request.headers["sec-websocket-protocol"] ||
         socket.destroyed
       ) {
@@ -357,7 +344,7 @@ export async function createWebHost(
           if (!ownsConnection()) return;
           try {
             const ack = ackSchema.parse(JSON.parse(data.toString()));
-            if (binary || ack.cursor > sequence)
+            if (binary || ack.cursor > events.cursor)
               return ws.close(1008, "Invalid cursor");
             client.lastSeen = Date.now();
           } catch {
@@ -367,9 +354,10 @@ export async function createWebHost(
         if (trustedLan)
           sendTo(
             ws,
-            events
-              .filter((entry) => entry.cursor > cursor)
-              .map((entry) => entry.data),
+            `[${events
+              .after(cursor)
+              .map((entry) => entry.json)
+              .join(",")}]`,
           );
         else if (owner) pump(owner, client);
       });
@@ -421,6 +409,10 @@ export async function createWebHost(
     response: ServerResponse,
     next: () => void,
   ): Promise<void> {
+    const abort = new AbortController();
+    const disconnected = () => abort.abort();
+    response.once("close", disconnected);
+    response.once("finish", () => response.off("close", disconnected));
     let device: AuthorizedDevice | undefined;
     let protectedRequest = false;
     const authorized = async () => {
@@ -536,7 +528,7 @@ export async function createWebHost(
           clients.set(clientId, {
             socket: undefined,
             deviceId: device?.id,
-            lastSent: sequence,
+            lastSent: events.cursor,
             pumping: false,
             pending: false,
             heartbeat: 0,
@@ -547,7 +539,7 @@ export async function createWebHost(
           return json(response, 200, {
             workspace,
             restrictWorkspace,
-            cursor: sequence,
+            cursor: events.cursor,
             clientId,
             recovery: runtime.recoveryEvents(),
           });
@@ -572,13 +564,13 @@ export async function createWebHost(
         }
         if (path === "/api/connection") {
           const { cursor } = ackSchema.parse(input);
-          const oldest = events[0]?.cursor ?? sequence + 1;
+          const oldest = events.oldest;
           client.lastSeen = Date.now();
           // Reconnect status keeps the same static build facts, so a page that
           // resumes an old connection still notices a rebuilt Core.
           applyBuildHeaders(response, await coreBuildDiagnostics.snapshot());
           return json(response, 200, {
-            resumable: cursor >= oldest - 1 && cursor <= sequence,
+            resumable: cursor >= oldest - 1 && cursor <= events.cursor,
           });
         }
         if (path === "/api/preview") {
@@ -751,7 +743,7 @@ export async function createWebHost(
                   method: rpc.method,
                   result: paginateSession(authorizedSnapshot, rpc.page),
                 }
-              : await runtime.request(forwarded);
+              : await runtime.request(forwarded, abort.signal);
         if (result.ok && result.method === "getSession") {
           const base = request.headers["x-forge-snapshot"];
           const update = sessionDeltas.encode(
