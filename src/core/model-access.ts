@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
 import { createAccountService } from "../provider/accounts";
-import type { AccountFetch } from "../provider/accounts/types";
+import type { AccountFetch, AccountTokens } from "../provider/accounts/types";
 import { catalogFromIds, mergeCatalog } from "../provider/catalog";
 import { createCachedProviderFactory } from "../provider/catalog-cache";
 import {
@@ -26,6 +26,7 @@ import {
   type CredentialInput,
   type ModelAccessRequest,
   type ModelAccessResult,
+  type ProviderProtocol,
   modelAccessRequestSchema,
   modelAccessResultSchema,
 } from "../shared/model-access";
@@ -88,6 +89,21 @@ type SelectionValidator = (
   source: PublicProviderSource | undefined,
   model: string | undefined,
 ) => void;
+
+function chooseApiMode(
+  protocols: readonly ProviderProtocol[] | undefined,
+  model: string | undefined,
+): ProviderProtocol {
+  if (!protocols?.length) return "chat-completions";
+  if (
+    protocols.includes("anthropic") &&
+    model?.toLowerCase().includes("claude")
+  )
+    return "anthropic";
+  if (protocols.includes("responses")) return "responses";
+  if (protocols.includes("chat-completions")) return "chat-completions";
+  return protocols[0] ?? "chat-completions";
+}
 
 function modelMetadata(
   upstream: ModelCatalog,
@@ -241,6 +257,23 @@ export function createModelAccessService(
       return { credentialId };
     },
   });
+  async function accountCatalog(account: AccountTokens, signal?: AbortSignal) {
+    return modelCatalogSchema.parse(
+      (await accounts.listModels(account, { signal })).map((model) => ({
+        id: model.id,
+        contextWindowTokens: model.contextWindowTokens ?? null,
+        ...(model.displayName ? { displayName: model.displayName } : {}),
+        protocols: model.protocols,
+        ...(model.inputModalities
+          ? { inputModalities: model.inputModalities }
+          : {}),
+        ...(model.reasoningEfforts
+          ? { reasoningEfforts: model.reasoningEfforts }
+          : {}),
+        ...(model.vision === undefined ? {} : { vision: model.vision }),
+      })),
+    );
+  }
   function createProvider(
     config: ProviderConfig,
     source?: PublicProviderSource,
@@ -277,21 +310,7 @@ export function createModelAccessService(
     if (!config.account) return raw;
     const account = config.account;
     const listModelCatalog = async (signal?: AbortSignal) =>
-      modelCatalogSchema.parse(
-        (await accounts.listModels(account, { signal })).map((model) => ({
-          id: model.id,
-          contextWindowTokens: model.contextWindowTokens ?? null,
-          ...(model.displayName ? { displayName: model.displayName } : {}),
-          protocols: model.protocols,
-          ...(model.inputModalities
-            ? { inputModalities: model.inputModalities }
-            : {}),
-          ...(model.reasoningEfforts
-            ? { reasoningEfforts: model.reasoningEfforts }
-            : {}),
-          ...(model.vision === undefined ? {} : { vision: model.vision }),
-        })),
-      );
+      accountCatalog(account, signal);
     return {
       ...raw,
       listModelCatalog,
@@ -415,26 +434,44 @@ export function createModelAccessService(
       });
     }
     if (config.account && !config.vertex) {
+      const tokens = config.account;
       const account = await accounts.providerConfig(
-        config.account,
+        tokens,
         selectedModel,
         signal,
       );
+      const connection = {
+        baseUrl: account.baseUrl,
+        apiKey: account.apiKey,
+        headers: { ...account.headers, ...config.headers },
+      };
+      const protocols =
+        account.platform === "copilot" && selectedModel !== undefined
+          ? (
+              await catalogStore.load(
+                modelCatalogCacheKey({ ...config, ...connection }, sourceId),
+                (requestSignal) => accountCatalog(tokens, requestSignal),
+                signal,
+              )
+            ).find((entry) => entry.id === selectedModel)?.protocols
+          : account.protocols;
+      const apiMode =
+        account.platform === "copilot"
+          ? chooseApiMode(protocols, selectedModel)
+          : account.apiMode;
       // Account platforms own the per-model adapter choice. Compare the selected
       // adapter and, when the account advertises this model's protocols, require
       // the override to be one of them; equality of the default mode alone is
       // not enough for Copilot models with different adapters.
-      if (!accountProtocolCompatible(requestedProtocol, account))
+      if (!accountProtocolCompatible(requestedProtocol, { apiMode, protocols }))
         throw new ForgeError(
           "invalid_input",
-          `${account.platform === "codex" ? "Codex 账号" : "账号"}为${model === undefined ? "此模型" : `模型 ${model}`}选择 ${account.apiMode} 协议，不能覆盖为 ${requestedProtocol}。`,
+          `${account.platform === "codex" ? "Codex 账号" : "账号"}为${model === undefined ? "此模型" : `模型 ${model}`}选择 ${apiMode} 协议，不能覆盖为 ${requestedProtocol}。`,
         );
       config = providerConfigSchema.parse({
         ...config,
-        baseUrl: account.baseUrl,
-        apiKey: account.apiKey,
-        apiMode: account.apiMode,
-        headers: { ...account.headers, ...config.headers },
+        ...connection,
+        apiMode,
         extraBody: { ...account.extraBody, ...config.extraBody },
       });
     }

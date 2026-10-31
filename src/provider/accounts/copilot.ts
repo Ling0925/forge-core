@@ -48,11 +48,6 @@ const COPILOT_PLANS: Readonly<Record<string, string>> = {
   enterprise: "Enterprise",
 };
 
-// Protocols learned from the last /models answer, by GitHub token and model.
-const learnedProtocols = new Map<string, Map<string, ProviderProtocol[]>>();
-// Copilot session tokens, by GitHub token. They are never persisted or logged.
-const defaultSessionCache = new Map<string, CopilotSessionToken>();
-
 function record(value: unknown): Record<string, unknown> | undefined {
   return value && typeof value === "object" && !Array.isArray(value)
     ? (value as Record<string, unknown>)
@@ -369,8 +364,8 @@ export async function getCopilotSessionToken(
   options: AccountProviderConfigOptions = {},
 ): Promise<CopilotSessionToken> {
   const now = options.now?.() ?? Date.now();
-  const cache = options.sessionCache ?? defaultSessionCache;
-  const cached = cache.get(githubToken);
+  const cache = options.sessionCache;
+  const cached = cache?.get(githubToken);
   if (cached && cached.expiresAt - 2 * 60_000 > now) return cached;
   const response = await requestJson({
     url: COPILOT_SESSION_URL,
@@ -406,7 +401,7 @@ export async function getCopilotSessionToken(
     expiresAt: unixMs(body?.expires_at) ?? now,
     apiBase: safeApiBase(endpoints?.api),
   };
-  cache.set(githubToken, session);
+  cache?.set(githubToken, session);
   return session;
 }
 
@@ -468,7 +463,6 @@ export async function listCopilotModels(
     );
   }
   const models: AccountModel[] = [];
-  const protocolsByModel = new Map<string, ProviderProtocol[]>();
   for (const value of data) {
     const entry = record(value);
     if (!entry) continue;
@@ -482,7 +476,6 @@ export async function listCopilotModels(
     const policy = record(entry.policy);
     if (policy && policy.state !== "enabled" && !policy.terms) continue;
     const protocols = endpointProtocols(entry.supported_endpoints);
-    protocolsByModel.set(id, protocols);
     const supports = record(capabilities.supports);
     const efforts = Array.isArray(supports?.reasoning_effort)
       ? supports.reasoning_effort.filter(
@@ -519,7 +512,6 @@ export async function listCopilotModels(
       "Copilot listed no chat models for this account.",
     );
   }
-  learnedProtocols.set(tokens.accessToken, protocolsByModel);
   return models;
 }
 
@@ -710,24 +702,8 @@ export function prepareCopilotHeaders(
   return headers;
 }
 
-function chooseApiMode(
-  protocols: ProviderProtocol[] | undefined,
-  model: string | undefined,
-): ProviderProtocol {
-  if (!protocols?.length) return "chat-completions";
-  if (
-    protocols.includes("anthropic") &&
-    model?.toLowerCase().includes("claude")
-  )
-    return "anthropic";
-  if (protocols.includes("responses")) return "responses";
-  if (protocols.includes("chat-completions")) return "chat-completions";
-  return protocols[0] ?? "chat-completions";
-}
-
 export async function getCopilotProviderConfig(
   tokens: AccountTokens,
-  model?: string,
   options: AccountProviderConfigOptions | AbortSignal = {},
 ): Promise<AccountProviderConfig> {
   const request =
@@ -740,20 +716,16 @@ export async function getCopilotProviderConfig(
     );
   }
   const session = await getCopilotSessionToken(tokens.accessToken, request);
-  const protocols = model
-    ? learnedProtocols.get(tokens.accessToken)?.get(model)
-    : undefined;
   return {
     platform: "copilot",
     baseUrl: session.apiBase,
     apiKey: session.token,
-    apiMode: chooseApiMode(protocols, model),
+    apiMode: "chat-completions",
     headers: {
       ...editorHeaders(),
       "Openai-Intent": "conversation-panel",
       "X-Initiator": "user",
     },
-    ...(protocols ? { protocols } : {}),
     prepareHeaders: prepareCopilotHeaders,
   };
 }

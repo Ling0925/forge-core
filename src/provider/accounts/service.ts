@@ -347,7 +347,7 @@ export class AccountService {
     };
     return tokens.platform === "codex"
       ? getCodexProviderConfig(tokens, model, options)
-      : getCopilotProviderConfig(tokens, model, options);
+      : getCopilotProviderConfig(tokens, options);
   }
 
   refresh(tokens: AccountTokens, signal?: AbortSignal): Promise<AccountTokens> {

@@ -31,7 +31,10 @@ export function modelCatalogCacheKey(
       JSON.stringify([
         sourceId ?? null,
         config.baseUrl.replace(/\/+$/, ""),
-        config.apiMode ?? "chat-completions",
+        // Copilot's single catalog advertises every per-model protocol.
+        config.account?.platform === "copilot"
+          ? config.account.platform
+          : (config.apiMode ?? "chat-completions"),
         config.vertex ??
           (config.account?.accountId
             ? [config.account.platform, config.account.accountId]
