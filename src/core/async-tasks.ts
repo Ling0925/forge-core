@@ -16,6 +16,7 @@ import {
   usageSchema,
 } from "../shared/schemas";
 import type { RunInput, SessionId, ToolResult, Usage } from "../shared/schemas";
+import { addUsage } from "../shared/usage-totals";
 import {
   atomicJson,
   privateDirectory,
@@ -355,20 +356,7 @@ export async function openAsyncTaskService(options: {
         const previous = task.record.usage;
         task.record = {
           ...task.record,
-          usage: {
-            promptTokens: previous.promptTokens + usage.promptTokens,
-            completionTokens:
-              previous.completionTokens + usage.completionTokens,
-            totalTokens: previous.totalTokens + usage.totalTokens,
-            ...(previous.cachedPromptTokens !== undefined ||
-            usage.cachedPromptTokens !== undefined
-              ? {
-                  cachedPromptTokens:
-                    (previous.cachedPromptTokens ?? 0) +
-                    (usage.cachedPromptTokens ?? 0),
-                }
-              : {}),
-          },
+          usage: addUsage(previous, usage),
         };
       };
       task.done = (async () => {

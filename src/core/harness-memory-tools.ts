@@ -1,5 +1,6 @@
 import type { AsyncTaskService } from "../shared/async-tasks";
 import type { ModelProvider } from "../shared/contracts";
+import { narrowestPermission } from "../shared/permissions";
 import type { Permission, SessionId } from "../shared/schemas";
 import type { openMemoryStore } from "../store/memory";
 import type { openSessionStore } from "../store/sessions";
@@ -44,8 +45,8 @@ export const createHarnessMemoryTools = (
       for (let hops = 0; main.parentSessionId && hops < 8; hops++)
         main = await store.get(main.parentSessionId);
       const service = await getAsyncTasks();
-      const levels = ["readonly", "workspace", "unrestricted"] as const;
-      let ceiling = levels.indexOf(toolContext.permission);
+      // Only ever narrows across reads, so a pending commit cannot widen.
+      let ceiling: Permission = toolContext.permission;
       const newOwner = !asyncPermissions.has(main.id);
       if (newOwner) asyncPermissions.set(main.id, () => toolContext.permission);
       try {
@@ -72,14 +73,12 @@ export const createHarnessMemoryTools = (
               approve: async () => false,
               onEvent: () => {},
               get permission() {
-                ceiling = Math.min(
+                ceiling = narrowestPermission(
                   ceiling,
-                  levels.indexOf(toolContext.permission),
-                  levels.indexOf(
-                    asyncPermissions.get(main.id)?.() ?? "readonly",
-                  ),
+                  toolContext.permission,
+                  asyncPermissions.get(main.id)?.() ?? "readonly",
                 );
-                return levels[ceiling] ?? "readonly";
+                return ceiling;
               },
             };
             return {

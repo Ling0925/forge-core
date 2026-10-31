@@ -12,7 +12,7 @@ import type {
 import { ForgeError } from "../shared/errors";
 import { executionTurns } from "../shared/execution";
 import { agentEventSchema, runInputSchema } from "../shared/schemas";
-import type { Message, SessionSnapshot } from "../shared/schemas";
+import type { Message, Permission, SessionSnapshot } from "../shared/schemas";
 import { createAdvisorCoordinator } from "./advisor";
 import { DEFAULT_MAX_AGENT_DEPTH, agentDepth } from "./agent-operations";
 import { assertAgentModel, isAgentToolAllowed } from "./agent-profiles";
@@ -259,14 +259,18 @@ export const createAgentRuntime = (
       const toolNames = definitions.map(
         (definition) => definition.function.name,
       );
-      let currentInstructions = buildSystemInstructions({
-        session: run.snapshot,
-        permission: effectivePermission(),
-        mode: input.mode,
-        projectInstructions: deps.projectInstructions,
-        toolNames,
-        canDelegate: run.canDelegate,
-      });
+      // One builder so every step's prompt describes the same delegation
+      // capability (canDelegate) as the tool list sent with it.
+      const instructions = (permission: Permission) =>
+        buildSystemInstructions({
+          session: (run as LoadedRunState).snapshot,
+          permission,
+          mode: input.mode,
+          projectInstructions: deps.projectInstructions,
+          toolNames,
+          canDelegate: run.canDelegate,
+        });
+      let currentInstructions = instructions(effectivePermission());
       const project = (state: SessionSnapshot) => {
         const projected = projectSummary(state).map((message, index) =>
           index === 0 && message.role === "system"
@@ -348,14 +352,7 @@ export const createAgentRuntime = (
         ),
       };
       includeSteering(); // Recover accepted inputs after closing any interrupted tool calls.
-      currentInstructions = buildSystemInstructions({
-        session: run.snapshot,
-        permission,
-        mode: input.mode,
-        projectInstructions: deps.projectInstructions,
-        toolNames,
-        canDelegate: run.canDelegate,
-      });
+      currentInstructions = instructions(permission);
       if (
         !run.snapshot.contextSummary &&
         !run.snapshot.messages.some((message) => message.role === "system")
@@ -472,13 +469,7 @@ export const createAgentRuntime = (
         const rawTarget = budget.target / scale;
         check();
         rootBudget.checkAdmission();
-        currentInstructions = buildSystemInstructions({
-          session: run.snapshot,
-          permission: effectivePermission(),
-          mode: input.mode,
-          projectInstructions: deps.projectInstructions,
-          toolNames,
-        });
+        currentInstructions = instructions(effectivePermission());
         await drainSteering();
         await drainAdvisor();
         check();

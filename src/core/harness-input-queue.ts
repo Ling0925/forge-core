@@ -1,11 +1,12 @@
 import { QueueAdmissionError } from "../shared/input-queue";
+import { narrowestPermission } from "../shared/permissions";
 import { settingsFields } from "../shared/schemas";
 import type { SessionId } from "../shared/schemas";
 import type { openSessionStore } from "../store/sessions";
 import type { openSettingsStore } from "../store/settings";
 import {
   type createProviderSelection,
-  inferSourceId,
+  selectSessionSource,
 } from "./harness-provider-selection";
 import { inputPredecessor, openInputQueue } from "./input-queue";
 
@@ -54,16 +55,11 @@ export const openHarnessInputQueue = ({
         store.get(input.sessionId),
         settingsStore.getPublic(),
       ]);
-      const providerSourceId =
-        input.providerSourceId ??
-        snapshot.providerSourceId ??
-        inferSourceId(settings, input.model) ??
-        settings.activeSourceId;
-      const routeGroupId =
-        input.routeGroupId ??
-        (input.model !== undefined || input.providerSourceId !== undefined
-          ? undefined
-          : snapshot.routeGroupId);
+      const { providerSourceId, routeGroupId } = selectSessionSource(
+        settings,
+        snapshot,
+        input,
+      );
       const model = settingsFields.model.parse(input.model ?? snapshot.model);
       const providerBinding = await queueProviderBinding(
         settings,
@@ -71,18 +67,12 @@ export const openHarnessInputQueue = ({
         providerSourceId,
         routeGroupId,
       );
-      const levels = ["readonly", "workspace", "unrestricted"] as const;
-      const permission =
-        levels[
-          Math.min(
-            levels.indexOf(
-              input.mode === "plan"
-                ? "readonly"
-                : (input.permission ?? settings.defaultPermission),
-            ),
-            levels.indexOf(snapshot.permissionCeiling ?? "unrestricted"),
-          )
-        ] ?? "readonly";
+      const permission = narrowestPermission(
+        input.mode === "plan"
+          ? "readonly"
+          : (input.permission ?? settings.defaultPermission),
+        snapshot.permissionCeiling,
+      );
       return {
         input: {
           ...input,

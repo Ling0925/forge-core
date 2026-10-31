@@ -1,7 +1,4 @@
-import {
-  type createRouteState,
-  createRoutedProvider,
-} from "../provider/routing";
+import type { createRouteState } from "../provider/routing";
 import type {
   ApprovalHandler,
   EventSink,
@@ -10,6 +7,7 @@ import type {
 } from "../shared/contracts";
 import { ForgeError } from "../shared/errors";
 import { QueueAdmissionError } from "../shared/input-queue";
+import { narrowestPermission } from "../shared/permissions";
 import type { RootRunBudget } from "../shared/run-budget";
 import { settingsFields } from "../shared/schemas";
 import type {
@@ -28,10 +26,13 @@ import { createDelegationModels } from "./delegation-models";
 import {
   assertProviderEndpoint,
   type createProviderSelection,
+  findRouteGroup,
   inferSourceId,
   queuedSelectionValidator,
   selectRouteGroup,
+  selectSessionSource,
 } from "./harness-provider-selection";
+import { routedProviderFor } from "./harness-route-provider";
 import type { createHarnessTitles } from "./harness-titles";
 import type { createHarnessTools } from "./harness-tools";
 import { inputPredecessor } from "./input-queue";
@@ -133,43 +134,24 @@ export const createHarnessRun = (deps: HarnessRunDeps) => {
           throw new QueueAdmissionError();
       }
       if (asyncPermissions.has(input.sessionId)) {
-        const levels = ["readonly", "workspace", "unrestricted"] as const;
-        asyncPermissions.set(
-          input.sessionId,
-          () =>
-            levels[
-              Math.min(
-                levels.indexOf(
-                  input.mode === "plan"
-                    ? "readonly"
-                    : (control?.getPermission?.() ??
-                        input.permission ??
-                        settings.defaultPermission),
-                ),
-                levels.indexOf(snapshot.permissionCeiling ?? "unrestricted"),
-              )
-            ] ?? "readonly",
+        asyncPermissions.set(input.sessionId, () =>
+          narrowestPermission(
+            input.mode === "plan"
+              ? "readonly"
+              : (control?.getPermission?.() ??
+                  input.permission ??
+                  settings.defaultPermission),
+            snapshot.permissionCeiling,
+          ),
         );
       }
       rootBudget = createRootRunBudget({ rootSessionId: input.sessionId });
-      // An explicit selection (the picked model's source) wins; a session
-      // keeps the source it was created with; only when neither exists does
-      // the model, and finally the remembered fallback, decide.
-      const providerSourceId =
-        input.providerSourceId ??
-        snapshot.providerSourceId ??
-        inferSourceId(settings, input.model) ??
-        settings.activeSourceId;
-      const routeGroupId =
-        input.routeGroupId ??
-        (input.model !== undefined || input.providerSourceId !== undefined
-          ? undefined
-          : snapshot.routeGroupId);
-      const group = routeGroupId
-        ? settings.routeGroups?.find((item) => item.id === routeGroupId)
-        : undefined;
-      if (routeGroupId && !group)
-        throw new ForgeError("not_found", "会话的路由组已不可用，请重新选择。");
+      const { providerSourceId, routeGroupId } = selectSessionSource(
+        settings,
+        snapshot,
+        input,
+      );
+      const group = findRouteGroup(settings, routeGroupId);
       if (input.harness && routeGroupId)
         throw new ForgeError(
           "invalid_input",
@@ -229,26 +211,17 @@ export const createHarnessRun = (deps: HarnessRunDeps) => {
         input.providerSourceId ?? inferSourceId(settings, input.model),
       );
       rootBudget.checkAdmission();
-      const provider =
+      const routed =
         selectedGroup && prepared
-          ? createRoutedProvider({
+          ? routedProviderFor({
               group: selectedGroup,
-              state: routeState,
-              ...(prepared.apiMode ? { apiMode: prepared.apiMode } : {}),
-              mayUseWebSearch: prepared.mayUseWebSearch,
-              contextWindow: prepared.contextWindow,
-              quota: prepared.quota,
-              exclude: prepared.exclude,
-              resolve: (member, requestSignal) =>
-                modelAccess.resolveProvider(
-                  member.sourceId,
-                  member.credentialId,
-                  requestSignal,
-                  member.model,
-                  validateSelection,
-                ),
+              prepared,
+              routeState,
+              modelAccess,
+              validateSelection,
             })
-          : resolved.provider;
+          : undefined;
+      const provider = routed ?? resolved.provider;
       if (signal.aborted) throw new ForgeError("cancelled", "Run cancelled.");
       const built = await buildTools(
         snapshot.workspace,
@@ -269,7 +242,10 @@ export const createHarnessRun = (deps: HarnessRunDeps) => {
           start: (claimed, apply) =>
             startTitle(claimed, apply, {
               signal,
-              provider: resolved.provider,
+              // Titles follow the session's route like its steps do. This
+              // supersedes 6a43589, which sent them to the group's base member
+              // directly, bypassing failover, quota accounting and stickiness.
+              provider: routed?.auxiliary(input.sessionId) ?? resolved.provider,
               secrets: [config.apiKey, config.baseUrl],
               beginUsage: () => budget.beginUsage(input.sessionId),
             }),

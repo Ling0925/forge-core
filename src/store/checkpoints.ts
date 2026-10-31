@@ -35,6 +35,20 @@ const recordSchema = checkpointMetadataSchema
   })
   .strict();
 type RecordData = z.infer<typeof recordSchema>;
+/**
+ * Where a workspace's checkpoints live under a state directory. Tools that
+ * record checkpoints and the harness that lists/restores them must agree.
+ */
+export const workspaceCheckpointDirectory = (
+  stateDirectory: string,
+  workspace: string,
+): string =>
+  join(
+    stateDirectory,
+    "checkpoints",
+    createHash("sha256").update(workspace).digest("hex"),
+  );
+
 export interface CheckpointStore extends CheckpointService {
   begin(input: {
     path: string;

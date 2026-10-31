@@ -9,7 +9,7 @@ import type {
 } from "../shared/schemas";
 import type { openSessionStore } from "../store/sessions";
 import { assertBoundary } from "./context";
-import { inferSourceId } from "./harness-provider-selection";
+import { fallbackSourceId, inferSourceId } from "./harness-provider-selection";
 
 /**
  * Copy a session's history up to a native-call boundary into a new session.
@@ -78,7 +78,7 @@ export const resolveNewSession = async (
     firstMember?.sourceId ??
     input.providerSourceId ??
     inferSourceId(settings, input.model) ??
-    settings.activeSourceId;
+    fallbackSourceId(settings);
   const source = settings.providerSources?.find(
     (candidate) => candidate.id === providerSourceId,
   );
@@ -100,17 +100,32 @@ export const resolveNewSession = async (
       "invalid_input",
       "Workspace must be an absolute directory.",
     );
+  let directory: boolean;
   try {
-    if (!(await stat(workspace)).isDirectory())
+    directory = (await stat(workspace)).isDirectory();
+  } catch (error) {
+    // Only a missing path is "not an existing directory"; access and I/O
+    // failures are reported as such so they are not mistaken for typos.
+    const code =
+      error && typeof error === "object" && "code" in error
+        ? String(error.code)
+        : undefined;
+    if (code === "ENOENT" || code === "ENOTDIR") directory = false;
+    else if (code === "EACCES" || code === "EPERM")
       throw new ForgeError(
         "invalid_input",
-        "Workspace must be an existing directory.",
+        "Workspace is not accessible: permission denied.",
       );
-  } catch {
+    else
+      throw new ForgeError(
+        "invalid_input",
+        `Workspace could not be inspected${code ? ` (${code})` : ""}.`,
+      );
+  }
+  if (!directory)
     throw new ForgeError(
       "invalid_input",
       "Workspace must be an existing directory.",
     );
-  }
   return { workspace, model, providerSourceId, group };
 };

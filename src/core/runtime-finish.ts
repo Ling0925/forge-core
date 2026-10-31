@@ -10,6 +10,7 @@ import type {
   SessionSnapshot,
   Usage,
 } from "../shared/schemas";
+import { addUsage } from "../shared/usage-totals";
 import type { createAgentSupervisor } from "./agent-supervisor";
 import { agentSummary } from "./agents";
 import type { createRunEvents } from "./runtime-events";
@@ -124,18 +125,6 @@ export const createRunFinish = ({
     // Cancellation/failure must not erase messages already acknowledged to the
     // sender. Keep them in history, without starting another run implicitly.
     includeSteering();
-    const addUsage = (a: Usage, b: Usage): Usage => ({
-      promptTokens: a.promptTokens + b.promptTokens,
-      completionTokens: a.completionTokens + b.completionTokens,
-      totalTokens: a.totalTokens + b.totalTokens,
-      ...(a.cachedPromptTokens === undefined &&
-      b.cachedPromptTokens === undefined
-        ? {}
-        : {
-            cachedPromptTokens:
-              (a.cachedPromptTokens ?? 0) + (b.cachedPromptTokens ?? 0),
-          }),
-    });
     const childUsage = supervisor
       .operations()
       .reduce(

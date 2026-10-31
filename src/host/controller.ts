@@ -17,6 +17,7 @@ import {
   workerMessageSchema,
   workerRequestSchema,
 } from "../shared/ipc";
+import { permissionRank } from "../shared/permissions";
 import {
   type AgentEvent,
   type ApprovalRequest,
@@ -769,12 +770,11 @@ export function createWorkerController(
             run.abort.signal.aborted
           )
             throw new ForgeError("not_found", "The run is no longer active.");
-          const levels = ["readonly", "workspace", "unrestricted"] as const;
           const ceiling =
             run.input.mode === "plan"
               ? "readonly"
               : (snapshot.permissionCeiling ?? "unrestricted");
-          if (levels.indexOf(request.permission) > levels.indexOf(ceiling))
+          if (permissionRank(request.permission) > permissionRank(ceiling))
             throw new ForgeError(
               "invalid_input",
               "当前运行的只读模式或子代理权限上限不允许此权限。",

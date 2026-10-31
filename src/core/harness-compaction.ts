@@ -1,20 +1,28 @@
+import type { createRouteState } from "../provider/routing";
 import {
   budgetUsage,
   measureContext,
   resolveContextBudget,
   resolveContextWindow,
 } from "../shared/context-usage";
-import { ForgeError } from "../shared/errors";
 import type { SessionId, SessionSnapshot } from "../shared/schemas";
 import type { openSettingsStore } from "../store/settings";
 import { withCancellation } from "./cancellation";
 import { projectSummary } from "./context";
+import {
+  findRouteGroup,
+  selectRouteGroup,
+  selectSessionSource,
+} from "./harness-provider-selection";
+import { routedProviderFor } from "./harness-route-provider";
 import type { createModelAccessService } from "./model-access";
 import { summarizeWorkingState } from "./working-memory";
 
 export type HarnessCompactionDeps = {
   settingsStore: Awaited<ReturnType<typeof openSettingsStore>>;
   modelAccess: ReturnType<typeof createModelAccessService>;
+  /** The harness-wide route state shared with runs. */
+  routeState: ReturnType<typeof createRouteState>;
 };
 
 /**
@@ -22,20 +30,25 @@ export type HarnessCompactionDeps = {
  * of the model window and record compaction plus projected context usage.
  */
 export const compactSessionSnapshot = async (
-  { settingsStore, modelAccess }: HarnessCompactionDeps,
+  { settingsStore, modelAccess, routeState }: HarnessCompactionDeps,
   id: SessionId,
   s: SessionSnapshot,
   signal: AbortSignal,
 ): Promise<SessionSnapshot> => {
   const settings = await settingsStore.getPublic();
-  const providerSourceId = s.providerSourceId ?? settings.activeSourceId;
-  const group = s.routeGroupId
-    ? settings.routeGroups?.find((item) => item.id === s.routeGroupId)
-    : undefined;
-  if (s.routeGroupId && !group)
-    throw new ForgeError("not_found", "会话的路由组已不可用，请重新选择。");
-  const prepared = group
-    ? await modelAccess.prepareRoute(group, signal)
+  // Compaction names no model or source, so the session's own binding (or
+  // the remembered fallback) decides, exactly as for an input-less run.
+  const { providerSourceId, routeGroupId } = selectSessionSource(settings, s);
+  // Like a run: an explicit group, or a credential rotation group for a
+  // direct source with several enabled credentials, goes through the route.
+  const selectedGroup = selectRouteGroup(
+    settings,
+    providerSourceId,
+    s.model,
+    findRouteGroup(settings, routeGroupId),
+  );
+  const prepared = selectedGroup
+    ? await modelAccess.prepareRoute(selectedGroup, signal)
     : undefined;
   const resolved =
     prepared?.base ??
@@ -45,7 +58,15 @@ export const compactSessionSnapshot = async (
       signal,
       s.model,
     ));
-  const { provider } = resolved;
+  const provider =
+    selectedGroup && prepared
+      ? routedProviderFor({
+          group: selectedGroup,
+          prepared,
+          routeState,
+          modelAccess,
+        }).auxiliary(id)
+      : resolved.provider;
   const bound =
     providerSourceId && providerSourceId !== s.providerSourceId
       ? { ...s, providerSourceId }
@@ -54,7 +75,7 @@ export const compactSessionSnapshot = async (
   const metadataSignal = AbortSignal.any([signal, AbortSignal.timeout(2000)]);
   try {
     reported ??= await withCancellation(
-      provider.getModelContextWindow?.(
+      resolved.provider.getModelContextWindow?.(
         resolved.actualModel ?? s.model,
         metadataSignal,
       ) ?? Promise.resolve(null),

@@ -1,5 +1,3 @@
-import { createHash } from "node:crypto";
-import { join } from "node:path";
 import { createProjectContext } from "../context/index";
 import { createMcpService } from "../mcp/registry";
 import type { createPluginHost } from "../plugins/host";
@@ -12,7 +10,10 @@ import type {
 import { ForgeError } from "../shared/errors";
 import type { Permission, PublicSettings, SessionId } from "../shared/schemas";
 import type { CommandTaskAccess } from "../shared/task-view";
-import { createCheckpointStore } from "../store/checkpoints";
+import {
+  createCheckpointStore,
+  workspaceCheckpointDirectory,
+} from "../store/checkpoints";
 import type { openMemoryStore } from "../store/memory";
 import type { openPublishedFileStore } from "../store/published-files";
 import type { openSessionStore } from "../store/sessions";
@@ -134,11 +135,7 @@ export const createHarnessTools = (deps: HarnessToolDeps) => {
           workspace,
           settings,
           apiKey,
-          join(
-            directory,
-            "checkpoints",
-            createHash("sha256").update(workspace).digest("hex"),
-          ),
+          workspaceCheckpointDirectory(directory, workspace),
           directory,
           service,
           extensions,

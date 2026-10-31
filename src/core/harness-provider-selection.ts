@@ -6,7 +6,7 @@ import {
   modelProtocolEndpoint,
   modelProtocolOverride,
 } from "../shared/model-protocol";
-import type { PublicSettings } from "../shared/schemas";
+import type { PublicSettings, SessionSnapshot } from "../shared/schemas";
 import type { openSettingsStore } from "../store/settings";
 import { inputProviderBinding } from "./input-queue";
 import type { createModelAccessService } from "./model-access";
@@ -33,6 +33,59 @@ export function inferSourceId(
   return owners.length === 1 ? owners[0]?.id : undefined;
 }
 
+/**
+ * The source used when nothing names one: FORGE_* environment overrides take
+ * precedence over the remembered active source, exactly as the settings store
+ * resolves an unspecified source (undefined selects the environment config).
+ */
+export const fallbackSourceId = (
+  settings: Pick<PublicSettings, "environmentOverride" | "activeSourceId">,
+): string | undefined =>
+  settings.environmentOverride ? undefined : settings.activeSourceId;
+
+/**
+ * The one source-priority rule for runs, queued inputs, compaction and queue
+ * bindings. An explicit selection (the picked model's source) wins; a session
+ * keeps the source it was created with; only when neither exists does the
+ * model, and finally fallbackSourceId (environment, then the remembered
+ * active source), decide. A session's route group applies only while the
+ * caller names neither a model nor a source.
+ */
+export function selectSessionSource(
+  settings: PublicSettings,
+  snapshot: Pick<SessionSnapshot, "providerSourceId" | "routeGroupId">,
+  input: Readonly<{
+    providerSourceId?: string | undefined;
+    routeGroupId?: string | undefined;
+    model?: string | undefined;
+  }> = {},
+): { providerSourceId: string | undefined; routeGroupId: string | undefined } {
+  return {
+    providerSourceId:
+      input.providerSourceId ??
+      snapshot.providerSourceId ??
+      inferSourceId(settings, input.model) ??
+      fallbackSourceId(settings),
+    routeGroupId:
+      input.routeGroupId ??
+      (input.model !== undefined || input.providerSourceId !== undefined
+        ? undefined
+        : snapshot.routeGroupId),
+  };
+}
+
+/** A configured route group by ID; a stale ID fails instead of falling back. */
+export function findRouteGroup(
+  settings: PublicSettings,
+  routeGroupId: string | undefined,
+): RouteGroup | undefined {
+  if (!routeGroupId) return undefined;
+  const group = settings.routeGroups?.find((item) => item.id === routeGroupId);
+  if (!group)
+    throw new ForgeError("not_found", "会话的路由组已不可用，请重新选择。");
+  return group;
+}
+
 export const assertProviderEndpoint = (baseUrl: string): void => {
   if (!baseUrl)
     throw new ForgeError(
@@ -47,8 +100,7 @@ export const createProviderSelection = (settingsStore: SettingsStore) => {
   // overrides the provider configuration.
   const defaultSourceId = async (requested: string | undefined) => {
     if (requested !== undefined) return requested;
-    const settings = await settingsStore.getPublic();
-    return settings.environmentOverride ? undefined : settings.activeSourceId;
+    return fallbackSourceId(await settingsStore.getPublic());
   };
   /**
    * The "active" source is only the fallback for callers that name no source.
@@ -79,12 +131,8 @@ export const createProviderSelection = (settingsStore: SettingsStore) => {
     sourceId?: string,
     routeGroupId?: string,
   ) => {
-    if (routeGroupId) {
-      const group = settings.routeGroups?.find(
-        (item) => item.id === routeGroupId,
-      );
-      if (!group)
-        throw new ForgeError("not_found", "会话的路由组已不可用，请重新选择。");
+    const group = findRouteGroup(settings, routeGroupId);
+    if (group) {
       const members = group.members.map((member) => {
         const source = settings.providerSources?.find(
           (item) => item.id === member.sourceId,
