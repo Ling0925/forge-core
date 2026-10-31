@@ -96,6 +96,29 @@ const aborted = (signal: AbortSignal) =>
   });
 
 export function registerLocalHostTests() {
+  it.each(["listWorkspaceEntries", "readWorkspaceFile"] as const)(
+    "does not bypass a missing service %s implementation",
+    async (method) => {
+      const custom = service();
+      Reflect.deleteProperty(custom, method);
+      const getSession = vi.spyOn(custom, "getSession");
+      const runtime = createRuntimeHub(custom);
+      cleanup.push(() => runtime.dispose());
+      const response = await runtime.request(
+        rpcRequestSchema.parse({
+          id: randomUUID(),
+          method,
+          sessionId,
+          path: ".",
+        }),
+      );
+      expect(getSession).not.toHaveBeenCalled();
+      expect(response).toMatchObject({
+        ok: false,
+        error: { code: "internal" },
+      });
+    },
+  );
   for (const command of ["steer", "cancel"] as const) {
     it.each(["count", "bytes"] as const)(
       `${command} control response survives the %s unrelated event bound`,

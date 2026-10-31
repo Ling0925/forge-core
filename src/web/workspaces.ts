@@ -1,14 +1,14 @@
 import { lstat, opendir, realpath } from "node:fs/promises";
 import { dirname, isAbsolute, join, relative } from "node:path";
 import {
+  containsPath,
+  createProtectedRootMatcher,
+} from "../shared/protected-roots";
+import {
   WORKSPACE_DIRECTORY_LIMIT,
   type WorkspaceDirectoryPage,
   isAbsoluteWorkspacePath,
 } from "../shared/workspaces";
-import {
-  containsPath,
-  createProtectedRootMatcher,
-} from "../tools/protected-roots";
 
 /** At most this many directory entries are inspected while answering one page. */
 export const WORKSPACE_SCAN_LIMIT = 2000;

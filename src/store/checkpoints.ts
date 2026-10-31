@@ -11,8 +11,8 @@ import { dirname, join, resolve } from "node:path";
 import { z } from "zod";
 import { ForgeError } from "../shared/errors";
 import { MAX_EDITABLE_FILE_BYTES as LIMIT } from "../shared/file-limits";
-import { createWorkspacePathGuard } from "../tools/path-guard";
-import { canonicalPath, containsPath } from "../tools/protected-roots";
+import { createWorkspacePathGuard } from "../shared/path-guard";
+import { canonicalPath, containsPath } from "../shared/protected-roots";
 import {
   atomicJson,
   hasCode,

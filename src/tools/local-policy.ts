@@ -7,9 +7,9 @@ import {
   isSensitivePath,
 } from "../shared/content-safety";
 import { MAX_EDITABLE_FILE_BYTES as FILE_LIMIT } from "../shared/file-limits";
+import type { WorkspacePathGuard } from "../shared/path-guard";
 import { check, fail, signature } from "./local-common";
 import { CACHE_LIMIT } from "./local-schemas";
-import type { WorkspacePathGuard } from "./path-guard";
 
 export function createLocalPolicy({
   known,

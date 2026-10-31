@@ -1,10 +1,15 @@
-import { ProviderError, type ProviderFailure } from "../provider/errors";
+import { withCancellation } from "../shared/cancellation";
 import type {
   ModelProvider,
   SessionStore,
   ToolContext,
 } from "../shared/contracts";
-import { ForgeError, type ProviderReason } from "../shared/errors";
+import {
+  ForgeError,
+  ProviderError,
+  providerFailures,
+  providerReasons,
+} from "../shared/errors";
 import {
   type ForgeMemoryInput,
   type MemoryChange,
@@ -17,7 +22,6 @@ import {
   providerResponseSchema,
 } from "../shared/schemas";
 import { redactMemoryText, retrieveMemoryEvidence } from "./memory-retrieval";
-import { withCancellation } from "./runtime";
 
 const synthesisPrompt = (
   maxMemories: number,
@@ -44,40 +48,10 @@ const fingerprint = (
 
 // Only authored labels and bounded numbers enter diagnostics, never exception
 // messages, stacks, response bodies or arbitrary adapter metadata.
-const providerFailures: ReadonlySet<string> = new Set([
-  "http",
-  "protocol",
-  "network",
-  "timeout",
-  "aborted",
-  "upstream",
-  "observer",
-] satisfies ProviderFailure[]);
-const providerReasons: ReadonlySet<string> = new Set([
-  "invalid_response",
-  "invalid_json",
-  "invalid_chunk",
-  "missing_finish",
-  "unterminated_event",
-  "output_limit",
-  "output_truncated",
-  "invalid_finish",
-  "invalid_tool_call",
-  "provider_error_event",
-  "missing_completion",
-  "unexpected_frame",
-  "rate_limit_exceeded",
-  "server_error",
-  "authentication_error",
-  "insufficient_quota",
-  "invalid_request",
-  "content_filter",
-  "response_incomplete",
-] satisfies ProviderReason[]);
 const providerDiagnostics = (error: unknown): string[] => {
   if (!(error instanceof ProviderError)) return ["classification=unknown"];
   const fields = [
-    `classification=${providerFailures.has(error.classification) ? error.classification : "unknown"}`,
+    `classification=${providerFailures.includes(error.classification) ? error.classification : "unknown"}`,
   ];
   if (
     error.status !== undefined &&
@@ -86,7 +60,7 @@ const providerDiagnostics = (error: unknown): string[] => {
     error.status <= 599
   )
     fields.push(`http_status=${error.status}`);
-  if (error.reason !== undefined && providerReasons.has(error.reason))
+  if (error.reason !== undefined && providerReasons.includes(error.reason))
     fields.push(`reason=${error.reason}`);
   return fields;
 };

@@ -1,12 +1,16 @@
 import { randomUUID } from "node:crypto";
 import { resolve } from "node:path";
 import { z } from "zod";
-import type { LocalToolRegistry, ModelProvider } from "../shared/contracts";
+import { withCancellation } from "../shared/cancellation";
+import type {
+  HarnessAdaptationHost,
+  LocalToolRegistry,
+  ModelProvider,
+} from "../shared/contracts";
 import { ForgeError } from "../shared/errors";
 import {
   BASELINE_HARNESS_STRATEGY,
   HARNESS_ADAPTATION_DEFAULTS,
-  type HarnessAdaptationHost,
   type HarnessAdaptationOptions,
   type HarnessAdaptationProgress,
   type HarnessAdaptationReport,
@@ -24,7 +28,6 @@ import {
   type Usage,
   providerResponseSchema,
 } from "../shared/schemas";
-import { withCancellation } from "./cancellation";
 import { executeToolCall } from "./tool-executor";
 
 export const HARNESS_PROBE_TOOLS = Object.freeze([

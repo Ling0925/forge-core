@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { routeRetryControl } from "../provider/routing";
+import { withCancellation } from "../shared/cancellation";
 import {
   type ContextBudget,
   budgetUsage,
@@ -29,7 +29,6 @@ import type {
 import { addUsage } from "../shared/usage-totals";
 import { agentAllowsWebSearch } from "./agent-profiles";
 import type { createApprovalQueue } from "./approval-queue";
-import { withCancellation } from "./cancellation";
 import { type RetryStopReason, stoppedProviderRetry } from "./provider-retry";
 import { compactContext } from "./runtime-context";
 import type { createRunEvents } from "./runtime-events";
@@ -178,7 +177,7 @@ export const requestGeneration = async (
   // re-running any completed local tool. A route group shares this one
   // budget and may only move to another member while nothing was sent.
   let attempt = 0;
-  const routing = routeRetryControl(deps.provider);
+  const routing = deps.provider.routeControl;
   let response: ProviderResponse;
   let previews: ReturnType<typeof createGenerationStream>["previews"];
   for (;;) {

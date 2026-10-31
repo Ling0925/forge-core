@@ -1,5 +1,5 @@
 import { ForgeError } from "./errors";
-import type { RunInput, SessionSnapshot } from "./schemas";
+import type { RunInput, SessionSnapshot } from "./schemas/sessions";
 
 export type SessionReviewInput = Pick<RunInput, "sessionId" | "prompt"> & {
   readonly mode: "build";

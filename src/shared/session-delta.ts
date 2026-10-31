@@ -1,5 +1,8 @@
 import { z } from "zod";
-import { type SessionSnapshot, sessionSnapshotSchema } from "./schemas";
+import {
+  type SessionSnapshot,
+  sessionSnapshotSchema,
+} from "./schemas/sessions";
 
 const offset = z.number().int().nonnegative();
 export const sessionDeltaSchema = z

@@ -4,19 +4,21 @@ import { lstat, realpath } from "node:fs/promises";
 import { homedir } from "node:os";
 import { delimiter, dirname, isAbsolute } from "node:path";
 import type { z } from "zod";
+import { withCancellation } from "../shared/cancellation";
 import { isSensitivePath } from "../shared/content-safety";
 import type { ToolContext } from "../shared/contracts";
 import { ForgeError } from "../shared/errors";
+import type { WorkspacePathGuard } from "../shared/path-guard";
+import { createProcessGroup } from "../shared/process-cleanup";
 import type { ToolResult } from "../shared/schemas";
 import { createCommandOutputStore } from "./command-output";
-import { abortable, check, errorCode, fail, result } from "./local-common";
+import { check, errorCode, fail, result, toolCancelled } from "./local-common";
 import type { createLocalPolicy } from "./local-policy";
 import {
   RESULT_LIMIT,
   type argumentsSchema,
   type commandSchema,
 } from "./local-schemas";
-import type { WorkspacePathGuard } from "./path-guard";
 
 export function createLocalCommands({
   guard,
@@ -95,7 +97,11 @@ export function createLocalCommands({
         request,
       });
       check(signal);
-      const allowed = await abortable(context.approve(request, signal), signal);
+      const allowed = await withCancellation(
+        context.approve(request, signal),
+        signal,
+        toolCancelled,
+      );
       check(signal);
       if (!allowed) return result({ error: "Command approval denied." }, true);
     }
@@ -121,29 +127,25 @@ export function createLocalCommands({
           TEMP: guard.root,
         },
       });
+      const signalProcess = createProcessGroup(child);
       let timedOut = false;
       let cancelled = false;
       let spawnFailed = false;
-      function kill(): void {
-        if (child.pid === undefined) return;
-        if (process.platform === "win32") {
-          child.kill("SIGKILL");
-          return;
-        }
+      async function kill(): Promise<void> {
         try {
-          process.kill(-child.pid, "SIGKILL");
+          await signalProcess("SIGKILL");
         } catch (error: unknown) {
           if (errorCode(error) !== "ESRCH") spawnFailed = true;
         }
       }
       const abort = () => {
         cancelled = true;
-        kill();
+        void kill();
       };
       signal.addEventListener("abort", abort, { once: true });
       const timer = setTimeout(() => {
         timedOut = true;
-        kill();
+        void kill();
       }, args.timeout_ms);
       child.once("spawn", () => {
         try {
@@ -171,11 +173,11 @@ export function createLocalCommands({
       child.on("error", () => {
         spawnFailed = true;
       });
-      child.on("close", (exitCode, exitSignal) => {
+      child.on("close", async (exitCode, exitSignal) => {
         clearTimeout(timer);
         signal.removeEventListener("abort", abort);
         // Descendants may have detached their output but remain in our group.
-        kill();
+        await kill();
         if (cancelled || signal.aborted) {
           void log
             .discard()

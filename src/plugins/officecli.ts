@@ -11,6 +11,11 @@ import type { ToolContext } from "../shared/contracts";
 import { ForgeError } from "../shared/errors";
 import { HTML_PREVIEW_MAX_BYTES } from "../shared/html-preview";
 import {
+  WorkspacePathError,
+  type WorkspacePathGuard,
+  createWorkspacePathGuard,
+} from "../shared/path-guard";
+import {
   type OfficeCliPluginConfig,
   officecliPluginConfigSchema,
 } from "../shared/plugins";
@@ -26,11 +31,6 @@ import {
 } from "../shared/schemas";
 import { defineTool } from "../shared/tool-definition";
 import { invalidToolInput, recoverToolInputError } from "../shared/tool-input";
-import {
-  WorkspacePathError,
-  type WorkspacePathGuard,
-  createWorkspacePathGuard,
-} from "../tools/path-guard";
 import type {
   OfficeCliBackend,
   OfficeCliResult,

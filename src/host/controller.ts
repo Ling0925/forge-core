@@ -1,8 +1,4 @@
 import { randomUUID } from "node:crypto";
-import {
-  listWorkspaceDirectory,
-  readWorkspaceFilePreview,
-} from "../core/workspace-files";
 import type { HarnessService, SteeringHandler } from "../shared/contracts";
 import { ForgeError, toErrorInfo } from "../shared/errors";
 import { HOST_PROTOCOL_VERSION, type HostState } from "../shared/host";
@@ -630,39 +626,18 @@ export function createWorkerController(
             );
           respond(request, await service.getUsageStats(request.filter));
           break;
-        case "listWorkspaceEntries": {
-          if (service.listWorkspaceEntries) {
-            respond(
-              request,
-              await service.listWorkspaceEntries(
-                request.sessionId,
-                request.path,
-              ),
-            );
-            break;
-          }
-          const session = await service.getSession(request.sessionId);
+        case "listWorkspaceEntries":
           respond(
             request,
-            await listWorkspaceDirectory(session.workspace, request.path),
+            await service.listWorkspaceEntries(request.sessionId, request.path),
           );
           break;
-        }
-        case "readWorkspaceFile": {
-          if (service.readWorkspaceFile) {
-            respond(
-              request,
-              await service.readWorkspaceFile(request.sessionId, request.path),
-            );
-            break;
-          }
-          const session = await service.getSession(request.sessionId);
+        case "readWorkspaceFile":
           respond(
             request,
-            await readWorkspaceFilePreview(session.workspace, request.path),
+            await service.readWorkspaceFile(request.sessionId, request.path),
           );
           break;
-        }
         case "compactSession":
           respond(request, await service.compactSession(request.sessionId));
           break;

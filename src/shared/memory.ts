@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { sessionIdSchema } from "./schemas";
+import { sessionIdSchema } from "./schemas/base";
 
 export const memoryIdSchema = z
   .number()

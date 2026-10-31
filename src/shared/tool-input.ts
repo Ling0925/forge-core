@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { ForgeError, formatValidationError } from "./errors";
-import type { ToolResult } from "./schemas";
+import type { ToolResult } from "./schemas/changes";
 
 // A declared optional field prevents gateways from inventing a required placeholder.
 export const noArgumentFields = { reason: z.string().max(512).optional() };

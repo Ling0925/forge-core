@@ -1,4 +1,5 @@
 import type { AdvisorCoordinator } from "../shared/agent-coordination";
+import { withCancellation } from "../shared/cancellation";
 import type {
   AgentRuntime,
   AgentRuntimeDependencies,
@@ -20,7 +21,6 @@ import {
 } from "./agent-operations";
 import { createAgentProgress } from "./agent-progress";
 import type { ApprovalQueue } from "./approval-queue";
-import { withCancellation } from "./cancellation";
 
 type AgentUpdate = Omit<
   Extract<AgentEvent, { type: "agent_update" }>,

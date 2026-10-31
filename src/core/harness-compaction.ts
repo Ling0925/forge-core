@@ -1,4 +1,5 @@
 import type { createRouteState } from "../provider/routing";
+import { withCancellation } from "../shared/cancellation";
 import {
   budgetUsage,
   measureContext,
@@ -7,7 +8,6 @@ import {
 } from "../shared/context-usage";
 import type { SessionId, SessionSnapshot } from "../shared/schemas";
 import type { openSettingsStore } from "../store/settings";
-import { withCancellation } from "./cancellation";
 import { projectSummary } from "./context";
 import {
   findRouteGroup,

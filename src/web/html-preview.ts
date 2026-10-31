@@ -3,7 +3,7 @@ import { constants } from "node:fs";
 import { lstat, open } from "node:fs/promises";
 import { TextDecoder } from "node:util";
 import { HTML_PREVIEW_MAX_BYTES, isHtmlPath } from "../shared/html-preview";
-import { createWorkspacePathGuard } from "../tools/path-guard";
+import { createWorkspacePathGuard } from "../shared/path-guard";
 
 const DOCUMENT_LIMIT = 24;
 const DOCUMENT_TTL_MS = 30 * 60 * 1000;

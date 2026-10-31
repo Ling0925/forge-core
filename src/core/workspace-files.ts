@@ -12,7 +12,7 @@ import type {
   WorkspaceFileEntryDto,
   WorkspaceFilePreviewDto,
 } from "../shared/ipc";
-import { createWorkspacePathGuard } from "../tools/path-guard";
+import { createWorkspacePathGuard } from "../shared/path-guard";
 
 const MAX_DIRECTORY_ENTRIES = 500;
 const MAX_PREVIEW_BYTES = 64 * 1024;

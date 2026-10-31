@@ -11,8 +11,9 @@ import {
 } from "../web-search";
 import { permissionSchema, sessionIdSchema, timestampSchema } from "./base";
 import { approvalRequestSchema, toolResultSchema } from "./changes";
-import { toolCallPreviewSchema, toolCallSchema, usageSchema } from "./messages";
+import { toolCallPreviewSchema, toolCallSchema } from "./messages";
 import { settingsFields } from "./settings";
+import { usageSchema } from "./usage";
 
 export const sessionStatusSchema = z.enum([
   "idle",

@@ -7,12 +7,12 @@ import {
   memoryRetrievalLimits,
   retrieveMemoryEvidence,
 } from "../../src/core/memory-retrieval";
-import { ProviderError } from "../../src/provider/errors";
 import type {
   ModelProvider,
   SessionStore,
   ToolContext,
 } from "../../src/shared/contracts";
+import { ProviderError } from "../../src/shared/errors";
 import {
   type ForgeMemoryInput,
   type MemoryStore,

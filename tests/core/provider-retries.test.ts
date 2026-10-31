@@ -1,12 +1,11 @@
 import { afterEach, expect, it, vi } from "vitest";
 import { RETRY_DELAYS_MS, createAgentRuntime } from "../../src/core/runtime";
-import { ProviderError } from "../../src/provider/openai";
 import type {
   LocalToolRegistry,
   ModelProvider,
   SessionStore,
 } from "../../src/shared/contracts";
-import { ForgeError } from "../../src/shared/errors";
+import { ForgeError, ProviderError } from "../../src/shared/errors";
 import {
   defaultPublicSettings,
   sessionSnapshotSchema,

@@ -1,4 +1,5 @@
-import type { SessionId, SessionSnapshot } from "./schemas";
+import type { SessionId } from "./schemas/base";
+import type { SessionSnapshot } from "./schemas/sessions";
 
 export type SessionMetadata = Omit<
   SessionSnapshot,

@@ -3,7 +3,8 @@ import { ForgeError } from "../shared/errors";
 import {
   type WorkspacePathGuard,
   createWorkspacePathGuard,
-} from "./path-guard";
+} from "../shared/path-guard";
+import { createProcessGroup } from "../shared/process-cleanup";
 
 export type GitAction = "status" | "diff" | "log";
 export interface GitInspection {
@@ -95,6 +96,7 @@ async function run(
         detached: process.platform !== "win32",
       },
     );
+    const signalProcess = createProcessGroup(child);
     const parts: Buffer[] = [];
     const diagnostic: Buffer[] = [];
     let size = 0;
@@ -104,13 +106,7 @@ async function run(
     const kill = (why: typeof reason) => {
       if (reason) return;
       reason = why;
-      if (process.platform !== "win32" && child.pid) {
-        try {
-          process.kill(-child.pid, "SIGKILL");
-        } catch {
-          child.kill("SIGKILL");
-        }
-      } else child.kill("SIGKILL");
+      void signalProcess("SIGKILL").catch(() => child.kill("SIGKILL"));
     };
     const timer = setTimeout(() => kill("timeout"), timeoutMs);
     const abort = () => kill("cancelled");

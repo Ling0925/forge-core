@@ -1,11 +1,8 @@
 import { z } from "zod";
-import type {
-  Permission,
-  RunInput,
-  SessionId,
-  ToolResult,
-  Usage,
-} from "./schemas";
+import type { Permission, SessionId } from "./schemas/base";
+import type { ToolResult } from "./schemas/changes";
+import type { RunInput } from "./schemas/sessions";
+import type { Usage } from "./schemas/usage";
 
 export const asyncTaskArguments = z
   .object({

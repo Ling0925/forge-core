@@ -3,6 +3,8 @@ import type {
   AgentWorktreeCreateInput,
   AgentWorktreeService,
 } from "../shared/agent-worktrees";
+import { minimalEnv } from "../shared/child-env";
+import { createProcessGroup } from "../shared/process-cleanup";
 export type {
   AgentWorktreeCreateInput,
   AgentWorktree,
@@ -62,6 +64,7 @@ function cancelled(destination?: string): ForgeError {
 /** Minimal environment: no provider credentials, tokens or proxy settings. */
 function gitEnvironment(): NodeJS.ProcessEnv {
   const environment: NodeJS.ProcessEnv = {
+    ...minimalEnv(),
     PATH: process.env.PATH ?? "/usr/bin:/bin",
     GIT_CONFIG_NOSYSTEM: "1",
     GIT_CONFIG_GLOBAL: "/dev/null",
@@ -72,42 +75,7 @@ function gitEnvironment(): NodeJS.ProcessEnv {
     GIT_PAGER: "cat",
     LC_ALL: "C",
   };
-  if (process.env.TMPDIR) environment.TMPDIR = process.env.TMPDIR;
-  if (process.platform === "win32" && process.env.SYSTEMROOT)
-    environment.SYSTEMROOT = process.env.SYSTEMROOT;
   return environment;
-}
-
-function terminate(child: ChildProcess): void {
-  if (process.platform !== "win32" && child.pid) {
-    try {
-      process.kill(-child.pid, "SIGTERM");
-      return;
-    } catch {
-      // Fall through to a direct child signal.
-    }
-  }
-  try {
-    child.kill("SIGTERM");
-  } catch {
-    // The child may already be gone; close settling decides the outcome.
-  }
-}
-
-function forceKill(child: ChildProcess): void {
-  if (process.platform !== "win32" && child.pid) {
-    try {
-      process.kill(-child.pid, "SIGKILL");
-      return;
-    } catch {
-      // Fall through to a direct child signal.
-    }
-  }
-  try {
-    child.kill("SIGKILL");
-  } catch {
-    // The child may already be gone.
-  }
 }
 
 function gitFailure(reason: KillReason): ForgeError {
@@ -169,6 +137,18 @@ function runGit(
       return;
     }
 
+    const signalProcess = createProcessGroup(child);
+    const kill = async (signal: NodeJS.Signals): Promise<void> => {
+      try {
+        await signalProcess(signal);
+      } catch {
+        try {
+          child.kill(signal);
+        } catch {
+          // Close settling decides the outcome if the child is already gone.
+        }
+      }
+    };
     const stdout: Buffer[] = [];
     let stdoutBytes = 0;
     let stderrBytes = 0;
@@ -195,10 +175,10 @@ function runGit(
     const stop = (why: KillReason): void => {
       if (reason) return;
       reason = why;
-      terminate(child);
+      void kill("SIGTERM");
       // Escalate only while we are still waiting for close. The timer keeps
       // the promise pending; cleanup clears it once the child has settled.
-      forceTimer = setTimeout(() => forceKill(child), 1500);
+      forceTimer = setTimeout(() => void kill("SIGKILL"), 1500);
       forceTimer.unref?.();
     };
     const onAbort = (): void => stop("cancelled");

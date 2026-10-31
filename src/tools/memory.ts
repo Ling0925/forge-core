@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { redactMemoryText } from "../core/memory-retrieval";
-import { withCancellation } from "../core/runtime";
+import { withCancellation } from "../shared/cancellation";
 import type { LocalToolRegistry, ToolContext } from "../shared/contracts";
 import { ForgeError } from "../shared/errors";
 import {

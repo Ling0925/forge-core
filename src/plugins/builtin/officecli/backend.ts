@@ -3,6 +3,7 @@ import { constants } from "node:fs";
 import { access, mkdir, mkdtemp, rm, stat } from "node:fs/promises";
 import { delimiter, isAbsolute, join, resolve } from "node:path";
 import { ForgeError } from "../../../shared/errors";
+import { createProcessGroup } from "../../../shared/process-cleanup";
 
 /**
  * Result of one stateless OfficeCLI invocation.
@@ -365,32 +366,6 @@ class BoundedOutput {
   }
 }
 
-function signalProcess(child: ChildProcess, signal: NodeJS.Signals): void {
-  if (process.platform !== "win32" && child.pid !== undefined) {
-    try {
-      process.kill(-child.pid, signal);
-      return;
-    } catch {
-      // Fall through to the direct child when the process group is unavailable.
-    }
-  }
-  try {
-    child.kill(signal);
-  } catch {
-    // The process may have exited between close and the signal.
-  }
-}
-
-function ownedGroupAlive(pid: number): boolean {
-  if (process.platform === "win32") return false;
-  try {
-    process.kill(-pid, 0);
-    return true;
-  } catch (error) {
-    return (error as NodeJS.ErrnoException).code !== "ESRCH";
-  }
-}
-
 /**
  * After the group leader is signaled, a descendant can ignore SIGTERM while
  * the leader exits, so `close` alone is not proof the owned group is gone.
@@ -398,19 +373,18 @@ function ownedGroupAlive(pid: number): boolean {
  * absent, bounded so a truly unkillable process cannot wedge disposal.
  */
 async function waitForOwnedGroupExit(
-  child: ChildProcess,
+  signalProcess: ReturnType<typeof createProcessGroup>,
   graceMs: number,
   timeoutMs: number,
 ): Promise<void> {
-  const pid = child.pid;
-  if (process.platform === "win32" || pid === undefined) return;
+  if (process.platform === "win32") return;
   const started = Date.now();
   let escalated = false;
   for (;;) {
-    if (!ownedGroupAlive(pid)) return;
+    if (!(await signalProcess(0))) return;
     if (!escalated && Date.now() - started >= graceMs) {
       escalated = true;
-      signalProcess(child, "SIGKILL");
+      await signalProcess("SIGKILL");
     }
     if (Date.now() - started >= timeoutMs) return;
     await new Promise((resolve) => setTimeout(resolve, GROUP_POLL_MS));
@@ -520,10 +494,10 @@ class Backend implements OfficeCliBackend {
           clearTimeout(timeoutTimer);
           timeoutTimer = undefined;
         }
-        signalProcess(child, "SIGTERM");
         terminationJoin = (async () => {
+          await signalOwned("SIGTERM");
           await waitForOwnedGroupExit(
-            child,
+            signalOwned,
             TERMINATION_GRACE_MS,
             TERMINATION_JOIN_MS,
           );
@@ -561,6 +535,21 @@ class Backend implements OfficeCliBackend {
         return;
       }
 
+      const processGroup = createProcessGroup(child);
+      const signalOwned = async (
+        signal: NodeJS.Signals | 0,
+      ): Promise<boolean> => {
+        try {
+          return await processGroup(signal);
+        } catch {
+          if (signal === 0) return true;
+          try {
+            return child.kill(signal);
+          } catch {
+            return false;
+          }
+        }
+      };
       child.stdout?.on("data", (chunk: Buffer) => output.push("stdout", chunk));
       child.stderr?.on("data", (chunk: Buffer) => output.push("stderr", chunk));
 

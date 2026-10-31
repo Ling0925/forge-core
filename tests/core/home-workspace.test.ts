@@ -13,10 +13,10 @@ import { expect, it } from "vitest";
 import { createProjectContext } from "../../src/context/project-context";
 import { createHarness } from "../../src/core/harness";
 import type { ModelProvider, ToolContext } from "../../src/shared/contracts";
+import { createWorkspacePathGuard } from "../../src/shared/path-guard";
 import { parseSessionId } from "../../src/shared/schemas";
 import { createCheckpointStore } from "../../src/store/checkpoints";
 import { createLocalToolRegistry } from "../../src/tools/local";
-import { createWorkspacePathGuard } from "../../src/tools/path-guard";
 
 it("runs readonly without tools when a home-shaped workspace contains managed state, then edits and restores", async () => {
   const home = await mkdtemp(join(tmpdir(), "forge-home-regression-"));

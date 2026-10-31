@@ -5,7 +5,7 @@ import {
   groupCleanupSupported,
   parsePsMembers,
   psMembers,
-} from "../../src/mcp/cleanup";
+} from "../../src/shared/process-cleanup";
 
 describe("POSIX process-group cleanup", () => {
   it("uses group signalling on every POSIX platform, not only Linux", () => {

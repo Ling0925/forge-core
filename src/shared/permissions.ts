@@ -1,4 +1,4 @@
-import type { Permission } from "./schemas";
+import type { Permission } from "./schemas/base";
 
 /** Permission levels from narrowest to widest. */
 export const PERMISSION_LEVELS = [

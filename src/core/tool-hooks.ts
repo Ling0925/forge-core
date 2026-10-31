@@ -1,7 +1,11 @@
 import { type ChildProcess, spawn } from "node:child_process";
 import { z } from "zod";
-import { cleanupProcess, groupCleanupSupported } from "../mcp/cleanup";
+import { minimalEnv } from "../shared/child-env";
 import { ForgeError } from "../shared/errors";
+import {
+  cleanupProcess,
+  groupCleanupSupported,
+} from "../shared/process-cleanup";
 import {
   type AfterToolHookEvent,
   type BeforeToolHookEvent,
@@ -130,15 +134,6 @@ function captureStream(
       truncated: bytes > limit,
     }),
   };
-}
-
-function minimalEnv(): NodeJS.ProcessEnv {
-  const env: Record<string, string> = {};
-  if (process.env.PATH) env.PATH = process.env.PATH;
-  if (process.env.TMPDIR) env.TMPDIR = process.env.TMPDIR;
-  if (process.platform === "win32" && process.env.SYSTEMROOT)
-    env.SYSTEMROOT = process.env.SYSTEMROOT;
-  return env;
 }
 
 /**

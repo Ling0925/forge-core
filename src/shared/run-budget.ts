@@ -1,5 +1,5 @@
 import { z } from "zod";
-import type { Usage } from "./schemas";
+import type { Usage } from "./schemas/usage";
 
 export const rootToolLimitSchema = z.number().int().min(1).max(1_000_000);
 export const rootTimeoutSchema = z

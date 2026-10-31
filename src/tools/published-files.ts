@@ -5,6 +5,7 @@ import { TextDecoder } from "node:util";
 import { z } from "zod";
 import type { LocalToolRegistry } from "../shared/contracts";
 import { ForgeError } from "../shared/errors";
+import { createWorkspacePathGuard } from "../shared/path-guard";
 import {
   PUBLISHED_FILE_MAX_BYTES,
   PUBLISHED_FILE_MAX_MIB,
@@ -14,7 +15,6 @@ import {
 import { defineTool } from "../shared/tool-definition";
 import { invalidToolInput, recoverToolInputError } from "../shared/tool-input";
 import type { PublishedFileStore } from "../store/published-files";
-import { createWorkspacePathGuard } from "./path-guard";
 
 const argumentsSchema = z
   .object({

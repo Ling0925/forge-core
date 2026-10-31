@@ -1,10 +1,7 @@
 import { z } from "zod";
-import {
-  approvalRequestSchema,
-  permissionSchema,
-  sessionIdSchema,
-  sessionStatusSchema,
-} from "./schemas";
+import { permissionSchema, sessionIdSchema } from "./schemas/base";
+import { approvalRequestSchema } from "./schemas/changes";
+import { sessionStatusSchema } from "./schemas/events";
 
 export const HOST_PROTOCOL_VERSION = 1;
 export const hostStateSchema = z

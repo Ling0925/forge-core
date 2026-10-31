@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { jsonObjectSchema, sessionIdSchema } from "./schemas";
+import { jsonObjectSchema, sessionIdSchema } from "./schemas/base";
 
 /** Versioned, browser-safe contracts. Manifests describe capabilities, never grant them. */
 export const PLUGIN_API_VERSION = 1;

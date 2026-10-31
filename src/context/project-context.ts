@@ -26,9 +26,9 @@ import {
   isSensitivePath,
 } from "../shared/content-safety";
 import { ForgeError } from "../shared/errors";
+import { createProtectedRootMatcher } from "../shared/protected-roots";
 import type { ToolDefinition } from "../shared/schemas";
 import { defineTool } from "../shared/tool-definition";
-import { createProtectedRootMatcher } from "../tools/protected-roots";
 
 // Bounded limits for all context and skill discovery.
 export const CONTEXT_LIMITS = Object.freeze({

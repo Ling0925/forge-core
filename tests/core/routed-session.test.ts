@@ -5,7 +5,6 @@ import {
   computeSessionUsage,
   routeUsageStats,
 } from "../../src/core/usage-stats";
-import { ProviderError } from "../../src/provider/errors";
 import {
   createRouteState,
   createRoutedProvider,
@@ -16,6 +15,7 @@ import type {
   ModelProvider,
   SessionStore,
 } from "../../src/shared/contracts";
+import { ProviderError } from "../../src/shared/errors";
 import type {
   ProviderAttempt,
   RouteGroup,

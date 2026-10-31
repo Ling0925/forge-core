@@ -1,6 +1,7 @@
 import { type ChildProcess, spawn } from "node:child_process";
+import { minimalEnv } from "../shared/child-env";
 import { ForgeError } from "../shared/errors";
-import { cleanupProcess } from "./cleanup";
+import { cleanupProcess } from "../shared/process-cleanup";
 import { type Json, JsonRpcConnection, invalid } from "./rpc";
 import { MCP_MAX_MESSAGE_BYTES } from "./types";
 
@@ -29,12 +30,7 @@ export class StdioMcpConnection extends JsonRpcConnection {
   private env(): NodeJS.ProcessEnv {
     // Minimal inherited environment: PATH/TMPDIR plus explicitly approved
     // names only. Credentials, proxies and API keys are never forwarded.
-    const env: Record<string, string> = {};
-    if (process.env.PATH) env.PATH = process.env.PATH;
-    if (process.env.TMPDIR) env.TMPDIR = process.env.TMPDIR;
-    if (process.platform === "win32" && process.env.SYSTEMROOT)
-      env.SYSTEMROOT = process.env.SYSTEMROOT;
-    return { ...env, ...this.options.env };
+    return { ...minimalEnv(), ...this.options.env };
   }
 
   protected async start(): Promise<void> {

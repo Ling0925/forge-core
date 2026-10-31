@@ -1,6 +1,6 @@
 import { z } from "zod";
 import type { ModelProvider } from "../shared/contracts";
-import { ForgeError } from "../shared/errors";
+import { ForgeError, ProviderError } from "../shared/errors";
 import type { ModelCatalog, ModelCatalogEntry } from "../shared/model-catalog";
 import {
   messageSchema,
@@ -10,7 +10,7 @@ import {
 } from "../shared/schemas";
 import type { ProviderConfig } from "../shared/schemas";
 import { MAX_PROVIDER_JSON_CHARS, parseProviderJson } from "./bounded-json";
-import { ProviderError, httpError, protocol } from "./errors";
+import { httpError, protocol } from "./errors";
 import { thinkingConfig, wireContents } from "./gemini-request";
 import { responseReader } from "./gemini-stream";
 import { modelsPageWire } from "./gemini-wire";

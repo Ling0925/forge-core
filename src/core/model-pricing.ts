@@ -1,4 +1,5 @@
 import { join } from "node:path";
+import { withCancellation } from "../shared/cancellation";
 import type { UsagePricingStatus } from "../shared/ipc";
 import {
   type ModelPrice,
@@ -13,7 +14,6 @@ import {
   resolveRequestRates,
 } from "../shared/model-pricing";
 import { atomicJson, privateDirectory, readJson } from "../store/io";
-import { withCancellation } from "./cancellation";
 
 export {
   estimateAggregateCostUsd,

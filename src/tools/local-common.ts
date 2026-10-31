@@ -8,9 +8,10 @@ export function fail(
 ): never {
   throw new ForgeError(code, message);
 }
+export const toolCancelled = () =>
+  new ForgeError("cancelled", "Tool execution cancelled.");
 export function check(signal: AbortSignal): void {
-  if (signal.aborted)
-    throw new ForgeError("cancelled", "Tool execution cancelled.");
+  if (signal.aborted) throw toolCancelled();
 }
 export function signature(info: Awaited<ReturnType<typeof lstat>>): string {
   return `${info.dev}:${info.ino}:${info.size}:${info.mtimeMs}:${info.ctimeMs}`;
@@ -35,18 +36,4 @@ export function errorCode(error: unknown): string | undefined {
   )
     return error.code;
   return undefined;
-}
-export async function abortable<T>(
-  promise: Promise<T>,
-  signal: AbortSignal,
-): Promise<T> {
-  check(signal);
-  return new Promise<T>((resolve, reject) => {
-    const abort = () =>
-      reject(new ForgeError("cancelled", "Tool execution cancelled."));
-    signal.addEventListener("abort", abort, { once: true });
-    promise
-      .then(resolve, reject)
-      .finally(() => signal.removeEventListener("abort", abort));
-  });
 }

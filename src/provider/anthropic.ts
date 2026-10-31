@@ -4,7 +4,11 @@ import type {
 } from "@anthropic-ai/sdk/resources/messages";
 import { z } from "zod";
 import type { ModelProvider } from "../shared/contracts";
-import { ForgeError, type ProtocolReason } from "../shared/errors";
+import {
+  ForgeError,
+  type ProtocolReason,
+  ProviderError,
+} from "../shared/errors";
 import type { ModelCatalog } from "../shared/model-catalog";
 import {
   jsonObjectSchema,
@@ -22,7 +26,7 @@ import type {
 } from "../shared/schemas";
 import { estimateToolCallLines } from "../shared/tool-preview-lines";
 import { normalizeModelCatalog } from "./catalog";
-import { ProviderError, httpError, protocol } from "./errors";
+import { httpError, protocol } from "./errors";
 import { createRequestOptions } from "./request-options";
 import { sdkEvents, withSdkRequest } from "./sdk-transport";
 import { scopeProviderState } from "./state-scope";

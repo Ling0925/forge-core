@@ -3,6 +3,7 @@ import { access, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
+import { minimalEnv } from "../../../shared/child-env";
 import { ForgeError } from "../../../shared/errors";
 import type { BrowserPluginConfig } from "../../../shared/plugins";
 
@@ -83,6 +84,7 @@ export function privateEnv(
   namespace: string | undefined,
 ): Record<string, string> {
   const env: Record<string, string> = {
+    ...minimalEnv(),
     HOME: layout.home,
     USERPROFILE: layout.home,
     TMPDIR: layout.tmp,
@@ -106,8 +108,6 @@ export function privateEnv(
     env.AGENT_BROWSER_ALLOWED_DOMAINS = config.allowedDomains.join(",");
   if (config.browserExecutablePath)
     env.AGENT_BROWSER_EXECUTABLE_PATH = config.browserExecutablePath;
-  if (process.env.PATH) env.PATH = process.env.PATH;
-  if (process.env.SYSTEMROOT) env.SYSTEMROOT = process.env.SYSTEMROOT;
   return env;
 }
 

@@ -1,4 +1,5 @@
 import type { AdvisorCoordinator } from "../shared/agent-coordination";
+import { withCancellation } from "../shared/cancellation";
 import {
   measureContext,
   resolveContextBudget,
@@ -19,7 +20,6 @@ import { assertAgentModel, isAgentToolAllowed } from "./agent-profiles";
 import { createAgentSupervisor } from "./agent-supervisor";
 import { nativeDefinitions, nativeDefinitionsFor } from "./agents";
 import { createApprovalQueue } from "./approval-queue";
-import { withCancellation } from "./cancellation";
 import { projectSummary } from "./context";
 import { harnessStrategyMessage } from "./harness-adaptation";
 import { buildSystemInstructions } from "./prompts";
@@ -49,7 +49,6 @@ import { claimAutoTitle } from "./session-title";
 import { createToolFailureGuard } from "./tool-failure-guard";
 import { createToolHookService } from "./tool-hooks";
 
-export { withCancellation } from "./cancellation";
 export {
   CONTEXT_SCALE_FLOOR,
   compactContext,

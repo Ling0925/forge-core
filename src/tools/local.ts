@@ -2,6 +2,10 @@ import { z } from "zod";
 import type { LocalToolRegistry, ToolContext } from "../shared/contracts";
 import { ForgeError } from "../shared/errors";
 import { MAX_EDITABLE_FILE_BYTES as FILE_LIMIT } from "../shared/file-limits";
+import {
+  WorkspacePathError,
+  createWorkspacePathGuard,
+} from "../shared/path-guard";
 import type { ToolCall, ToolResult } from "../shared/schemas";
 import type { CheckpointStore } from "../store/checkpoints";
 import { gitInspect } from "./git";
@@ -15,7 +19,6 @@ import {
   definitions,
   optionsSchema,
 } from "./local-schemas";
-import { WorkspacePathError, createWorkspacePathGuard } from "./path-guard";
 
 export interface LocalToolOptions {
   readonly protectedRoots?: readonly string[];

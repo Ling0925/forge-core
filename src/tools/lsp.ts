@@ -10,6 +10,7 @@ import {
 } from "../shared/content-safety";
 import type { LocalToolRegistry, ToolContext } from "../shared/contracts";
 import { NON_LAYOUT_CONTROLS } from "../shared/control-characters";
+import { createWorkspacePathGuard } from "../shared/path-guard";
 import {
   type ToolCall,
   type ToolDefinition,
@@ -23,7 +24,6 @@ import {
   type LspServerConfig,
   type LspServerPool,
 } from "./lsp-pool";
-import { createWorkspacePathGuard } from "./path-guard";
 
 export interface LspToolOptions {
   readonly pool: LspServerPool;

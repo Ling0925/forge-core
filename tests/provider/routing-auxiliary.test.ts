@@ -1,10 +1,10 @@
 import { expect, it } from "vitest";
-import { ProviderError } from "../../src/provider/errors";
 import {
   createRouteState,
   createRoutedProvider,
 } from "../../src/provider/routing";
 import type { ModelProvider } from "../../src/shared/contracts";
+import { ProviderError } from "../../src/shared/errors";
 import { routeGroupSchema } from "../../src/shared/model-access";
 
 const session = "11111111-1111-4111-8111-111111111111";

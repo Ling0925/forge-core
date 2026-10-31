@@ -4,7 +4,8 @@ import {
   advanceContextDisplay,
   emptyContextDisplay,
 } from "./context-display";
-import { type AgentEvent, type Usage, contextUsageSchema } from "./schemas";
+import { type AgentEvent, contextUsageSchema } from "./schemas/events";
+import type { Usage } from "./schemas/usage";
 import {
   type CacheUsageState,
   accumulateCacheUsage,

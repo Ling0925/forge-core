@@ -7,6 +7,10 @@ import { isSensitivePath } from "../shared/content-safety";
 import type { ToolContext } from "../shared/contracts";
 import { createDiffPatch } from "../shared/diff";
 import { ForgeError } from "../shared/errors";
+import {
+  WorkspacePathError,
+  type WorkspacePathGuard,
+} from "../shared/path-guard";
 import type {
   FileChange,
   JsonValue,
@@ -27,7 +31,6 @@ import {
   ENTRY_LIMIT,
   type argumentsSchema,
 } from "./local-schemas";
-import { WorkspacePathError, type WorkspacePathGuard } from "./path-guard";
 
 export function createLocalFiles({
   options,

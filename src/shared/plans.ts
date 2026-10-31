@@ -1,4 +1,5 @@
-import type { SessionSnapshot, TaskPlan } from "./schemas";
+import type { TaskPlan } from "./schemas/events";
+import type { SessionSnapshot } from "./schemas/sessions";
 
 type PlanState = Pick<SessionSnapshot, "plan" | "plans">;
 const identified = (plan: TaskPlan): TaskPlan => ({

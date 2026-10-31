@@ -2,6 +2,7 @@ import { spawn } from "node:child_process";
 import { rm } from "node:fs/promises";
 import { join } from "node:path";
 import { ForgeError } from "../../../shared/errors";
+import { createProcessGroup } from "../../../shared/process-cleanup";
 import { type CliCommand, exists } from "./cli-layout";
 import { parseToolResult, redact } from "./result";
 import type { Session } from "./session";
@@ -83,6 +84,7 @@ export function createLifecycle(session: Session, cli: CliCommand) {
         windowsHide: true,
       },
     );
+    const signalProcess = createProcessGroup(child);
     let stdout = "";
     let stderr = "";
     child.stdout?.setEncoding("utf8");
@@ -110,11 +112,9 @@ export function createLifecycle(session: Session, cli: CliCommand) {
         clearTimeout(abandonTimer);
         finish(value);
       };
-      const killOwnedGroup = () => {
+      const killOwnedGroup = async () => {
         try {
-          if (process.platform !== "win32" && child.pid)
-            process.kill(-child.pid, "SIGKILL");
-          else child.kill("SIGKILL");
+          await signalProcess("SIGKILL");
         } catch {
           /* already gone */
         }
@@ -123,7 +123,7 @@ export function createLifecycle(session: Session, cli: CliCommand) {
       // success while the process handle is still unjoined.
       const killTimer = setTimeout(() => {
         timedOut = true;
-        killOwnedGroup();
+        void killOwnedGroup();
       }, CLEANUP_TIMEOUT_MS);
       const abandonTimer = setTimeout(() => {
         killOwnedGroup();

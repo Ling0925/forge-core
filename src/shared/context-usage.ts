@@ -1,10 +1,7 @@
-import type {
-  ContextUsage,
-  Message,
-  PublicSettings,
-  ToolDefinition,
-  Usage,
-} from "./schemas";
+import type { ContextUsage } from "./schemas/events";
+import type { Message, ToolDefinition } from "./schemas/messages";
+import type { PublicSettings } from "./schemas/settings";
+import type { Usage } from "./schemas/usage";
 
 /**
  * Conservative window for models nobody reports: most current chat models

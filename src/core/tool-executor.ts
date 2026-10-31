@@ -1,3 +1,4 @@
+import { withCancellation } from "../shared/cancellation";
 import type { ApprovalHandler, LocalToolRegistry } from "../shared/contracts";
 import { ForgeError, toErrorInfo } from "../shared/errors";
 import {
@@ -12,7 +13,6 @@ import {
 import type { ToolHookDiagnostic, ToolHookService } from "../shared/tool-hooks";
 import { invalidToolInput } from "../shared/tool-input";
 import { nativeDefinitions } from "./agents";
-import { withCancellation } from "./cancellation";
 import { toToolHookOutcome } from "./tool-hooks";
 
 const roleDenied = (): ToolResult => ({

@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { permissionSchema } from "./schemas";
+import { permissionSchema } from "./schemas/base";
 
 /**
  * Opt-in, host-configured tool lifecycle hooks.

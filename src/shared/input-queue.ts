@@ -1,13 +1,11 @@
 import { z } from "zod";
 import { ForgeError } from "./errors";
-import {
-  errorInfoSchema,
-  errorMessageSchema,
-  permissionSchema,
-  runInputSchema,
-  sessionIdSchema,
-} from "./schemas";
-import type { RunInput, SessionId, SessionStatus } from "./schemas";
+import { permissionSchema, sessionIdSchema } from "./schemas/base";
+import type { SessionId } from "./schemas/base";
+import { errorInfoSchema, errorMessageSchema } from "./schemas/events";
+import type { SessionStatus } from "./schemas/events";
+import { runInputSchema } from "./schemas/sessions";
+import type { RunInput } from "./schemas/sessions";
 
 export const enqueueInputSchema = z
   .object({ inputId: z.string().uuid(), input: runInputSchema })

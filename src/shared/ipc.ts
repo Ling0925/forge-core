@@ -56,28 +56,23 @@ import {
   publishedFileIdSchema,
   publishedFileResponseSchema,
 } from "./published-files";
+import { permissionSchema, sessionIdSchema } from "./schemas/base";
+import type { Permission, SessionId } from "./schemas/base";
+import { agentEventSchema, errorInfoSchema } from "./schemas/events";
 import {
-  agentEventSchema,
-  configureInputSchema,
   createSessionInputSchema,
-  errorInfoSchema,
-  permissionSchema,
-  publicSettingsSchema,
   runInputSchema,
-  sessionIdSchema,
   sessionSnapshotSchema,
   sessionSummarySchema,
-} from "./schemas";
+} from "./schemas/sessions";
 import type {
-  ConfigureInput,
   CreateSessionInput,
-  Permission,
-  PublicSettings,
   RunInput,
-  SessionId,
   SessionSnapshot,
   SessionSummary,
-} from "./schemas";
+} from "./schemas/sessions";
+import { configureInputSchema, publicSettingsSchema } from "./schemas/settings";
+import type { ConfigureInput, PublicSettings } from "./schemas/settings";
 import {
   type SessionPage,
   type SessionPageRequest,

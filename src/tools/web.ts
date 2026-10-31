@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { z } from "zod";
+import { withCancellation } from "../shared/cancellation";
 import type { LocalToolRegistry, ToolContext } from "../shared/contracts";
 import type { ToolCall, ToolDefinition, ToolResult } from "../shared/schemas";
 import { defineTool } from "../shared/tool-definition";
@@ -11,9 +12,9 @@ import {
 } from "./web-content";
 import {
   WebAccessError,
-  abortable,
   requestPublicText,
   validatePublicUrl,
+  webCancelled,
 } from "./web-network";
 
 const NOTICE =
@@ -128,12 +129,13 @@ export function createWebToolRegistry(
       request,
     });
     check(signal);
-    const ok = await abortable(
+    const ok = await withCancellation(
       Promise.resolve().then(() => {
         check(signal);
         return ctx.approve(request, signal);
       }),
       signal,
+      webCancelled,
     );
     check(signal);
     if (!ok || (ctx.permission as string) === "readonly")

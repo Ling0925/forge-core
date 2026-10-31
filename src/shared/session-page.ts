@@ -1,11 +1,11 @@
 import { z } from "zod";
 import { ForgeError } from "./errors";
 import { executionTurns } from "./execution";
+import type { AgentEvent } from "./schemas/events";
 import {
-  type AgentEvent,
   type SessionSnapshot,
   sessionSnapshotSchema,
-} from "./schemas";
+} from "./schemas/sessions";
 import { sessionUsageStateSchema, summarizeUsageState } from "./session-usage";
 
 const offsetSchema = z.number().int().nonnegative();

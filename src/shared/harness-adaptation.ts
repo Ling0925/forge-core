@@ -1,5 +1,4 @@
 import { z } from "zod";
-import type { LocalToolRegistry } from "./contracts";
 
 /** Omitted from RunInput by default. These limits apply only to the preflight. */
 export const harnessAdaptationOptionsSchema = z
@@ -144,11 +143,4 @@ export interface HarnessExperienceStore {
   list(scope: HarnessExperienceScope): Promise<readonly HarnessExperience[]>;
   /** Called only after explicit opt-in and successful, non-readonly execution. */
   save(input: HarnessExperienceInput): Promise<HarnessExperience>;
-}
-export interface HarnessAdaptationHost {
-  /** Fresh registry for each probe, never the formal run's read/write authority. */
-  createProbeTools(): Promise<LocalToolRegistry>;
-  readonly experiences?: HarnessExperienceStore;
-  /** Host-owned secret redaction before feedback, persistence and projection. */
-  readonly redact?: (text: string) => string;
 }

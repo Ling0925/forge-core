@@ -1,17 +1,8 @@
 import type OpenAI from "openai";
-import type { ModelCatalog } from "../shared/model-catalog";
-import { createAnthropicProvider } from "./anthropic";
-import { parseProviderJson } from "./bounded-json";
-import { normalizeModelCatalog } from "./catalog";
-import { ProviderError, httpError, protocol } from "./errors";
-import { createGeminiProvider } from "./gemini";
-import { createRequestOptions } from "./request-options";
-import { sdkEvents, withSdkRequest } from "./sdk-transport";
-export { ProviderError } from "./errors";
-export type { ProviderFailure } from "./errors";
 import { z } from "zod";
 import type { ModelProvider } from "../shared/contracts";
-import { ForgeError } from "../shared/errors";
+import { ForgeError, ProviderError } from "../shared/errors";
+import type { ModelCatalog } from "../shared/model-catalog";
 import {
   messageSchema,
   providerConfigSchema,
@@ -28,7 +19,14 @@ import type {
   Usage,
 } from "../shared/schemas";
 import { estimateToolCallLines } from "../shared/tool-preview-lines";
+import { createAnthropicProvider } from "./anthropic";
+import { parseProviderJson } from "./bounded-json";
+import { normalizeModelCatalog } from "./catalog";
+import { httpError, protocol } from "./errors";
+import { createGeminiProvider } from "./gemini";
+import { createRequestOptions } from "./request-options";
 import { createResponsesAdapter } from "./responses";
+import { sdkEvents, withSdkRequest } from "./sdk-transport";
 import { scopeProviderState } from "./state-scope";
 
 let sdk: Promise<typeof import("openai")> | undefined;

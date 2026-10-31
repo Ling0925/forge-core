@@ -1,8 +1,8 @@
 import type { ServerSentEvent } from "openai/core/streaming";
 import { z } from "zod";
-import { ForgeError } from "../shared/errors";
+import { ForgeError, ProviderError } from "../shared/errors";
 import type { ProviderConfig } from "../shared/schemas";
-import { ProviderError, httpError, protocol } from "./errors";
+import { httpError, protocol } from "./errors";
 
 let sdkErrors:
   | Promise<
