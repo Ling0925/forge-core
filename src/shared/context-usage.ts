@@ -93,12 +93,25 @@ export function budgetUsage(budget: ContextBudget): {
  * UTF-8 bytes/3 captures CJK better. Provider usage calibrates request totals. */
 export function estimateTokens(text: string): number {
   let weight = 0;
-  for (const char of text) {
-    const code = char.codePointAt(0) ?? 0;
+  for (let i = 0; i < text.length; i++) {
+    let code = text.charCodeAt(i);
+    if (code >= 0xd800 && code <= 0xdbff) {
+      const next = text.charCodeAt(i + 1);
+      if (next >= 0xdc00 && next <= 0xdfff) {
+        code = 65536;
+        i++;
+      }
+    }
     weight += code < 128 ? 0.25 : (code < 2048 ? 2 : code < 65536 ? 3 : 4) / 3;
   }
   return Math.ceil(weight);
 }
+
+const messageTokenEstimates = new WeakMap<
+  Message,
+  { content: number; toolCalls: number; providerState: number }
+>();
+const toolTokenEstimates = new WeakMap<readonly ToolDefinition[], number>();
 
 export function measureContext(
   messages: readonly Message[],
@@ -118,22 +131,42 @@ export function measureContext(
           : message.role === "tool"
             ? "tools"
             : "conversation";
-    parts[category] += 4 + estimateTokens(message.content ?? "");
+    let tokens = messageTokenEstimates.get(message);
+    if (!tokens) {
+      tokens = {
+        content: estimateTokens(message.content ?? ""),
+        toolCalls: 0,
+        providerState: 0,
+      };
+      if (message.role === "assistant") {
+        if (message.tool_calls?.length)
+          tokens.toolCalls = estimateTokens(JSON.stringify(message.tool_calls));
+        // Responses replays opaque reasoning items too. Count the opaque state only
+        // as an estimate; do not serialize local origin/model/baseURL metadata.
+        if (message.providerState)
+          tokens.providerState = estimateTokens(
+            JSON.stringify(message.providerState.output),
+          );
+      }
+      messageTokenEstimates.set(message, tokens);
+    }
+    parts[category] += 4 + tokens.content;
     // Vision costs vary by model and resolution; never tokenize base64 as text.
     if (message.role === "user")
       parts[category] += (message.images?.length ?? 0) * 2048;
     if (message.role === "assistant") {
-      if (message.tool_calls?.length)
-        parts.tools += estimateTokens(JSON.stringify(message.tool_calls));
-      // Responses replays opaque reasoning items too. Count the opaque state only
-      // as an estimate; do not serialize local origin/model/baseURL metadata.
-      if (message.providerState)
-        parts.tools += estimateTokens(
-          JSON.stringify(message.providerState.output),
-        );
+      parts.tools += tokens.toolCalls;
+      parts.tools += tokens.providerState;
     }
   }
-  if (tools.length) parts.tools += estimateTokens(JSON.stringify(tools));
+  if (tools.length) {
+    let tokens = toolTokenEstimates.get(tools);
+    if (tokens === undefined) {
+      tokens = estimateTokens(JSON.stringify(tools));
+      toolTokenEstimates.set(tools, tokens);
+    }
+    parts.tools += tokens;
+  }
   if (messages.length) parts.instructions += 3;
   const usedTokens = Object.values(parts).reduce((a, b) => a + b, 0);
   return {
