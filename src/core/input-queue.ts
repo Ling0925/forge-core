@@ -410,7 +410,7 @@ export async function openInputQueue(options: {
   /** One durable acceptance path; origin is host-owned and never caller-supplied. */
   const accept = async (
     raw: unknown,
-    origin?: "background_task",
+    origin?: QueuedInput["origin"],
   ): Promise<QueuedInput> => {
     const request = enqueueInputSchema.parse(raw);
     // Legacy-compatible hash: origin is compared separately so a notification
@@ -516,7 +516,7 @@ export async function openInputQueue(options: {
   };
   return {
     enqueue: (raw) => accept(raw),
-    notify: (raw) => accept(raw, "background_task"),
+    notify: (raw, origin = "background_task") => accept(raw, origin),
     async list(id) {
       const sessionId = sessionIdSchema.parse(id);
       await options.validateSession(sessionId);

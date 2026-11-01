@@ -21,6 +21,10 @@
       "types": "./src/store/index.ts",
       "import": "./dist/store/index.js"
     },
+    "./superagent": {
+      "types": "./src/superagent/index.ts",
+      "import": "./dist/superagent/index.js"
+    },
     "./tools": {
       "types": "./src/tools/index.ts",
       "import": "./dist/tools/index.js"
@@ -68,6 +72,10 @@
     "./shared/agent-profiles": {
       "types": "./src/shared/agent-profiles.ts",
       "import": "./dist/shared/agent-profiles.js"
+    },
+    "./shared/superagent": {
+      "types": "./src/shared/superagent.ts",
+      "import": "./dist/shared/superagent.js"
     },
     "./shared/agent-coordination": {
       "types": "./src/shared/agent-coordination.ts",

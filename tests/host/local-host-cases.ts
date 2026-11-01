@@ -62,6 +62,7 @@ function service(overrides: Partial<HarnessService> = {}): HarnessService {
     listModels: async () => [],
     listSessions: async () => [],
     createSession: async () => snapshot,
+    createSessionWithProfile: async () => snapshot,
     getSession: async () => snapshot,
     run: async () => snapshot,
     compactSession: async () => snapshot,

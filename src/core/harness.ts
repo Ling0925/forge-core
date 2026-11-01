@@ -46,7 +46,11 @@ import {
   readSessionPublishedFile,
 } from "./harness-published-files";
 import { createHarnessRun } from "./harness-run";
-import { forkSessionSnapshot, resolveNewSession } from "./harness-sessions";
+import {
+  createSessionWithProfile,
+  forkSessionSnapshot,
+  resolveNewSession,
+} from "./harness-sessions";
 import { createHarnessTitles } from "./harness-titles";
 import { createHarnessTools } from "./harness-tools";
 import { createModelAccessService } from "./model-access";
@@ -218,6 +222,7 @@ export const createHarness = async (
       return { provider, requestSignal };
     };
     const runSession = createHarnessRun({
+      canReadSession: options.canReadSession,
       store,
       settingsStore,
       modelAccess,
@@ -554,6 +559,16 @@ export const createHarness = async (
           ...(providerSourceId ? { providerSourceId } : {}),
           ...(group ? { routeGroupId: group.id } : {}),
         });
+      },
+      async createSessionWithProfile(input) {
+        check();
+        const settings = await settingsStore.getPublic();
+        check();
+        return createSessionWithProfile(
+          { store, settings, agentWorktrees },
+          input,
+          disposal.signal,
+        );
       },
       run(raw, onEvent, approve, callerSignal, control) {
         check();

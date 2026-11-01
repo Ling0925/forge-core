@@ -99,6 +99,8 @@ export function validateChange(
     return invalid(persisted);
   if (
     metadata.data.id !== previous.id ||
+    metadata.data.agentRole?.kind !== previous.agentRole?.kind ||
+    metadata.data.agentRole?.ownerId !== previous.agentRole?.ownerId ||
     events.data.some((event) => event.sessionId !== previous.id)
   )
     invalid(persisted);

@@ -1,5 +1,7 @@
 import { z } from "zod";
 
+export const DEFAULT_MAX_ACTIVE_AGENTS = 4;
+
 export const agentProfileIdSchema = z.string().regex(/^[a-z][a-z0-9_-]{0,63}$/);
 export const agentToolGroupSchema = z.enum([
   "read",

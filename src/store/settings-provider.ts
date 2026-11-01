@@ -1,4 +1,5 @@
 import {
+  DEFAULT_MAX_ACTIVE_AGENTS,
   ForgeError,
   type PublicSettings,
   configureInputSchema,
@@ -71,6 +72,24 @@ export function createSettingsProvider({
       environmentOverride,
       public: publicSettingsSchema.parse({
         ...settings,
+        ...(stored.settings.superAgent === undefined
+          ? {}
+          : {
+              superAgent: {
+                ...stored.settings.superAgent,
+                maxWorkers:
+                  stored.settings.superAgent.maxWorkers ??
+                  DEFAULT_MAX_ACTIVE_AGENTS,
+                ...(stored.settings.superAgent.github === undefined
+                  ? {}
+                  : {
+                      github: {
+                        ...stored.settings.superAgent.github,
+                        hasWebhookSecret: !!stored.webhookSecret,
+                      },
+                    }),
+              },
+            }),
         hasApiKey: apiKey !== "",
         isConfigured: settings.baseUrl !== "" && settings.model !== "",
         providerSources: stored.sources.map(publicSource),

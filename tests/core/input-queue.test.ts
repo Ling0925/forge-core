@@ -7,6 +7,7 @@ import { openInputQueue } from "../../src/core/input-queue";
 import { ForgeError } from "../../src/shared/errors";
 import {
   type InputQueueHost,
+  type QueuedInput,
   enqueueInputSchema,
 } from "../../src/shared/input-queue";
 import { type RunInput, parseSessionId } from "../../src/shared/schemas";
@@ -98,12 +99,49 @@ it("keeps a background notification origin host-owned and deduplicates by origin
   expect((await queue.list(sessionId)).items).toHaveLength(2);
 });
 
+it("admits the host origin only through notify and preserves it across reopen and dispatch", async () => {
+  const queue = await create();
+  await queue.pause(sessionId);
+  const request = { inputId: randomUUID(), input: input("host work") };
+  await expect(
+    queue.enqueue({ ...request, origin: "superagent" } as never),
+  ).rejects.toThrow();
+  await expect(
+    queue.enqueue({
+      ...request,
+      input: { ...request.input, origin: "superagent" },
+    } as never),
+  ).rejects.toThrow();
+  const accepted = await queue.notify(request, "superagent");
+  expect(accepted.origin).toBe("superagent");
+  await expect(queue.enqueue(request)).rejects.toMatchObject({
+    code: "invalid_input",
+  });
+  await expect(queue.notify(request)).rejects.toMatchObject({
+    code: "invalid_input",
+  });
+  await queue.dispose();
+  const reopened = await create();
+  expect((await reopened.list(sessionId)).items[0]?.origin).toBe("superagent");
+  const origins: QueuedInput["origin"][] = [];
+  await reopened.attach({
+    isBusy: () => false,
+    start: async (_input, _runId, _binding, _ack, origin) => {
+      origins.push(origin);
+      return "completed";
+    },
+  });
+  await reopened.resume(sessionId);
+  await settled(reopened, 1);
+  expect(origins).toEqual(["superagent"]);
+});
+
 it("wakes a finished session exactly once and queues serially behind a busy run", async () => {
   const queue = await create();
   let busy = true;
   let running = 0;
   let maxRunning = 0;
-  const starts: (readonly ["background_task" | undefined, string])[] = [];
+  const starts: (readonly [QueuedInput["origin"], string])[] = [];
   await queue.attach({
     isBusy: () => busy,
     start: async (raw, _runId, _binding, _ack, origin) => {
@@ -251,7 +289,7 @@ it("keeps ordinary enqueue acknowledgment behavior and preserves queued origins 
       _runId: string,
       _binding: string,
       _ack?: string,
-      origin?: "background_task",
+      origin?: QueuedInput["origin"],
     ) => {
       origins.push(origin);
       return "completed" as const;
@@ -282,7 +320,7 @@ it("keeps notification pause local so explicit resume is still required", async 
       _runId: string,
       _binding: string,
       _ack?: string,
-      _origin?: "background_task",
+      _origin?: QueuedInput["origin"],
     ) => "completed" as const,
   );
   await queue.attach({ isBusy: () => false, start });

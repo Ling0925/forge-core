@@ -20,6 +20,7 @@ test("package exports resolve every module barrel from dist", async () => {
     "core",
     "provider",
     "store",
+    "superagent",
     "tools",
     "context",
     "mcp",

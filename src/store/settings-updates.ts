@@ -72,8 +72,40 @@ export function createSettingsUpdates({
           // Profile CRUD merges into the loaded collection, so it never rewrites
           // unrelated roles, provider sources or ordinary settings.
           let next = agent === undefined ? stored : updateAgent(stored, agent);
-          if (settings !== undefined || apiKey !== undefined)
-            next = updateLegacy(next, parsed.data);
+          if (settings !== undefined || apiKey !== undefined) {
+            const { superAgent, ...ordinary } = settings ?? {};
+            let patch: Record<string, unknown> = ordinary;
+            if (superAgent !== undefined) {
+              const { github, ...fields } = superAgent;
+              const { webhookSecret, ...githubFields } = github ?? {};
+              if (webhookSecret !== undefined)
+                next = { ...next, webhookSecret };
+              patch = {
+                ...ordinary,
+                superAgent: {
+                  ...next.settings.superAgent,
+                  ...fields,
+                  ...(github === undefined
+                    ? {}
+                    : {
+                        github: {
+                          ...next.settings.superAgent?.github,
+                          ...githubFields,
+                          ...(githubFields.webhook === undefined
+                            ? {}
+                            : {
+                                webhook: {
+                                  ...next.settings.superAgent?.github?.webhook,
+                                  ...githubFields.webhook,
+                                },
+                              }),
+                        },
+                      }),
+                },
+              };
+            }
+            next = updateLegacy(next, { ...parsed.data, settings: patch });
+          }
           for (const operation of batch ?? (source ? [source] : []))
             next = await updateSource(
               next,

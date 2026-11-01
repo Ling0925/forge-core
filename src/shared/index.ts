@@ -9,6 +9,7 @@ export {
   advisorRequestSchema,
 } from "./agent-coordination";
 export {
+  DEFAULT_MAX_ACTIVE_AGENTS,
   agentModelSelectionSchema,
   type AgentProfile,
   agentProfileIdSchema,
@@ -455,6 +456,9 @@ export {
 } from "./schemas/messages";
 export {
   contextSummarySchema,
+  agentRoleSchema,
+  type CreateProfileSessionInput,
+  createProfileSessionInputSchema,
   type CreateSessionInput,
   createSessionInputSchema,
   type RunInput,
@@ -500,6 +504,34 @@ export {
   sessionPageSchema,
 } from "./session-page";
 export { sessionReviewInput } from "./session-review";
+export {
+  type Trigger,
+  triggerSchema,
+  type Thread,
+  threadSchema,
+  type WorkItem,
+  workItemSchema,
+  type WorkItemStatus,
+  workItemStatusSchema,
+  type CreateWorkItem,
+  createWorkItemSchema,
+  type WorkItemUpdate,
+  workItemUpdateSchema,
+  type WorkItemQuery,
+  workItemQuerySchema,
+  type WorkItemStore,
+  type Suggestion,
+  suggestionSchema,
+  type OutboxItem,
+  outboxItemSchema,
+  type Delivery,
+  deliverySchema,
+  type SuperAgentSettings,
+  superAgentSettingsSchema,
+  superAgentSettingsInputSchema,
+  type PublicSuperAgentSettings,
+  publicSuperAgentSettingsSchema,
+} from "./superagent";
 export type {
   RecordDelta,
   SessionChange,

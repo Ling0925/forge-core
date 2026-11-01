@@ -4,6 +4,7 @@ import {
   type SessionSnapshot,
   type ToolResult,
   invalidToolInput,
+  sessionIdSchema,
 } from "../shared";
 
 const recordId = (index: number) => `m${index + 1}`;
@@ -23,9 +24,10 @@ const searchArgs = z
     limit: z.number().int().min(1).max(20).default(10),
   })
   .strict();
-const readArgs = z
+export const historyReadSchema = z
   .object({
     id: z.string().regex(/^m[1-9][0-9]*$/),
+    sessionId: sessionIdSchema.optional(),
     offset: z.number().int().nonnegative().default(0),
     limit: z.number().int().min(1).max(12000).default(6000),
   })
@@ -40,8 +42,8 @@ export const historyDefinitions = [
   {
     name: "history_read",
     description:
-      "Read an original record from this session by mN ID returned by history_search or the working-state summary. Pages use character offsets; follow nextOffset until null to retrieve the full semantic record. Does not execute prior tool calls. Provider continuation and private reasoning are excluded.",
-    input: readArgs,
+      "Read an original record by mN ID returned by history_search or the working-state summary. Omit sessionId for this session; reading another session requires host authorization. Pages use character offsets; follow nextOffset until null to retrieve the full semantic record. Does not execute prior tool calls. Provider continuation and private reasoning are excluded.",
+    input: historyReadSchema,
   },
 ];
 
@@ -55,8 +57,10 @@ export function executeHistory(
     isError,
   });
   if (name === "history_read") {
-    const parsed = readArgs.safeParse(args);
+    const parsed = historyReadSchema.safeParse(args);
     if (!parsed.success) return invalidToolInput(parsed.error);
+    if (parsed.data.sessionId && parsed.data.sessionId !== snapshot.id)
+      return invalidToolInput("Session history access is not authorized.");
     const { id, offset, limit } = parsed.data;
     const message = snapshot.messages[Number(id.slice(1)) - 1];
     if (!message)

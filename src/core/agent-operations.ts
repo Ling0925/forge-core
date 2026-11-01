@@ -5,6 +5,7 @@ import {
   type AgentRuntimeDependencies,
   type ApprovalHandler,
   C0_CONTROL,
+  DEFAULT_MAX_ACTIVE_AGENTS,
   ForgeError,
   type Permission,
   type RunControl,
@@ -15,16 +16,14 @@ import {
   advisorAnswerInputSchema,
   advisorInputSchema,
   agentProfileIdSchema,
-  agentProfileSchema,
   providerSourceIdSchema,
   sessionIdSchema,
   settingsFields,
 } from "../shared";
 
-import { agentProfileSummary } from "./agent-profiles";
+import { agentProfileSummary, resolveAgentProfile } from "./agent-profiles";
+import { createAgentSession } from "./agent-sessions";
 
-/** Default for settings.maxActiveAgents. */
-export const DEFAULT_MAX_ACTIVE_AGENTS = 4;
 /** @deprecated Use DEFAULT_MAX_ACTIVE_AGENTS or settings.maxActiveAgents. */
 export const MAX_ACTIVE_AGENTS = DEFAULT_MAX_ACTIVE_AGENTS;
 /** Default for settings.maxAgentDepth: only the primary agent delegates. */
@@ -468,13 +467,9 @@ export async function executeAgentOperation(
           deps.settings.agentProfiles ??
           [])
         : [];
-      const found = catalog.find((item) => item.id === parsed.profileId);
-      if (parsed.profileId && (!found || !found.enabled))
-        throw new ForgeError(
-          "invalid_input",
-          "Agent profile is missing or disabled. Rediscover profiles; no task was started.",
-        );
-      const profile = found ? agentProfileSchema.parse(found) : undefined;
+      const profile = parsed.profileId
+        ? resolveAgentProfile(catalog, parsed.profileId)
+        : undefined;
       if (
         parsed.profileRevision !== undefined &&
         profile?.revision !== parsed.profileRevision
@@ -548,13 +543,6 @@ export async function executeAgentOperation(
           `${activeLimit} child agent${activeLimit === 1 ? " is" : "s are"} active (the configured maximum); wait for a slot before spawning.`,
         );
       const writePaths = [...new Set(parsed.writePaths ?? [])];
-      if (isolation === "worktree" && permission === "readonly")
-        throw new ForgeError("tool", "Readonly mode cannot create a worktree.");
-      if (isolation === "worktree" && !deps.agentWorktrees)
-        throw new ForgeError(
-          "tool",
-          "This host does not provide agent worktrees.",
-        );
       if (
         isolation === "worktree" &&
         !deps.childContextFactory &&
@@ -593,52 +581,24 @@ export async function executeAgentOperation(
         );
       deps.rootBudget?.checkAdmission();
       check(env.signal);
-      const child = await deps.store.create({
-        workspace: snapshot.workspace,
-        title: parsed.task.slice(0, 256),
-        model,
-        ...(sourceId ? { providerSourceId: sourceId } : {}),
-      });
-      await deps.store.save({
-        ...child,
-        parentSessionId: input.sessionId,
-        agentTask: parsed.task,
-        ...(profile
-          ? {
-              agentProfile: profile,
-              agentProfileId: profile.id,
-              agentProfileName: profile.name,
-            }
-          : {}),
-        ...(parsed.ownership ? { ownership: parsed.ownership } : {}),
-        ...(parsed.writePaths ? { writePaths } : {}),
-        permissionCeiling: permission,
-      });
-      let childWorkspace = child.workspace;
-      if (isolation === "worktree" && deps.agentWorktrees) {
-        try {
-          deps.rootBudget?.checkAdmission();
-          check(env.signal);
-          const isolated = await deps.agentWorktrees.create({
-            workspace: snapshot.workspace,
-            sessionId: child.id,
-            signal: env.signal,
-          });
-          childWorkspace = isolated.workspace;
-          const { workspace: _workspace, ...agentWorktree } = isolated;
-          await deps.store.save({
-            ...(await deps.store.get(child.id)),
-            workspace: childWorkspace,
-            agentWorktree,
-          });
-        } catch (error) {
-          await deps.store.save({
-            ...(await deps.store.get(child.id)),
-            status: env.signal.aborted ? "cancelled" : "failed",
-          });
-          throw error;
-        }
-      }
+      const child = await createAgentSession(
+        deps,
+        {
+          workspace: snapshot.workspace,
+          title: parsed.task.slice(0, 256),
+          model,
+          ...(sourceId ? { providerSourceId: sourceId } : {}),
+          parentSessionId: input.sessionId,
+          agentTask: parsed.task,
+          ...(profile ? { profile } : {}),
+          ...(parsed.ownership ? { ownership: parsed.ownership } : {}),
+          ...(parsed.writePaths ? { writePaths } : {}),
+          permission,
+          isolation,
+        },
+        env.signal,
+      );
+      const childWorkspace = child.workspace;
       const controller = new AbortController();
       const operation: ChildOperation = {
         controller,

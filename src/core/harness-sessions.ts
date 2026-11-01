@@ -1,16 +1,69 @@
 import { stat } from "node:fs/promises";
 import { isAbsolute, resolve } from "node:path";
 import {
+  type AgentWorktreeService,
+  type CreateProfileSessionInput,
   type CreateSessionInput,
   ForgeError,
   type PublicSettings,
   type SessionId,
   type SessionSnapshot,
+  type SessionStore,
+  createProfileSessionInputSchema,
+  narrowestPermission,
+  settingsFields,
 } from "../shared";
 
 import type { openSessionStore } from "../store";
+import { resolveAgentProfile } from "./agent-profiles";
+import { createAgentSession } from "./agent-sessions";
 import { assertBoundary } from "./context";
 import { fallbackSourceId, inferSourceId } from "./harness-provider-selection";
+
+export async function createSessionWithProfile(
+  deps: {
+    store: SessionStore;
+    settings: PublicSettings;
+    agentWorktrees: AgentWorktreeService;
+  },
+  raw: CreateProfileSessionInput,
+  signal: AbortSignal,
+): Promise<SessionSnapshot> {
+  const input = createProfileSessionInputSchema.parse(raw);
+  const profile = resolveAgentProfile(
+    deps.settings.agentProfiles ?? [],
+    input.profileId,
+  );
+  const selection = await resolveNewSession(deps.settings, {
+    workspace: input.workspace,
+    ...(profile.model.mode === "fixed"
+      ? {
+          model: profile.model.model,
+          providerSourceId: profile.model.providerSourceId,
+        }
+      : {}),
+  });
+  return createAgentSession(
+    deps,
+    {
+      workspace: selection.workspace,
+      title: input.title ?? "New session",
+      titleSource: input.title === undefined ? "default" : "user",
+      model: settingsFields.model.parse(selection.model),
+      ...(selection.providerSourceId
+        ? { providerSourceId: selection.providerSourceId }
+        : {}),
+      ...(input.agentRole === undefined ? {} : { agentRole: input.agentRole }),
+      profile,
+      permission: narrowestPermission(
+        deps.settings.defaultPermission,
+        profile.permission,
+      ),
+      isolation: input.isolation ?? profile.isolation,
+    },
+    signal,
+  );
+}
 
 /**
  * Copy a session's history up to a native-call boundary into a new session.

@@ -319,7 +319,7 @@ export function createWorkerController(
     providedRunId?: RunId,
     providerBinding?: string,
     acknowledgedPredecessor?: string,
-    inputOrigin?: "background_task",
+    inputOrigin?: import("../shared").QueuedInput["origin"],
   ) => {
     if (
       [...runs.values()].some((run) => run.input.sessionId === input.sessionId)

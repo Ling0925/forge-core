@@ -3,6 +3,7 @@ import {
   type ApprovalHandler,
   type EventSink,
   ForgeError,
+  type HarnessOptions,
   type LocalToolRegistry,
   type Permission,
   QueueAdmissionError,
@@ -50,6 +51,7 @@ type ProviderSelection = ReturnType<typeof createProviderSelection>;
 
 /** Everything one harness run borrows from its owning harness. */
 export type HarnessRunDeps = {
+  canReadSession?: HarnessOptions["canReadSession"];
   store: Awaited<ReturnType<typeof openSessionStore>>;
   settingsStore: Awaited<ReturnType<typeof openSettingsStore>>;
   modelAccess: ReturnType<typeof createModelAccessService>;
@@ -232,6 +234,7 @@ export const createHarnessRun = (deps: HarnessRunDeps) => {
         config.apiKey,
         provider,
         input.uiHost,
+        snapshot,
       );
       tools = built.tools;
       rootBudget.checkAdmission();
@@ -239,6 +242,7 @@ export const createHarnessRun = (deps: HarnessRunDeps) => {
       const result = await createAgentRuntime({
         rootBudget: budget,
         store,
+        canReadSession: deps.canReadSession,
         sessionLock: { id: input.sessionId, release: releaseSession },
         autoTitle: {
           secrets: [config.apiKey, config.baseUrl],
@@ -308,6 +312,7 @@ export const createHarnessRun = (deps: HarnessRunDeps) => {
               child.config.apiKey,
               child.provider,
               input.uiHost,
+              childInput ? await store.get(childInput.sessionId) : undefined,
             )),
             provider: child.provider,
             ...(childSourceId ? { providerSourceId: childSourceId } : {}),

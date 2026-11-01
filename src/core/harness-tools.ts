@@ -10,6 +10,7 @@ import type {
   Permission,
   PublicSettings,
   SessionId,
+  SessionSnapshot,
 } from "../shared";
 
 import {
@@ -39,7 +40,7 @@ import { createHarnessMemoryTools } from "./harness-memory-tools";
 /** Harness-owned state shared by every per-run tool registry. */
 export type HarnessToolDeps = {
   directory: string;
-  options: Pick<HarnessOptions, "toolFactory">;
+  options: Pick<HarnessOptions, "toolFactory" | "sessionTools">;
   plugins: Awaited<ReturnType<typeof createPluginHost>>;
   publishedFiles: Awaited<ReturnType<typeof openPublishedFileStore>>;
   memories: Awaited<ReturnType<typeof openMemoryStore>>;
@@ -126,8 +127,10 @@ export const createHarnessTools = (deps: HarnessToolDeps) => {
     apiKey: string,
     provider: ModelProvider,
     uiHost?: "web",
+    session?: SessionSnapshot,
   ) => {
     let local: LocalToolRegistry | undefined;
+    let sessionTools: LocalToolRegistry | undefined;
     let context: Awaited<ReturnType<typeof createProjectContext>> | undefined;
     let extensions: Awaited<ReturnType<typeof plugins.createTools>> | undefined;
     try {
@@ -149,8 +152,10 @@ export const createHarnessTools = (deps: HarnessToolDeps) => {
         protectedRoots: [directory],
       });
       await context.refresh();
+      sessionTools = session ? options.sessionTools?.(session) : undefined;
       const combined = createCombinedToolRegistry(
         local,
+        ...(sessionTools ? [sessionTools] : []),
         ...(!options.toolFactory
           ? [
               await createPublishedFileTool(workspace, publishedFiles, {
@@ -215,6 +220,7 @@ export const createHarnessTools = (deps: HarnessToolDeps) => {
     } catch (error) {
       await Promise.allSettled([
         local?.dispose(),
+        sessionTools?.dispose(),
         extensions?.registry.dispose(),
         context?.dispose(),
       ]);

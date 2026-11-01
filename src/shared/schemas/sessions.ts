@@ -21,6 +21,13 @@ export const contextSummarySchema = z
   })
   .strict();
 export const sessionTitleSchema = z.string().trim().min(1).max(256);
+export const agentRoleSchema = z
+  .object({
+    kind: z.enum(["router", "worker"]),
+    ownerId: z.string().min(1),
+  })
+  .strict()
+  .readonly();
 const summaryFields = {
   version: z.literal(1),
   id: sessionIdSchema,
@@ -35,6 +42,7 @@ const summaryFields = {
   parentSessionId: sessionIdSchema.optional(),
   agentProfileId: agentProfileIdSchema.optional(),
   agentProfileName: z.string().min(1).max(80).optional(),
+  agentRole: agentRoleSchema.optional(),
   archived: z.boolean().optional(),
 };
 export const sessionSummarySchema = z.object(summaryFields).strict().readonly();
@@ -117,6 +125,23 @@ export const createSessionInputSchema = z
   .strict()
   .readonly();
 export type CreateSessionInput = z.infer<typeof createSessionInputSchema>;
+export const createProfileSessionInputSchema = createSessionInputSchema
+  .unwrap()
+  .omit({
+    model: true,
+    providerSourceId: true,
+    routeGroupId: true,
+  })
+  .extend({
+    profileId: agentProfileIdSchema,
+    isolation: z.enum(["shared", "worktree"]).optional(),
+    agentRole: agentRoleSchema.optional(),
+  })
+  .strict()
+  .readonly();
+export type CreateProfileSessionInput = z.infer<
+  typeof createProfileSessionInputSchema
+>;
 export const textPromptSchema = z.string().trim().min(1).max(1000000);
 export const runInputSchema = z
   .object({
