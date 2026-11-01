@@ -6,6 +6,7 @@ import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import {
   type Trigger,
   type WorkItemStore,
+  createWorkItemSchema,
   workItemStatusSchema,
 } from "../../src/shared";
 import { type SuperAgentStore, openSuperAgentStore } from "../../src/store";
@@ -54,6 +55,7 @@ const work = {
   brief: "Investigate",
   threadIds: [thread.id],
   profileId: "worker",
+  routerSessionId: "router-session",
 };
 const outgoing = {
   workId: "wrk_example",
@@ -202,6 +204,8 @@ it("claims once, updates progress, and queries work by status and subscriptions"
   expect(first.id).toMatch(/^wrk_/);
   expect(first).toMatchObject({
     status: "queued",
+    routerSessionId: work.routerSessionId,
+    pendingStatus: null,
     claimedBy: null,
     workerSessionId: null,
   });
@@ -241,6 +245,75 @@ it("claims once, updates progress, and queries work by status and subscriptions"
   });
   await expect(items.linkThread("missing", thread.id)).rejects.toMatchObject({
     code: "not_found",
+  });
+});
+
+it("requires a Router on create and migrates version 1 Router cursors into work items", async () => {
+  const { routerSessionId, ...legacyInput } = work;
+  expect(createWorkItemSchema.safeParse(legacyInput).success).toBe(false);
+  const first = await store.workItems.create(work);
+  const second = await store.workItems.create({
+    ...work,
+    routerSessionId: "other-router",
+  });
+  const running = await store.workItems.claim(second.id, "other-router");
+  await store.setCursor(`superagent:work-router:${first.id}`, routerSessionId);
+  await store.setCursor(`superagent:work-router:${second.id}`, "other-router");
+  await store.setCursor("superagent:work-router:orphan", "former-router");
+  await store.setCursor("superagent:router:workspace", routerSessionId);
+  await store.setCursor("github:owner/repo:since", receivedAt);
+  await store.close();
+  const legacy = new DatabaseSync(join(directory, "superagent.sqlite"));
+  try {
+    legacy.exec(
+      "ALTER TABLE work_items DROP COLUMN router_session_id; PRAGMA user_version = 1;",
+    );
+  } finally {
+    legacy.close();
+  }
+  store = await openSuperAgentStore(directory);
+  opened.push(store);
+  expect(await store.workItems.get(first.id)).toEqual(first);
+  expect(await store.workItems.get(second.id)).toEqual(running);
+  expect(await store.workItems.list()).toEqual(
+    expect.arrayContaining([first, running]),
+  );
+  expect(await store.getCursor("superagent:router:workspace")).toBe(
+    routerSessionId,
+  );
+  expect(await store.getCursor("github:owner/repo:since")).toBe(receivedAt);
+  const migrated = new DatabaseSync(join(directory, "superagent.sqlite"));
+  try {
+    expect(migrated.prepare("PRAGMA user_version").get()?.user_version).toBe(2);
+    expect(
+      migrated
+        .prepare(
+          "SELECT * FROM cursors WHERE key GLOB 'superagent:work-router:*'",
+        )
+        .all(),
+    ).toEqual([]);
+    expect(
+      migrated
+        .prepare("PRAGMA table_info(work_items)")
+        .all()
+        .map((column) => column.name),
+    ).not.toContain("pending_status");
+  } finally {
+    migrated.close();
+  }
+  expect(
+    await store.workItems.linkWorker(first.id, "worker-session"),
+  ).toMatchObject({
+    routerSessionId,
+    pendingStatus: null,
+  });
+  await store.close();
+  store = await openSuperAgentStore(directory);
+  opened.push(store);
+  expect(await store.workItems.get(second.id)).toEqual(running);
+  expect(await store.workItems.create(work)).toMatchObject({
+    routerSessionId,
+    pendingStatus: null,
   });
 });
 

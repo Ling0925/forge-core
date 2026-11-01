@@ -7,9 +7,9 @@ import { join } from "node:path";
 import { vi } from "vitest";
 import { createHostRuntime } from "../../src/host";
 import {
+  type ConfigureInput,
   type HarnessOptions,
   type RpcRequest,
-  type SuperAgentSettings,
   agentProfileTemplates,
   rpcRequestSchema,
   rpcResponseSchema,
@@ -45,7 +45,7 @@ export async function hostFixture(
     providerFactory?: HarnessOptions["providerFactory"];
     enabled?: boolean;
     force?: boolean;
-    config?: SuperAgentSettings;
+    config?: NonNullable<ConfigureInput["settings"]>["superAgent"];
     since?: string;
     maxBodyBytes?: number;
   } = {},

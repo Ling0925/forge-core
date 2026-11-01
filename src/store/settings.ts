@@ -54,6 +54,7 @@ export async function openSettingsStore(
     ...(state.webhookSecret === undefined
       ? {}
       : { webhookSecret: state.webhookSecret }),
+    ...(state.boardToken === undefined ? {} : { boardToken: state.boardToken }),
     sources: [...state.sources],
     ...(state.routeGroups === undefined
       ? {}
@@ -115,6 +116,9 @@ export async function openSettingsStore(
       ...(parsed.data.webhookSecret === undefined
         ? {}
         : { webhookSecret: parsed.data.webhookSecret }),
+      ...(parsed.data.boardToken === undefined
+        ? {}
+        : { boardToken: parsed.data.boardToken }),
       sources: (parsed.data.sources ?? []).map((source) => ({
         ...source,
         revision: source.revision ?? 1,
@@ -183,6 +187,9 @@ export async function openSettingsStore(
     getProviderSnapshot: providerSnapshot,
     async getWebhookSecret() {
       return (await load()).webhookSecret;
+    },
+    async getBoardToken() {
+      return (await load()).boardToken;
     },
     async getProviderConfig(sourceId, credentialId, model) {
       const snapshot = await providerSnapshot(sourceId, credentialId, model);

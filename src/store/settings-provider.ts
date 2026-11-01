@@ -78,6 +78,18 @@ export function createSettingsProvider({
           : {
               superAgent: {
                 ...stored.settings.superAgent,
+                workItems: {
+                  backend:
+                    stored.settings.superAgent.workItems?.backend ?? "local",
+                },
+                ...(stored.settings.superAgent.board === undefined
+                  ? {}
+                  : {
+                      board: {
+                        ...stored.settings.superAgent.board,
+                        hasToken: !!stored.boardToken,
+                      },
+                    }),
                 maxWorkers:
                   stored.settings.superAgent.maxWorkers ??
                   DEFAULT_MAX_ACTIVE_AGENTS,

@@ -26,6 +26,16 @@ function requireConfiguration(
   const login = config.github?.login;
   const repos = config.github?.repos;
   const port = config.github?.webhook?.port;
+  const board =
+    config.workItems?.backend === "board"
+      ? {
+          "board.url": config.board?.url,
+          "board.projectId": config.board?.projectId,
+          "board.accountable": config.board?.accountable,
+          "board.token": config.board?.hasToken,
+          "board.reconnectDelay": config.board?.reconnectDelay !== undefined,
+        }
+      : {};
   if (
     !workspace ||
     !routerProfileId ||
@@ -33,7 +43,8 @@ function requireConfiguration(
     !login ||
     !repos?.length ||
     !secret ||
-    port === undefined
+    port === undefined ||
+    Object.values(board).some((value) => !value)
   ) {
     const missing = Object.entries({
       workspace,
@@ -43,6 +54,7 @@ function requireConfiguration(
       "github.repos": repos?.length,
       "github.webhookSecret": secret,
       "github.webhook.port": port !== undefined,
+      ...board,
     })
       .filter(([, value]) => !value)
       .map(([key]) => `superAgent.${key}`);

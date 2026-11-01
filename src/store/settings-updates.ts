@@ -76,15 +76,33 @@ export function createSettingsUpdates({
             const { superAgent, ...ordinary } = settings ?? {};
             let patch: Record<string, unknown> = ordinary;
             if (superAgent !== undefined) {
-              const { github, ...fields } = superAgent;
+              const { github, board, workItems, ...fields } = superAgent;
               const { webhookSecret, ...githubFields } = github ?? {};
+              const { token, ...boardFields } = board ?? {};
               if (webhookSecret !== undefined)
                 next = { ...next, webhookSecret };
+              if (token !== undefined) next = { ...next, boardToken: token };
               patch = {
                 ...ordinary,
                 superAgent: {
                   ...next.settings.superAgent,
                   ...fields,
+                  ...(workItems === undefined
+                    ? {}
+                    : {
+                        workItems: {
+                          ...next.settings.superAgent?.workItems,
+                          ...workItems,
+                        },
+                      }),
+                  ...(board === undefined
+                    ? {}
+                    : {
+                        board: {
+                          ...next.settings.superAgent?.board,
+                          ...boardFields,
+                        },
+                      }),
                   ...(github === undefined
                     ? {}
                     : {

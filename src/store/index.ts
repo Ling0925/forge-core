@@ -46,3 +46,4 @@ export { openSessionStore } from "./sessions";
 export { openSettingsStore } from "./settings";
 export { openSuperAgentStore, type SuperAgentStore } from "./superagent";
 export { openToolHooksStore } from "./tool-hooks";
+export { createCompositeWorkItemStore } from "./work-items";

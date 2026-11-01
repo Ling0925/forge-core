@@ -50,10 +50,12 @@ export const workItemSchema = z
   .object({
     id: idSchema,
     status: workItemStatusSchema,
+    pendingStatus: workItemStatusSchema.nullable(),
     title: z.string(),
     brief: z.string(),
     threadIds: idsSchema,
     workerSessionId: idSchema.nullable(),
+    routerSessionId: idSchema,
     profileId: agentProfileIdSchema,
     worktree: z.string().nullable(),
     progress: z.string().nullable(),
@@ -71,6 +73,7 @@ export const createWorkItemSchema = workItemSchema
     brief: true,
     threadIds: true,
     profileId: true,
+    routerSessionId: true,
   })
   .extend({ worktree: z.string().optional() })
   .strict()
@@ -213,6 +216,12 @@ const githubFields = {
     .readonly()
     .optional(),
 };
+const boardFields = {
+  url: z.string().optional(),
+  projectId: z.string().optional(),
+  accountable: z.string().optional(),
+  reconnectDelay: z.number().int().nonnegative().optional(),
+};
 export const superAgentSettingsSchema = z
   .object({
     enabled: z.boolean().optional(),
@@ -220,6 +229,12 @@ export const superAgentSettingsSchema = z
     routerProfileId: agentProfileIdSchema.optional(),
     workerProfileId: agentProfileIdSchema.optional(),
     github: z.object(githubFields).strict().readonly().optional(),
+    board: z.object(boardFields).strict().readonly().optional(),
+    workItems: z
+      .object({ backend: z.enum(["local", "board"]).optional() })
+      .strict()
+      .readonly()
+      .optional(),
     maxWorkers: z.number().int().positive().optional(),
   })
   .strict()
@@ -228,6 +243,11 @@ export type SuperAgentSettings = z.infer<typeof superAgentSettingsSchema>;
 export const superAgentSettingsInputSchema = superAgentSettingsSchema
   .unwrap()
   .extend({
+    board: z
+      .object({ ...boardFields, token: z.string().optional() })
+      .strict()
+      .readonly()
+      .optional(),
     github: z
       .object({ ...githubFields, webhookSecret: z.string().optional() })
       .strict()
@@ -239,6 +259,11 @@ export const superAgentSettingsInputSchema = superAgentSettingsSchema
 export const publicSuperAgentSettingsSchema = superAgentSettingsSchema
   .unwrap()
   .extend({
+    board: z
+      .object({ ...boardFields, hasToken: z.boolean() })
+      .strict()
+      .readonly()
+      .optional(),
     github: z
       .object({ ...githubFields, hasWebhookSecret: z.boolean() })
       .strict()
