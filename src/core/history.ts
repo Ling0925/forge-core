@@ -59,8 +59,6 @@ export function executeHistory(
   if (name === "history_read") {
     const parsed = historyReadSchema.safeParse(args);
     if (!parsed.success) return invalidToolInput(parsed.error);
-    if (parsed.data.sessionId && parsed.data.sessionId !== snapshot.id)
-      return invalidToolInput("Session history access is not authorized.");
     const { id, offset, limit } = parsed.data;
     const message = snapshot.messages[Number(id.slice(1)) - 1];
     if (!message)

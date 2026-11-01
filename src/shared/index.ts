@@ -531,6 +531,8 @@ export {
   superAgentSettingsInputSchema,
   type PublicSuperAgentSettings,
   publicSuperAgentSettingsSchema,
+  type SuperAgentEvent,
+  superAgentEventSchema,
 } from "./superagent";
 export type {
   RecordDelta,

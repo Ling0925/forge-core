@@ -201,3 +201,22 @@ export const publicSuperAgentSettingsSchema = superAgentSettingsSchema
 export type PublicSuperAgentSettings = z.infer<
   typeof publicSuperAgentSettingsSchema
 >;
+
+export const superAgentEventSchema = z.discriminatedUnion("type", [
+  z
+    .object({ type: z.literal("superagent_trigger"), trigger: triggerSchema })
+    .strict(),
+  z
+    .object({ type: z.literal("superagent_work"), work: workItemSchema })
+    .strict(),
+  z
+    .object({
+      type: z.literal("superagent_suggestion"),
+      suggestion: suggestionSchema,
+    })
+    .strict(),
+  z
+    .object({ type: z.literal("superagent_outbox"), item: outboxItemSchema })
+    .strict(),
+]);
+export type SuperAgentEvent = z.infer<typeof superAgentEventSchema>;

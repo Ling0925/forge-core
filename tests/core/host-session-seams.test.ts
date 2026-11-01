@@ -4,17 +4,15 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { z } from "zod";
-import { createHarness, createSessionWithProfile } from "../../src/core";
+import { createHarness } from "../../src/core";
 import {
   type AgentProfileInput,
-  ForgeError,
   type HarnessOptions,
   type HarnessService,
   type LocalToolRegistry,
   type Permission,
   type SessionId,
   agentProfileTemplates,
-  defaultPublicSettings,
   defineTool,
 } from "../../src/shared";
 import { openSessionStore } from "../../src/store";
@@ -399,28 +397,22 @@ it.each(["allowed", "denied", "absent"] as const)(
 );
 
 it("retains local worktree failure classification on profile session creation", async () => {
-  const store = await openSessionStore(join(directory, "state"));
-  const failure = new ForgeError("tool", "Fixture worktree failure");
+  const service = await harness();
+  await service.updateSettings({
+    agent: {
+      type: "save",
+      profile: { ...profile, permission: "workspace" },
+      expectedRevision: 1,
+    },
+  });
   await expect(
-    createSessionWithProfile(
-      {
-        store,
-        settings: {
-          ...defaultPublicSettings,
-          model: "fixture",
-          agentProfiles: [{ ...profile, revision: 1, permission: "workspace" }],
-        },
-        agentWorktrees: {
-          create: async () => {
-            throw failure;
-          },
-        },
-      },
-      { workspace, profileId: profile.id, isolation: "worktree" },
-      new AbortController().signal,
-    ),
-  ).rejects.toBe(failure);
-  expect(await store.list()).toMatchObject([
+    service.createSessionWithProfile({
+      workspace,
+      profileId: profile.id,
+      isolation: "worktree",
+    }),
+  ).rejects.toMatchObject({ code: "invalid_input", retryable: false });
+  expect(await service.listSessions()).toMatchObject([
     { status: "failed", agentProfileId: profile.id },
   ]);
 });
