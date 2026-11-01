@@ -1,7 +1,7 @@
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   CONTEXT_SCALE_FLOOR,
   compactContext,
@@ -97,6 +97,28 @@ const call = (id: string) => ({
 });
 const input = { sessionId: initial().id, prompt: "work" };
 const signal = () => new AbortController().signal;
+it("leaves a borrowed session lock to its owner", async () => {
+  const f = fixture(finalProvider, emptyTools);
+  const release = vi.fn(await f.deps.store.acquire(input.sessionId));
+  const runtime = createAgentRuntime({
+    ...f.deps,
+    sessionLock: { id: input.sessionId, release },
+  });
+  try {
+    await runtime.run(
+      input,
+      () => {},
+      async () => false,
+      signal(),
+    );
+    expect(release).not.toHaveBeenCalled();
+    await expect(f.deps.store.acquire(input.sessionId)).rejects.toMatchObject({
+      code: "busy",
+    });
+  } finally {
+    await release();
+  }
+});
 /** A persisted `context_usage` event; `used` is the local estimate for the turn. */
 const usageEvent = (
   index: number,

@@ -1,9 +1,10 @@
 import { spawn } from "node:child_process";
-import { ForgeError } from "../shared/errors";
+import { ForgeError } from "../shared";
 import {
   type WorkspacePathGuard,
+  createProcessGroup,
   createWorkspacePathGuard,
-} from "./path-guard";
+} from "../store";
 
 export type GitAction = "status" | "diff" | "log";
 export interface GitInspection {
@@ -92,9 +93,10 @@ async function run(
       {
         env,
         stdio: ["ignore", "pipe", "pipe"],
-        detached: process.platform !== "win32",
+        detached: true,
       },
     );
+    const signalProcess = createProcessGroup(child);
     const parts: Buffer[] = [];
     const diagnostic: Buffer[] = [];
     let size = 0;
@@ -104,13 +106,7 @@ async function run(
     const kill = (why: typeof reason) => {
       if (reason) return;
       reason = why;
-      if (process.platform !== "win32" && child.pid) {
-        try {
-          process.kill(-child.pid, "SIGKILL");
-        } catch {
-          child.kill("SIGKILL");
-        }
-      } else child.kill("SIGKILL");
+      void signalProcess("SIGKILL").catch(() => child.kill("SIGKILL"));
     };
     const timer = setTimeout(() => kill("timeout"), timeoutMs);
     const abort = () => kill("cancelled");

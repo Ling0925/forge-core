@@ -163,7 +163,7 @@ await harness.dispose();
 const seed = Number(values.seed);
 const seeded = new Map(workspaces.map((workspace) => [workspace, []]));
 if (seed) {
-  const { openSessionStore } = await import("../dist/store/sessions.js");
+  const { openSessionStore } = await import("../dist/store/index.js");
   const store = await openSessionStore(harnessOptions.stateDir);
   const text = "lorem ipsum dolor sit amet ".repeat(40);
   for (let i = 0; i < seed; i++) {

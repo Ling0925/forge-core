@@ -1,24 +1,25 @@
 import { ForgeError } from "./errors";
-import type { HarnessAdaptationHost } from "./harness-adaptation";
+import type { HarnessExperienceStore } from "./harness-adaptation";
+import type { JsonValue, Permission, SessionId } from "./schemas/base";
+import type { ApprovalRequest, ToolResult } from "./schemas/changes";
+import type { AgentEvent } from "./schemas/events";
 import type {
-  AgentEvent,
-  ApprovalRequest,
-  ConfigureInput,
-  CreateSessionInput,
-  JsonValue,
   Message,
-  Permission,
-  ProviderConfig,
   ProviderResponse,
-  PublicSettings,
-  RunInput,
-  SessionId,
-  SessionSnapshot,
-  SessionSummary,
   ToolCall,
   ToolDefinition,
-  ToolResult,
-} from "./schemas";
+} from "./schemas/messages";
+import type {
+  CreateSessionInput,
+  RunInput,
+  SessionSnapshot,
+  SessionSummary,
+} from "./schemas/sessions";
+import type {
+  ConfigureInput,
+  ProviderConfig,
+  PublicSettings,
+} from "./schemas/settings";
 
 export type EventSink = (event: AgentEvent) => void;
 export type ApprovalHandler = (
@@ -44,7 +45,14 @@ export interface RunControl {
   /** Bind the run's sole writer after startup; unbind before terminal cleanup. */
   readonly setSteeringHandler?: (handler: SteeringHandler | undefined) => void;
 }
+export interface RouteRetryControl {
+  readonly groupId: string;
+  /** True only when the last routed request for this session provably never ran. */
+  readonly mayRetry: (sessionId?: string) => boolean;
+}
+
 export interface ModelProvider {
+  readonly routeControl?: RouteRetryControl;
   readonly apiMode?: "chat-completions" | "responses" | "anthropic" | "gemini";
   /** Host-derived metadata for mixed routes with Responses candidates, not a setting or gateway support guarantee. */
   readonly mayUseWebSearch?: boolean;
@@ -77,7 +85,9 @@ export interface ModelProvider {
       /** Optional live reasoning display; never persisted as assistant content. */
       onReasoning?: (text: string) => void;
       /** Ephemeral cumulative metadata; never execute or expose partial arguments. */
-      onToolCall?: (preview: import("./schemas").ToolCallPreview) => void;
+      onToolCall?: (
+        preview: import("./schemas/messages").ToolCallPreview,
+      ) => void;
     }>,
   ): Promise<ProviderResponse>;
 }
@@ -91,7 +101,7 @@ export interface ToolContext {
   readonly onEvent: EventSink;
   /** Host-owned accounting for auxiliary inference; undefined marks missing usage. */
   readonly onModelUsage?: (
-    usage: import("./schemas").Usage | undefined,
+    usage: import("./schemas/usage").Usage | undefined,
   ) => void;
   /** Host-owned observers; not model tools and never permission grants. */
   readonly onCommandStarted?: () => void;
@@ -113,6 +123,14 @@ export interface LocalToolRegistry {
   readonly commandTasks?: import("./task-view").CommandTaskAccess;
   dispose(): Promise<void>;
 }
+export interface HarnessAdaptationHost {
+  /** Fresh registry for each probe, never the formal run's read/write authority. */
+  createProbeTools(): Promise<LocalToolRegistry>;
+  readonly experiences?: HarnessExperienceStore;
+  /** Host-owned secret redaction before feedback, persistence and projection. */
+  readonly redact?: (text: string) => string;
+}
+
 export type ToolArguments = Readonly<Record<string, JsonValue>>;
 export interface SessionStore {
   /** Versioned persistence; optional for legacy/in-memory adapters. */
@@ -147,7 +165,7 @@ export interface SettingsStore {
     model?: string,
   ): Promise<{
     config: ProviderConfig;
-    source?: import("./schemas").PublicProviderSource;
+    source?: import("./schemas/settings").PublicProviderSource;
   }>;
 
   refreshAccount?(
@@ -231,11 +249,11 @@ export interface HarnessService {
     id: SessionId,
     checkpointId: string,
   ): Promise<SessionSnapshot>;
-  listWorkspaceEntries?(
+  listWorkspaceEntries(
     id: SessionId,
     path?: string,
   ): Promise<import("./ipc").WorkspaceDirectoryListingDto>;
-  readWorkspaceFile?(
+  readWorkspaceFile(
     id: SessionId,
     path: string,
   ): Promise<import("./ipc").WorkspaceFilePreviewDto>;

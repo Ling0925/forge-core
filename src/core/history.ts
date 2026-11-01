@@ -1,6 +1,10 @@
 import { z } from "zod";
-import type { Message, SessionSnapshot, ToolResult } from "../shared/schemas";
-import { invalidToolInput } from "../shared/tool-input";
+import {
+  type Message,
+  type SessionSnapshot,
+  type ToolResult,
+  invalidToolInput,
+} from "../shared";
 
 const recordId = (index: number) => `m${index + 1}`;
 export function historyText(message: Message): string {

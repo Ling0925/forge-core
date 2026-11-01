@@ -1,5 +1,12 @@
-import type { AgentEvent } from "./schemas";
-import type { TranscriptSnapshot as SessionSnapshot } from "./session-page";
+import type { AgentEvent } from "./schemas/events";
+import type { SessionSnapshot as StoredSessionSnapshot } from "./schemas/sessions";
+
+type SessionSnapshot = Pick<StoredSessionSnapshot, "messages" | "events"> & {
+  readonly transcript?: {
+    readonly messageOffset: number;
+    readonly firstTurn: number;
+  };
+};
 
 export interface ExecutionTurn {
   readonly turn: number;

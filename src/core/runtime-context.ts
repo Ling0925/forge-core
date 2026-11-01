@@ -1,5 +1,4 @@
-import { ForgeError } from "../shared/errors";
-import type { AgentEvent, Message } from "../shared/schemas";
+import { type AgentEvent, ForgeError, type Message } from "../shared";
 
 export const isHumanTurn = (message: Message | undefined): boolean =>
   message?.role === "user" && message.origin !== "agent_reconciliation";

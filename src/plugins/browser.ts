@@ -2,29 +2,26 @@ import { randomUUID } from "node:crypto";
 import { resolve } from "node:path";
 import { z } from "zod";
 import { zodToJsonSchema } from "zod-to-json-schema";
-import type { ToolContext } from "../shared/contracts";
-import { ForgeError } from "../shared/errors";
 import {
   type BrowserCommand,
   type BrowserCommandResult,
   type BrowserPluginConfig,
   type BrowserResponse,
+  ForgeError,
+  type PublishedFile,
+  type SessionId,
+  type ToolContext,
+  type ToolResult,
   browserCommandResultSchema,
   browserCommandSchema,
   browserPluginConfigSchema,
-} from "../shared/plugins";
-import type { PublishedFile } from "../shared/published-files";
-import {
-  type SessionId,
-  type ToolResult,
-  jsonObjectSchema,
-} from "../shared/schemas";
-import { defineTool } from "../shared/tool-definition";
-import {
+  defineTool,
   invalidToolInput,
+  jsonObjectSchema,
   noArgumentFields,
   recoverToolInputError,
-} from "../shared/tool-input";
+} from "../shared";
+
 import type {
   PluginDefinition,
   PluginScope,

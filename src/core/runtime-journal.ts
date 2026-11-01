@@ -1,16 +1,17 @@
 import {
   type AdvisorRequest,
-  advisorRequestSchema,
-} from "../shared/agent-coordination";
-import type { SessionStore, SteeringInput } from "../shared/contracts";
-import { ForgeError } from "../shared/errors";
-import {
+  type AgentEvent,
+  ForgeError,
   type Message,
   type RunInput,
   type SessionSnapshot,
+  type SessionStore,
+  type SteeringInput,
+  advisorRequestSchema,
+  agentEventSchema,
   runInputSchema,
-} from "../shared/schemas";
-import { type AgentEvent, agentEventSchema } from "../shared/schemas";
+} from "../shared";
+
 import { createSessionWriter } from "./session-writer";
 
 interface RuntimeJournalState {

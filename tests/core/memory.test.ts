@@ -5,13 +5,12 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { forgeMemory } from "../../src/core/forge-memory";
 import { createHarness } from "../../src/core/harness";
 import { retrieveMemoryEvidence } from "../../src/core/memory-retrieval";
-import { ProviderError } from "../../src/provider/errors";
 import type {
   ModelProvider,
   SessionStore,
   ToolContext,
 } from "../../src/shared/contracts";
-import { ForgeError } from "../../src/shared/errors";
+import { ForgeError, ProviderError } from "../../src/shared/errors";
 import {
   type MemoryStore,
   forgeMemorySchema,

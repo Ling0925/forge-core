@@ -1,8 +1,8 @@
 import { createHash, randomUUID } from "node:crypto";
 import { join, resolve } from "node:path";
 import { z } from "zod";
-import { ForgeError } from "../shared/errors";
 import {
+  ForgeError,
   type HarnessExperience,
   type HarnessExperienceInput,
   type HarnessExperienceScope,
@@ -10,7 +10,8 @@ import {
   harnessExperienceInputSchema,
   harnessExperienceSchema,
   harnessExperienceScopeSchema,
-} from "../shared/harness-adaptation";
+} from "../shared";
+
 import { atomicJson, privateDirectory, readJson, storageError } from "./io";
 import { fileLock } from "./lock";
 

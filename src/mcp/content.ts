@@ -3,7 +3,7 @@ import {
   type McpContent,
   type McpToolOutcome,
   mcpContentSchema,
-} from "../shared/mcp";
+} from "../shared";
 import { boundedText } from "./bounds";
 
 const resultSchema = z.object({

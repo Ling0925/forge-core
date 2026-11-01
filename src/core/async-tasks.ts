@@ -1,29 +1,32 @@
 import { randomUUID } from "node:crypto";
-import { readdir } from "node:fs/promises";
+import { readdir, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { z } from "zod";
-import type {
-  AsyncTaskService,
-  AsyncTaskStart,
-  AsyncTaskView,
-} from "../shared/async-tasks";
-import { asyncTaskArguments } from "../shared/async-tasks";
-import { ForgeError } from "../shared/errors";
 import {
+  type AsyncTaskService,
+  type AsyncTaskStart,
+  type AsyncTaskView,
+  ForgeError,
+  type RunInput,
+  type SessionId,
+  type ToolResult,
+  type Usage,
+  addUsage,
+  asyncTaskArguments,
   permissionSchema,
   sessionIdSchema,
   toolResultSchema,
   usageSchema,
-} from "../shared/schemas";
-import type { RunInput, SessionId, ToolResult, Usage } from "../shared/schemas";
-import { addUsage } from "../shared/usage-totals";
+} from "../shared";
+
 import {
   atomicJson,
+  fileLock,
   privateDirectory,
   readJson,
   storageError,
-} from "../store/io";
-import { fileLock } from "../store/lock";
+  syncDirectory,
+} from "../store";
 
 const MAX_TASKS = 256;
 const MAX_ACTIVE = 16;
@@ -64,6 +67,7 @@ const recordSchema = z
     resultIsError: z.boolean().optional(),
     usage: usageSchema,
     usageComplete: z.boolean(),
+    delivered: z.boolean().optional(),
   })
   .strict();
 type Record = z.infer<typeof recordSchema>;
@@ -130,13 +134,23 @@ export async function openAsyncTaskService(options: {
       );
     return task;
   };
+  const reap = async (task: Task) => {
+    try {
+      await rm(join(directory, `${task.record.id}.json`), { force: true });
+      await syncDirectory(directory);
+    } catch {
+      throw storageError();
+    }
+    tasks.delete(task.record.id);
+  };
   function notify(
     task: Task,
     automatic = false,
     guard?: () => void,
   ): Promise<void> {
     if (task.notifying) return task.notifying;
-    if (task.record.notification === "queued") return Promise.resolve();
+    if (task.record.notification === "queued" || task.record.delivered)
+      return Promise.resolve();
     check();
     if (task.record.status === "running")
       throw new ForgeError(
@@ -190,7 +204,6 @@ export async function openAsyncTaskService(options: {
     const files = (await readdir(directory)).filter((name) =>
       name.endsWith(".json"),
     );
-    if (files.length > MAX_TASKS) throw storageError();
     for (const file of files) {
       const parsed = recordSchema.safeParse(
         await readJson(join(directory, file), RECORD_BYTES),
@@ -202,6 +215,10 @@ export async function openAsyncTaskService(options: {
       )
         throw storageError();
       const task: Task = { record: parsed.data, persisted: true };
+      if (task.record.delivered) {
+        await reap(task);
+        continue;
+      }
       if (task.record.status === "running") {
         task.record = {
           ...task.record,
@@ -218,6 +235,7 @@ export async function openAsyncTaskService(options: {
         await persist(task);
       }
       tasks.set(task.record.id, task);
+      if (tasks.size > MAX_TASKS) throw storageError();
     }
   } catch (error) {
     await release();
@@ -424,6 +442,7 @@ export async function openAsyncTaskService(options: {
       })().finally(() => {
         input.signal.removeEventListener("abort", abort);
         task.controller = undefined;
+        input.onSettled?.();
       });
       await started;
       return view(task);
@@ -462,7 +481,21 @@ export async function openAsyncTaskService(options: {
           });
       } else if (input.action === "wait")
         await wait(task, input.timeout_ms, context.signal);
-      return page(task, input.offset, input.limit);
+      const response = page(task, input.offset, input.limit);
+      if (
+        input.action === "read" &&
+        task.record.status !== "running" &&
+        input.offset + input.limit >= (task.record.output?.length ?? 0)
+      ) {
+        await task.done;
+        while (task.notifying) await task.notifying;
+        if (["queued", "suppressed"].includes(task.record.notification)) {
+          task.record = { ...task.record, delivered: true };
+          await persist(task);
+          await reap(task);
+        }
+      }
+      return response;
     },
     async cancelSession(id) {
       const owned = [...tasks.values()].filter(
@@ -471,6 +504,13 @@ export async function openAsyncTaskService(options: {
       for (const task of owned) task.controller?.abort();
       await Promise.all(owned.map((task) => task.done));
       return owned.length > 0;
+    },
+    async reapSession(id) {
+      const owned = [...tasks.values()].filter((task) => owns(task, id));
+      await Promise.allSettled(
+        owned.flatMap((task) => [task.done, task.notifying]),
+      );
+      for (const task of owned) await reap(task);
     },
     dispose() {
       if (closing) return closing;

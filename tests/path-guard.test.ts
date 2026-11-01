@@ -12,8 +12,8 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   WorkspacePathError,
   createWorkspacePathGuard,
-} from "../src/tools/path-guard";
-import type { WorkspacePathGuard } from "../src/tools/path-guard";
+} from "../src/store/path-guard";
+import type { WorkspacePathGuard } from "../src/store/path-guard";
 
 interface Fixture {
   readonly temporary: string;
@@ -120,11 +120,7 @@ describe("workspace path guard: Given / When / Then", () => {
 
   it("given absolute input even inside the workspace, when resolving, then rejects it", async () => {
     const { guard, workspace } = givenWorkspace();
-    for (const input of [
-      join(workspace, "nested", "note.txt"),
-      "/absolute",
-      "C:\\absolute",
-    ]) {
+    for (const input of [join(workspace, "nested", "note.txt"), "/absolute"]) {
       await expect(guard.resolveRead(input)).rejects.toMatchObject({
         code: "OUTSIDE_WORKSPACE",
       });
@@ -133,7 +129,7 @@ describe("workspace path guard: Given / When / Then", () => {
 
   it("given invalid input, when resolving, then exposes neither raw input nor filesystem details", async () => {
     const { guard } = givenWorkspace();
-    for (const input of ["", "nested/\0secret", "C:relative"]) {
+    for (const input of ["", "nested/\0secret"]) {
       await expect(guard.resolveRead(input)).rejects.toMatchObject({
         name: "WorkspacePathError",
         code: "INVALID_PATH",
@@ -153,6 +149,18 @@ describe("workspace path guard: Given / When / Then", () => {
       code: "MISSING",
     });
   });
+
+  it.each(["a:note.txt", "a:\\note.txt", "\\note.txt"])(
+    "resolves %s as a literal POSIX filename",
+    async (name) => {
+      const { guard, workspace } = givenWorkspace();
+      const path = join(workspace, name);
+      expect(await guard.resolveWrite(name)).toBe(path);
+      await writeFile(path, "literal");
+      expect(await guard.resolveRead(name)).toBe(path);
+      expect(await guard.resolveWrite(name)).toBe(path);
+    },
+  );
 
   it("given a file as parent, when reading or writing its child, then rejects the non-directory", async () => {
     const { guard } = givenWorkspace();

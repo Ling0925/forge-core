@@ -1,11 +1,8 @@
 import { z } from "zod";
-import type {
-  Permission,
-  RunInput,
-  SessionId,
-  ToolResult,
-  Usage,
-} from "./schemas";
+import type { Permission, SessionId } from "./schemas/base";
+import type { ToolResult } from "./schemas/changes";
+import type { RunInput } from "./schemas/sessions";
+import type { Usage } from "./schemas/usage";
 
 export const asyncTaskArguments = z
   .object({
@@ -62,6 +59,7 @@ export interface AsyncTaskStart {
     onUsage: (usage: Usage | undefined) => void,
   ) => Promise<ToolResult>;
   readonly redact?: (text: string) => string;
+  readonly onSettled?: () => void;
 }
 export interface AsyncTaskService {
   start(input: AsyncTaskStart): Promise<AsyncTaskView>;
@@ -75,5 +73,6 @@ export interface AsyncTaskService {
   ): Promise<ToolResult>;
   /** Stop owned work and work delegated to this main session, joining real completion. */
   cancelSession(sessionId: SessionId): Promise<boolean>;
+  reapSession(sessionId: SessionId): Promise<void>;
   dispose(): Promise<void>;
 }

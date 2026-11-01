@@ -1,5 +1,5 @@
-import { mcpRegisterInputSchema } from "../../src/mcp/types";
 import type { HarnessService } from "../../src/shared/contracts";
+import { mcpRegisterInputSchema } from "../../src/shared/mcp";
 
 /**
  * Neutral host-test defaults for public service methods that the local host
@@ -17,7 +17,19 @@ export const extendedService = (): Pick<
   | "listCheckpoints"
   | "getCheckpointDiff"
   | "restoreCheckpoint"
+  | "listWorkspaceEntries"
+  | "readWorkspaceFile"
 > => ({
+  listWorkspaceEntries: async (_id, path = ".") => ({
+    workspace: "/tmp",
+    path,
+    parentPath: null,
+    entries: [],
+    truncated: false,
+  }),
+  readWorkspaceFile: async (id, path) => {
+    throw new Error(`No workspace file ${path} for ${id}`);
+  },
   getProjectContext: async () => ({
     workspace: "/tmp",
     instructionSources: [],

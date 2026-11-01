@@ -3,7 +3,6 @@ import { describe, expect, it, vi } from "vitest";
 import { agentSummary, boundedReports } from "../../src/core/agent-operations";
 import { createRootRunBudget } from "../../src/core/run-budget";
 import { createAgentRuntime } from "../../src/core/runtime";
-import { ProviderError } from "../../src/provider/openai";
 import type {
   AgentRuntimeDependencies,
   ApprovalHandler,
@@ -11,7 +10,7 @@ import type {
   ModelProvider,
   SessionStore,
 } from "../../src/shared/contracts";
-import { ForgeError } from "../../src/shared/errors";
+import { ForgeError, ProviderError } from "../../src/shared/errors";
 import type { RootRunBudget } from "../../src/shared/run-budget";
 import {
   type AgentEvent,

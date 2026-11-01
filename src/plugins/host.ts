@@ -1,7 +1,7 @@
-import type { LocalToolRegistry } from "../shared/contracts";
-import { ForgeError } from "../shared/errors";
 import {
   type BrowserRequest,
+  ForgeError,
+  type LocalToolRegistry,
   type PluginConfigureInput,
   type PluginRecord,
   browserRequestSchema,
@@ -11,9 +11,10 @@ import {
   pluginIdSchema,
   pluginManifestSchema,
   pluginRecordSchema,
-} from "../shared/plugins";
-import { type PluginEntry, openPluginStore } from "../store/plugins";
-import { createCombinedToolRegistry } from "../tools/combined";
+} from "../shared";
+
+import { type PluginEntry, openPluginStore } from "../store";
+import { createCombinedToolRegistry } from "../tools";
 import { type BrowserPluginOptions, createBrowserPlugin } from "./browser";
 import {
   type OfficeCliPluginOptions,

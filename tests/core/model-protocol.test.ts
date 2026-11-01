@@ -1,14 +1,25 @@
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, expect, it } from "vitest";
+import { afterEach, expect, it, vi } from "vitest";
 import { createModelAccessService } from "../../src/core/model-access";
-import { COPILOT_SESSION_URL } from "../../src/provider/accounts";
+import {
+  AccountService,
+  COPILOT_SESSION_URL,
+} from "../../src/provider/accounts";
 import type {
   ModelProvider,
   ProviderFactory,
 } from "../../src/shared/contracts";
-import type { ProviderAttempt } from "../../src/shared/model-access";
+import {
+  ForgeError,
+  isRetryableProviderFailure,
+  toErrorInfo,
+} from "../../src/shared/errors";
+import type {
+  AccountTokens,
+  ProviderAttempt,
+} from "../../src/shared/model-access";
 import {
   type ModelCatalog,
   modelCatalogEntrySchema,
@@ -611,6 +622,282 @@ it("requires account overrides to match the selected and advertised per-model ad
   expect(
     accountProtocolCompatible("anthropic", { apiMode: "chat-completions" }),
   ).toBe(false);
+});
+
+async function copilotFixture() {
+  const root = await mkdtemp(join(tmpdir(), "forge-copilot-protocol-"));
+  cleanups.push(() => rm(root, { recursive: true, force: true }));
+  const store = await openSettingsStore(root);
+  const tokens: AccountTokens = {
+    platform: "copilot",
+    accessToken: "fixture-shared-github-token",
+    accountId: "fixture-account",
+  };
+  await store.update({
+    source: {
+      type: "save",
+      source: {
+        id: "copilot",
+        label: "Copilot",
+        baseUrl: "https://copilot.test",
+        model: "responses-only",
+        modelAliases: { response: "responses-only" },
+      },
+      credentials: [
+        {
+          id: "account",
+          label: "Account",
+          type: "account",
+          enabled: true,
+          account: tokens,
+        },
+      ],
+    },
+  });
+  const seen: Seen[] = [];
+  const session = vi.fn(async () => ({
+    token: "fixture-session",
+    expires_at: Math.floor(Date.now() / 1000) + 3600,
+    endpoints: { api: "https://copilot.test" },
+  }));
+  const models = vi.fn(async () => ({
+    data: [
+      {
+        id: "responses-only",
+        capabilities: { type: "chat" },
+        model_picker_enabled: true,
+        supported_endpoints: ["/responses"],
+      },
+    ],
+  }));
+  const open = async (
+    create = createModelAccessService,
+    settingsStore = store,
+  ) => {
+    const access = create({
+      settingsStore,
+      catalogStore: await openModelCatalogStore(root),
+      providerFactory: capture(seen),
+      signal: signal(),
+      accountFetch: async (input) => {
+        const url = String(input);
+        const body =
+          url === COPILOT_SESSION_URL
+            ? await session()
+            : url === "https://copilot.test/models"
+              ? await models()
+              : undefined;
+        if (!body) throw new Error(`Unexpected fixture URL: ${url}`);
+        return new Response(JSON.stringify(body), {
+          headers: { "content-type": "application/json" },
+        });
+      },
+    });
+    cleanups.push(() => access.dispose());
+    return access;
+  };
+  const discover = (access: ReturnType<typeof createModelAccessService>) =>
+    access.request({ type: "catalog", sourceId: "copilot" });
+  const infer = async (
+    access: ReturnType<typeof createModelAccessService>,
+    model = "responses-only",
+  ) => {
+    const { provider } = await access.resolveProvider(
+      "copilot",
+      undefined,
+      signal(),
+      model,
+    );
+    await complete(provider, model);
+  };
+  return { store, tokens, seen, session, models, open, discover, infer };
+}
+
+it("routes Copilot through Responses after restarting with only a cached catalog", async () => {
+  const f = await copilotFixture();
+  const first = await f.open();
+  expect(await f.discover(first)).toMatchObject({
+    models: [{ id: "responses-only", protocols: ["responses"] }],
+  });
+  await f.infer(first);
+  expect(f.seen.at(-1)?.config.apiMode).toBe("responses");
+  await first.dispose();
+  vi.resetModules();
+  const { createModelAccessService: restartedCreate } = await import(
+    "../../src/core/model-access"
+  );
+  const restarted = await f.open(restartedCreate);
+  f.models.mockRejectedValue(new Error("Catalog is offline"));
+  await f.infer(restarted, "response");
+  expect(f.seen.at(-1)).toMatchObject({
+    model: "responses-only",
+    config: { apiMode: "responses" },
+  });
+  expect(f.models).toHaveBeenCalledTimes(1);
+  expect(f.session).toHaveBeenCalledTimes(2);
+});
+
+it("loads Copilot protocols for first inference and replaces them on catalog refresh", async () => {
+  const f = await copilotFixture();
+  vi.resetModules();
+  const { createModelAccessService: freshCreate } = await import(
+    "../../src/core/model-access"
+  );
+  const access = await f.open(freshCreate);
+  await f.infer(access);
+  expect(f.seen.at(-1)?.config.apiMode).toBe("responses");
+  await f.discover(access);
+  await f.infer(access);
+  expect(f.models).toHaveBeenCalledTimes(1);
+  f.models.mockResolvedValue({
+    data: [
+      {
+        id: "responses-only",
+        capabilities: { type: "chat" },
+        model_picker_enabled: true,
+        supported_endpoints: ["/chat/completions"],
+      },
+    ],
+  });
+  await access.request({
+    type: "catalog",
+    sourceId: "copilot",
+    refresh: true,
+  });
+  await f.infer(access);
+  expect(f.seen.at(-1)?.config.apiMode).toBe("chat-completions");
+  expect(f.models).toHaveBeenCalledTimes(2);
+});
+
+it("retains cached Copilot protocols when the account token changes", async () => {
+  const now = vi.spyOn(Date, "now");
+  const f = await copilotFixture();
+  let account = f.tokens;
+  const access = await f.open(createModelAccessService, {
+    ...f.store,
+    async getProviderSnapshot(...args) {
+      const current = await f.store.getProviderSnapshot!(...args);
+      return {
+        ...current,
+        config: { ...current.config, apiKey: account.accessToken, account },
+      };
+    },
+  });
+  await f.discover(access);
+  account = { ...f.tokens, accessToken: "fixture-refreshed-github-token" };
+  f.session.mockResolvedValue({
+    token: "fixture-refreshed-session",
+    expires_at: Math.floor(Date.now() / 1000) + 3600,
+    endpoints: { api: "https://copilot.test" },
+  });
+  f.models.mockRejectedValue(new Error("Catalog is offline"));
+  await f.infer(access);
+  expect(f.seen.at(-1)?.config).toMatchObject({
+    apiMode: "responses",
+    apiKey: "fixture-refreshed-session",
+  });
+  expect(f.models).toHaveBeenCalledTimes(1);
+  expect(f.session).toHaveBeenCalledTimes(2);
+
+  const renewedAt = Date.now() + 3600 * 1000;
+  now.mockReturnValue(renewedAt);
+  f.session.mockResolvedValue({
+    token: "fixture-renewed-session",
+    expires_at: Math.floor(renewedAt / 1000) + 3600,
+    endpoints: { api: "https://copilot.test" },
+  });
+  await f.infer(access);
+  expect(f.seen.at(-1)?.config).toMatchObject({
+    apiMode: "responses",
+    apiKey: "fixture-renewed-session",
+  });
+  expect(f.models).toHaveBeenCalledTimes(1);
+  expect(f.session).toHaveBeenCalledTimes(3);
+});
+
+it("isolates Copilot catalogs and session tokens between model-access account services", async () => {
+  const a = await copilotFixture();
+  const b = await copilotFixture();
+  b.session.mockResolvedValue({
+    token: "fixture-session-b",
+    expires_at: Math.floor(Date.now() / 1000) + 3600,
+    endpoints: { api: "https://copilot.test" },
+  });
+  b.models.mockResolvedValue({
+    data: [
+      {
+        id: "responses-only",
+        capabilities: { type: "chat" },
+        model_picker_enabled: true,
+        supported_endpoints: ["/chat/completions"],
+      },
+    ],
+  });
+  const first = await a.open();
+  const second = await b.open();
+  await a.discover(first);
+  await b.discover(second);
+  await a.infer(first);
+  await b.infer(second);
+  expect(a.seen.at(-1)?.config).toMatchObject({
+    apiMode: "responses",
+    apiKey: "fixture-session",
+  });
+  expect(b.seen.at(-1)?.config).toMatchObject({
+    apiMode: "chat-completions",
+    apiKey: "fixture-session-b",
+  });
+  expect(a.session).toHaveBeenCalledTimes(1);
+  expect(b.session).toHaveBeenCalledTimes(1);
+});
+
+it("selects the Copilot protocol without mutating the account configuration", async () => {
+  const original = AccountService.prototype.providerConfig;
+  vi.spyOn(AccountService.prototype, "providerConfig").mockImplementation(
+    async function (this: AccountService, ...args) {
+      return Object.freeze(await original.apply(this, args));
+    },
+  );
+  const f = await copilotFixture();
+  const access = await f.open();
+  await f.infer(access);
+  expect(f.seen.at(-1)?.config.apiMode).toBe("responses");
+});
+
+it.each([
+  new Error("Catalog loader failed locally"),
+  new ForgeError("invalid_input", "Invalid local catalog input."),
+])("preserves local catalog failures on inference: $name", async (error) => {
+  const listModels = vi
+    .spyOn(AccountService.prototype, "listModels")
+    .mockRejectedValue(error);
+  const f = await copilotFixture();
+  const access = await f.open();
+  await expect(f.infer(access)).rejects.toBe(error);
+  const { provider } = await access.resolveProvider("copilot");
+  await expect(complete(provider, "responses-only")).rejects.toBe(error);
+  expect(isRetryableProviderFailure(error)).toBe(false);
+  expect(toErrorInfo(error)).toMatchObject({
+    code: error instanceof ForgeError ? "invalid_input" : "internal",
+    retryable: false,
+  });
+  expect(listModels).toHaveBeenCalledTimes(2);
+  expect(f.seen).toEqual([]);
+});
+
+it("keeps chat-completions for Copilot models missing from the catalog", async () => {
+  const f = await copilotFixture();
+  const access = await f.open();
+  await f.infer(access, "unlisted-model");
+  const { provider } = await access.resolveProvider("copilot");
+  await complete(provider, "unlisted-model");
+  expect(
+    f.seen.map(({ config, model }) => ({ apiMode: config.apiMode, model })),
+  ).toEqual([
+    { apiMode: "chat-completions", model: "unlisted-model" },
+    { apiMode: "chat-completions", model: "unlisted-model" },
+  ]);
+  expect(f.models).toHaveBeenCalledTimes(1);
 });
 
 it("prepares route members with their own effective protocols", async () => {

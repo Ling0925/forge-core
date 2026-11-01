@@ -2,7 +2,8 @@ import { type ChildProcess, spawn } from "node:child_process";
 import { constants } from "node:fs";
 import { access, mkdir, mkdtemp, rm, stat } from "node:fs/promises";
 import { delimiter, isAbsolute, join, resolve } from "node:path";
-import { ForgeError } from "../../../shared/errors";
+import { ForgeError } from "../../../shared";
+import { createProcessGroup } from "../../../store";
 
 /**
  * Result of one stateless OfficeCLI invocation.
@@ -56,10 +57,6 @@ const HOST_ENV_KEYS = [
   "LC_CTYPE",
   "LC_MESSAGES",
   "TZ",
-  "SYSTEMROOT",
-  "WINDIR",
-  "COMSPEC",
-  "PATHEXT",
 ] as const;
 
 interface RuntimeLayout {
@@ -184,40 +181,14 @@ function validateOptions(options: {
   };
 }
 
-function hasPathSeparator(value: string): boolean {
-  return (
-    value.includes("/") ||
-    (process.platform === "win32" && value.includes("\\"))
-  );
-}
-
 async function isExecutableFile(path: string): Promise<boolean> {
   try {
     if (!(await stat(path)).isFile()) return false;
-    await access(
-      path,
-      process.platform === "win32" ? constants.F_OK : constants.X_OK,
-    );
+    await access(path, constants.X_OK);
     return true;
   } catch {
     return false;
   }
-}
-
-function windowsExtensions(
-  executable: string,
-  pathExt: string | undefined,
-): readonly string[] {
-  if (process.platform !== "win32") return [""];
-  const extensions = (pathExt ?? process.env.PATHEXT ?? ".COM;.EXE;.BAT;.CMD")
-    .split(";")
-    .map((item) => item.trim())
-    .filter(Boolean);
-  const lower = executable.toLowerCase();
-  return [
-    "",
-    ...extensions.filter((item) => !lower.endsWith(item.toLowerCase())),
-  ];
 }
 
 async function resolveExecutable(
@@ -230,7 +201,7 @@ async function resolveExecutable(
     throw missingExecutable();
   }
 
-  if (hasPathSeparator(configured)) {
+  if (configured.includes("/")) {
     const candidate = resolve(workspace, configured);
     if (await isExecutableFile(candidate)) return candidate;
     throw missingExecutable();
@@ -242,12 +213,10 @@ async function resolveExecutable(
     // resolution depends only on the explicit workspace and PATH values.
     if (!entry) continue;
     const base = isAbsolute(entry) ? entry : resolve(workspace, entry);
-    for (const extension of windowsExtensions(configured, env.PATHEXT)) {
-      const candidate = join(base, `${configured}${extension}`);
-      if (seen.has(candidate)) continue;
-      seen.add(candidate);
-      if (await isExecutableFile(candidate)) return candidate;
-    }
+    const candidate = join(base, configured);
+    if (seen.has(candidate)) continue;
+    seen.add(candidate);
+    if (await isExecutableFile(candidate)) return candidate;
   }
   throw missingExecutable();
 }
@@ -267,14 +236,9 @@ function privateEnvironment(
   return Object.freeze({
     ...env,
     HOME: home,
-    USERPROFILE: home,
-    // Linux/macOS XDG special folders and Windows roaming/local app data all
-    // point into this run's private tree, never the user's real profile.
     XDG_CACHE_HOME: cache,
     XDG_CONFIG_HOME: config,
     XDG_DATA_HOME: data,
-    APPDATA: config,
-    LOCALAPPDATA: data,
     TMPDIR: temp,
     TMP: temp,
     TEMP: temp,
@@ -365,32 +329,6 @@ class BoundedOutput {
   }
 }
 
-function signalProcess(child: ChildProcess, signal: NodeJS.Signals): void {
-  if (process.platform !== "win32" && child.pid !== undefined) {
-    try {
-      process.kill(-child.pid, signal);
-      return;
-    } catch {
-      // Fall through to the direct child when the process group is unavailable.
-    }
-  }
-  try {
-    child.kill(signal);
-  } catch {
-    // The process may have exited between close and the signal.
-  }
-}
-
-function ownedGroupAlive(pid: number): boolean {
-  if (process.platform === "win32") return false;
-  try {
-    process.kill(-pid, 0);
-    return true;
-  } catch (error) {
-    return (error as NodeJS.ErrnoException).code !== "ESRCH";
-  }
-}
-
 /**
  * After the group leader is signaled, a descendant can ignore SIGTERM while
  * the leader exits, so `close` alone is not proof the owned group is gone.
@@ -398,19 +336,17 @@ function ownedGroupAlive(pid: number): boolean {
  * absent, bounded so a truly unkillable process cannot wedge disposal.
  */
 async function waitForOwnedGroupExit(
-  child: ChildProcess,
+  signalProcess: ReturnType<typeof createProcessGroup>,
   graceMs: number,
   timeoutMs: number,
 ): Promise<void> {
-  const pid = child.pid;
-  if (process.platform === "win32" || pid === undefined) return;
   const started = Date.now();
   let escalated = false;
   for (;;) {
-    if (!ownedGroupAlive(pid)) return;
+    if (!(await signalProcess(0))) return;
     if (!escalated && Date.now() - started >= graceMs) {
       escalated = true;
-      signalProcess(child, "SIGKILL");
+      await signalProcess("SIGKILL");
     }
     if (Date.now() - started >= timeoutMs) return;
     await new Promise((resolve) => setTimeout(resolve, GROUP_POLL_MS));
@@ -520,10 +456,10 @@ class Backend implements OfficeCliBackend {
           clearTimeout(timeoutTimer);
           timeoutTimer = undefined;
         }
-        signalProcess(child, "SIGTERM");
         terminationJoin = (async () => {
+          await signalOwned("SIGTERM");
           await waitForOwnedGroupExit(
-            child,
+            signalOwned,
             TERMINATION_GRACE_MS,
             TERMINATION_JOIN_MS,
           );
@@ -551,8 +487,7 @@ class Backend implements OfficeCliBackend {
         child = spawn(executable, [...args], {
           cwd: this.workspace,
           shell: false,
-          detached: process.platform !== "win32",
-          windowsHide: true,
+          detached: true,
           stdio: ["ignore", "pipe", "pipe"],
           env: this.layout.env,
         });
@@ -561,6 +496,21 @@ class Backend implements OfficeCliBackend {
         return;
       }
 
+      const processGroup = createProcessGroup(child);
+      const signalOwned = async (
+        signal: NodeJS.Signals | 0,
+      ): Promise<boolean> => {
+        try {
+          return await processGroup(signal);
+        } catch {
+          if (signal === 0) return true;
+          try {
+            return child.kill(signal);
+          } catch {
+            return false;
+          }
+        }
+      };
       child.stdout?.on("data", (chunk: Buffer) => output.push("stdout", chunk));
       child.stderr?.on("data", (chunk: Buffer) => output.push("stderr", chunk));
 

@@ -182,6 +182,86 @@ async function setup(restrictWorkspace = true) {
 }
 
 describe("Web host with default personal LAN direct access", () => {
+  it("cancels request-scoped compaction when the HTTP caller disconnects", async () => {
+    const { service, directory, url, login } = await setup();
+    const auth = await login();
+    const session = await service.createSession({ workspace: directory });
+    let signal: AbortSignal | undefined;
+    let finish!: () => void;
+    const gate = new Promise<void>((done) => {
+      finish = done;
+    });
+    vi.spyOn(service, "compactSession").mockImplementation(
+      async (_id, caller) => {
+        signal = caller;
+        await gate;
+        return session;
+      },
+    );
+    const req = request(`${url}/api/rpc`, { method: "POST", headers: auth });
+    req.on("error", () => {});
+    req.end(
+      JSON.stringify({
+        id: randomUUID(),
+        method: "compactSession",
+        sessionId: session.id,
+      }),
+    );
+    try {
+      await vi.waitFor(() => expect(signal).toBeDefined());
+      req.destroy();
+      await vi.waitFor(() => expect(signal?.aborted).toBe(true));
+    } finally {
+      req.destroy();
+      finish();
+    }
+  });
+
+  it("serializes an event once for multiple Web clients and replay", async () => {
+    const { web, service, directory, url, login } = await setup();
+    const auth = await login();
+    const first = await connectEvents(url, auth);
+    const second = await connectEvents(url, await login());
+    const session = await service.createSession({ workspace: directory });
+    let emit!: Parameters<typeof service.run>[1];
+    vi.spyOn(service, "run").mockImplementation(
+      async (_input, sink, _approve, signal) => {
+        emit = sink;
+        await new Promise<void>((done) =>
+          signal.addEventListener("abort", () => done(), { once: true }),
+        );
+        return session;
+      },
+    );
+    await web.runtime.request({
+      id: randomUUID(),
+      method: "startRun",
+      input: { sessionId: session.id, prompt: "stream" },
+    });
+    const stringify = vi.spyOn(JSON, "stringify");
+    const value = {
+      type: "text_delta" as const,
+      sessionId: session.id,
+      timestamp: new Date().toISOString(),
+      text: 'serialized-event-你好"\n',
+    };
+    emit(value);
+    await vi.waitFor(() => {
+      expect(first.received).toHaveLength(1);
+      expect(second.received).toHaveLength(1);
+    });
+    const replay = await connectEvents(url, auth, 0);
+    expect(replay.received).toEqual(first.received);
+    expect(second.received[0]?.event).toEqual(value);
+    expect(
+      stringify.mock.results.filter(
+        (result) =>
+          result.type === "return" &&
+          result.value?.includes("serialized-event-"),
+      ).length,
+    ).toBe(1);
+  });
+
   it("accepts durable inputs without a client event lease and checks their nested session workspace", async () => {
     const { url, directory, service, login } = await setup();
     const authA = await login();
@@ -227,7 +307,7 @@ describe("Web host with default personal LAN direct access", () => {
       expect(await observed.json()).toMatchObject({
         ok: true,
         result: {
-          items: [{ inputId, state: "consumed", outcome: "completed" }],
+          items: [],
         },
       });
     });

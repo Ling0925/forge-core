@@ -1,4 +1,4 @@
-import type { Message, ToolCall } from "../shared/schemas";
+import type { Message, ToolCall } from "../shared";
 import { parseProviderJson } from "./bounded-json";
 import { protocol } from "./errors";
 import { MAX_TEXT, type Part, statePartsWire } from "./gemini-wire";

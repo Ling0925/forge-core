@@ -23,20 +23,15 @@ function hasControlCharacter(value: string): boolean {
 }
 
 /**
- * A platform-neutral absolute path. `path.isAbsolute` lives in `node:path`,
- * which the renderer bundle cannot import, so this mirrors its spellings: a
- * POSIX root, a Windows drive root, or a UNC share. Control characters are
+ * `path.isAbsolute` lives in `node:path`, which the renderer bundle cannot
+ * import, so this mirrors its POSIX spelling. Control characters are
  * refused so no path can smuggle line breaks into a response or a log.
  */
 export function isAbsoluteWorkspacePath(value: string): boolean {
   if (value.length === 0 || value.length > WORKSPACE_PATH_MAX_LENGTH)
     return false;
   if (hasControlCharacter(value)) return false;
-  return (
-    value.startsWith("/") ||
-    /^[A-Za-z]:[\\/]/.test(value) ||
-    /^\\\\[^\\]/.test(value)
-  );
+  return value.startsWith("/");
 }
 
 const absolutePathSchema = z

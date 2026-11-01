@@ -1,7 +1,11 @@
 import { z } from "zod";
 import { ForgeError } from "./errors";
-import { permissionSchema, runInputSchema, sessionIdSchema } from "./schemas";
-import type { RunInput, SessionId, SessionStatus } from "./schemas";
+import { permissionSchema, sessionIdSchema } from "./schemas/base";
+import type { SessionId } from "./schemas/base";
+import { errorInfoSchema, errorMessageSchema } from "./schemas/events";
+import type { SessionStatus } from "./schemas/events";
+import { runInputSchema } from "./schemas/sessions";
+import type { RunInput } from "./schemas/sessions";
 
 export const enqueueInputSchema = z
   .object({ inputId: z.string().uuid(), input: runInputSchema })
@@ -37,7 +41,8 @@ export const queuedInputSchema = z
     outcome: z
       .enum(["completed", "failed", "cancelled", "interrupted"])
       .optional(),
-    reason: z.string().max(1024).optional(),
+    reason: errorMessageSchema.optional(),
+    error: errorInfoSchema.optional(),
   })
   .strict()
   .readonly();
@@ -46,7 +51,7 @@ export const inputQueueSnapshotSchema = z
   .object({
     sessionId: sessionIdSchema,
     paused: z.boolean(),
-    reason: z.string().max(1024).optional(),
+    reason: errorMessageSchema.optional(),
     items: z.array(queuedInputSchema).max(4096).readonly(),
   })
   .strict()

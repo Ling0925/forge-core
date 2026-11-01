@@ -1,20 +1,23 @@
 import { randomUUID } from "node:crypto";
-import { redactMemoryText } from "../core/memory-retrieval";
-import { withCancellation } from "../core/runtime";
-import type { LocalToolRegistry, ToolContext } from "../shared/contracts";
-import { ForgeError } from "../shared/errors";
 import {
+  ForgeError,
   type ForgeMemoryInput,
+  type LocalToolRegistry,
   type MemoryStore,
+  type ToolCall,
+  type ToolContext,
+  type ToolResult,
+  defineTool,
   deleteMemorySchema,
   forgeMemorySchema,
   getMemorySchema,
+  invalidToolInput,
+  recoverToolInputError,
+  redactMemoryText,
   searchMemorySchema,
   updateMemorySchema,
-} from "../shared/memory";
-import type { ToolCall, ToolResult } from "../shared/schemas";
-import { defineTool } from "../shared/tool-definition";
-import { invalidToolInput, recoverToolInputError } from "../shared/tool-input";
+  withCancellation,
+} from "../shared";
 
 const definitions = [
   defineTool(

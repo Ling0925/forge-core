@@ -1,15 +1,17 @@
 import { randomUUID } from "node:crypto";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdtemp, readFile, readdir, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { openInputQueue } from "../../src/core/input-queue";
+import { ForgeError } from "../../src/shared/errors";
 import {
   type InputQueueHost,
   enqueueInputSchema,
 } from "../../src/shared/input-queue";
 import { type RunInput, parseSessionId } from "../../src/shared/schemas";
 import { atomicJson } from "../../src/store/io";
+import * as io from "../../src/store/io";
 
 let directory = "";
 let queues: InputQueueHost[] = [];
@@ -43,11 +45,22 @@ async function create(binding = () => "a".repeat(64)) {
   queues.push(queue);
   return queue;
 }
+const retired = async () =>
+  Promise.all(
+    (await readdir(join(directory, "input-queue/receipts")))
+      .filter((file) => file.endsWith(".json"))
+      .map(async (file) =>
+        JSON.parse(
+          await readFile(join(directory, "input-queue/receipts", file), "utf8"),
+        ),
+      ),
+  );
 const settled = async (queue: InputQueueHost, count: number) =>
   vi.waitFor(async () => {
+    await queue.list(sessionId);
     expect(
-      (await queue.list(sessionId)).items.filter(
-        (item) => item.state === "consumed",
+      (await retired()).filter(
+        (item) => item.sessionId === sessionId && item.state === "consumed",
       ),
     ).toHaveLength(count);
   });
@@ -167,9 +180,7 @@ it("never lets a notification implicitly acknowledge a failed or paused predeces
   await queue.resume(sessionId);
   await settled(queue, 1);
   expect(started).toEqual(["notice"]);
-  expect((await queue.list(sessionId)).items[0]?.origin).toBe(
-    "background_task",
-  );
+  expect((await retired())[0]?.origin).toBe("background_task");
 });
 
 it("keeps ordinary enqueue acknowledgment behavior and preserves queued origins across restart", async () => {
@@ -386,7 +397,7 @@ it.each(["failed", "cancelled", "interrupted"] as const)(
     await settled(queue, 1);
     expect((await queue.list(sessionId)).paused).toBe(true);
     expect(start).toHaveBeenCalledTimes(1);
-    expect((await queue.list(sessionId)).items[0]?.input?.prompt).toBe("first");
+    expect((await retired())[0]?.input?.prompt).toBe("first");
     await queue.resume(sessionId);
     await settled(queue, 2);
   },
@@ -486,7 +497,7 @@ it("allows only one durable consumer and does not lose queued items on ownership
   expect(start).toHaveBeenCalledTimes(1);
 });
 
-it("bounds queue counts, bytes and retry receipts and rejects malformed attachments", async () => {
+it("compacts a full legacy receipt ledger while preserving live count and byte bounds", async () => {
   const queue = await create();
   const first = await queue.enqueue({ inputId: randomUUID(), input: input() });
   const path = join(directory, "input-queue/queue.json");
@@ -543,7 +554,7 @@ it("bounds queue counts, bytes and retry receipts and rejects malformed attachme
   await fill(4096, "work", true, true);
   await expect(
     queue.enqueue({ inputId: randomUUID(), input: input() }),
-  ).rejects.toMatchObject({ code: "busy" });
+  ).resolves.toMatchObject({ state: "queued" });
   await expect(
     queue.enqueue({
       inputId: randomUUID(),
@@ -554,4 +565,216 @@ it("bounds queue counts, bytes and retry receipts and rejects malformed attachme
     }),
   ).rejects.toThrow();
   expect(first.state).toBe("queued");
+});
+
+it("compacts terminal inputs and still deduplicates late retries across restart", async () => {
+  const queue = await create();
+  const completed = { inputId: randomUUID(), input: input("completed") };
+  const cancelled = { inputId: randomUUID(), input: input("cancelled") };
+  await queue.enqueue(completed);
+  await queue.notify(cancelled);
+  await queue.cancel(sessionId, cancelled.inputId);
+  const start = vi.fn(async () => "completed" as const);
+  await queue.attach({ isBusy: () => false, start });
+  await settled(queue, 1);
+  const ledger = JSON.parse(
+    await readFile(join(directory, "input-queue/queue.json"), "utf8"),
+  );
+  expect(ledger.items).toEqual([]);
+  expect(ledger.sessions).toEqual({});
+  await queue.dispose();
+  const recovered = await create(() => "b".repeat(64));
+  await recovered.attach({ isBusy: () => false, start });
+  expect(await recovered.enqueue(completed)).toMatchObject({
+    state: "consumed",
+    outcome: "completed",
+  });
+  expect(await recovered.notify(cancelled)).toMatchObject({
+    state: "cancelled",
+  });
+  await expect(recovered.enqueue(cancelled)).rejects.toMatchObject({
+    code: "invalid_input",
+  });
+  await expect(
+    recovered.enqueue({ ...completed, input: input("changed") }),
+  ).rejects.toMatchObject({ code: "invalid_input" });
+  expect(start).toHaveBeenCalledOnce();
+});
+
+it("preserves retry deduplication if compaction fails after writing its receipt", async () => {
+  const queue = await create();
+  const request = { inputId: randomUUID(), input: input() };
+  await queue.enqueue(request);
+  const path = join(directory, "input-queue/queue.json");
+  const ledger = JSON.parse(await readFile(path, "utf8"));
+  Object.assign(ledger.items[0], {
+    state: "consumed",
+    outcome: "completed",
+    input: null,
+    runId: randomUUID(),
+  });
+  await atomicJson(path, ledger);
+  const persist = atomicJson;
+  const write = vi
+    .spyOn(io, "atomicJson")
+    .mockImplementation(async (...args) => {
+      if (args[0] === path)
+        throw new ForgeError("storage", "fixture ledger write failure");
+      return persist(...args);
+    });
+  try {
+    await expect(queue.enqueue(request)).rejects.toMatchObject({
+      code: "storage",
+    });
+  } finally {
+    write.mockRestore();
+  }
+  await queue.dispose();
+  const recovered = await create();
+  const start = vi.fn(async () => "completed" as const);
+  await recovered.attach({ isBusy: () => false, start });
+  expect(await recovered.enqueue(request)).toMatchObject({ state: "consumed" });
+  expect((await recovered.list(sessionId)).items).toEqual([]);
+  expect(start).not.toHaveBeenCalled();
+});
+
+it("stops scheduling with the existing storage failure only for ledger I/O", async () => {
+  const queue = await create();
+  await queue.enqueue({ inputId: randomUUID(), input: input() });
+  const path = join(directory, "input-queue/queue.json");
+  const write = atomicJson;
+  const spy = vi.spyOn(io, "atomicJson").mockImplementation(async (...args) => {
+    if (
+      args[0] === path &&
+      (args[1] as { items: { state: string }[] }).items.some(
+        (item) => item.state === "bound",
+      )
+    )
+      throw new ForgeError("storage", "fixture ledger write failure");
+    return write(...args);
+  });
+  const start = vi.fn(async () => "completed" as const);
+  try {
+    await queue.attach({ isBusy: () => false, start });
+    await vi.waitFor(async () =>
+      expect(await queue.list(sessionId)).toMatchObject({
+        paused: true,
+        reason: expect.stringContaining("Queue persistence failed"),
+      }),
+    );
+    await expect(
+      queue.enqueue({ inputId: randomUUID(), input: input() }),
+    ).rejects.toMatchObject({
+      code: "storage",
+      message: expect.stringContaining("Queue persistence failed"),
+    });
+    expect(start).not.toHaveBeenCalled();
+  } finally {
+    spy.mockRestore();
+  }
+});
+
+it.each(["predecessor", "prepare", "start", "isBusy"] as const)(
+  "isolates a scheduling %s failure with the real error",
+  async (step) => {
+    const other = parseSessionId(randomUUID());
+    const failure = new ForgeError(
+      step === "predecessor" ? "storage" : "provider",
+      `fixture ${step} failure`,
+      true,
+    );
+    let fail = false;
+    const queue = await openInputQueue({
+      directory,
+      validateSession: async () => {},
+      predecessor: async (id) => {
+        if (fail && id === sessionId && step === "predecessor") throw failure;
+        return { active: false, unsafe: false, token: "a".repeat(64) };
+      },
+      prepare: async (raw) => {
+        if (fail && raw.sessionId === sessionId && step === "prepare")
+          throw failure;
+        return {
+          input: { ...raw, model: "fixture", permission: "workspace" },
+          providerBinding: "a".repeat(64),
+        };
+      },
+    });
+    queues.push(queue);
+    const first = { inputId: randomUUID(), input: input() };
+    const second = { inputId: randomUUID(), input: input("other", other) };
+    await queue.enqueue(first);
+    await queue.enqueue(second);
+    fail = true;
+    const start = vi.fn(async (raw: RunInput) => {
+      if (raw.sessionId === sessionId && step === "start") throw failure;
+      return "completed" as const;
+    });
+    await queue.attach({
+      isBusy: (id) => {
+        if (id === sessionId && step === "isBusy") throw failure;
+        return false;
+      },
+      start,
+    });
+    await vi.waitFor(async () => {
+      expect(await queue.list(sessionId)).toMatchObject({
+        paused: true,
+        reason: failure.message,
+        items: [
+          {
+            state: step === "start" ? "uncertain" : "blocked",
+            error: {
+              code: failure.code,
+              message: failure.message,
+              retryable: true,
+            },
+          },
+        ],
+      });
+      expect(await queue.enqueue(second)).toMatchObject({ state: "consumed" });
+    });
+    await expect(
+      queue.enqueue({ inputId: randomUUID(), input: input("next", other) }),
+    ).resolves.toMatchObject({ state: "queued" });
+  },
+);
+
+it("isolates the session-state capacity failure instead of declaring ledger failure", async () => {
+  const queue = await create();
+  const accepted = await queue.enqueue({
+    inputId: randomUUID(),
+    input: input(),
+  });
+  const path = join(directory, "input-queue/queue.json");
+  const ledger = JSON.parse(await readFile(path, "utf8"));
+  ledger.sessions = Object.fromEntries(
+    Array.from({ length: 4096 }, () => [randomUUID(), { paused: true }]),
+  );
+  await atomicJson(path, ledger);
+  await queue.attach({
+    isBusy: () => false,
+    start: async () => {
+      await queue.finished(sessionId, "failed");
+      return "failed";
+    },
+  });
+  await vi.waitFor(async () =>
+    expect(await queue.list(sessionId)).toMatchObject({
+      paused: true,
+      items: [
+        {
+          inputId: accepted.inputId,
+          state: "uncertain",
+          error: {
+            code: "busy",
+            message: "The durable queue session limit has been reached.",
+          },
+        },
+      ],
+    }),
+  );
+  await expect(
+    queue.enqueue({ inputId: randomUUID(), input: input("next") }),
+  ).resolves.toMatchObject({ state: "queued" });
 });

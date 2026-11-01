@@ -1,18 +1,16 @@
 import { z } from "zod";
-import { agentProfilesSchema } from "../shared/agent-profiles";
-import type { AgentProfile } from "../shared/agent-profiles";
 import {
+  type AgentProfile,
   type RouteGroup,
+  agentProfilesSchema,
+  configureInputSchema,
   connectionInputSchema,
   credentialInputSchema,
-  routeGroupSchema,
-} from "../shared/model-access";
-import {
-  configureInputSchema,
   providerSourceIdSchema,
   providerSourceRevisionSchema,
   providerSourceSchema,
-} from "../shared/schemas";
+  routeGroupSchema,
+} from "../shared";
 
 // One authoritative transaction holds sources, private credentials and routes.
 export const TRANSACTION_LIMIT = 16 * 1024 * 1024;

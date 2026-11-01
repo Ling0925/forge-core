@@ -1,26 +1,31 @@
 import { randomUUID } from "node:crypto";
 import { z } from "zod";
-import { boundedText } from "../mcp/bounds";
-import { mcpToolName, parseMcpToolName } from "../mcp/names";
-import type { McpService } from "../mcp/registry";
 import {
   MCP_CALL_ARGUMENT_LIMIT,
   MCP_MAX_SERVERS,
   MCP_MAX_TOOLS_PER_SERVER,
   MCP_RESULT_LIMIT,
-} from "../mcp/types";
-import type { LocalToolRegistry, ToolContext } from "../shared/contracts";
-import { ForgeError } from "../shared/errors";
-import type { McpServerRecord } from "../shared/mcp";
-import type {
-  JsonValue,
-  ToolCall,
-  ToolDefinition,
-  ToolResult,
-} from "../shared/schemas";
-import { jsonValueSchema } from "../shared/schemas";
-import { defineTool } from "../shared/tool-definition";
-import { invalidToolInput, recoverToolInputError } from "../shared/tool-input";
+  type McpService,
+  boundedText,
+  mcpToolName,
+  parseMcpToolName,
+} from "../mcp";
+
+import {
+  ForgeError,
+  type JsonValue,
+  type LocalToolRegistry,
+  type McpServerRecord,
+  type ToolCall,
+  type ToolContext,
+  type ToolDefinition,
+  type ToolResult,
+  defineTool,
+  invalidToolInput,
+  jsonValueSchema,
+  recoverToolInputError,
+} from "../shared";
+
 import { mcpToolPage } from "./mcp-discovery";
 
 // Discriminated unions require the underlying object (before readonly and

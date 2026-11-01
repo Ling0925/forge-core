@@ -1,13 +1,13 @@
 import { describe, expect, it } from "vitest";
 import { assertNever } from "./contracts";
 import { ForgeError, toErrorInfo } from "./errors";
+import { runInputSchema } from "./schemas/sessions";
 import {
   configureInputSchema,
   defaultPublicSettings,
   providerConfigSchema,
   publicSettingsSchema,
-  runInputSchema,
-} from "./schemas";
+} from "./schemas/settings";
 
 const sessionId = "00000000-0000-4000-8000-000000000001";
 

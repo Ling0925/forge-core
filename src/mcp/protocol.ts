@@ -1,8 +1,8 @@
 import { type ChildProcess, spawn } from "node:child_process";
-import { ForgeError } from "../shared/errors";
-import { cleanupProcess } from "./cleanup";
+import { ForgeError, MCP_MAX_MESSAGE_BYTES } from "../shared";
+import { cleanupProcess, minimalEnv } from "../store";
+
 import { type Json, JsonRpcConnection, invalid } from "./rpc";
-import { MCP_MAX_MESSAGE_BYTES } from "./types";
 
 /**
  * A real stdio MCP connection: newline-framed JSON-RPC 2.0 over the child's
@@ -19,7 +19,7 @@ export class StdioMcpConnection extends JsonRpcConnection {
       args: readonly string[];
       env: Readonly<Record<string, string>>;
       requestTimeoutMs: number;
-      /** Private working directory for the server; never inherited implicitly. */
+      /** Omitted for host-wide servers, which inherit the host's cwd. */
       cwd?: string;
     }>,
   ) {
@@ -29,23 +29,16 @@ export class StdioMcpConnection extends JsonRpcConnection {
   private env(): NodeJS.ProcessEnv {
     // Minimal inherited environment: PATH/TMPDIR plus explicitly approved
     // names only. Credentials, proxies and API keys are never forwarded.
-    const env: Record<string, string> = {};
-    if (process.env.PATH) env.PATH = process.env.PATH;
-    if (process.env.TMPDIR) env.TMPDIR = process.env.TMPDIR;
-    if (process.platform === "win32" && process.env.SYSTEMROOT)
-      env.SYSTEMROOT = process.env.SYSTEMROOT;
-    return { ...env, ...this.options.env };
+    return { ...minimalEnv(), ...this.options.env };
   }
 
   protected async start(): Promise<void> {
     const child = spawn(this.options.command, [...this.options.args], {
       stdio: ["pipe", "pipe", "pipe"],
       env: this.env(),
-      // A missing cwd must not silently fall back to Forge's own directory.
       ...(this.options.cwd === undefined ? {} : { cwd: this.options.cwd }),
       // New process group so the whole tree can be terminated on disposal.
       detached: true,
-      windowsHide: true,
     });
     this.child = child;
     child.stdin?.on("error", (error) => this.shutdown(error));

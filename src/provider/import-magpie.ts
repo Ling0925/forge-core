@@ -1,15 +1,14 @@
 import { createHash } from "node:crypto";
-import { ForgeError } from "../shared/errors";
 import {
   type CredentialInput,
-  credentialInputSchema,
-} from "../shared/model-access";
-import {
+  ForgeError,
   type JsonValue,
   type ProviderSourceOperation,
+  credentialInputSchema,
   jsonObjectSchema,
   providerSourceOperationSchema,
-} from "../shared/schemas";
+} from "../shared";
+
 import type { ProviderEndpoints, ProviderPreset } from "./presets";
 import { findProviderPreset, presetEndpoints } from "./presets";
 import { extraBodyReserved } from "./request-options";

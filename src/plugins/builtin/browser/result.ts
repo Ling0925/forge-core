@@ -1,4 +1,4 @@
-import { ForgeError } from "../../../shared/errors";
+import { ForgeError } from "../../../shared";
 
 /** BrowserCommandResult.text is capped by the shared schema at 24,000 chars. */
 const RESULT_TEXT_LIMIT = 24_000;

@@ -1,25 +1,27 @@
-import type { AdvisorCoordinator } from "../shared/agent-coordination";
 import {
+  type AdvisorCoordinator,
+  type AgentRuntime,
+  type AgentRuntimeDependencies,
+  ForgeError,
+  type Message,
+  type Permission,
+  type RunControl,
+  type SessionSnapshot,
+  agentEventSchema,
+  executionTurns,
   measureContext,
   resolveContextBudget,
   resolveContextWindow,
-} from "../shared/context-usage";
-import type {
-  AgentRuntime,
-  AgentRuntimeDependencies,
-  RunControl,
-} from "../shared/contracts";
-import { ForgeError } from "../shared/errors";
-import { executionTurns } from "../shared/execution";
-import { agentEventSchema, runInputSchema } from "../shared/schemas";
-import type { Message, Permission, SessionSnapshot } from "../shared/schemas";
+  runInputSchema,
+  withCancellation,
+} from "../shared";
+
 import { createAdvisorCoordinator } from "./advisor";
 import { DEFAULT_MAX_AGENT_DEPTH, agentDepth } from "./agent-operations";
 import { assertAgentModel, isAgentToolAllowed } from "./agent-profiles";
 import { createAgentSupervisor } from "./agent-supervisor";
 import { nativeDefinitions, nativeDefinitionsFor } from "./agents";
 import { createApprovalQueue } from "./approval-queue";
-import { withCancellation } from "./cancellation";
 import { projectSummary } from "./context";
 import { harnessStrategyMessage } from "./harness-adaptation";
 import { buildSystemInstructions } from "./prompts";
@@ -49,7 +51,6 @@ import { claimAutoTitle } from "./session-title";
 import { createToolFailureGuard } from "./tool-failure-guard";
 import { createToolHookService } from "./tool-hooks";
 
-export { withCancellation } from "./cancellation";
 export {
   CONTEXT_SCALE_FLOOR,
   compactContext,
@@ -95,11 +96,11 @@ export const createAgentRuntime = (
         deps.toolHooks.afterTool,
         deps.toolHooks.toolError,
       ].some((entries) => entries.length > 0);
-    let release: () => Promise<void>;
+    let release: (() => Promise<void>) | undefined;
     try {
       release =
         deps.sessionLock?.id === input.sessionId
-          ? deps.sessionLock.release
+          ? undefined
           : await deps.store.acquire(input.sessionId, signal);
     } catch (error) {
       if (!deps.rootBudget) rootBudget.close();
@@ -566,7 +567,7 @@ export const createAgentRuntime = (
         } finally {
           try {
             await journal.pendingWrite;
-            await release();
+            await release?.();
           } finally {
             if (!deps.rootBudget) rootBudget.close();
           }

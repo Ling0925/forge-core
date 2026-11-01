@@ -4,19 +4,24 @@ import { lstat, realpath } from "node:fs/promises";
 import { homedir } from "node:os";
 import { delimiter, dirname, isAbsolute } from "node:path";
 import type { z } from "zod";
-import { isSensitivePath } from "../shared/content-safety";
-import type { ToolContext } from "../shared/contracts";
-import { ForgeError } from "../shared/errors";
-import type { ToolResult } from "../shared/schemas";
+import {
+  ForgeError,
+  type ToolContext,
+  type ToolResult,
+  isSensitivePath,
+  withCancellation,
+} from "../shared";
+
+import { type WorkspacePathGuard, createProcessGroup } from "../store";
+
 import { createCommandOutputStore } from "./command-output";
-import { abortable, check, errorCode, fail, result } from "./local-common";
+import { check, errorCode, fail, result, toolCancelled } from "./local-common";
 import type { createLocalPolicy } from "./local-policy";
 import {
   RESULT_LIMIT,
   type argumentsSchema,
   type commandSchema,
 } from "./local-schemas";
-import type { WorkspacePathGuard } from "./path-guard";
 
 export function createLocalCommands({
   guard,
@@ -28,12 +33,10 @@ export function createLocalCommands({
   const { containsKnown, redact, targetName } = policy;
   const commandOutput = createCommandOutputStore(redact);
   async function commandPath(): Promise<string> {
-    const defaults =
-      process.platform === "win32"
-        ? ["C:\\Windows\\System32"]
-        : ["/usr/local/bin", "/usr/bin", "/bin"];
     const candidates = [
-      ...defaults,
+      "/usr/local/bin",
+      "/usr/bin",
+      "/bin",
       dirname(process.execPath),
       ...(process.env.PATH ?? "").split(delimiter),
     ];
@@ -48,12 +51,7 @@ export function createLocalCommands({
         continue;
       try {
         const local = await realpath(candidate);
-        if (
-          containsKnown(local) ||
-          isSensitivePath(local) ||
-          (process.platform === "win32" && local.startsWith("\\\\"))
-        )
-          continue;
+        if (containsKnown(local) || isSensitivePath(local)) continue;
         if ((await lstat(local)).isDirectory()) paths.add(local);
       } catch {
         // An invalid or inaccessible PATH entry contributes no search directory.
@@ -95,7 +93,11 @@ export function createLocalCommands({
         request,
       });
       check(signal);
-      const allowed = await abortable(context.approve(request, signal), signal);
+      const allowed = await withCancellation(
+        context.approve(request, signal),
+        signal,
+        toolCancelled,
+      );
       check(signal);
       if (!allowed) return result({ error: "Command approval denied." }, true);
     }
@@ -110,7 +112,7 @@ export function createLocalCommands({
       const child = spawn(executable, args.argv.slice(1), {
         cwd,
         shell: false,
-        detached: process.platform !== "win32",
+        detached: true,
         stdio: ["ignore", "pipe", "pipe"],
         env: {
           PATH: path,
@@ -121,29 +123,25 @@ export function createLocalCommands({
           TEMP: guard.root,
         },
       });
+      const signalProcess = createProcessGroup(child);
       let timedOut = false;
       let cancelled = false;
       let spawnFailed = false;
-      function kill(): void {
-        if (child.pid === undefined) return;
-        if (process.platform === "win32") {
-          child.kill("SIGKILL");
-          return;
-        }
+      async function kill(): Promise<void> {
         try {
-          process.kill(-child.pid, "SIGKILL");
+          await signalProcess("SIGKILL");
         } catch (error: unknown) {
           if (errorCode(error) !== "ESRCH") spawnFailed = true;
         }
       }
       const abort = () => {
         cancelled = true;
-        kill();
+        void kill();
       };
       signal.addEventListener("abort", abort, { once: true });
       const timer = setTimeout(() => {
         timedOut = true;
-        kill();
+        void kill();
       }, args.timeout_ms);
       child.once("spawn", () => {
         try {
@@ -171,11 +169,11 @@ export function createLocalCommands({
       child.on("error", () => {
         spawnFailed = true;
       });
-      child.on("close", (exitCode, exitSignal) => {
+      child.on("close", async (exitCode, exitSignal) => {
         clearTimeout(timer);
         signal.removeEventListener("abort", abort);
         // Descendants may have detached their output but remain in our group.
-        kill();
+        await kill();
         if (cancelled || signal.aborted) {
           void log
             .discard()

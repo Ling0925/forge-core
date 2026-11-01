@@ -1,9 +1,17 @@
 import { randomUUID } from "node:crypto";
 import { z } from "zod";
-import type { LocalToolRegistry, ToolContext } from "../shared/contracts";
-import type { ToolCall, ToolDefinition, ToolResult } from "../shared/schemas";
-import { defineTool } from "../shared/tool-definition";
-import { invalidToolInput, recoverToolInputError } from "../shared/tool-input";
+import {
+  type LocalToolRegistry,
+  type ToolCall,
+  type ToolContext,
+  type ToolDefinition,
+  type ToolResult,
+  defineTool,
+  invalidToolInput,
+  recoverToolInputError,
+  withCancellation,
+} from "../shared";
+
 import {
   type WebContent,
   cleanWebText,
@@ -11,9 +19,9 @@ import {
 } from "./web-content";
 import {
   WebAccessError,
-  abortable,
   requestPublicText,
   validatePublicUrl,
+  webCancelled,
 } from "./web-network";
 
 const NOTICE =
@@ -128,12 +136,13 @@ export function createWebToolRegistry(
       request,
     });
     check(signal);
-    const ok = await abortable(
+    const ok = await withCancellation(
       Promise.resolve().then(() => {
         check(signal);
         return ctx.approve(request, signal);
       }),
       signal,
+      webCancelled,
     );
     check(signal);
     if (!ok || (ctx.permission as string) === "readonly")

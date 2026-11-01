@@ -10,7 +10,7 @@ import {
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { ForgeError } from "../shared/errors";
+import { ForgeError } from "../shared";
 
 const COMMAND_BYTES = 16 * 1024 * 1024;
 const RUN_BYTES = 128 * 1024 * 1024;

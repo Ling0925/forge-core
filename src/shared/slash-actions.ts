@@ -1,7 +1,8 @@
 import type { ForgeBridge } from "./ipc";
 import { mcpRegisterDtoSchema } from "./ipc";
 import { sessionPlans } from "./plans";
-import { type SessionId, createSessionInputSchema } from "./schemas";
+import type { SessionId } from "./schemas/base";
+import { createSessionInputSchema } from "./schemas/sessions";
 import { sessionReviewInput } from "./session-review";
 import { isPrimarySession } from "./sessions";
 

@@ -67,58 +67,67 @@ export function psMembers(group: number): Promise<Member[]> {
   });
 }
 
-/** Process-group cleanup needs POSIX groups and a way to verify membership. */
-export function groupCleanupSupported(
-  platform: NodeJS.Platform = process.platform,
-): boolean {
-  return platform !== "win32";
-}
-
 const members = (group: number) =>
   process.platform === "linux" ? procMembers(group) : psMembers(group);
 
 const delay = (ms: number) =>
   new Promise<void>((resolve) => setTimeout(resolve, ms));
 
+export function createProcessGroup(child: ChildProcess) {
+  let owned: Member[] | undefined;
+  let pending = Promise.resolve();
+  return (signal: NodeJS.Signals | 0): Promise<boolean> => {
+    const work = pending.then(async () => {
+      const group = child.pid;
+      if (!group) return false;
+      const previous = owned ?? (await members(group));
+      const current = await members(group);
+      // Retain ownership across signals only while a start-time identity survives.
+      const anchored = current.some((member) =>
+        previous.some(
+          (old) => old.pid === member.pid && old.start === member.start,
+        ),
+      );
+      owned = anchored ? current : [];
+      if (!owned.some((member) => member.state !== "Z" && member.state !== "X"))
+        return false;
+      if (signal !== 0) {
+        try {
+          process.kill(-group, signal);
+        } catch (error) {
+          if ((error as NodeJS.ErrnoException).code === "ESRCH") {
+            owned = [];
+            return false;
+          }
+          throw error;
+        }
+      }
+      return true;
+    });
+    pending = work.then(
+      () => undefined,
+      () => undefined,
+    );
+    return work;
+  };
+}
+
 /** Referenced, bounded cleanup: never schedule a detached delayed group signal. */
 export async function cleanupProcess(child: ChildProcess): Promise<void> {
   const group = child.pid;
   if (!group) return;
-  if (!groupCleanupSupported()) {
-    // Windows has no POSIX process groups: direct-child cleanup only.
-    child.kill("SIGTERM");
-    await delay(2000);
-    if (child.exitCode === null && child.signalCode === null)
-      child.kill("SIGKILL");
-    return;
-  }
-  let owned = await members(group);
-  if (!owned.length) return;
+  const signalProcess = createProcessGroup(child);
+  if (!(await signalProcess(0))) return;
   const started = Date.now();
   let killed = false;
   let terminated = false;
   while (Date.now() - started < 3000) {
-    const current = await members(group);
-    // An original identity must still anchor ownership of this group. Once
-    // absent, never signal this numeric group again (it may have been reused).
-    const anchored = current.some((member) =>
-      owned.some((old) => old.pid === member.pid && old.start === member.start),
-    );
-    if (!anchored) return;
-    owned = current;
-    if (!current.some((member) => member.state !== "Z" && member.state !== "X"))
-      return;
     if (!terminated || (!killed && Date.now() - started >= 2000)) {
       const signal = terminated ? "SIGKILL" : "SIGTERM";
-      try {
-        process.kill(-group, signal);
-      } catch (error) {
-        if ((error as NodeJS.ErrnoException).code === "ESRCH") return;
-        throw error;
-      }
+      if (!(await signalProcess(signal))) return;
       if (terminated) killed = true;
       terminated = true;
-    }
+    } else if (!(await signalProcess(0))) return;
     await delay(20);
   }
   throw new Error("MCP process group did not terminate within 3 seconds.");

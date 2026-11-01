@@ -1,4 +1,4 @@
-import { ForgeError } from "../../../shared/errors";
+import { ForgeError } from "../../../shared";
 
 function hostAllowed(
   hostname: string,

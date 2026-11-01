@@ -1,35 +1,29 @@
 import { randomUUID } from "node:crypto";
-import { routeRetryControl } from "../provider/routing";
 import {
+  type AgentRuntimeDependencies,
+  type ApprovalHandler,
   type ContextBudget,
-  budgetUsage,
-  measureContext,
-  reportedContext,
-} from "../shared/context-usage";
-import type {
-  AgentRuntimeDependencies,
-  ApprovalHandler,
-} from "../shared/contracts";
-import {
+  type ContextUsage,
   ForgeError,
+  type Message,
+  type Permission,
+  type ProviderResponse,
+  type RootRunBudget,
+  type RunInput,
+  type SessionSnapshot,
+  type ToolDefinition,
+  addUsage,
+  budgetUsage,
   isRetryableProviderFailure,
+  measureContext,
+  providerResponseSchema,
   providerRetryReason,
-} from "../shared/errors";
-import type { RootRunBudget } from "../shared/run-budget";
-import { providerResponseSchema } from "../shared/schemas";
-import type {
-  ContextUsage,
-  Message,
-  Permission,
-  ProviderResponse,
-  RunInput,
-  SessionSnapshot,
-  ToolDefinition,
-} from "../shared/schemas";
-import { addUsage } from "../shared/usage-totals";
+  reportedContext,
+  withCancellation,
+} from "../shared";
+
 import { agentAllowsWebSearch } from "./agent-profiles";
 import type { createApprovalQueue } from "./approval-queue";
-import { withCancellation } from "./cancellation";
 import { type RetryStopReason, stoppedProviderRetry } from "./provider-retry";
 import { compactContext } from "./runtime-context";
 import type { createRunEvents } from "./runtime-events";
@@ -178,7 +172,7 @@ export const requestGeneration = async (
   // re-running any completed local tool. A route group shares this one
   // budget and may only move to another member while nothing was sent.
   let attempt = 0;
-  const routing = routeRetryControl(deps.provider);
+  const routing = deps.provider.routeControl;
   let response: ProviderResponse;
   let previews: ReturnType<typeof createGenerationStream>["previews"];
   for (;;) {

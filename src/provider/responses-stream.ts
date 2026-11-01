@@ -1,13 +1,16 @@
 import { isDeepStrictEqual } from "node:util";
 import type { ServerSentEvent } from "openai/core/streaming";
 import { z } from "zod";
-import { providerResponseSchema, toolCallSchema } from "../shared/schemas";
-import type { ProviderResponse, ToolCallPreview } from "../shared/schemas";
-import type {
-  WebCitation,
-  WebSearchMode,
-  WebSearchProgress,
-} from "../shared/web-search";
+import {
+  type ProviderResponse,
+  type ToolCallPreview,
+  type WebCitation,
+  type WebSearchMode,
+  type WebSearchProgress,
+  providerResponseSchema,
+  toolCallSchema,
+} from "../shared";
+
 import { responseFailure } from "./responses-errors";
 import {
   type Helpers,

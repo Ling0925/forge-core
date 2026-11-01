@@ -182,11 +182,11 @@ describe("agent-browser backend", () => {
       const run = start.cwd.slice(0, -"/work".length);
       const env = start.env;
       expect(env.HOME).toBe(join(run, "home"));
-      expect(env.USERPROFILE).toBe(env.HOME);
+      expect(env.USERPROFILE).toBeUndefined();
       expect(env.TMP).toBe(env.TMPDIR);
       expect(env.TEMP).toBe(env.TMPDIR);
-      expect(env.APPDATA).toBe(join(run, "config"));
-      expect(env.LOCALAPPDATA).toBe(join(run, "data"));
+      expect(env.APPDATA).toBeUndefined();
+      expect(env.LOCALAPPDATA).toBeUndefined();
       expect(env.AGENT_BROWSER_PROFILE).toBeUndefined();
       // An explicit persistent profile is incompatible with allowed-domains.
       // Protect the ephemeral profile through TMPDIR's reserved sensitive name.

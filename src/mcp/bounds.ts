@@ -1,5 +1,4 @@
-import { ForgeError } from "../shared/errors";
-import { MCP_DISCOVERY_LIMIT, MCP_RESULT_LIMIT } from "./types";
+import { ForgeError, MCP_DISCOVERY_LIMIT, MCP_RESULT_LIMIT } from "../shared";
 
 export const MCP_TRUNCATION_MARKER =
   "\n[MCP output truncated: UTF-8 byte limit]";

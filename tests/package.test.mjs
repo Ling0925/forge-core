@@ -12,6 +12,46 @@ import { build } from "esbuild";
 
 const root = fileURLToPath(new URL("../", import.meta.url));
 
+test("package exports resolve every module barrel from dist", async () => {
+  const pkg = JSON.parse(
+    await readFile(new URL("../package.json", import.meta.url), "utf8"),
+  );
+  for (const module of [
+    "core",
+    "provider",
+    "store",
+    "tools",
+    "context",
+    "mcp",
+    "plugins",
+    "host",
+    "web",
+    "shared",
+  ]) {
+    assert.deepEqual(pkg.exports[`./${module}`], {
+      types: `./src/${module}/index.ts`,
+      import: `./dist/${module}/index.js`,
+    });
+    assert.equal(
+      import.meta.resolve(`@forge/core/${module}`),
+      new URL(`../dist/${module}/index.js`, import.meta.url).href,
+    );
+    await import(`@forge/core/${module}`);
+  }
+  assert(!Object.keys(pkg.exports).some((path) => path.includes("*")));
+  const { createHarness } = await import("@forge/core/core");
+  assert.equal(createHarness, (await import("@forge/core")).createHarness);
+});
+
+test("package exports reject private implementation paths", async () => {
+  assert.throws(() => import.meta.resolve("@forge/core/store/io"), {
+    code: "ERR_PACKAGE_PATH_NOT_EXPORTED",
+  });
+  await assert.rejects(import("@forge/core/store/io"), {
+    code: "ERR_PACKAGE_PATH_NOT_EXPORTED",
+  });
+});
+
 async function runNode(args, directory, env = {}) {
   const child = spawn(process.execPath, args, {
     cwd: directory,
@@ -168,6 +208,27 @@ test("built shared subpaths bundle for browsers without the runtime", async () =
   const ipc = await import("@forge/core/shared/ipc");
   const project = await import("@forge/core/shared/project-context");
   assert.equal(ipc.projectContextDtoSchema, project.projectContextDtoSchema);
+});
+
+test("the shared module barrel bundles for browsers and preserves schema identity", async () => {
+  const result = await build({
+    stdin: {
+      contents: 'export * from "@forge/core/shared";',
+      resolveDir: root,
+    },
+    bundle: true,
+    platform: "browser",
+    format: "esm",
+    write: false,
+    metafile: true,
+    logLevel: "silent",
+  });
+  for (const output of Object.values(result.metafile.outputs))
+    assert.deepEqual(output.imports, []);
+  const shared = await import("@forge/core/shared");
+  const ipc = await import("@forge/core/shared/ipc");
+  assert.equal(shared.projectContextDtoSchema, ipc.projectContextDtoSchema);
+  assert.equal(shared.workerMessageSchema, ipc.workerMessageSchema);
 });
 
 test("packaged runtime executes an offline turn and persists the session", async () => {

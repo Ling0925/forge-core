@@ -1,32 +1,39 @@
-import { createProjectContext } from "../context/index";
-import type { McpService } from "../mcp/registry";
-import type { createPluginHost } from "../plugins/host";
-import type { AsyncTaskService } from "../shared/async-tasks";
+import { createProjectContext } from "../context";
+import type { McpService } from "../mcp";
+import type { createPluginHost } from "../plugins";
 import type {
+  AsyncTaskService,
+  CommandTaskAccess,
   HarnessOptions,
   LocalToolRegistry,
   ModelProvider,
-} from "../shared/contracts";
-import type { Permission, PublicSettings, SessionId } from "../shared/schemas";
-import type { CommandTaskAccess } from "../shared/task-view";
+  Permission,
+  PublicSettings,
+  SessionId,
+} from "../shared";
+
 import {
   createCheckpointStore,
+  type openMemoryStore,
+  type openPublishedFileStore,
+  type openSessionStore,
   workspaceCheckpointDirectory,
-} from "../store/checkpoints";
-import type { openMemoryStore } from "../store/memory";
-import type { openPublishedFileStore } from "../store/published-files";
-import type { openSessionStore } from "../store/sessions";
-import { createAsyncTaskToolRegistry } from "../tools/async-tasks";
-import { createChartToolRegistry } from "../tools/chart";
-import { createCombinedToolRegistry } from "../tools/combined";
-import { withCommandTasks } from "../tools/command-tasks";
-import { createLocalToolRegistry } from "../tools/local";
-import { createLspToolRegistry } from "../tools/lsp";
-import type { LspServerPool } from "../tools/lsp-pool";
-import { createMcpToolRegistry } from "../tools/mcp";
-import { createPublishedFileTool } from "../tools/published-files";
-import { createSkillTool } from "../tools/skills";
-import { createWebToolRegistry } from "../tools/web";
+} from "../store";
+
+import {
+  type LspServerPool,
+  createAsyncTaskToolRegistry,
+  createChartToolRegistry,
+  createCombinedToolRegistry,
+  createLocalToolRegistry,
+  createLspToolRegistry,
+  createMcpToolRegistry,
+  createPublishedFileTool,
+  createSkillTool,
+  createWebToolRegistry,
+  withCommandTasks,
+} from "../tools";
+
 import { createHarnessMemoryTools } from "./harness-memory-tools";
 
 /** Harness-owned state shared by every per-run tool registry. */
@@ -38,12 +45,12 @@ export type HarnessToolDeps = {
   memories: Awaited<ReturnType<typeof openMemoryStore>>;
   store: Awaited<ReturnType<typeof openSessionStore>>;
   getAsyncTasks: () => Promise<AsyncTaskService>;
-  asyncPermissions: Map<SessionId, () => Permission>;
+  asyncPermissions: Map<SessionId, { read: () => Permission; tasks: number }>;
   mcp: McpService;
   lspPool: LspServerPool;
   taskAccess: Set<CommandTaskAccess>;
   recentTaskAccess: CommandTaskAccess[];
-  taskSecrets: Set<string>;
+  taskSecrets: Map<string, { registries: number }>;
 };
 
 // Default per-run tools include the explicitly enabled plugin registries.
@@ -166,7 +173,13 @@ export const createHarnessTools = (deps: HarnessToolDeps) => {
       const ownedContext = context;
       const access = combined.commandTasks;
       if (access) taskAccess.add(access);
-      if (apiKey) taskSecrets.add(apiKey);
+      const secret = apiKey
+        ? (taskSecrets.get(apiKey) ?? { registries: 0 })
+        : undefined;
+      if (secret) {
+        secret.registries++;
+        taskSecrets.set(apiKey, secret);
+      }
       let accessReleased = false;
       return {
         instructions: [context.getSystemContext(), extensions?.instructions]
@@ -184,11 +197,15 @@ export const createHarnessTools = (deps: HarnessToolDeps) => {
             try {
               await combined.dispose();
             } finally {
-              if (access && !accessReleased) {
+              if (!accessReleased) {
                 accessReleased = true;
-                taskAccess.delete(access);
-                recentTaskAccess.push(access);
-                if (recentTaskAccess.length > 8) recentTaskAccess.shift();
+                if (secret && --secret.registries === 0)
+                  taskSecrets.delete(apiKey);
+                if (access) {
+                  taskAccess.delete(access);
+                  recentTaskAccess.push(access);
+                  if (recentTaskAccess.length > 8) recentTaskAccess.shift();
+                }
               }
               await ownedContext.dispose();
             }

@@ -1,18 +1,17 @@
 import {
   type CheckpointMetadata,
   type CheckpointService,
+  ForgeError,
+  MAX_EDITABLE_FILE_BYTES as LIMIT,
   checkpointMetadataSchema,
-} from "../shared/checkpoints";
-export type { CheckpointMetadata, RestoreOptions } from "../shared/checkpoints";
+} from "../shared";
+export type { CheckpointMetadata, RestoreOptions } from "../shared";
 import { createHash, randomUUID } from "node:crypto";
 import { constants } from "node:fs";
 import { type FileHandle, lstat, open, rename, unlink } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { z } from "zod";
-import { ForgeError } from "../shared/errors";
-import { MAX_EDITABLE_FILE_BYTES as LIMIT } from "../shared/file-limits";
-import { createWorkspacePathGuard } from "../tools/path-guard";
-import { canonicalPath, containsPath } from "../tools/protected-roots";
+
 import {
   atomicJson,
   hasCode,
@@ -22,6 +21,8 @@ import {
   syncDirectory,
 } from "./io";
 import { fileLock } from "./lock";
+import { createWorkspacePathGuard } from "./path-guard";
+import { canonicalPath, containsPath } from "./protected-roots";
 
 const RECORD_LIMIT = Math.ceil((LIMIT * 8) / 3) + 64 * 1024;
 const idSchema = z.string().uuid();

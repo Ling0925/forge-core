@@ -1,6 +1,9 @@
-import type { AgentProfile, AgentToolGroup } from "../shared/agent-profiles";
-import { ForgeError } from "../shared/errors";
-import type { RunInput } from "../shared/schemas";
+import {
+  type AgentProfile,
+  type AgentToolGroup,
+  ForgeError,
+  type RunInput,
+} from "../shared";
 
 export function assertAgentModel(
   profile: AgentProfile | undefined,

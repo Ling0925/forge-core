@@ -3,11 +3,11 @@ import {
   type AdvisorCoordinator,
   type AdvisorInput,
   type AdvisorRequest,
+  ForgeError,
   advisorAnswerInputSchema,
   advisorInputSchema,
   advisorRequestSchema,
-} from "../shared/agent-coordination";
-import { ForgeError } from "../shared/errors";
+} from "../shared";
 
 type Entry = {
   record: AdvisorRequest;

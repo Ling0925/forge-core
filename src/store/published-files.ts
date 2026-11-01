@@ -1,8 +1,8 @@
 import { createHash, randomUUID } from "node:crypto";
 import { join } from "node:path";
 import { z } from "zod";
-import { ForgeError } from "../shared/errors";
 import {
+  ForgeError,
   PUBLISHED_FILE_MAX_BASE64_BYTES,
   PUBLISHED_FILE_MAX_BYTES,
   PUBLISHED_FILE_MAX_MIB,
@@ -10,11 +10,13 @@ import {
   PUBLISHED_SESSION_MAX_FILES,
   type PublishedFile,
   type PublishedFileResponse,
+  type SessionId,
   publishedFileIdSchema,
   publishedFileResponseSchema,
   publishedFileSchema,
-} from "../shared/published-files";
-import { type SessionId, sessionIdSchema } from "../shared/schemas";
+  sessionIdSchema,
+} from "../shared";
+
 import { atomicJson, privateDirectory, readJson, storageError } from "./io";
 import { fileLock } from "./lock";
 

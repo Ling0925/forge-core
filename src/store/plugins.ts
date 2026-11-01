@@ -1,8 +1,7 @@
 import { join } from "node:path";
 import { z } from "zod";
-import { ForgeError } from "../shared/errors";
-import { pluginIdSchema } from "../shared/plugins";
-import { jsonObjectSchema } from "../shared/schemas";
+import { ForgeError, jsonObjectSchema, pluginIdSchema } from "../shared";
+
 import { atomicJson, privateDirectory, readJson } from "./io";
 import { fileLock } from "./lock";
 

@@ -1,12 +1,16 @@
-import type { AsyncTaskService } from "../shared/async-tasks";
-import type { ModelProvider } from "../shared/contracts";
-import { narrowestPermission } from "../shared/permissions";
-import type { Permission, SessionId } from "../shared/schemas";
-import type { openMemoryStore } from "../store/memory";
-import type { openSessionStore } from "../store/sessions";
-import { createMemoryToolRegistry } from "../tools/memory";
+import {
+  type AsyncTaskService,
+  type ModelProvider,
+  type Permission,
+  type SessionId,
+  narrowestPermission,
+  redactMemoryText,
+} from "../shared";
+
+import type { openMemoryStore, openSessionStore } from "../store";
+
+import { createMemoryToolRegistry } from "../tools";
 import { forgeMemory } from "./forge-memory";
-import { redactMemoryText } from "./memory-retrieval";
 
 export type HarnessMemoryToolDeps = {
   store: Awaited<ReturnType<typeof openSessionStore>>;
@@ -16,7 +20,7 @@ export type HarnessMemoryToolDeps = {
    * Only sessions which actually launch retained async receipts enter this map.
    * Later runs replace the reader so pending commits observe current grants.
    */
-  asyncPermissions: Map<SessionId, () => Permission>;
+  asyncPermissions: Map<SessionId, { read: () => Permission; tasks: number }>;
 };
 
 /**
@@ -47,8 +51,18 @@ export const createHarnessMemoryTools = (
       const service = await getAsyncTasks();
       // Only ever narrows across reads, so a pending commit cannot widen.
       let ceiling: Permission = toolContext.permission;
-      const newOwner = !asyncPermissions.has(main.id);
-      if (newOwner) asyncPermissions.set(main.id, () => toolContext.permission);
+      const owner = asyncPermissions.get(main.id) ?? {
+        read: () => toolContext.permission,
+        tasks: 0,
+      };
+      owner.tasks++;
+      asyncPermissions.set(main.id, owner);
+      let released = false;
+      const release = () => {
+        if (released) return;
+        released = true;
+        if (--owner.tasks === 0) asyncPermissions.delete(main.id);
+      };
       try {
         return await service.start({
           tool: "forge_memory",
@@ -64,6 +78,7 @@ export const createHarnessMemoryTools = (
           },
           signal: toolContext.signal,
           redact: (text) => redactMemoryText(text, [apiKey]),
+          onSettled: release,
           execute: async (signal, onModelUsage) => {
             const context = {
               ...toolContext,
@@ -76,7 +91,7 @@ export const createHarnessMemoryTools = (
                 ceiling = narrowestPermission(
                   ceiling,
                   toolContext.permission,
-                  asyncPermissions.get(main.id)?.() ?? "readonly",
+                  owner.read(),
                 );
                 return ceiling;
               },
@@ -97,7 +112,7 @@ export const createHarnessMemoryTools = (
           },
         });
       } catch (error) {
-        if (newOwner) asyncPermissions.delete(main.id);
+        release();
         throw error;
       }
     },

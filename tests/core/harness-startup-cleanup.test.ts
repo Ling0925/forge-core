@@ -184,7 +184,13 @@ it("releases nothing when startup succeeds until dispose", async () => {
   const harness = await createHarness({ stateDir: join(dir, "state") });
   expect(probe.released).toEqual([]);
   await harness.dispose();
-  expect(new Set(probe.released)).toEqual(
-    new Set(["modelAccess", "inputQueue", "memory", "mcp", "plugins", "lsp"]),
-  );
+  await harness.dispose();
+  expect(probe.released).toEqual([
+    "mcp",
+    "modelAccess",
+    "inputQueue",
+    "memory",
+    "plugins",
+    "lsp",
+  ]);
 });

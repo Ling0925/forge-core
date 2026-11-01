@@ -9,11 +9,7 @@ import {
   readFrames,
   sendFrame,
 } from "../../src/host/frames";
-import {
-  localSocketPath,
-  supportsLocalSocket,
-  verifyLocalSocket,
-} from "../../src/host/socket-path";
+import { localSocketPath, verifyLocalSocket } from "../../src/host/socket-path";
 
 it("frames split UTF-8 and multiple messages with per-frame byte bounds", () => {
   const socket = new EventEmitter() as Socket;
@@ -74,11 +70,4 @@ it("rejects public directories, symlinks, non-sockets and unsafe paths", async (
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
-});
-
-it("supports local Unix sockets on every POSIX platform, not only Linux", () => {
-  for (const platform of ["linux", "darwin", "freebsd", "openbsd"] as const)
-    expect(supportsLocalSocket(platform)).toBe(true);
-  // Node maps socket paths to named pipes on Windows: no inode or modes to verify.
-  expect(supportsLocalSocket("win32")).toBe(false);
 });

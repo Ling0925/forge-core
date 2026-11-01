@@ -2,8 +2,8 @@ import { randomBytes } from "node:crypto";
 import { constants } from "node:fs";
 import { lstat, open } from "node:fs/promises";
 import { TextDecoder } from "node:util";
-import { HTML_PREVIEW_MAX_BYTES, isHtmlPath } from "../shared/html-preview";
-import { createWorkspacePathGuard } from "../tools/path-guard";
+import { HTML_PREVIEW_MAX_BYTES, isHtmlPath } from "../shared";
+import { createWorkspacePathGuard } from "../store";
 
 const DOCUMENT_LIMIT = 24;
 const DOCUMENT_TTL_MS = 30 * 60 * 1000;
@@ -84,7 +84,7 @@ function sensitive(relativePath: string): boolean {
 
 /**
  * Read one workspace HTML file for preview. The path guard rejects traversal,
- * foreign absolute paths, symlinks and protected state roots; the reader
+ * absolute paths, symlinks and protected state roots; the reader
  * rejects non-HTML, oversized and non-UTF-8 content. The result is still
  * untrusted markup and is only ever framed with a sandbox.
  */

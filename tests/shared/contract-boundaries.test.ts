@@ -15,6 +15,11 @@ import {
   checkpointDtoSchema,
   checkpointMetadataSchema,
 } from "../../src/shared/checkpoints";
+import type {
+  HarnessService,
+  ModelProvider,
+  RouteRetryControl,
+} from "../../src/shared/contracts";
 import * as ipc from "../../src/shared/ipc";
 import {
   type McpService,
@@ -84,15 +89,72 @@ function imports(source: string): string[] {
 }
 
 describe("neutral contract ownership", () => {
-  it("keeps all shared imports, including type-only references, inside the contract layer", async () => {
+  it("routes cross-module imports through explicit module barrels", async () => {
+    const source = resolve(root, "src");
+    for (const file of await sources(source)) {
+      const content = await readFile(file, "utf8");
+      const module = file.slice(source.length + 1).split("/")[0];
+      for (const dependency of imports(content)) {
+        if (!dependency.startsWith(".")) continue;
+        const target = resolve(dirname(file), dependency);
+        const targetModule = target.slice(source.length + 1).split("/")[0];
+        if (module === targetModule) continue;
+        expect(target, `${file}: ${dependency}`).toBe(
+          resolve(source, targetModule ?? ""),
+        );
+      }
+      if (file.endsWith("/index.ts")) {
+        const tree = ts.createSourceFile(file, content, ts.ScriptTarget.Latest);
+        for (const statement of tree.statements)
+          if (ts.isExportDeclaration(statement))
+            expect(statement.exportClause, file).toBeDefined();
+      }
+    }
+  });
+
+  it("keeps shared imports independent of higher layers", async () => {
     const shared = resolve(root, "src/shared");
     for (const file of await sources(shared))
       for (const dependency of imports(await readFile(file, "utf8"))) {
         const allowed = dependency.startsWith(".")
           ? resolve(dirname(file), dependency).startsWith(`${shared}/`)
-          : ["zod", "zod-to-json-schema"].includes(dependency);
+          : dependency.startsWith("node:") ||
+            ["zod", "zod-to-json-schema"].includes(dependency);
         expect(allowed, `${file}: ${dependency}`).toBe(true);
       }
+  });
+
+  it("has no source import cycles, including type-only references", async () => {
+    const files = await sources(resolve(root, "src"));
+    const graph = new Map<string, string[]>();
+    for (const file of files) {
+      const dependencies = imports(await readFile(file, "utf8"))
+        .filter((path) => path.startsWith("."))
+        .map((path) => resolve(dirname(file), path))
+        .flatMap((path) =>
+          [path, `${path}.ts`, `${path}/index.ts`].filter((target) =>
+            files.includes(target),
+          ),
+        );
+      graph.set(file, dependencies);
+    }
+    const visited = new Set<string>();
+    const stack: string[] = [];
+    const cycles: string[][] = [];
+    const visit = (file: string): void => {
+      const start = stack.indexOf(file);
+      if (start !== -1) {
+        cycles.push([...stack.slice(start), file]);
+        return;
+      }
+      if (visited.has(file)) return;
+      visited.add(file);
+      stack.push(file);
+      for (const dependency of graph.get(file) ?? []) visit(dependency);
+      stack.pop();
+    };
+    for (const file of files) visit(file);
+    expect(cycles).toEqual([]);
   });
 
   it("bundles the public transport contract for browsers without host implementations", async () => {
@@ -184,6 +246,15 @@ describe("neutral contract ownership", () => {
   });
 
   it("makes implementation factories explicitly satisfy neutral service ports", () => {
+    expectTypeOf<ModelProvider["routeControl"]>().toEqualTypeOf<
+      RouteRetryControl | undefined
+    >();
+    expectTypeOf<HarnessService["listWorkspaceEntries"]>()
+      .exclude<undefined>()
+      .toEqualTypeOf<HarnessService["listWorkspaceEntries"]>();
+    expectTypeOf<HarnessService["readWorkspaceFile"]>()
+      .exclude<undefined>()
+      .toEqualTypeOf<HarnessService["readWorkspaceFile"]>();
     expectTypeOf<
       Awaited<ReturnType<typeof createProjectContext>>
     >().toEqualTypeOf<ProjectContextService>();

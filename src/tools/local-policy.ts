@@ -1,15 +1,16 @@
 import { constants } from "node:fs";
 import { lstat, open } from "node:fs/promises";
-import { relative, sep } from "node:path";
+import { relative } from "node:path";
 import { TextDecoder } from "node:util";
 import {
+  MAX_EDITABLE_FILE_BYTES as FILE_LIMIT,
   containsSensitiveText,
   isSensitivePath,
-} from "../shared/content-safety";
-import { MAX_EDITABLE_FILE_BYTES as FILE_LIMIT } from "../shared/file-limits";
+} from "../shared";
+
+import type { WorkspacePathGuard } from "../store";
 import { check, fail, signature } from "./local-common";
 import { CACHE_LIMIT } from "./local-schemas";
-import type { WorkspacePathGuard } from "./path-guard";
 
 export function createLocalPolicy({
   known,
@@ -81,7 +82,7 @@ export function createLocalPolicy({
     cacheBytes = 0;
   }
   function targetName(path: string): string {
-    const name = relative(guard.root, path).split(sep).join("/") || ".";
+    const name = relative(guard.root, path) || ".";
     if (isSensitivePath(name) || containsKnown(name))
       fail("Sensitive paths are not permitted.");
     return name;

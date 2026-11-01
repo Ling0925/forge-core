@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { MCP_NAME_LIMIT } from "./types";
+import { MCP_NAME_LIMIT } from "../shared";
 
 // Namespaced provider tool names: mcp__<server>__<tool>. Segments never
 // contain "__", so parsing is collision-free.

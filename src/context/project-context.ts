@@ -1,12 +1,17 @@
-import type {
-  ContextFileSignature,
-  ContextFingerprint,
-  InstructionSource,
-  ProjectContextCatalog,
-  ProjectContextService,
-  SkillProvenance,
-  SkillRecord,
-} from "../shared/project-context";
+import {
+  type ContextFileSignature,
+  type ContextFingerprint,
+  ForgeError,
+  type InstructionSource,
+  type ProjectContextCatalog,
+  type ProjectContextService,
+  type SkillProvenance,
+  type SkillRecord,
+  type ToolDefinition,
+  containsSensitiveText,
+  defineTool,
+  isSensitivePath,
+} from "../shared";
 export type {
   ContextFileSignature,
   ContextFingerprint,
@@ -15,20 +20,14 @@ export type {
   ProjectContextService,
   SkillProvenance,
   SkillRecord,
-} from "../shared/project-context";
+} from "../shared";
 import { createHash } from "node:crypto";
 import { constants, type BigIntStats, type Dirent, type Stats } from "node:fs";
 import { lstat, open, readdir, realpath } from "node:fs/promises";
 import { isAbsolute, join, relative, resolve, sep } from "node:path";
 import { z } from "zod";
-import {
-  containsSensitiveText,
-  isSensitivePath,
-} from "../shared/content-safety";
-import { ForgeError } from "../shared/errors";
-import type { ToolDefinition } from "../shared/schemas";
-import { defineTool } from "../shared/tool-definition";
-import { createProtectedRootMatcher } from "../tools/protected-roots";
+
+import { createProtectedRootMatcher } from "../store";
 
 // Bounded limits for all context and skill discovery.
 export const CONTEXT_LIMITS = Object.freeze({

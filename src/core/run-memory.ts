@@ -1,10 +1,14 @@
 import { createHash } from "node:crypto";
 import { join } from "node:path";
 import { z } from "zod";
-import type { AgentRuntimeDependencies } from "../shared/contracts";
-import { ForgeError } from "../shared/errors";
-import { type SessionSnapshot, sessionIdSchema } from "../shared/schemas";
-import { atomicJson, privateDirectory, readJson } from "../store/io";
+import {
+  type AgentRuntimeDependencies,
+  ForgeError,
+  type SessionSnapshot,
+  sessionIdSchema,
+} from "../shared";
+
+import { atomicJson, privateDirectory, readJson } from "../store";
 import { assertBoundary } from "./context";
 import { historyText } from "./history";
 

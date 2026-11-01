@@ -1,25 +1,28 @@
-import type { createRouteState } from "../provider/routing";
+import type { createRouteState } from "../provider";
+import {
+  type ApprovalHandler,
+  type EventSink,
+  ForgeError,
+  type LocalToolRegistry,
+  type Permission,
+  QueueAdmissionError,
+  type RootRunBudget,
+  type RunControl,
+  type RunInput,
+  type SessionId,
+  type SessionSnapshot,
+  narrowestPermission,
+  redactMemoryText,
+  settingsFields,
+} from "../shared";
+
 import type {
-  ApprovalHandler,
-  EventSink,
-  LocalToolRegistry,
-  RunControl,
-} from "../shared/contracts";
-import { ForgeError } from "../shared/errors";
-import { QueueAdmissionError } from "../shared/input-queue";
-import { narrowestPermission } from "../shared/permissions";
-import type { RootRunBudget } from "../shared/run-budget";
-import { settingsFields } from "../shared/schemas";
-import type {
-  Permission,
-  RunInput,
-  SessionId,
-  SessionSnapshot,
-} from "../shared/schemas";
-import type { openHarnessExperienceStore } from "../store/harness-experiences";
-import type { openSessionStore } from "../store/sessions";
-import type { openSettingsStore } from "../store/settings";
-import type { openToolHooksStore } from "../store/tool-hooks";
+  openHarnessExperienceStore,
+  openSessionStore,
+  openSettingsStore,
+  openToolHooksStore,
+} from "../store";
+
 import { assertAgentModel } from "./agent-profiles";
 import type { createAgentWorktreeService } from "./agent-worktrees";
 import { createDelegationModels } from "./delegation-models";
@@ -36,7 +39,7 @@ import { routedProviderFor } from "./harness-route-provider";
 import type { createHarnessTitles } from "./harness-titles";
 import type { createHarnessTools } from "./harness-tools";
 import { inputPredecessor } from "./input-queue";
-import { redactMemoryText } from "./memory-retrieval";
+
 import type { createModelAccessService } from "./model-access";
 import { createRootRunBudget } from "./run-budget";
 import type { openRunMemory } from "./run-memory";
@@ -61,7 +64,7 @@ export type HarnessRunDeps = {
   toolHooksStore: Awaited<ReturnType<typeof openToolHooksStore>>;
   agentWorktrees: ReturnType<typeof createAgentWorktreeService>;
   getHarnessExperiences: () => ReturnType<typeof openHarnessExperienceStore>;
-  asyncPermissions: Map<SessionId, () => Permission>;
+  asyncPermissions: Map<SessionId, { read: () => Permission; tasks: number }>;
   track: (
     id: SessionId,
     controller: AbortController,
@@ -133,8 +136,9 @@ export const createHarnessRun = (deps: HarnessRunDeps) => {
         )
           throw new QueueAdmissionError();
       }
-      if (asyncPermissions.has(input.sessionId)) {
-        asyncPermissions.set(input.sessionId, () =>
+      const asyncPermission = asyncPermissions.get(input.sessionId);
+      if (asyncPermission) {
+        asyncPermission.read = () =>
           narrowestPermission(
             input.mode === "plan"
               ? "readonly"
@@ -142,8 +146,7 @@ export const createHarnessRun = (deps: HarnessRunDeps) => {
                   input.permission ??
                   settings.defaultPermission),
             snapshot.permissionCeiling,
-          ),
-        );
+          );
       }
       rootBudget = createRootRunBudget({ rootSessionId: input.sessionId });
       const { providerSourceId, routeGroupId } = selectSessionSource(
@@ -333,8 +336,8 @@ export const createHarnessRun = (deps: HarnessRunDeps) => {
           active.delete(input.sessionId);
           const reader = asyncPermissions.get(input.sessionId);
           if (reader) {
-            const permission = reader();
-            asyncPermissions.set(input.sessionId, () => permission);
+            const permission = reader.read();
+            reader.read = () => permission;
           }
         }
       }

@@ -1,10 +1,11 @@
-import type { ProviderProtocol } from "../shared/model-access";
 import {
   type ModelCatalog,
   type ModelCatalogEntry,
+  type ProviderProtocol,
   modelCatalogEntrySchema,
   modelCatalogSchema,
-} from "../shared/model-catalog";
+} from "../shared";
+
 import { readModelContextWindow } from "./context-window";
 
 type RecordValue = Readonly<Record<string, unknown>>;

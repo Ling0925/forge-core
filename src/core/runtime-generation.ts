@@ -1,5 +1,5 @@
-import type { ModelProvider } from "../shared/contracts";
-import type { AgentEvent } from "../shared/schemas";
+import type { AgentEvent, ModelProvider } from "../shared";
+
 import { createToolPreviewStream } from "./tool-preview";
 
 type GenerationPreview = {

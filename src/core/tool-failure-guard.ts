@@ -1,5 +1,4 @@
-import { ForgeError } from "../shared/errors";
-import type { ToolCall, ToolResult } from "../shared/schemas";
+import { ForgeError, type ToolCall, type ToolResult } from "../shared";
 
 /** Bound repeated model-generated retries without replaying or hiding tool effects. */
 export function createToolFailureGuard() {

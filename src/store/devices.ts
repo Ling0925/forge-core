@@ -10,11 +10,12 @@ import { z } from "zod";
 import {
   type AuthorizedDevice,
   type DeviceAuthorization,
+  ForgeError,
   deviceCredentialSchema,
   deviceNameSchema,
   deviceRecordSchema,
-} from "../shared/device-authorization";
-import { ForgeError } from "../shared/errors";
+} from "../shared";
+
 import { atomicJson, privateDirectory, readJson } from "./io";
 import { fileLock } from "./lock";
 

@@ -1,12 +1,13 @@
 import { randomUUID } from "node:crypto";
 import { z } from "zod";
-import { ForgeError } from "../shared/errors";
-import { recordPlan, sessionPlans } from "../shared/plans";
 import {
+  ForgeError,
   type SessionSnapshot,
   type TaskPlan,
+  recordPlan,
+  sessionPlans,
   taskPlanSchema,
-} from "../shared/schemas";
+} from "../shared";
 
 /** Also the persisted ceiling (sessionSnapshot.plans.max). */
 export const DEFAULT_MAX_SESSION_PLANS = 10000;

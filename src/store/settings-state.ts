@@ -1,9 +1,10 @@
-import { ForgeError } from "../shared/errors";
 import {
   type CredentialInput,
+  ForgeError,
   type ProviderProtocol,
   sourceAccessFields,
-} from "../shared/model-access";
+} from "../shared";
+
 import { readJson } from "./io";
 import { fileLock } from "./lock";
 import {

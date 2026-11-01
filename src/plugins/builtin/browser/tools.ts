@@ -2,11 +2,12 @@ import { randomUUID } from "node:crypto";
 import { constants } from "node:fs";
 import { lstat, open, rm } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
-import { ForgeError } from "../../../shared/errors";
-import type {
-  BrowserCommand,
-  BrowserCommandResult,
-} from "../../../shared/plugins";
+import {
+  type BrowserCommand,
+  type BrowserCommandResult,
+  ForgeError,
+} from "../../../shared";
+
 import { assertNavigable } from "./navigation";
 import {
   type ToolResult,

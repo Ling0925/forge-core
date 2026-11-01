@@ -1,11 +1,12 @@
-import type { LocalToolRegistry } from "../shared/contracts";
 import type {
   BrowserRequest,
   BrowserResponse,
+  JsonValue,
+  LocalToolRegistry,
   PluginHealth,
   PluginManifest,
-} from "../shared/plugins";
-import type { JsonValue, SessionId } from "../shared/schemas";
+  SessionId,
+} from "../shared";
 
 export type PluginConfig = Readonly<Record<string, JsonValue>>;
 export interface PluginScope extends LocalToolRegistry {

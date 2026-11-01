@@ -75,7 +75,7 @@ it
       expect((await lstat(ownedTemp)).mode & 0o777).toBe(0o700);
       const profileEntries = await readdir(ownedTemp, { recursive: true });
       expect(
-        profileEntries.some((entry) => /(?:^|[\\/\\\\])Default$/.test(entry)),
+        profileEntries.some((entry) => /(?:^|\/)Default$/.test(entry)),
       ).toBe(true);
       for (const command of [
         { action: "snapshot" },

@@ -1,29 +1,30 @@
 import { randomUUID } from "node:crypto";
 import { constants } from "node:fs";
 import { lstat, open } from "node:fs/promises";
-import { extname, relative, sep } from "node:path";
+import { extname, relative } from "node:path";
 import { fileURLToPath } from "node:url";
 import { z } from "zod";
 import {
-  containsSensitiveText,
-  isSensitivePath,
-} from "../shared/content-safety";
-import type { LocalToolRegistry, ToolContext } from "../shared/contracts";
-import { NON_LAYOUT_CONTROLS } from "../shared/control-characters";
-import {
+  type LocalToolRegistry,
+  NON_LAYOUT_CONTROLS,
   type ToolCall,
+  type ToolContext,
   type ToolDefinition,
   type ToolResult,
+  containsSensitiveText,
+  defineTool,
+  isSensitivePath,
   lspServersSchema,
-} from "../shared/schemas";
-import { defineTool } from "../shared/tool-definition";
-import { recoverToolInputError } from "../shared/tool-input";
+  recoverToolInputError,
+} from "../shared";
+
+import { createWorkspacePathGuard } from "../store";
+
 import {
   LspCleanupError,
   type LspServerConfig,
   type LspServerPool,
 } from "./lsp-pool";
-import { createWorkspacePathGuard } from "./path-guard";
 
 export interface LspToolOptions {
   readonly pool: LspServerPool;
@@ -174,7 +175,7 @@ export async function createLspToolRegistry(
     if (isSensitivePath(path) || containsKnown(path))
       throw new Error("Sensitive paths are not permitted.");
     const absolute = await guard.resolveRead(path);
-    const local = relative(guard.root, absolute).split(sep).join("/");
+    const local = relative(guard.root, absolute);
     if (isSensitivePath(local) || containsKnown(local))
       throw new Error("Sensitive paths are not permitted.");
     const handle = await open(
@@ -242,7 +243,7 @@ export async function createLspToolRegistry(
       if (url.protocol !== "file:" || url.search || url.hash || url.hostname)
         return undefined;
       const absolute = fileURLToPath(url);
-      const local = relative(guard.root, absolute).split(sep).join("/");
+      const local = relative(guard.root, absolute);
       if (!local || isSensitivePath(local) || containsKnown(local))
         return undefined;
       if (
@@ -472,8 +473,7 @@ export async function createLspToolRegistry(
       };
       return result(payload);
     } catch (error) {
-      if (error instanceof LspCleanupError)
-        return result({ error: error.message }, true);
+      if (error instanceof LspCleanupError) throw error;
       const invalid = recoverToolInputError(error);
       if (invalid) return invalid;
       return result(

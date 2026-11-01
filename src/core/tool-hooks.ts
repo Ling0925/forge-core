@@ -1,11 +1,10 @@
 import { type ChildProcess, spawn } from "node:child_process";
 import { z } from "zod";
-import { cleanupProcess, groupCleanupSupported } from "../mcp/cleanup";
-import { ForgeError } from "../shared/errors";
 import {
   type AfterToolHookEvent,
   type BeforeToolHookEvent,
   type BeforeToolHookResult,
+  ForgeError,
   type RunEndHookEvent,
   TOOL_HOOK_MAX_ARGUMENT_BYTES,
   TOOL_HOOK_MAX_CONTENT_PREVIEW_BYTES,
@@ -19,7 +18,8 @@ import {
   type ToolHookStatus,
   toolHooksConfigSchema,
   truncateToolHookText,
-} from "../shared/tool-hooks";
+} from "../shared";
+import { cleanupProcess, minimalEnv } from "../store";
 
 /**
  * Host-configured executable tool lifecycle hooks.
@@ -30,7 +30,7 @@ import {
  * - Hooks run as real child processes with `argv` and no shell. Input is a
  *   single JSON document on stdin; stdout is only interpreted for an explicit
  *   before-hook allow/deny decision and is otherwise not surfaced.
- * - Environment is minimal (PATH/TMPDIR, plus SYSTEMROOT on Windows); no
+ * - Environment is minimal (PATH/TMPDIR); no
  *   provider credentials or arbitrary host variables are forwarded.
  * - Hooks never alter tool arguments, grant permissions, replay tools or
  *   replace the original tool outcome. A failing before hook fails closed.
@@ -132,15 +132,6 @@ function captureStream(
   };
 }
 
-function minimalEnv(): NodeJS.ProcessEnv {
-  const env: Record<string, string> = {};
-  if (process.env.PATH) env.PATH = process.env.PATH;
-  if (process.env.TMPDIR) env.TMPDIR = process.env.TMPDIR;
-  if (process.platform === "win32" && process.env.SYSTEMROOT)
-    env.SYSTEMROOT = process.env.SYSTEMROOT;
-  return env;
-}
-
 /**
  * Join an owned process tree exactly once. Concurrent timeout/abort/close/
  * dispose callers share the same promise. Returns false when cleanup could not
@@ -158,16 +149,6 @@ function cleanupOnce(
   if (existing) return existing;
   const pending = (async () => {
     try {
-      // Without process groups (Windows) cleanup only signals the direct
-      // child; once that child has exited there is nothing left to join.
-      if (
-        !groupCleanupSupported() &&
-        (child.exitCode !== null || child.signalCode !== null)
-      ) {
-        cleaned.add(child);
-        active.delete(child);
-        return true;
-      }
       await cleanupProcess(child);
       cleaned.add(child);
       active.delete(child);
@@ -342,7 +323,6 @@ export function createToolHookService(
           env: minimalEnv(),
           shell: false,
           detached: true,
-          windowsHide: true,
         });
       } catch {
         failedToStart = true;

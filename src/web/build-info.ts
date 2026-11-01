@@ -6,9 +6,9 @@ import {
   type CoreBuildInfo,
   coreBuildInfo,
   parseCoreBuildInfo,
-} from "../shared/build-info";
+} from "../shared";
 
-export type { CoreBuildInfo } from "../shared/build-info";
+export type { CoreBuildInfo } from "../shared";
 
 /** `unknown` is a real answer: neither side proved the other is current. */
 export type RestartRequired = "true" | "false" | "unknown";

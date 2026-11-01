@@ -13,6 +13,20 @@ import type {
   SessionId,
 } from "../../src/shared/schemas";
 import { openMemoryStore } from "../../src/store/memory";
+const ownership = vi.hoisted(() => ({ permissions: new Map() }));
+vi.mock("../../src/core/harness-tools", async (original) => {
+  const module =
+    await original<typeof import("../../src/core/harness-tools")>();
+  return {
+    ...module,
+    createHarnessTools: (
+      deps: Parameters<typeof module.createHarnessTools>[0],
+    ) => {
+      ownership.permissions = deps.asyncPermissions;
+      return module.createHarnessTools(deps);
+    },
+  };
+});
 
 const deferred = () => {
   let resolve!: () => void;
@@ -202,14 +216,11 @@ describe("async memory through the real harness and host queue", () => {
         synthesis.resolve();
       }
       await vi.waitFor(() => expect(finished()).toHaveLength(2));
-      const queue = await getInputQueue().list(sessionId);
       await vi.waitFor(async () =>
-        expect((await getInputQueue().list(sessionId)).items[0]?.state).toBe(
-          "consumed",
-        ),
+        expect((await getInputQueue().list(sessionId)).items).toEqual([]),
       );
-      expect(queue.items).toHaveLength(1);
-      expect(queue.items[0]?.origin).toBe("background_task");
+      expect(await receipts()).toEqual([]);
+      expect(ownership.permissions.size).toBe(0);
       expect(turns).toBe(4);
       expect(requests).toBe(1);
       for (const message of finished())
@@ -326,7 +337,7 @@ describe("async memory through the real harness and host queue", () => {
       .at(-1);
     if (started?.kind === "event")
       expect(started.data.event).toMatchObject({ permission: "readonly" });
-    expect((await receipts())[0].status).toBe("failed");
+    expect(await receipts()).toEqual([]);
   });
 
   it("cancels an idle session's background inference, joins it and never wakes or writes", async () => {
@@ -339,7 +350,9 @@ describe("async memory through the real harness and host queue", () => {
     });
     await startRun();
     await vi.waitFor(() => expect(finished()).toHaveLength(1));
+    expect(ownership.permissions.size).toBe(1);
     expect(await harness.cancelSession(sessionId)).toBe(true);
+    expect(ownership.permissions.size).toBe(0);
     expect((await receipts())[0]).toMatchObject({
       status: "cancelled",
       notification: "suppressed",
@@ -442,7 +455,9 @@ describe("async memory through the real harness and host queue", () => {
     });
     synthesis.resolve();
     await vi.waitFor(() => expect(finished()).toHaveLength(2));
-    expect((await getInputQueue().list(sessionId)).items).toHaveLength(1);
+    await vi.waitFor(async () =>
+      expect((await getInputQueue().list(sessionId)).items).toEqual([]),
+    );
     expect(childTurns).toBe(2);
     expect(requests).toBe(1);
   });

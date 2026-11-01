@@ -1,9 +1,13 @@
 import { createHash } from "node:crypto";
 import { join } from "node:path";
 import { z } from "zod";
-import { ForgeError } from "../shared/errors";
-import { type ModelCatalog, modelCatalogSchema } from "../shared/model-catalog";
-import type { ProviderConfig } from "../shared/schemas";
+import {
+  ForgeError,
+  type ModelCatalog,
+  type ProviderConfig,
+  modelCatalogSchema,
+} from "../shared";
+
 import { atomicJson, privateDirectory, readJson } from "./io";
 import { fileLock } from "./lock";
 
@@ -31,7 +35,10 @@ export function modelCatalogCacheKey(
       JSON.stringify([
         sourceId ?? null,
         config.baseUrl.replace(/\/+$/, ""),
-        config.apiMode ?? "chat-completions",
+        // Copilot's single catalog advertises every per-model protocol.
+        config.account?.platform === "copilot"
+          ? config.account.platform
+          : (config.apiMode ?? "chat-completions"),
         config.vertex ??
           (config.account?.accountId
             ? [config.account.platform, config.account.accountId]

@@ -1,5 +1,5 @@
 import type { ModelCatalogEntry } from "./model-catalog";
-import type { Usage } from "./schemas";
+import type { Usage } from "./schemas/usage";
 
 export type TokenRates = Pick<
   NonNullable<ModelCatalogEntry["pricing"]>,

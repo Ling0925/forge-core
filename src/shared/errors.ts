@@ -1,46 +1,56 @@
 import { ZodError } from "zod";
-import { errorInfoSchema } from "./schemas";
-import type { ErrorInfo } from "./schemas";
+import { errorInfoSchema } from "./schemas/events";
+import type { ErrorInfo } from "./schemas/events";
 
 /**
  * Static, bounded reason codes for provider protocol framing/finish failures.
  * These are authored public labels only; never upstream response bodies.
  */
-export type ProtocolReason =
-  | "invalid_response"
-  | "invalid_json"
-  | "invalid_chunk"
-  | "missing_finish"
-  | "unterminated_event"
-  | "output_limit"
-  | "output_truncated"
-  | "invalid_finish"
-  | "invalid_tool_call"
-  | "provider_error_event"
-  | "missing_completion"
-  | "unexpected_frame";
+const protocolReasons = [
+  "invalid_response",
+  "invalid_json",
+  "invalid_chunk",
+  "missing_finish",
+  "unterminated_event",
+  "output_limit",
+  "output_truncated",
+  "invalid_finish",
+  "invalid_tool_call",
+  "provider_error_event",
+  "missing_completion",
+  "unexpected_frame",
+] as const;
+export type ProtocolReason = (typeof protocolReasons)[number];
 
-export type UpstreamReason =
-  | "rate_limit_exceeded"
-  | "server_error"
-  | "authentication_error"
-  | "insufficient_quota"
-  | "invalid_request"
-  | "content_filter"
-  | "response_incomplete";
-export type ProviderReason = ProtocolReason | UpstreamReason;
-export type ProviderRetryReason =
-  | "protocol"
-  | "network"
-  | "timeout"
-  | "http"
-  | "upstream";
-
-type ClassifiedProviderError = ForgeError & {
-  readonly classification: string;
-  readonly status?: number | undefined;
-  readonly reason?: ProviderReason | undefined;
-};
+const upstreamReasons = [
+  "rate_limit_exceeded",
+  "server_error",
+  "authentication_error",
+  "insufficient_quota",
+  "invalid_request",
+  "content_filter",
+  "response_incomplete",
+] as const;
+export type UpstreamReason = (typeof upstreamReasons)[number];
+export const providerReasons = [
+  ...protocolReasons,
+  ...upstreamReasons,
+] as const;
+export type ProviderReason = (typeof providerReasons)[number];
+export const providerFailures = [
+  "http",
+  "protocol",
+  "network",
+  "timeout",
+  "aborted",
+  "upstream",
+  "observer",
+] as const;
+export type ProviderFailure = (typeof providerFailures)[number];
+export type ProviderRetryReason = Exclude<
+  ProviderFailure,
+  "aborted" | "observer"
+>;
 
 /**
  * A provider failure is worth one bounded retry only when the request never
@@ -49,12 +59,16 @@ type ClassifiedProviderError = ForgeError & {
  * immediately; replaying them cannot succeed and may repeat side effects.
  */
 export const isRetryableProviderFailure = (error: unknown): boolean => {
-  if (!(error instanceof ForgeError) || error.code !== "provider") return false;
-  const candidate = error as Partial<ClassifiedProviderError>;
-  if (typeof candidate.classification !== "string") return false;
-  if (candidate.classification === "upstream") return error.retryable;
-  if (candidate.classification === "protocol") {
-    switch (candidate.reason) {
+  if (!(error instanceof ProviderError))
+    return (
+      error instanceof ForgeError &&
+      error.code === "provider" &&
+      error.retryable &&
+      providerRetryReason(error) !== undefined
+    );
+  if (error.classification === "upstream") return error.retryable;
+  if (error.classification === "protocol") {
+    switch (error.reason) {
       case undefined:
       case "missing_finish":
       case "unterminated_event":
@@ -65,13 +79,10 @@ export const isRetryableProviderFailure = (error: unknown): boolean => {
         return false;
     }
   }
-  if (
-    candidate.classification === "network" ||
-    candidate.classification === "timeout"
-  )
+  if (error.classification === "network" || error.classification === "timeout")
     return true;
-  if (candidate.classification !== "http") return false;
-  const status = candidate.status;
+  if (error.classification !== "http") return false;
+  const status = error.status;
   return (
     status === 408 ||
     status === 429 ||
@@ -83,16 +94,20 @@ export const isRetryableProviderFailure = (error: unknown): boolean => {
 export const providerRetryReason = (
   error: unknown,
 ): ProviderRetryReason | undefined => {
-  if (!(error instanceof ForgeError) || error.code !== "provider")
+  if (
+    !(error instanceof ForgeError) ||
+    error.code !== "provider" ||
+    (!(error instanceof ProviderError) && !error.retryable) ||
+    !("classification" in error)
+  )
     return undefined;
-  const candidate = error as Partial<ClassifiedProviderError>;
-  switch (candidate.classification) {
+  switch (error.classification) {
     case "protocol":
     case "network":
     case "timeout":
     case "http":
     case "upstream":
-      return candidate.classification;
+      return error.classification;
     default:
       return undefined;
   }
@@ -109,6 +124,33 @@ export class ForgeError extends Error {
     this.name = "ForgeError";
     this.code = info.code;
     this.retryable = info.retryable;
+  }
+}
+
+export class ProviderError extends ForgeError {
+  readonly classification: ProviderFailure;
+  readonly status: number | undefined;
+  readonly reason: ProviderReason | undefined;
+  constructor(
+    classification: ProviderFailure,
+    message: string,
+    retryable = false,
+    status?: number,
+    reason?: ProviderReason,
+  ) {
+    super(
+      "provider",
+      classification === "protocol" ||
+        classification === "http" ||
+        classification === "upstream"
+        ? `${message} [${classification}${status === undefined ? "" : ` HTTP ${status}`}]${reason === undefined ? "" : ` (${reason})`}`
+        : message,
+      retryable,
+    );
+    this.name = "ProviderError";
+    this.classification = classification;
+    this.status = status;
+    this.reason = reason;
   }
 }
 

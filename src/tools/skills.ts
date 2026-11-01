@@ -6,11 +6,17 @@ import {
   contextPathArgumentsSchema,
   createProjectContextTool,
   loadSkillArgumentsSchema,
-} from "../context/project-context";
-import type { LocalToolRegistry, ToolContext } from "../shared/contracts";
-import { ForgeError } from "../shared/errors";
-import type { JsonValue, ToolCall, ToolResult } from "../shared/schemas";
-import { invalidToolInput, recoverToolInputError } from "../shared/tool-input";
+} from "../context";
+import {
+  ForgeError,
+  type JsonValue,
+  type LocalToolRegistry,
+  type ToolCall,
+  type ToolContext,
+  type ToolResult,
+  invalidToolInput,
+  recoverToolInputError,
+} from "../shared";
 
 export interface SkillToolOptions {
   readonly context: ProjectContextService;

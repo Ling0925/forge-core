@@ -1,14 +1,13 @@
 import { describe, expect, it } from "vitest";
-import { ProviderError } from "../../src/provider/errors";
 import {
   ROUTE_USAGE_HALF_LIFE_MS,
   type RouteQuota,
   createRouteState,
   createRoutedProvider,
   decayedServedTokens,
-  routeRetryControl,
 } from "../../src/provider/routing";
 import type { ModelProvider } from "../../src/shared/contracts";
+import { ProviderError } from "../../src/shared/errors";
 import type {
   ProviderAttempt,
   RouteGroup,
@@ -118,7 +117,7 @@ function routed(options: {
       };
     },
   });
-  const control = routeRetryControl(provider);
+  const control = provider.routeControl;
   if (control === undefined)
     throw new Error("Routed provider must expose retry control");
   const run = (overrides: RunOverrides = {}) =>

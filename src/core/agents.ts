@@ -1,13 +1,15 @@
 import { z } from "zod";
-import { ForgeError, formatValidationError } from "../shared/errors";
 import {
+  ForgeError,
+  type TaskPlan,
   type ToolDefinition,
   type ToolResult,
+  defineTool,
+  formatValidationError,
+  invalidToolInput,
   providerSourceIdSchema,
-} from "../shared/schemas";
-import type { TaskPlan } from "../shared/schemas";
-import { defineTool } from "../shared/tool-definition";
-import { invalidToolInput } from "../shared/tool-input";
+} from "../shared";
+
 import {
   type AgentEnvironment,
   agentArgumentSchemas,

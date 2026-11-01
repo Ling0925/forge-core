@@ -1,12 +1,12 @@
 import { expect, it, vi } from "vitest";
 import { createAgentRuntime } from "../../src/core/runtime";
 import { createToolPreviewStream } from "../../src/core/tool-preview";
-import { ProviderError } from "../../src/provider/openai";
 import type {
   LocalToolRegistry,
   ModelProvider,
   SessionStore,
 } from "../../src/shared/contracts";
+import { ProviderError } from "../../src/shared/errors";
 import {
   type AgentEvent,
   type ToolCallPreview,

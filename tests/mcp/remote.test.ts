@@ -4,12 +4,16 @@ import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
-import { sameOriginEndpoint, validSessionId } from "../../src/mcp/http";
+import {
+  HttpMcpConnection,
+  sameOriginEndpoint,
+  validSessionId,
+} from "../../src/mcp/http";
 import { createMcpService } from "../../src/mcp/registry";
 import {
   mcpRegisterAnyInputSchema,
   mcpRemoteServerConfigSchema,
-} from "../../src/mcp/types";
+} from "../../src/shared/mcp";
 import { mcpRegisterDtoSchema } from "../../src/shared/mcp";
 
 const initResult = {
@@ -819,6 +823,40 @@ describe("legacy SSE transport", () => {
 });
 
 describe("lifecycle: cancellation, disable and revoke", () => {
+  it("forgets cancelled HTTP request ids after the aborted send settles", async () => {
+    const fixture = streamableFixture();
+    const listening = await listen(fixture.handler);
+    servers.push(listening.server);
+    const connection = new HttpMcpConnection({
+      url: `${listening.base}/mcp`,
+      headers: {},
+      requestTimeoutMs: mcpRemoteServerConfigSchema.parse({
+        id: "fixture",
+        label: "Fixture",
+        transport: "http",
+        enabled: true,
+        url: `${listening.base}/mcp`,
+      }).requestTimeoutMs,
+    });
+    try {
+      await connection.connect();
+      const controller = new AbortController();
+      const work = connection.callTool("slow", {}, controller.signal);
+      const rejected = expect(work).rejects.toMatchObject({
+        code: "cancelled",
+      });
+      await until(() => fixture.state.held.length === 1);
+      controller.abort();
+      await rejected;
+      await until(() => fixture.state.held[0]?.response.destroyed === true);
+      expect(Reflect.get(connection, "cancelledRequests").size).toBe(0);
+      await expect(
+        connection.callTool("echo", { text: "still live" }),
+      ).resolves.toMatchObject({ text: "still live" });
+    } finally {
+      await connection.close();
+    }
+  });
   it.each(["http", "sse"] as const)(
     "shares %s initialization, routes concurrent replies, and cancels only one request",
     async (transport) => {

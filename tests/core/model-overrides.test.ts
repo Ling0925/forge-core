@@ -6,12 +6,12 @@ import { join } from "node:path";
 import { afterEach, expect, it, vi } from "vitest";
 import { createHarness } from "../../src/core/harness";
 import { createModelAccessService } from "../../src/core/model-access";
-import { ProviderError } from "../../src/provider/errors";
 import { createModelProvider } from "../../src/provider/openai";
 import type {
   ModelProvider,
   ProviderFactory,
 } from "../../src/shared/contracts";
+import { ProviderError } from "../../src/shared/errors";
 import type { ProviderAttempt } from "../../src/shared/model-access";
 import type { ModelCatalog } from "../../src/shared/model-catalog";
 import {

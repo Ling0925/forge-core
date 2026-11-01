@@ -3,12 +3,12 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, expect, it, vi } from "vitest";
 import { createHarness } from "../../src/core/harness";
-import { ProviderError } from "../../src/provider/errors";
 import type {
   HarnessService,
   ModelProvider,
   ProviderFactory,
 } from "../../src/shared/contracts";
+import { ProviderError } from "../../src/shared/errors";
 import { ForgeError } from "../../src/shared/errors";
 import { openSessionStore } from "../../src/store/sessions";
 

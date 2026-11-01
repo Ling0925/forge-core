@@ -1,6 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
-import type { SessionSnapshot } from "../shared/schemas";
-import type { SessionDelta } from "../shared/session-delta";
+import type { SessionDelta, SessionSnapshot } from "../shared";
 
 const keys = ["messages", "events", "changes"] as const;
 function fingerprint(value: unknown) {

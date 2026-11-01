@@ -1,6 +1,6 @@
 import { type ChildProcess, spawn } from "node:child_process";
 import { homedir } from "node:os";
-import { cleanupProcess } from "../mcp/cleanup";
+import { cleanupProcess, minimalEnv } from "../store";
 
 export const LSP_MESSAGE_LIMIT = 1024 * 1024;
 const HEADER_LIMIT = 8192;
@@ -50,18 +50,12 @@ export class StdioLspClient {
   start(): void {
     if (this.child || this.disposal)
       throw new Error("LSP client already used.");
-    const env: NodeJS.ProcessEnv = { HOME: homedir() };
-    // Deliberately do not forward tokens, proxy settings, NODE_OPTIONS or config.
-    if (process.env.PATH) env.PATH = process.env.PATH;
-    if (process.env.TMPDIR) env.TMPDIR = process.env.TMPDIR;
-    if (process.platform === "win32" && process.env.SYSTEMROOT)
-      env.SYSTEMROOT = process.env.SYSTEMROOT;
+    const env = { ...minimalEnv(), HOME: homedir() };
     const child = spawn(this.options.command, [...this.options.args], {
       cwd: this.options.cwd,
       env,
       stdio: ["pipe", "pipe", "pipe"],
       detached: true,
-      windowsHide: true,
     });
     this.child = child;
     this.joined = new Promise<void>((resolve) => child.once("close", resolve));

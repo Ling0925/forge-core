@@ -1,6 +1,6 @@
 import { lstat, realpath } from "node:fs/promises";
 import { dirname, isAbsolute, resolve } from "node:path";
-import { privateDirectory } from "../store/io";
+import { privateDirectory } from "../store";
 import { hostError } from "./errors";
 
 /**
@@ -9,25 +9,10 @@ import { hostError } from "./errors";
  */
 export const LOCAL_SOCKET_PATH_MAX_BYTES = 100;
 
-/**
- * Filesystem Unix sockets with owner-only permissions work on every POSIX
- * platform Node supports. On Windows Node maps socket paths to named pipes,
- * which have neither a filesystem inode nor POSIX modes to verify.
- */
-export function supportsLocalSocket(
-  platform: NodeJS.Platform = process.platform,
-): boolean {
-  return platform !== "win32";
-}
-
 export async function localSocketPath(
   path: string,
   createParent = false,
 ): Promise<string> {
-  if (!supportsLocalSocket())
-    throw hostError(
-      "Local Unix socket hosting requires a POSIX platform (Linux, macOS or BSD).",
-    );
   if (
     !isAbsolute(path) ||
     Buffer.byteLength(path) > LOCAL_SOCKET_PATH_MAX_BYTES ||

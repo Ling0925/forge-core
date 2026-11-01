@@ -1,4 +1,4 @@
-import type { AgentEvent, ContextUsage } from "./schemas";
+import type { AgentEvent, ContextUsage } from "./schemas/events";
 
 /** Presentation only. Never rewrite raw usage events or accumulated billing totals. */
 export type ContextDisplay = Readonly<{

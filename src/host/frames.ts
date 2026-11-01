@@ -1,5 +1,5 @@
 import type { Socket } from "node:net";
-import { PUBLISHED_FILE_MAX_BASE64_BYTES } from "../shared/published-files";
+import { PUBLISHED_FILE_MAX_BASE64_BYTES } from "../shared";
 import { hostError } from "./errors";
 
 export const MAX_REQUEST_BYTES = 16 * 1024 * 1024;
@@ -51,8 +51,16 @@ export function sendFrame(
   value: unknown,
   limit = MAX_RESPONSE_BYTES,
 ): boolean {
+  return sendSerializedFrame(socket, JSON.stringify(value), limit);
+}
+
+export function sendSerializedFrame(
+  socket: Socket,
+  json: string,
+  limit = MAX_RESPONSE_BYTES,
+): boolean {
   if (socket.destroyed) return false;
-  const frame = `${JSON.stringify(value)}\n`;
+  const frame = `${json}\n`;
   const bytes = Buffer.byteLength(frame);
   if (bytes > limit || socket.writableLength + bytes > MAX_RESPONSE_BYTES) {
     socket.destroy();

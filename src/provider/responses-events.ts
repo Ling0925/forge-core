@@ -1,9 +1,12 @@
 import { isDeepStrictEqual } from "node:util";
 import type { ServerSentEvent } from "openai/core/streaming";
 import { z } from "zod";
-import type { ProtocolReason } from "../shared/errors";
-import { toolCallSchema } from "../shared/schemas";
-import type { ToolCallPreview } from "../shared/schemas";
+import {
+  type ProtocolReason,
+  type ToolCallPreview,
+  toolCallSchema,
+} from "../shared";
+
 import type { ProviderDiagnostic, ProviderStage } from "./errors";
 import { urlCitation, webSearchCall } from "./responses-web-search";
 

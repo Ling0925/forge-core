@@ -1,17 +1,17 @@
-import type { ModelProvider } from "../shared/contracts";
-import { ForgeError, isRetryableProviderFailure } from "../shared/errors";
-import type {
-  ProviderAttempt,
-  RouteGroup,
-  RouteMember,
-} from "../shared/model-access";
-import type {
-  ProviderConfig,
-  ProviderResponse,
-  ToolCallPreview,
-  Usage,
-} from "../shared/schemas";
-import type { WebSearchProgress } from "../shared/web-search";
+import {
+  ForgeError,
+  type ModelProvider,
+  type ProviderAttempt,
+  type ProviderConfig,
+  type ProviderResponse,
+  type RouteGroup,
+  type RouteMember,
+  type RouteRetryControl,
+  type ToolCallPreview,
+  type Usage,
+  type WebSearchProgress,
+  isRetryableProviderFailure,
+} from "../shared";
 
 /**
  * Explicit route-group selection, adapted from Magpie's gateway
@@ -116,12 +116,6 @@ export const createRouteState = (): RouteState => ({
   rotate: new Map(),
   last: new Map(),
 });
-
-export interface RouteRetryControl {
-  readonly groupId: string;
-  /** True only when the last routed request for this session provably never ran. */
-  readonly mayRetry: (sessionId?: string) => boolean;
-}
 
 export interface RoutedProviderOptions {
   readonly group: RouteGroup;
@@ -410,13 +404,6 @@ const attemptUsage = (
           ? {}
           : { cachedPromptTokens: usage.cachedPromptTokens }),
       };
-
-/** The runtime asks this before spending another attempt on a routed request. */
-export const routeRetryControl = (
-  provider: ModelProvider,
-): RouteRetryControl | undefined =>
-  (provider as ModelProvider & { readonly routeControl?: RouteRetryControl })
-    .routeControl;
 
 /**
  * Background requests on behalf of a session (auto-title, manual compaction)

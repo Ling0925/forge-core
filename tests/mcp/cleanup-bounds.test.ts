@@ -7,7 +7,7 @@ import { expect, it } from "vitest";
 import { MCP_TRUNCATION_MARKER } from "../../src/mcp/bounds";
 import { StdioMcpConnection } from "../../src/mcp/protocol";
 import { createMcpService } from "../../src/mcp/registry";
-import { MCP_RESULT_LIMIT } from "../../src/mcp/types";
+import { MCP_RESULT_LIMIT } from "../../src/shared/mcp";
 import { parseSessionId } from "../../src/shared/schemas";
 import { createMcpToolRegistry } from "../../src/tools/mcp";
 

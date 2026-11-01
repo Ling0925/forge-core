@@ -4,3 +4,5 @@ export * from "./schemas/messages";
 export * from "./schemas/changes";
 export * from "./schemas/events";
 export * from "./schemas/sessions";
+export * from "./schemas/diff";
+export * from "./schemas/usage";

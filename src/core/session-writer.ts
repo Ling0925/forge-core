@@ -1,10 +1,11 @@
-import type { SessionStore } from "../shared/contracts";
 import {
+  type RecordDelta,
   type SessionId,
   type SessionSnapshot,
+  type SessionStore,
+  type VersionedSession,
   sessionSnapshotSchema,
-} from "../shared/schemas";
-import type { RecordDelta, VersionedSession } from "../shared/session-store";
+} from "../shared";
 
 function records<T>(
   previous: readonly T[],

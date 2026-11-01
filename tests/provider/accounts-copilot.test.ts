@@ -188,6 +188,25 @@ describe("Copilot device sign-in", () => {
 });
 
 describe("Copilot session tokens", () => {
+  it("does not share session tokens when no service cache is supplied", async () => {
+    const fetch = vi
+      .fn<AccountFetch>()
+      .mockResolvedValueOnce(json(sessionBody({ token: "first-session" })))
+      .mockResolvedValueOnce(json(sessionBody({ token: "second-session" })));
+    const options = { fetch, now: () => NOW };
+    expect(
+      await getCopilotSessionToken("gho_standalone", options),
+    ).toMatchObject({
+      token: "first-session",
+    });
+    expect(
+      await getCopilotSessionToken("gho_standalone", options),
+    ).toMatchObject({
+      token: "second-session",
+    });
+    expect(fetch).toHaveBeenCalledTimes(2);
+  });
+
   it("caches the short-lived session token and falls back from an unsafe API base", async () => {
     const cache = new Map();
     let calls = 0;
@@ -240,39 +259,11 @@ describe("Copilot session tokens", () => {
 describe("Copilot provider configuration", () => {
   it("uses the session token, editor headers and body-dependent request headers", async () => {
     const cache = new Map();
-    const token = "gho_learned";
     const fetch: AccountFetch = async (input) => {
-      const url = String(input);
-      if (url === COPILOT_SESSION_URL) return json(sessionBody());
-      if (url === `${COPILOT_API_BASE}/models`) {
-        return json({
-          data: [
-            {
-              id: "gpt-4o",
-              name: "GPT-4o",
-              vendor: "OpenAI",
-              model_picker_enabled: true,
-              policy: { state: "enabled" },
-              capabilities: {
-                type: "chat",
-                limits: { max_context_window_tokens: 128000 },
-                supports: { reasoning_effort: ["low", "high"], vision: true },
-              },
-              billing: { is_premium: true },
-              supported_endpoints: ["/chat/completions", "/responses"],
-            },
-          ],
-        });
-      }
-      return json({}, 500);
+      expect(String(input)).toBe(COPILOT_SESSION_URL);
+      return json(sessionBody());
     };
-    const tokens = copilotTokens({ accessToken: token });
-    await listCopilotModels(tokens, {
-      fetch,
-      now: () => NOW,
-      sessionCache: cache,
-    });
-    const config = await getCopilotProviderConfig(tokens, "gpt-4o", {
+    const config = await getCopilotProviderConfig(copilotTokens(), {
       fetch,
       now: () => NOW,
       sessionCache: cache,
@@ -281,8 +272,7 @@ describe("Copilot provider configuration", () => {
       platform: "copilot",
       baseUrl: COPILOT_API_BASE,
       apiKey: "session-secret",
-      apiMode: "responses",
-      protocols: ["chat-completions", "responses"],
+      apiMode: "chat-completions",
     });
     expect(config.headers).toMatchObject({
       "Editor-Version": "vscode/1.140.0",
@@ -318,7 +308,7 @@ describe("Copilot provider configuration", () => {
   it("refuses expired tokens and honors an abort before the session exchange", async () => {
     const expired = copilotTokens({ expiresAt: NOW - 1 });
     await expect(
-      getCopilotProviderConfig(expired, "gpt-4o", {
+      getCopilotProviderConfig(expired, {
         fetch: async () => json({}),
         now: () => NOW,
         sessionCache: new Map(),
@@ -329,22 +319,17 @@ describe("Copilot provider configuration", () => {
     controller.abort();
     const fetch = vi.fn<AccountFetch>(async () => json(sessionBody()));
     await expect(
-      getCopilotProviderConfig(
-        copilotTokens({ accessToken: "gho_aborted" }),
-        "gpt-4o",
-        {
-          fetch,
-          now: () => NOW,
-          sessionCache: new Map(),
-          signal: controller.signal,
-        },
-      ),
+      getCopilotProviderConfig(copilotTokens({ accessToken: "gho_aborted" }), {
+        fetch,
+        now: () => NOW,
+        sessionCache: new Map(),
+        signal: controller.signal,
+      }),
     ).rejects.toMatchObject({ code: "canceled" });
     expect(fetch).not.toHaveBeenCalled();
     await expect(
       getCopilotProviderConfig(
         copilotTokens({ accessToken: "gho_aborted_bare" }),
-        "gpt-4o",
         AbortSignal.abort(),
       ),
     ).rejects.toMatchObject({ code: "canceled" });

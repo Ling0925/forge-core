@@ -1,7 +1,10 @@
 import { type KeyObject, createPrivateKey, sign } from "node:crypto";
-import { ForgeError } from "../shared/errors";
-import type { VertexConfig } from "../shared/model-access";
-import type { ModelCatalog, ModelCatalogEntry } from "../shared/model-catalog";
+import {
+  ForgeError,
+  type ModelCatalog,
+  type ModelCatalogEntry,
+  type VertexConfig,
+} from "../shared";
 
 // Google Vertex AI access with credentials the user supplied as JSON. The
 // endpoint and credential behavior follows

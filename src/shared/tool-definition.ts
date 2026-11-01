@@ -1,11 +1,8 @@
 import type { z } from "zod";
 import { zodToJsonSchema } from "zod-to-json-schema";
 import { ForgeError } from "./errors";
-import {
-  type ToolDefinition,
-  jsonObjectSchema,
-  toolDefinitionSchema,
-} from "./schemas";
+import { jsonObjectSchema } from "./schemas/base";
+import { type ToolDefinition, toolDefinitionSchema } from "./schemas/messages";
 
 const definitionCache = new WeakMap<z.ZodType, Map<string, ToolDefinition>>();
 

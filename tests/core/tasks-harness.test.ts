@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { expect, it } from "vitest";
 import { createHarness } from "../../src/core/harness";
 import type { ModelProvider } from "../../src/shared/contracts";
+import { openSessionStore } from "../../src/store/sessions";
 const barrier = () => {
   let release = () => {};
   const promise = new Promise<void>((resolve) => {
@@ -11,6 +12,65 @@ const barrier = () => {
   });
   return { release, promise };
 };
+it("holds the session lock until run tools finish disposing", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "forge-lock-owner-"));
+  const workspace = join(dir, "workspace");
+  await mkdir(workspace);
+  const disposing = barrier();
+  const cleanup = barrier();
+  const h = await createHarness({
+    stateDir: join(dir, "state"),
+    providerFactory: () => ({
+      listModels: async () => [],
+      complete: async () => {
+        throw new Error("fixture provider failure");
+      },
+    }),
+    toolFactory: async () => ({
+      definitions: [],
+      execute: async () => ({ content: "", isError: false }),
+      dispose: async () => {
+        disposing.release();
+        await cleanup.promise;
+      },
+    }),
+  });
+  try {
+    await h.updateSettings({
+      settings: { baseUrl: "http://127.0.0.1:1/v1", model: "fixture" },
+    });
+    const session = await h.createSession({
+      workspace,
+      title: "Lock ownership",
+    });
+    const work = h.run(
+      { sessionId: session.id, prompt: "work" },
+      () => {},
+      async () => false,
+      new AbortController().signal,
+    );
+    await disposing.promise;
+    const external = await openSessionStore(join(dir, "state"));
+    const acquired = await external.acquire(session.id).then(
+      async (release) => {
+        await release();
+        return true;
+      },
+      (error) => {
+        expect(error).toMatchObject({ code: "busy" });
+        return false;
+      },
+    );
+    cleanup.release();
+    expect((await work).status).toBe("failed");
+    expect(acquired).toBe(false);
+    await (await external.acquire(session.id))();
+  } finally {
+    cleanup.release();
+    await h.dispose();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
 it("shows and stops an owned child but external hosts only observe, without extra model calls", async () => {
   const dir = await mkdtemp(join(tmpdir(), "forge-tasks-host-"));
   const workspace = join(dir, "workspace");

@@ -2,10 +2,14 @@ import { randomUUID } from "node:crypto";
 import { readFile, readdir, realpath, stat } from "node:fs/promises";
 import { join } from "node:path";
 import { z } from "zod";
-import type { SessionStore } from "../shared/contracts";
-import { ForgeError } from "../shared/errors";
-import type { SessionId } from "../shared/schemas";
-import { createSessionInputSchema, sessionIdSchema } from "../shared/schemas";
+import {
+  ForgeError,
+  type SessionId,
+  type SessionStore,
+  createSessionInputSchema,
+  sessionIdSchema,
+} from "../shared";
+
 import { hasCode, privateDirectory, readJson, storageError } from "./io";
 import { fileLock } from "./lock";
 import { createSessionJournal } from "./session-journal";

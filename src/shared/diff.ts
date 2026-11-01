@@ -1,5 +1,5 @@
 import { editScript } from "./edit-script";
-import type { DiffPatch } from "./schemas";
+import type { DiffPatch } from "./schemas/diff";
 
 const CONTEXT = 5;
 const MAX_INPUT_CHARS = 2 * 1024 * 1024;

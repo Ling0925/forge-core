@@ -5,6 +5,7 @@ import { isIP } from "node:net";
 import { type Readable, Transform } from "node:stream";
 import { createBrotliDecompress, createGunzip, createInflate } from "node:zlib";
 import ipaddr from "ipaddr.js";
+import { withCancellation } from "../shared";
 
 const BYTE_LIMIT = 2 * 1024 * 1024;
 const TIMEOUT_MS = 20000;
@@ -67,42 +68,22 @@ export function validatePublicUrl(input: string): URL {
 }
 
 function check(signal: AbortSignal): void {
-  if (signal.aborted)
-    throw new WebAccessError("Web request cancelled or timed out.");
+  if (signal.aborted) throw webCancelled();
 }
 
-export async function abortable<T>(
-  work: Promise<T>,
-  signal: AbortSignal,
-): Promise<T> {
-  // Always observe work, including a rejection racing an already-aborted signal.
-  return new Promise<T>((resolve, reject) => {
-    const abort = () => {
-      cleanup();
-      reject(new WebAccessError("Web request cancelled or timed out."));
-    };
-    const cleanup = () => signal.removeEventListener("abort", abort);
-    signal.addEventListener("abort", abort, { once: true });
-    work.then(
-      (value) => {
-        cleanup();
-        resolve(value);
-      },
-      (error) => {
-        cleanup();
-        reject(error);
-      },
-    );
-    if (signal.aborted) abort();
-  });
-}
+export const webCancelled = () =>
+  new WebAccessError("Web request cancelled or timed out.");
 
 async function resolvePublic(url: URL, signal: AbortSignal) {
   const host = url.hostname.replace(/^\[|\]$/g, "");
   const literal = isIP(host);
   const addresses = literal
     ? [{ address: host, family: literal }]
-    : await abortable(lookup(host, { all: true, verbatim: true }), signal);
+    : await withCancellation(
+        lookup(host, { all: true, verbatim: true }),
+        signal,
+        webCancelled,
+      );
   check(signal);
   if (
     !addresses.length ||
@@ -164,8 +145,7 @@ async function requestOnce(url: URL, signal: AbortSignal): Promise<Hop> {
       else if (value) resolve(value);
       else reject(new WebAccessError("Invalid web response."));
     };
-    const abort = () =>
-      finish(new WebAccessError("Web request cancelled or timed out."));
+    const abort = () => finish(webCancelled());
     const receive = (response: IncomingMessage) => {
       if (settled) {
         response.destroy();
@@ -301,7 +281,11 @@ export async function requestPublicText(
     for (let hop = 0; hop <= 3; hop++) {
       check(signal);
       if (options.beforeRequest)
-        await abortable(options.beforeRequest(new URL(url), signal), signal);
+        await withCancellation(
+          options.beforeRequest(new URL(url), signal),
+          signal,
+          webCancelled,
+        );
       check(signal);
       const response = await requestOnce(url, signal);
       if (response.status >= 200 && response.status < 300)
@@ -317,8 +301,7 @@ export async function requestPublicText(
     }
     throw new WebAccessError("Web redirect limit reached.");
   } catch (error) {
-    if (signal.aborted)
-      throw new WebAccessError("Web request cancelled or timed out.");
+    if (signal.aborted) throw webCancelled();
     if (error instanceof WebAccessError) throw error;
     throw new WebAccessError(
       "Web request failed (network, DNS, TLS or response error); no automatic retry performed.",

@@ -3,8 +3,8 @@ import type {
   ResponseCreateParamsStreaming,
   ResponseInput,
 } from "openai/resources/responses/responses";
-import type { Message, ToolDefinition } from "../shared/schemas";
-import type { WebSearchMode } from "../shared/web-search";
+import type { Message, ToolDefinition, WebSearchMode } from "../shared";
+
 import { type Helpers, prose, validatedOutput } from "./responses-events";
 
 function input(

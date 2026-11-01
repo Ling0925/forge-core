@@ -1,11 +1,11 @@
-import { ForgeError } from "../shared/errors";
-import { type Json, JsonRpcConnection, invalid } from "./rpc";
+import { ForgeError } from "../shared";
 import {
   MCP_MAX_MESSAGE_BYTES,
   MCP_MAX_SSE_EVENT_BYTES,
   MCP_PROTOCOL_VERSION,
   type McpTransport,
-} from "./types";
+} from "../shared";
+import { type Json, JsonRpcConnection, invalid } from "./rpc";
 
 const SESSION_HEADER = "mcp-session-id";
 const PROTOCOL_HEADER = "mcp-protocol-version";
@@ -136,6 +136,7 @@ interface RemoteOptions {
  * message or an SSE stream whose events are routed by JSON-RPC id.
  */
 export class HttpMcpConnection extends JsonRpcConnection {
+  protected override readonly responsesInSend = true;
   private readonly endpoint: URL;
   private sessionId: string | undefined;
   private readonly controllers = new Map<AbortController, number | undefined>();

@@ -1,4 +1,5 @@
-import type { SessionId, Usage } from "./schemas";
+import type { SessionId } from "./schemas/base";
+import type { Usage } from "./schemas/usage";
 
 /** Host UI projection, never an additional model tool or permission grant. */
 export interface TaskView {

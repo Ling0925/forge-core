@@ -1,18 +1,17 @@
 import { constants } from "node:fs";
 import { lstat, open, opendir } from "node:fs/promises";
-import { dirname, join, relative, sep } from "node:path";
+import { dirname, join, relative } from "node:path";
 import { TextDecoder } from "node:util";
 import {
+  ForgeError,
+  type WorkspaceDirectoryListingDto,
+  type WorkspaceFileEntryDto,
+  type WorkspaceFilePreviewDto,
   containsSensitiveText,
   isSensitivePath,
-} from "../shared/content-safety";
-import { ForgeError } from "../shared/errors";
-import type {
-  WorkspaceDirectoryListingDto,
-  WorkspaceFileEntryDto,
-  WorkspaceFilePreviewDto,
-} from "../shared/ipc";
-import { createWorkspacePathGuard } from "../tools/path-guard";
+} from "../shared";
+
+import { createWorkspacePathGuard } from "../store";
 
 const MAX_DIRECTORY_ENTRIES = 500;
 const MAX_PREVIEW_BYTES = 64 * 1024;
@@ -57,7 +56,7 @@ export async function listWorkspaceDirectory(
     options.protectedRoots,
   );
   const target = await guard.resolveRead(normalizedInput);
-  const safeRelative = relative(guard.root, target).split(sep).join("/") || ".";
+  const safeRelative = relative(guard.root, target) || ".";
   if (
     isSensitivePath(safeRelative) ||
     secrets.some((secret) => safeRelative.includes(secret))
@@ -97,8 +96,7 @@ export async function listWorkspaceDirectory(
     if (!childInfo.isDirectory() && !childInfo.isFile()) {
       continue;
     }
-    const childRelative =
-      relative(guard.root, childPath).split(sep).join("/") || item.name;
+    const childRelative = relative(guard.root, childPath) || item.name;
     collected.push({
       name: item.name,
       path: childRelative,
@@ -119,8 +117,7 @@ export async function listWorkspaceDirectory(
     truncated = true;
   }
   const entries = collected.slice(0, MAX_DIRECTORY_ENTRIES);
-  const rawParent =
-    safeRelative === "." ? null : dirname(safeRelative).split(sep).join("/");
+  const rawParent = safeRelative === "." ? null : dirname(safeRelative);
   const parentPath = rawParent === "" ? "." : rawParent;
 
   return {
@@ -147,7 +144,7 @@ export async function readWorkspaceFilePreview(
     options.protectedRoots,
   );
   const target = await guard.resolveRead(normalizedInput);
-  const safeRelative = relative(guard.root, target).split(sep).join("/") || ".";
+  const safeRelative = relative(guard.root, target) || ".";
   if (
     safeRelative === "." ||
     isSensitivePath(safeRelative) ||

@@ -10,6 +10,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, expect, it, vi } from "vitest";
 import type { ModelCatalog } from "../../src/shared/model-catalog";
+import type { ProviderConfig } from "../../src/shared/schemas";
 import {
   modelCatalogCacheKey,
   openModelCatalogStore,
@@ -102,6 +103,60 @@ it("replaces the whole catalog on explicit refresh, including unknown limits and
     [],
   );
   expect(unused).not.toHaveBeenCalled();
+});
+
+it("reuses Copilot protocols across API modes and tokens while invalidating changed account configuration", async () => {
+  const { home, store } = await fixture();
+  const accountConfig: ProviderConfig = {
+    ...config,
+    credentialId: "account",
+    sourceRevision: 1,
+    account: {
+      platform: "copilot",
+      accountId: "fixture-account",
+      accessToken: "fixture-github-token",
+    },
+  };
+  const models: ModelCatalog = [
+    { id: "model", contextWindowTokens: null, protocols: ["responses"] },
+  ];
+  const loader = vi.fn(async () => models);
+  const accountKey = modelCatalogCacheKey(accountConfig, "a");
+  expect(await store.load(accountKey, loader)).toEqual(models);
+  const reopened = await openModelCatalogStore(home);
+  const renewed = {
+    ...accountConfig,
+    apiMode: "responses" as const,
+    apiKey: "fixture-renewed-session",
+    account: {
+      ...accountConfig.account!,
+      accessToken: "fixture-renewed-github-token",
+    },
+  };
+  expect(
+    await reopened.load(modelCatalogCacheKey(renewed, "a"), loader),
+  ).toEqual(models);
+  expect(loader).toHaveBeenCalledTimes(1);
+  const updated: ModelCatalog = [
+    { id: "model", contextWindowTokens: null, protocols: ["anthropic"] },
+  ];
+  loader.mockResolvedValue(updated);
+  for (const change of [
+    { sourceRevision: 2 },
+    { credentialId: "other-credential" },
+    { account: { ...renewed.account, accountId: "other-account" } },
+    { baseUrl: "https://other.test" },
+  ]) {
+    expect(
+      await reopened.load(
+        modelCatalogCacheKey({ ...renewed, ...change }, "a"),
+        loader,
+      ),
+    ).toEqual(updated);
+  }
+  expect(loader).toHaveBeenCalledTimes(5);
+  expect(await reopened.load(accountKey, loader)).toEqual(models);
+  expect(loader).toHaveBeenCalledTimes(5);
 });
 
 it("reports failed refreshes without replacing the last successful snapshot", async () => {

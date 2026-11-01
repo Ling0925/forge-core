@@ -299,7 +299,7 @@ it("validates arguments and never creates sessions for invalid paths/budgets", a
   for (const writePaths of [
     ["../out"],
     ["/absolute"],
-    ["C:\\out"],
+    ["src\\out"],
     ["src/*.ts"],
     ["a/../b"],
     ["a\u0000b"],

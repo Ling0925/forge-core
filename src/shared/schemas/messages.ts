@@ -3,6 +3,7 @@ import { imageAttachmentsSchema } from "../images";
 import { webCitationSchema, webSearchRecordSchema } from "../web-search";
 import { jsonObjectSchema } from "./base";
 import { settingsFields } from "./settings";
+import { usageSchema } from "./usage";
 
 export const toolCallSchema = z
   .object({
@@ -106,18 +107,6 @@ export const messageSchema = z
   ])
   .readonly();
 export type Message = z.infer<typeof messageSchema>;
-export const usageSchema = z
-  .object({
-    promptTokens: z.number().int().nonnegative(),
-    completionTokens: z.number().int().nonnegative(),
-    totalTokens: z.number().int().nonnegative(),
-    // Provider-reported only: a gateway cache hit count. Zero is a known value;
-    // absence means the gateway did not report it and must stay absent.
-    cachedPromptTokens: z.number().int().nonnegative().optional(),
-  })
-  .strict()
-  .readonly();
-export type Usage = z.infer<typeof usageSchema>;
 export const providerResponseSchema = z
   .object({
     message: assistantMessageSchema,

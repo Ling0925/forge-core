@@ -1,5 +1,17 @@
 import { spawn } from "node:child_process";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import * as fs from "node:fs/promises";
+import {
+  chmod,
+  mkdir,
+  mkdtemp,
+  readFile,
+  rename,
+  rm,
+  stat,
+  symlink,
+  utimes,
+  writeFile,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -10,11 +22,26 @@ import { JsonRpcConnection } from "../../src/mcp/rpc";
 import type { ModelProvider } from "../../src/shared/contracts";
 import { mcpServerConfigSchema } from "../../src/shared/mcp";
 import { toolResultSchema } from "../../src/shared/schemas";
+import * as io from "../../src/store/io";
+import { fileLock } from "../../src/store/lock";
+import * as locks from "../../src/store/lock";
 
 vi.mock("node:child_process", async (importOriginal) => {
   const actual = await importOriginal<typeof import("node:child_process")>();
   return { ...actual, spawn: vi.fn(actual.spawn) };
 });
+
+vi.mock("node:fs/promises", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("node:fs/promises")>()),
+}));
+
+const deferred = () => {
+  let resolve!: () => void;
+  const promise = new Promise<void>((done) => {
+    resolve = done;
+  });
+  return { promise, resolve };
+};
 
 const serverPath = fileURLToPath(
   new URL("../../examples/mcp/echo-server.mjs", import.meta.url),
@@ -109,6 +136,258 @@ beforeEach(async () => {
 afterEach(async () => {
   await harness.dispose();
   await rm(directory, { recursive: true, force: true });
+});
+
+it("rejects connections waiting on the catalog lock when the service is disposed", async () => {
+  const service = await createMcpService({ home: stateDir });
+  const unlock = await fileLock(join(stateDir, "mcp/servers.lock"));
+  const work = service.listTools("echo").then(
+    () => undefined,
+    (error: unknown) => error,
+  );
+  try {
+    await service.dispose();
+    await unlock();
+    expect(await work).toMatchObject({ code: "cancelled" });
+    await expect(service.listTools("echo")).rejects.toMatchObject({
+      code: "cancelled",
+    });
+    expect(children()).toHaveLength(0);
+  } finally {
+    await unlock();
+    await service.dispose();
+  }
+});
+
+it("reuses live calls and discovery without catalog reads or file locks", async () => {
+  const service = await createMcpService({ home: stateDir });
+  const uncached = await createMcpService({ home: stateDir });
+  try {
+    const tools = await service.listTools("echo");
+    const result = await service.callTool("echo", "echo", { text: "cached" });
+    const read = vi.spyOn(io, "readJson");
+    const lock = vi.spyOn(locks, "fileLock");
+    const unlock = await fileLock(join(stateDir, "mcp/servers.lock"));
+    lock.mockClear();
+    try {
+      expect(await service.listTools("echo")).toEqual(tools);
+      expect(
+        await service.callTool("echo", "echo", { text: "cached" }),
+      ).toEqual(result);
+      expect(read).not.toHaveBeenCalled();
+      expect(lock).not.toHaveBeenCalled();
+    } finally {
+      await unlock();
+    }
+    expect(await uncached.listTools("echo")).toEqual(tools);
+    expect(await uncached.callTool("echo", "echo", { text: "cached" })).toEqual(
+      result,
+    );
+  } finally {
+    await service.dispose();
+    await uncached.dispose();
+  }
+});
+
+it.each([
+  "in-place",
+  "replacement",
+  "missing",
+  "invalid",
+  "permissions",
+  "symlink",
+] as const)(
+  "invalidates the cached catalog on %s changes and matches an uncached reader",
+  async (change) => {
+    const service = await createMcpService({ home: stateDir });
+    const uncached = await createMcpService({ home: stateDir });
+    const path = join(stateDir, "mcp/servers.json");
+    try {
+      await service.listTools("echo");
+      const before = await stat(path);
+      const original = await readFile(path, "utf8");
+      const updated = original.replace('"Echo"', '"echo"');
+      if (change === "replacement") {
+        await writeFile(`${path}.next`, updated, { mode: 0o600 });
+        await utimes(`${path}.next`, before.atime, before.mtime);
+        await rename(`${path}.next`, path);
+      } else if (change === "in-place") {
+        await writeFile(path, updated);
+        await utimes(path, before.atime, before.mtime);
+      } else if (change === "missing") await rm(path);
+      else if (change === "permissions") await chmod(path, 0o644);
+      else if (change === "symlink") {
+        await rename(path, `${path}.original`);
+        await symlink(`${path}.original`, path);
+      } else await writeFile(path, "invalid");
+      const read = vi.spyOn(io, "readJson");
+      const actual = await Promise.allSettled([service.list()]);
+      expect(read).toHaveBeenCalledTimes(1);
+      expect(actual).toEqual(await Promise.allSettled([uncached.list()]));
+      if (change !== "in-place" && change !== "replacement") {
+        await expect(service.listTools("echo")).rejects.toMatchObject({
+          code: change === "missing" ? "tool" : "storage",
+        });
+      } else {
+        expect(actual).toMatchObject([
+          { status: "fulfilled", value: [{ label: "echo" }] },
+        ]);
+        read.mockClear();
+        await service.listTools("echo");
+        expect(read).not.toHaveBeenCalled();
+      }
+    } finally {
+      await service.dispose();
+      await uncached.dispose();
+    }
+  },
+);
+
+it("invalidates cached absence and local catalog mutations", async () => {
+  const home = join(directory, "empty");
+  const service = await createMcpService({ home });
+  const other = await createMcpService({ home });
+  try {
+    expect(await service.list()).toEqual([]);
+    await other.register({
+      id: "echo",
+      label: "Echo",
+      command: process.execPath,
+      args: [serverPath],
+      enabled: true,
+    });
+    expect(await service.list()).toEqual(await other.list());
+    await service.setEnabled("echo", false);
+    expect(await service.list()).toEqual(await other.list());
+    await service.remove("echo");
+    expect(await service.list()).toEqual([]);
+  } finally {
+    await service.dispose();
+    await other.dispose();
+  }
+});
+
+it("keeps a cache hit coherent when a mutation finishes during its stamp check", async () => {
+  const service = await createMcpService({ home: stateDir });
+  const other = await createMcpService({ home: stateDir });
+  const inspecting = deferred();
+  const finish = deferred();
+  try {
+    const before = await service.list();
+    const lstat = fs.lstat;
+    vi.spyOn(fs, "lstat").mockImplementationOnce(async (path) => {
+      const info = await lstat(path);
+      inspecting.resolve();
+      await finish.promise;
+      return info;
+    });
+    const reading = service.list();
+    await inspecting.promise;
+    await service.setEnabled("echo", false);
+    finish.resolve();
+    expect(await reading).toEqual(before);
+    expect(await service.list()).toEqual(await other.list());
+  } finally {
+    finish.resolve();
+    await service.dispose();
+    await other.dispose();
+  }
+});
+
+it("releases the catalog lock before closing a replaced connection", async () => {
+  const service = await createMcpService({ home: stateDir });
+  const close = JsonRpcConnection.prototype.close;
+  try {
+    await service.listTools("echo");
+    const path = join(stateDir, "mcp/servers.json");
+    const catalog = JSON.parse(await readFile(path, "utf8"));
+    catalog.servers[0].env = { FORGE_MCP_VISIBLE_VALUE: "fixture" };
+    await io.atomicJson(path, catalog, 1 << 20);
+    const lockFree = vi.fn();
+    vi.spyOn(JsonRpcConnection.prototype, "close").mockImplementation(
+      async function (this: JsonRpcConnection) {
+        const unlock = await fileLock(join(stateDir, "mcp/servers.lock"));
+        await unlock();
+        lockFree();
+        await close.call(this);
+      },
+    );
+    expect(await service.callTool("echo", "secret_report", {})).toMatchObject({
+      text: "visible",
+    });
+    expect(lockFree).toHaveBeenCalledOnce();
+  } finally {
+    vi.mocked(JsonRpcConnection.prototype.close).mockRestore();
+    await service.dispose();
+  }
+});
+
+it("shares one MCP process across workspaces in the same harness", async () => {
+  const otherWorkspace = join(directory, "other-workspace");
+  await mkdir(otherWorkspace);
+  const first = await session();
+  const second = await harness.createSession({ workspace: otherWorkspace });
+  expect((await run(first.id)).status).toBe("completed");
+  expect((await run(second.id)).status).toBe("completed");
+  expect(children()).toHaveLength(1);
+});
+
+it("does not spawn after disposal races an authoritative catalog read", async () => {
+  const service = await createMcpService({ home: stateDir });
+  const reading = deferred();
+  const finish = deferred();
+  const read = io.readJson;
+  vi.spyOn(io, "readJson").mockImplementation(async (...args) => {
+    const value = await read(...args);
+    if (args[0] === join(stateDir, "mcp/servers.json")) {
+      reading.resolve();
+      await finish.promise;
+    }
+    return value;
+  });
+  const work = service.listTools("echo").then(
+    () => undefined,
+    (error: unknown) => error,
+  );
+  try {
+    await reading.promise;
+    await service.dispose();
+    finish.resolve();
+    expect(await work).toMatchObject({ code: "cancelled" });
+    expect(children()).toHaveLength(0);
+  } finally {
+    finish.resolve();
+    await work;
+    await service.dispose();
+  }
+});
+
+it("joins in-flight MCP management calls during harness disposal", async () => {
+  const reading = deferred();
+  const finish = deferred();
+  const read = io.readJson;
+  vi.spyOn(io, "readJson").mockImplementation(async (...args) => {
+    const value = await read(...args);
+    if (args[0] === join(stateDir, "mcp/servers.json")) {
+      reading.resolve();
+      await finish.promise;
+    }
+    return value;
+  });
+  const work = harness.listMcpServers();
+  await reading.promise;
+  let closed = false;
+  const closing = harness.dispose().then(() => {
+    closed = true;
+  });
+  try {
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(closed).toBe(false);
+  } finally {
+    finish.resolve();
+    await work;
+    await closing;
+  }
 });
 
 it("reuses one process across management and consecutive turns, then closes on harness disposal", async () => {

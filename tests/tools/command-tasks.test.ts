@@ -116,6 +116,19 @@ const manage = (tools: LocalToolRegistry, ctx: ToolContext, args: unknown) =>
   tools.execute(call("command_task", args), ctx);
 
 describe("command task wrapper", () => {
+  it("preserves literal backslashes in POSIX executable titles", async () => {
+    const { base } = controlled();
+    const tools = wrap(base);
+    const ctx = context();
+    await tools.execute(
+      call("run_command", { argv: ["/bin/report\\tool"], background: true }),
+      ctx,
+    );
+    expect(tools.commandTasks?.list(ctx.sessionId)).toMatchObject([
+      { title: "report\\tool" },
+    ]);
+  });
+
   it("adds only one control tool and leaves base definitions untouched", () => {
     const base = fake(async () => result({}));
     const tools = wrap(base);

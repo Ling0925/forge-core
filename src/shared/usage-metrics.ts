@@ -1,5 +1,6 @@
 import { z } from "zod";
-import type { AgentEvent, Usage } from "./schemas";
+import type { AgentEvent } from "./schemas/events";
+import type { Usage } from "./schemas/usage";
 
 const requestBoundaries = new Set<AgentEvent["type"]>([
   "run_started",

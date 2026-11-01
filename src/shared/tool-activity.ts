@@ -1,4 +1,4 @@
-import type { ToolCall } from "./schemas";
+import type { ToolCall } from "./schemas/messages";
 
 /** Display-only best-effort masking, not a permission or secret-detection boundary. */
 export function redactCommandArguments(

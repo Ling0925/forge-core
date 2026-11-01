@@ -13,13 +13,13 @@ Core 可以作为独立 HTTP/WebSocket 服务运行，也可以作为 TypeScript
 - **本地工作区**：文件搜索与编辑、命令执行、检查点和改动记录；浏览器、LSP 与 MCP 按配置启用。
 - **官方插件**：统一清单、配置、启停和诊断；首个 `browser` 插件接入 agent-browser，支持同会话截图预览与人工接管，默认禁用。见[插件与浏览器](docs/PLUGINS.md)。
 - **持久化上下文**：会话历史、分页读取、上下文压缩、工作记忆与长期记忆。
-- **客户端连接**：HTTP RPC、WebSocket 事件与恢复游标，以及 POSIX（Linux、macOS 等）本地 Unix socket。
+- **客户端连接**：HTTP RPC、WebSocket 事件与恢复游标，以及 Linux、macOS 本地 Unix socket。
 
 本仓是 TypeScript/Node 实现，不包含 CLI、React 界面、Electron 或 Android 应用。
 
 ## 快速开始
 
-需要 **Node.js `>=22.23.1 <23`** 和 **pnpm `11.18.0`**，版本约束见 [package.json](package.json)。
+支持 **Linux 和 macOS**，不支持 Windows。需要 **Node.js `>=22.23.1 <23`** 和 **pnpm `11.18.0`**，版本约束见 [package.json](package.json)。
 
 ```sh
 git clone https://github.com/Ling0925/forge-core.git
@@ -32,7 +32,7 @@ Linux 和 macOS 构建均需 C 编译器 `/usr/bin/cc`，生成 `dist/native/for
 在进程内对已验证的文件描述符加锁。运行时若 addon 缺失，Linux 回退到系统 `flock`，macOS 回退到 `dist/native/forge-flock`。
 锁随最后一个描述符关闭/进程退出释放，不靠超时删锁。
 嵌入打包时可用绝对路径 `FORGE_FLOCK_EXECUTABLE` 和 `FORGE_FLOCK_ADDON` 分别指定随包提供的可信 helper 和 addon。
-Windows 的文件锁仍不受支持。构建后的聚焦验证：`node --test tests/store/posix-lock.test.mjs`。
+构建后的聚焦验证：`node --test tests/store/posix-lock.test.mjs`。
 
 将下面的工作区替换成实际存在的绝对路径，再启动 API 服务：
 
@@ -114,6 +114,7 @@ MCP 支持 **stdio、Streamable HTTP、Legacy SSE**。注册不会连接；启�
 - `maxActiveAgents`：每个父运行同时活跃的子 Agent 数（4，范围 1–32）。
 - `maxAgentDepth`：委派深度（1 = 只有主 Agent 能派子任务，最大 4）。
 - `maxSessionPlans`：每个会话的计划数（10000；持久化格式上限也是 10000，只能调低）。
+- Host 选项 `createRuntimeHub(service, { requestTimeoutMs })` 和 `connectLocalHost({ requestTimeoutMs, ... })`：短 RPC 的传输超时（120000 毫秒）。压缩、模型发现/管理、浏览器、运行启动/插话、队列启动、会话取消、等待运行取消、MCP 健康检查/启停/删除、插件配置/检查和用量统计不设传输超时，沿用操作自己的期限及取消机制；请求断开会取消支持 `AbortSignal` 的操作，已接受的运行独立继续。
 - Vertex 来源：`vertex.models` 用自己的模型列表替换内置参考列表；`vertex.discoverModels: true` 会调用 Vertex `publishers.models.list` 获取 Gemini 模型，失败时回退到 `models` 或内置列表。
 
 ## 作为包使用

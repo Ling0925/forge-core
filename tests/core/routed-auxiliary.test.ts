@@ -3,8 +3,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { expect, it, vi } from "vitest";
 import { createHarness } from "../../src/core/harness";
-import { ProviderError } from "../../src/provider/errors";
 import type { HarnessService } from "../../src/shared/contracts";
+import { ProviderError } from "../../src/shared/errors";
 import {
   type Message,
   type ProviderSource,
