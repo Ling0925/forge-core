@@ -45,10 +45,24 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { WebSocket } from "ws";
 import { z } from "zod";
 import { createHarness } from "../src/core/harness";
-import { type RunEvent, runEventSchema } from "../src/shared/ipc";
+import { createRuntimeHub } from "../src/host/runtime";
+import {
+  type HostEvent,
+  type RunEvent,
+  hostEventSchema,
+  rpcRequestSchema,
+  rpcResponseSchema,
+  runEventSchema,
+} from "../src/shared/ipc";
+import type { SuperAgentEvent } from "../src/shared/superagent";
 import { openSessionStore } from "../src/store/sessions";
 import { createWebHost } from "../src/web/server";
 import { image } from "./fixtures/image";
+import {
+  deferred,
+  fixture as superAgentFixture,
+  trigger,
+} from "./superagent/fixture";
 
 const cleanup: (() => Promise<unknown>)[] = [];
 afterEach(async () => {
@@ -194,6 +208,253 @@ async function setup(restrictWorkspace = true, symlinkWorkspace = false) {
 }
 
 describe("Web host with default personal LAN direct access", () => {
+  it.each([
+    { restrictWorkspace: true, match: true, linked: false },
+    { restrictWorkspace: true, match: true, linked: true },
+    { restrictWorkspace: true, match: false, linked: false },
+    { restrictWorkspace: false, match: false, linked: false },
+  ])(
+    "scopes super-agent RPCs and events: %j",
+    async ({ restrictWorkspace, match, linked }) => {
+      const f = await superAgentFixture();
+      cleanup.push(() => f.close());
+      const work = await f.createWork();
+      const suggestion = await f.store.createSuggestion({
+        threadIds: work.threadIds,
+        triggerIds: ["gh:1"],
+        brief: "Suggested work",
+      });
+      const outbox = await f.store.createOutboxItem({
+        workId: work.id,
+        kind: "comment",
+        target: { thread: work.threadIds[0]! },
+        body: { text: "Reply" },
+      });
+      if (linked) {
+        const alias = join(f.directory, "alias");
+        await symlink(f.workspace, alias);
+        await f.harness.updateSettings({
+          settings: { superAgent: { workspace: alias } },
+        });
+      }
+      let emit!: (event: SuperAgentEvent) => void;
+      const runtime = createRuntimeHub(f.harness, {
+        superAgent: () => f.engine,
+        superAgentEvents: (listener) => {
+          emit = listener;
+          return () => {};
+        },
+      });
+      cleanup.push(() => runtime.dispose());
+      const web = await createWebHost({
+        runtime,
+        workspace: match ? f.workspace : f.directory,
+        host: "127.0.0.1",
+        port: 5173,
+        restrictWorkspace,
+      });
+      cleanup.push(() => web.close());
+      web.server.on("request", (req, res) => {
+        void web.handle(req, res, () => res.end());
+      });
+      await new Promise<void>((done) =>
+        web.server.listen(0, "127.0.0.1", done),
+      );
+      const url = `http://127.0.0.1:${(web.server.address() as { port: number }).port}`;
+      const headers = {
+        Host: "127.0.0.1:5173",
+        Origin: web.origin,
+        "Content-Type": "application/json",
+      };
+      const connected = await (
+        await fetch(`${url}/api/connect`, {
+          method: "POST",
+          headers,
+          body: "{}",
+        })
+      ).json();
+      const auth = {
+        ...headers,
+        "X-Forge-Client": connected.clientId as string,
+      };
+      const rpc = async (input: object) => {
+        const request = rpcRequestSchema.parse({ id: randomUUID(), ...input });
+        const response = await fetch(`${url}/api/rpc`, {
+          method: "POST",
+          headers: auth,
+          body: JSON.stringify(request),
+        });
+        expect(response.status).toBe(200);
+        return rpcResponseSchema.parse(await response.json());
+      };
+      const requests = [
+        { method: "getSuperAgentState" },
+        { method: "listSuperAgentTriggers" },
+        { method: "listWorkItems" },
+        { method: "getWorkItem", workId: work.id },
+        { method: "stopWorkItem", workId: work.id, reason: "Stop" },
+        { method: "resumeWorkItem", workId: work.id },
+        { method: "listSuggestions" },
+        {
+          method: "decideSuggestion",
+          suggestionId: suggestion.id,
+          accept: false,
+        },
+        { method: "listOutbox" },
+        { method: "decideOutbox", outboxId: outbox.id, approve: false },
+      ];
+      const disabled = {
+        code: "not_found",
+        message: "Super-agent is disabled on this host.",
+        retryable: false,
+      };
+      const visible = !restrictWorkspace || match;
+      for (const request of requests) {
+        const result = await rpc(request);
+        if (visible)
+          expect(result, JSON.stringify(result)).toMatchObject({
+            ok: true,
+            method: request.method,
+          });
+        else
+          expect(result).toEqual({
+            id: result.id,
+            method: request.method,
+            ok: false,
+            error: disabled,
+          });
+      }
+      const ws = new WebSocket(
+        `${url.replace("http:", "ws:")}/api/events?clientId=${connected.clientId}&cursor=${connected.cursor}`,
+        { headers: auth },
+      );
+      cleanup.push(async () => ws.terminate());
+      const received: HostEvent[] = [];
+      await new Promise<void>((done, reject) => {
+        ws.on("error", reject);
+        ws.on("message", (raw) => {
+          const batch = z
+            .object({ cursor: z.number(), events: z.array(hostEventSchema) })
+            .parse(JSON.parse(raw.toString()));
+          received.push(...batch.events);
+          done();
+        });
+      });
+      const first: SuperAgentEvent = {
+        type: "superagent_trigger",
+        trigger: trigger("first"),
+      };
+      const second: SuperAgentEvent = {
+        type: "superagent_trigger",
+        trigger: trigger("second"),
+      };
+      const gate = deferred();
+      const state = await f.engine.getSuperAgentState();
+      if (restrictWorkspace)
+        vi.spyOn(f.engine, "getSuperAgentState").mockImplementationOnce(
+          async () => {
+            await gate.promise;
+            return state;
+          },
+        );
+      emit(first);
+      emit(second);
+      const session = await f.harness.createSession({
+        workspace: web.workspace,
+      });
+      await runtime.request({
+        id: randomUUID(),
+        method: "startRun",
+        input: { sessionId: session.id, prompt: "Ordinary turn" },
+      });
+      await vi.waitFor(() =>
+        expect(
+          received.some(
+            (event) => "event" in event && event.event.type === "run_finished",
+          ),
+        ).toBe(true),
+      );
+      const superEvents = () => received.filter((event) => "type" in event);
+      if (restrictWorkspace) expect(superEvents()).toEqual([]);
+      gate.resolve();
+      if (visible)
+        await vi.waitFor(() => expect(superEvents()).toEqual([first, second]));
+
+      await f.harness.updateSettings({
+        settings: { superAgent: { workspace: web.workspace } },
+      });
+      expect(await rpc({ method: "getSuperAgentState" })).toMatchObject({
+        ok: true,
+      });
+      const sentinel: SuperAgentEvent = {
+        type: "superagent_trigger",
+        trigger: trigger("sentinel"),
+      };
+      emit(sentinel);
+      await vi.waitFor(() => expect(superEvents().at(-1)).toEqual(sentinel));
+      expect(superEvents()).toEqual(
+        visible ? [first, second, sentinel] : [sentinel],
+      );
+
+      await f.harness.updateSettings({
+        settings: {
+          superAgent: { workspace: match ? f.directory : f.workspace },
+        },
+      });
+      const changed = await rpc({ method: "getSuperAgentState" });
+      if (restrictWorkspace)
+        expect(changed).toMatchObject({ ok: false, error: disabled });
+      else expect(changed).toMatchObject({ ok: true });
+      const hidden: SuperAgentEvent = {
+        type: "superagent_trigger",
+        trigger: trigger("after-change"),
+      };
+      emit(hidden);
+      await f.harness.updateSettings({
+        settings: { superAgent: { enabled: false } },
+      });
+      for (const request of requests)
+        expect(await rpc(request)).toMatchObject({
+          ok: false,
+          error: disabled,
+        });
+      const inactive: SuperAgentEvent = {
+        type: "superagent_trigger",
+        trigger: trigger("disabled"),
+      };
+      emit(inactive);
+      await f.harness.updateSettings({
+        settings: { superAgent: { enabled: true, workspace: web.workspace } },
+      });
+      emit(sentinel);
+      await vi.waitFor(() =>
+        expect(
+          superEvents().filter(
+            (event) => JSON.stringify(event) === JSON.stringify(sentinel),
+          ),
+        ).toHaveLength(2),
+      );
+      expect(superEvents()).toContainEqual(sentinel);
+      if (restrictWorkspace) expect(superEvents()).not.toContainEqual(hidden);
+      else expect(superEvents()).toContainEqual(hidden);
+      if (restrictWorkspace) expect(superEvents()).not.toContainEqual(inactive);
+      else expect(superEvents()).toContainEqual(inactive);
+      await f.harness.updateSettings({
+        settings: { superAgent: { workspace: "" } },
+      });
+      for (const request of requests)
+        expect(await rpc(request)).toMatchObject({
+          ok: false,
+          error: {
+            code: "invalid_input",
+            message:
+              "Enable superagent and configure its workspace and profiles.",
+            retryable: false,
+          },
+        });
+    },
+  );
+
   it.each([false, true])(
     "includes owned worktree sessions and runs while rejecting foreign ownership (legacy: %s)",
     async (legacy) => {
