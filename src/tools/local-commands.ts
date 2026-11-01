@@ -5,6 +5,7 @@ import { homedir } from "node:os";
 import { delimiter, dirname, isAbsolute } from "node:path";
 import type { z } from "zod";
 import {
+  type CommandEnvironmentTransform,
   ForgeError,
   type ToolContext,
   type ToolResult,
@@ -26,9 +27,11 @@ import {
 export function createLocalCommands({
   guard,
   policy,
+  transformCommandEnv,
 }: {
   guard: WorkspacePathGuard;
   policy: ReturnType<typeof createLocalPolicy>;
+  transformCommandEnv?: CommandEnvironmentTransform | undefined;
 }) {
   const { containsKnown, redact, targetName } = policy;
   const commandOutput = createCommandOutputStore(redact);
@@ -102,6 +105,15 @@ export function createLocalCommands({
       if (!allowed) return result({ error: "Command approval denied." }, true);
     }
     const path = await commandPath();
+    let env: Record<string, string | undefined> = {
+      PATH: path,
+      HOME: homedir(),
+      LANG: "C.UTF-8",
+      TMPDIR: guard.root,
+      TMP: guard.root,
+      TEMP: guard.root,
+    };
+    if (transformCommandEnv) env = await transformCommandEnv(env);
     await guard.resolveRead(name);
     if (!(await lstat(cwd)).isDirectory())
       fail("Command cwd must be a directory.");
@@ -114,14 +126,7 @@ export function createLocalCommands({
         shell: false,
         detached: true,
         stdio: ["ignore", "pipe", "pipe"],
-        env: {
-          PATH: path,
-          HOME: homedir(),
-          LANG: "C.UTF-8",
-          TMPDIR: guard.root,
-          TMP: guard.root,
-          TEMP: guard.root,
-        },
+        env,
       });
       const signalProcess = createProcessGroup(child);
       let timedOut = false;

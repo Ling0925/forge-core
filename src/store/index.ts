@@ -3,7 +3,7 @@ export {
   createCheckpointStore,
   workspaceCheckpointDirectory,
 } from "./checkpoints";
-export { minimalEnv } from "./child-env";
+export { isolateGithubCredentials, minimalEnv } from "./child-env";
 export { openDeviceAuthorization } from "./devices";
 export { openHarnessExperienceStore } from "./harness-experiences";
 export {

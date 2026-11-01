@@ -1,4 +1,5 @@
 import {
+  DEFAULT_GITHUB_WEBHOOK_MAX_BODY_BYTES,
   DEFAULT_MAX_ACTIVE_AGENTS,
   ForgeError,
   type PublicSettings,
@@ -85,6 +86,13 @@ export function createSettingsProvider({
                   : {
                       github: {
                         ...stored.settings.superAgent.github,
+                        webhook: {
+                          ...stored.settings.superAgent.github.webhook,
+                          maxBodyBytes:
+                            stored.settings.superAgent.github.webhook
+                              ?.maxBodyBytes ??
+                            DEFAULT_GITHUB_WEBHOOK_MAX_BODY_BYTES,
+                        },
                         hasWebhookSecret: !!stored.webhookSecret,
                       },
                     }),

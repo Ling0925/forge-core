@@ -60,6 +60,7 @@ function requireConfiguration(
     port,
     secret,
     host: config.github?.webhook?.host,
+    maxBodyBytes: config.github?.webhook?.maxBodyBytes,
   };
 }
 
@@ -124,6 +125,7 @@ export async function createHostRuntime(
           "Super-agent requires the host input queue.",
         );
       engine = createSuperAgent({
+        stateDirectory: directory,
         harness,
         inputQueue: harness.inputQueue,
         store,
@@ -185,6 +187,7 @@ export async function createHostRuntime(
       webhook = await createGithubWebhook({
         host: config.host,
         port: config.port,
+        maxBodyBytes: config.maxBodyBytes,
         secret: config.secret,
         store,
         processDelivery: source.processDelivery,

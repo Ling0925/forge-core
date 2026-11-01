@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { expect, it } from "vitest";
 import {
+  DEFAULT_GITHUB_WEBHOOK_MAX_BODY_BYTES,
   DEFAULT_MAX_ACTIVE_AGENTS,
   configureInputSchema,
   publicSettingsSchema,
@@ -32,7 +33,10 @@ it("keeps webhook credentials private, preserves omitted secrets, and clears exp
     });
     expect(saved.superAgent).toMatchObject({
       maxWorkers: DEFAULT_MAX_ACTIVE_AGENTS,
-      github: { hasWebhookSecret: true },
+      github: {
+        hasWebhookSecret: true,
+        webhook: { maxBodyBytes: DEFAULT_GITHUB_WEBHOOK_MAX_BODY_BYTES },
+      },
     });
     expect(JSON.stringify(saved)).not.toContain("fixture-secret");
     expect(saved.superAgent?.github).not.toHaveProperty("webhookSecret");
@@ -50,7 +54,7 @@ it("keeps webhook credentials private, preserves omitted secrets, and clears exp
     await store.update({
       settings: {
         superAgent: {
-          github: { webhook: { port: 8081 } },
+          github: { webhook: { port: 8081, maxBodyBytes: 1024 } },
           maxWorkers: DEFAULT_MAX_ACTIVE_AGENTS + 1,
         },
       },
@@ -63,7 +67,7 @@ it("keeps webhook credentials private, preserves omitted secrets, and clears exp
       github: {
         login: "bot",
         repos: ["owner/repo"],
-        webhook: { host: "localhost", port: 8081 },
+        webhook: { host: "localhost", port: 8081, maxBodyBytes: 1024 },
         hasWebhookSecret: true,
       },
     });
@@ -72,6 +76,14 @@ it("keeps webhook credentials private, preserves omitted secrets, and clears exp
     });
     expect(cleared.superAgent?.github?.hasWebhookSecret).toBe(false);
     expect(await reopened.getWebhookSecret()).toBe("");
+    await reopened.update({
+      settings: { superAgent: { github: { webhook: { port: 8082 } } } },
+    });
+    expect((await reopened.getPublic()).superAgent?.github?.webhook).toEqual({
+      host: "localhost",
+      port: 8082,
+      maxBodyBytes: 1024,
+    });
     expect(
       configureInputSchema.safeParse({
         settings: { superAgent: { github: { hasWebhookSecret: true } } },

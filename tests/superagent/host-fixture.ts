@@ -47,6 +47,7 @@ export async function hostFixture(
     force?: boolean;
     config?: SuperAgentSettings;
     since?: string;
+    maxBodyBytes?: number;
   } = {},
 ) {
   const directory = await mkdtemp(join(tmpdir(), "forge-superagent-host-"));
@@ -92,7 +93,13 @@ export async function hostFixture(
         github: {
           login: "forge-bot",
           repos: ["owner/repo"],
-          webhook: { host: "127.0.0.1", port: 0 },
+          webhook: {
+            host: "127.0.0.1",
+            port: 0,
+            ...(options.maxBodyBytes === undefined
+              ? {}
+              : { maxBodyBytes: options.maxBodyBytes }),
+          },
           webhookSecret: "fixture-secret",
         },
       },

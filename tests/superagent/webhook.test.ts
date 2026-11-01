@@ -1,5 +1,6 @@
 import { createHmac } from "node:crypto";
 import { mkdtemp, rm } from "node:fs/promises";
+import { request } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, expect, it, vi } from "vitest";
@@ -13,7 +14,7 @@ afterEach(async () => {
   for (const close of cleanup.reverse()) await close();
   cleanup.length = 0;
 });
-async function setup() {
+async function setup(maxBodyBytes?: number) {
   const dir = await mkdtemp(join(tmpdir(), "forge-webhook-"));
   cleanup.push(() => rm(dir, { recursive: true, force: true }));
   const store = await openSuperAgentStore(dir);
@@ -23,6 +24,7 @@ async function setup() {
   const receiver = await createGithubWebhook({
     host: "127.0.0.1",
     port: 0,
+    maxBodyBytes,
     secret: "fixture-secret",
     store,
     processDelivery,
@@ -121,4 +123,58 @@ it("requires POST and a delivery ID, and checks the unmodified body", async () =
       })
     ).status,
   ).toBe(401);
+});
+
+it.each(["content-length", "chunked"])(
+  "rejects an oversized %s upload before the client finishes sending it",
+  async (framing) => {
+    const limit = Buffer.byteLength(JSON.stringify(payload));
+    const f = await setup(limit);
+    const record = vi.spyOn(f.store, "recordDelivery");
+    const response = new Promise<number | undefined>((resolve, reject) => {
+      const req = request(
+        f.url,
+        {
+          method: "POST",
+          headers: {
+            ...f.headers,
+            ...(framing === "content-length"
+              ? { "Content-Length": limit + 1 }
+              : { "Transfer-Encoding": "chunked" }),
+          },
+        },
+        (res) => {
+          expect(res.headers.connection).toBe("close");
+          res.resume();
+          res.on("end", () => {
+            resolve(res.statusCode);
+            req.destroy();
+          });
+        },
+      );
+      cleanup.push(async () => {
+        req.destroy();
+      });
+      req.on("error", reject);
+      req.flushHeaders();
+      if (framing === "chunked") {
+        req.write(f.body);
+        setImmediate(() => req.write(" "));
+      }
+    });
+    expect(await response).toBe(413);
+    expect(record).not.toHaveBeenCalled();
+    expect(await f.store.unprocessedDeliveries()).toEqual([]);
+    expect(f.processDelivery).not.toHaveBeenCalled();
+    expect(f.onError).not.toHaveBeenCalled();
+  },
+);
+
+it("accepts a signed body exactly at the byte limit", async () => {
+  const f = await setup(Buffer.byteLength(JSON.stringify(payload)));
+  expect(
+    (await fetch(f.url, { method: "POST", headers: f.headers, body: f.body }))
+      .status,
+  ).toBe(202);
+  expect(await f.store.unprocessedDeliveries()).toHaveLength(1);
 });

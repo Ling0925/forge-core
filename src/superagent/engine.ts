@@ -19,7 +19,7 @@ import {
   sessionIdSchema,
   toErrorInfo,
 } from "../shared";
-import type { SuperAgentStore } from "../store";
+import { type SuperAgentStore, isolateGithubCredentials } from "../store";
 import {
   routerInstructions,
   untrustedData,
@@ -38,6 +38,7 @@ export interface SuperAgentSessions {
 }
 
 export interface SuperAgentDeps {
+  stateDirectory: string;
   harness: HarnessService;
   inputQueue: Pick<
     InputQueueHost,
@@ -595,6 +596,12 @@ export function createSuperAgent(deps: SuperAgentDeps) {
       });
       return {
         registry,
+        ...(role.kind === "worker"
+          ? {
+              transformCommandEnv: (env: Record<string, string | undefined>) =>
+                isolateGithubCredentials(env, deps.stateDirectory),
+            }
+          : {}),
         instructions:
           role.kind === "router" ? routerInstructions : workerInstructions,
       };

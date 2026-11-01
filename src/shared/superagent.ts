@@ -197,6 +197,9 @@ export const deliverySchema = z
   .readonly();
 export type Delivery = z.infer<typeof deliverySchema>;
 
+// GitHub caps webhook payloads at 25 MB: https://docs.github.com/en/webhooks/webhook-events-and-payloads#payload-cap
+export const DEFAULT_GITHUB_WEBHOOK_MAX_BODY_BYTES = 26214400;
+
 const githubFields = {
   login: z.string().optional(),
   repos: z.array(z.string()).readonly().optional(),
@@ -204,6 +207,7 @@ const githubFields = {
     .object({
       host: z.string().optional(),
       port: z.number().int().optional(),
+      maxBodyBytes: z.number().int().positive().optional(),
     })
     .strict()
     .readonly()

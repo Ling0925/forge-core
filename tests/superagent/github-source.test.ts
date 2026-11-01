@@ -58,6 +58,8 @@ it("pages catch-up, stops before older events, and deduplicates later webhooks",
     ...event,
     id: 403,
     event: "mentioned",
+    actor: { login: "forge-bot" },
+    created_at: "2026-10-31T11:59:59Z",
     issue: { ...issue, body: "@forge-bot help" },
   };
   const pages = [
@@ -249,6 +251,125 @@ it("fetches each comment parent once across pages and refreshes it on the next p
         }),
       );
     }
+  } finally {
+    await f.close();
+  }
+});
+
+it("collapses a mention and its comment into the explicit comment ID across catch-up and webhooks", async () => {
+  const f = await fixture();
+  vi.spyOn(api, "githubToken").mockResolvedValue("fixture-private-token");
+  const mentioned = {
+    id: 403,
+    event: "mentioned",
+    actor: { login: "FORGE-BOT" },
+    created_at: timestamp,
+    issue,
+  };
+  const authored = { ...comment, user: { login: "comment-author" } };
+  const pages = [
+    [mentioned],
+    [
+      {
+        ...authored,
+        issue_url: "https://api.github.com/repos/owner/repo/issues/1",
+      },
+    ],
+    issue,
+  ];
+  vi.stubGlobal(
+    "fetch",
+    vi.fn(async () => new Response(JSON.stringify(pages.shift()))),
+  );
+  const ingest = vi.fn(f.engine.ingest);
+  const source = createGithubSource({
+    login: "forge-bot",
+    repos: ["owner/repo"],
+    store: f.store,
+    ingest,
+  });
+  try {
+    await f.store.setCursor("github:owner/repo:since", timestamp);
+    await source.catchUp();
+    expect(ingest).toHaveBeenCalledOnce();
+    expect(await f.store.listTriggers()).toEqual([
+      expect.objectContaining({
+        id: "gh:comment:201",
+        kind: "issue_comment.created",
+        actor: "comment-author",
+        explicit: true,
+        threadId: "gh:owner/repo#1",
+      }),
+    ]);
+    const webhook = delivery({
+      payload: { ...payload, sender: authored.user, comment: authored },
+    });
+    await f.store.recordDelivery(webhook);
+    await source.processDelivery(webhook);
+    expect(await f.store.listTriggers()).toHaveLength(1);
+  } finally {
+    await f.close();
+  }
+});
+
+it.each([
+  "no comment",
+  "different issue",
+  "different timestamp",
+  "different recipient",
+])("keeps an unmatched mentioned event explicit (%s)", async (mismatch) => {
+  const f = await fixture();
+  vi.spyOn(api, "githubToken").mockResolvedValue("fixture-private-token");
+  const bodyIssue = { ...issue, body: "@forge-bot help with the issue body" };
+  const parent =
+    mismatch === "different issue"
+      ? { ...issue, id: 102, number: 2 }
+      : bodyIssue;
+  const candidate = {
+    ...comment,
+    body:
+      mismatch === "different recipient" ? "@somebody-else help" : comment.body,
+    created_at:
+      mismatch === "different timestamp" ? "2026-10-31T12:00:01Z" : timestamp,
+    updated_at:
+      mismatch === "different timestamp" ? "2026-10-31T12:00:01Z" : timestamp,
+    issue_url: `https://api.github.com/repos/owner/repo/issues/${parent.number}`,
+  };
+  const pages = [
+    [
+      {
+        id: 403,
+        event: "mentioned",
+        actor: { login: "forge-bot" },
+        created_at: timestamp,
+        issue: bodyIssue,
+      },
+    ],
+    mismatch === "no comment" ? [] : [candidate],
+    parent,
+  ];
+  vi.stubGlobal(
+    "fetch",
+    vi.fn(async () => new Response(JSON.stringify(pages.shift()))),
+  );
+  const source = createGithubSource({
+    login: "forge-bot",
+    repos: ["owner/repo"],
+    store: f.store,
+    ingest: f.engine.ingest,
+  });
+  try {
+    await f.store.setCursor("github:owner/repo:since", timestamp);
+    await source.catchUp();
+    const triggers = await f.store.listTriggers();
+    expect(triggers).toHaveLength(mismatch === "no comment" ? 1 : 2);
+    expect(triggers).toContainEqual(
+      expect.objectContaining({
+        kind: "issues.mentioned",
+        explicit: true,
+        threadId: "gh:owner/repo#1",
+      }),
+    );
   } finally {
     await f.close();
   }

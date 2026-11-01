@@ -1,3 +1,4 @@
+import { join } from "node:path";
 import { afterEach, beforeEach, expect, it } from "vitest";
 import {
   ForgeError,
@@ -611,6 +612,7 @@ it("explicitly resumes a failed session through the real durable input queue", a
   expect(failed.status).toBe("failed");
   const inputQueue = f.harness.inputQueue!;
   const engine = createSuperAgent({
+    stateDirectory: join(f.directory, "state"),
     harness: f.harness,
     inputQueue,
     sessions: f.sessions,

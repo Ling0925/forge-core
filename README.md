@@ -119,13 +119,13 @@ MCP 支持 **stdio、Streamable HTTP、Legacy SSE**。注册不会连接；启�
 
 ## Super-agent（GitHub，可选）
 
-在 `updateSettings` RPC 的 `input.settings.superAgent` 中设置 `enabled: true`，或启动时传 `--super-agent`（仅本次强制启用），然后重启服务。必填项为 `workspace`（本地 Git 工作区）、`routerProfileId`、`workerProfileId`（已保存的智能体配置）、`github.login`、`github.repos`（如 `["owner/repo"]`）、`github.webhook.port` 和 `github.webhookSecret`；可选 `github.webhook.host`、`maxWorkers`。模型沿用两个 profile，Worker 在独立 worktree 中执行；并发默认值沿用 `maxActiveAgents` 的默认常量。
+在 `updateSettings` RPC 的 `input.settings.superAgent` 中设置 `enabled: true`，或启动时传 `--super-agent`（仅本次强制启用），然后重启服务。必填项为 `workspace`（本地 Git 工作区）、`routerProfileId`、`workerProfileId`（已保存的智能体配置）、`github.login`、`github.repos`（如 `["owner/repo"]`）、`github.webhook.port` 和 `github.webhookSecret`；可选 `github.webhook.host`、`github.webhook.maxBodyBytes`、`maxWorkers`。模型沿用两个 profile，Worker 在独立 worktree 中执行；并发默认值沿用 `maxActiveAgents` 的默认常量。
 
 修改 `superAgent` 设置后需重启 host 才能完整生效；引擎与 Webhook 监听器在启动时装配。
 
-通过 `updateSettings` 设置随机生成的 `github.webhookSecret`，并在 GitHub 仓库的 Webhook 配置中填入同一 Secret，Content type 选择 `application/json`。公共设置只返回 `hasWebhookSecret`。在宿主机先执行 `gh auth login`；启动补偿和审批后的发送执行器临时调用 `gh auth token`，凭据不进入会话或发送队列。
+通过 `updateSettings` 设置随机生成的 `github.webhookSecret`，并在 GitHub 仓库的 Webhook 配置中填入同一 Secret，Content type 选择 `application/json`。公共设置只返回 `hasWebhookSecret`。在宿主机先执行 `gh auth login`；启动补偿和审批后的发送执行器临时调用 `gh auth token`，凭据不进入会话或发送队列。仅 Worker 的前台、后台命令及其子进程使用私有空目录作为 `GH_CONFIG_DIR`，移除 GitHub token/host 环境变量并清空 git credential helpers、关闭交互凭据提示；保留用户 git 身份及其他配置。Router 和普通会话沿用原有命令环境。
 
-Webhook 是独立 HTTP 监听器，向其根路径 POST。用 tunnel 或反向代理**只暴露 `github.webhook.port`**，Forge API 端口留在私网。GitHub 勾选 Issues、Issue comments、Pull requests、Pull request reviews、Pull request review comments；监听器验签并持久化后返回 202，重复 delivery 返回 409。接口字段见 [GitHub Webhook 文档](https://docs.github.com/en/webhooks/webhook-events-and-payloads)。
+Webhook 是独立 HTTP 监听器，向其根路径 POST。用 tunnel 或反向代理**只暴露 `github.webhook.port`**，Forge API 端口留在私网。GitHub 勾选 Issues、Issue comments、Pull requests、Pull request reviews、Pull request review comments；监听器验签并持久化后返回 202，重复 delivery 返回 409。`superAgent.github.webhook.maxBodyBytes` 默认 26214400（25 MB，与 GitHub 最大载荷一致）；Content-Length 或流式累计字节数超出时立即返回 413 并关闭请求，不持久化。接口字段见 [GitHub Webhook 文档](https://docs.github.com/en/webhooks/webhook-events-and-payloads)。
 
 启动时先恢复未处理的 delivery，再按仓库的 `github:<repo>:since` 游标补查 issue events 和 issue comments（分页、一次性，无轮询）；首次无游标时从当前时刻开始，不导入旧历史。评论使用对象 ID，指派/审阅请求使用线程、接收人和事件时间去重；REST 能恢复的历史以 [issue events API](https://docs.github.com/en/rest/issues/events) 为准。
 

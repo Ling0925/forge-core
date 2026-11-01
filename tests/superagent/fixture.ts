@@ -96,7 +96,9 @@ export const newDecision = (event: Trigger) => ({
   brief: `Investigate ${event.id}.`,
 });
 
-export async function fixture() {
+export async function fixture(
+  options: { localTools?: boolean; approve?: boolean } = {},
+) {
   const directory = await mkdtemp(join(tmpdir(), "forge-superagent-"));
   const workspace = join(directory, "workspace");
   await mkdir(workspace);
@@ -136,13 +138,17 @@ export async function fixture() {
         return typeof step === "function" ? step(...args) : step;
       },
     }),
-    toolFactory: () => ({
-      definitions: [],
-      execute: async () => {
-        throw new Error("Unexpected tool");
-      },
-      dispose: async () => {},
-    }),
+    ...(options.localTools
+      ? {}
+      : {
+          toolFactory: () => ({
+            definitions: [],
+            execute: async () => {
+              throw new Error("Unexpected tool");
+            },
+            dispose: async () => {},
+          }),
+        }),
     sessionTools: (session) => engine.sessionTools(session),
     canReadSession: (reader, target) => engine.canReadSession(reader, target),
   });
@@ -228,6 +234,7 @@ export async function fixture() {
     }),
   };
   const deps: SuperAgentDeps = {
+    stateDirectory: join(directory, "state"),
     harness,
     inputQueue,
     sessions,
@@ -253,7 +260,7 @@ export async function fixture() {
       .run(
         item.input!,
         () => {},
-        async () => false,
+        async () => options.approve ?? false,
         new AbortController().signal,
         {
           inputOrigin: item.origin,

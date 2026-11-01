@@ -12,6 +12,21 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
+it("applies the configured webhook body limit at host startup", async () => {
+  const f = await hostFixture({
+    maxBodyBytes: Buffer.byteLength(JSON.stringify(payload)) - 1,
+  });
+  const store = await openSuperAgentStore(join(f.directory, "state"));
+  try {
+    expect((await f.send(payload)).status).toBe(413);
+    expect(await store.unprocessedDeliveries()).toEqual([]);
+    expect(await store.listTriggers()).toEqual([]);
+  } finally {
+    await store.close();
+    await f.close();
+  }
+});
+
 it.each(["offline", "HTTP 503"])(
   "keeps the host running and reports a catch-up failure (%s) without advancing the cursor",
   async (failure) => {

@@ -1,5 +1,6 @@
 import { z } from "zod";
 import {
+  type CommandEnvironmentTransform,
   MAX_EDITABLE_FILE_BYTES as FILE_LIMIT,
   type ToolDefinition,
   defineTool,
@@ -232,6 +233,7 @@ export const optionsSchema = z
     redactValues: z.array(z.string()).readonly().optional(),
     checkpointStore: z.custom<CheckpointStore>().optional(),
     gitTimeoutMs: z.number().int().positive().optional(),
+    transformCommandEnv: z.custom<CommandEnvironmentTransform>().optional(),
   })
   .strict()
   .readonly();

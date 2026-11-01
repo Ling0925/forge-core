@@ -136,6 +136,9 @@ it("executes each approved write with private credentials and sanitizes failures
       mocks.spawn.mock.calls.some(([, args]) => args.includes("config")),
     ).toBe(false);
     expect(
+      mocks.spawn.mock.calls.filter(([command]) => command === "gh"),
+    ).toHaveLength(4);
+    expect(
       mocks.spawn.mock.calls
         .filter(([command]) => command === "gh")
         .every(([, args]) => args.join(" ") === "auth token"),

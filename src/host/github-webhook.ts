@@ -4,17 +4,24 @@ import {
   type ServerResponse,
   createServer,
 } from "node:http";
-import { type Delivery, jsonValueSchema } from "../shared";
+import {
+  DEFAULT_GITHUB_WEBHOOK_MAX_BODY_BYTES,
+  type Delivery,
+  jsonValueSchema,
+} from "../shared";
 import type { SuperAgentStore } from "../store";
 
 export async function createGithubWebhook(options: {
   host?: string | undefined;
   port: number;
+  maxBodyBytes?: number | undefined;
   secret: string;
   store: Pick<SuperAgentStore, "recordDelivery">;
   processDelivery(delivery: Delivery): Promise<unknown>;
   onError(error: unknown): void;
 }) {
+  const maxBodyBytes =
+    options.maxBodyBytes ?? DEFAULT_GITHUB_WEBHOOK_MAX_BODY_BYTES;
   const operations = new Set<Promise<void>>();
   const handle = async (request: IncomingMessage, response: ServerResponse) => {
     const reply = (status: number) => {
@@ -23,6 +30,15 @@ export async function createGithubWebhook(options: {
     };
     if (request.method !== "POST") {
       reply(405);
+      return;
+    }
+    const tooLarge = () => {
+      request.pause();
+      response.writeHead(413, { Connection: "close" });
+      response.end(() => request.destroy());
+    };
+    if (Number(request.headers["content-length"]) > maxBodyBytes) {
+      tooLarge();
       return;
     }
     const signature = request.headers["x-hub-signature-256"];
@@ -34,7 +50,15 @@ export async function createGithubWebhook(options: {
       return;
     }
     const chunks: Buffer[] = [];
-    for await (const chunk of request) chunks.push(Buffer.from(chunk));
+    let length = 0;
+    for await (const chunk of request.iterator({ destroyOnReturn: false })) {
+      length += chunk.length;
+      if (length > maxBodyBytes) {
+        tooLarge();
+        return;
+      }
+      chunks.push(Buffer.from(chunk));
+    }
     const raw = Buffer.concat(chunks);
     const expected = createHmac("sha256", options.secret).update(raw).digest();
     if (

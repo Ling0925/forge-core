@@ -284,13 +284,22 @@ export type ProviderFactory = (config: ProviderConfig) => ModelProvider;
 export type ToolFactory = (
   workspace: string,
 ) => LocalToolRegistry | Promise<LocalToolRegistry>;
+export type CommandEnvironmentTransform = (
+  env: Record<string, string | undefined>,
+) =>
+  | Record<string, string | undefined>
+  | Promise<Record<string, string | undefined>>;
 export interface HarnessOptions {
   readonly stateDir?: string;
   readonly providerFactory?: ProviderFactory;
   readonly toolFactory?: ToolFactory;
-  readonly sessionTools?: (
-    session: SessionSnapshot,
-  ) => { registry: LocalToolRegistry; instructions: string } | undefined;
+  readonly sessionTools?: (session: SessionSnapshot) =>
+    | {
+        registry: LocalToolRegistry;
+        instructions: string;
+        transformCommandEnv?: CommandEnvironmentTransform;
+      }
+    | undefined;
   readonly canReadSession?: (
     reader: SessionSnapshot,
     sessionId: SessionId,
