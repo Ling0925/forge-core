@@ -93,7 +93,9 @@ async function setup(complete: ModelProvider["complete"]) {
 const finished = () =>
   sent.filter(
     (message) =>
-      message.kind === "event" && message.data.event.type === "run_finished",
+      message.kind === "event" &&
+      "event" in message.data &&
+      message.data.event.type === "run_finished",
   );
 const startRun = async (
   prompt = "forge 用户明确要求整理长期约定，其他工作可以并行",
@@ -224,7 +226,7 @@ describe("async memory through the real harness and host queue", () => {
       expect(turns).toBe(4);
       expect(requests).toBe(1);
       for (const message of finished())
-        if (message.kind === "event")
+        if (message.kind === "event" && "event" in message.data)
           expect(message.data.event).toMatchObject({
             status: "completed",
             usage: { totalTokens: 24 },
@@ -268,10 +270,12 @@ describe("async memory through the real harness and host queue", () => {
     const started = sent
       .filter(
         (message) =>
-          message.kind === "event" && message.data.event.type === "run_started",
+          message.kind === "event" &&
+          "event" in message.data &&
+          message.data.event.type === "run_started",
       )
       .at(-1);
-    if (started?.kind === "event")
+    if (started?.kind === "event" && "event" in started.data)
       expect(started.data.event).toMatchObject({ permission: "readonly" });
     const memories = await openMemoryStore(home);
     try {
@@ -332,10 +336,12 @@ describe("async memory through the real harness and host queue", () => {
     const started = sent
       .filter(
         (message) =>
-          message.kind === "event" && message.data.event.type === "run_started",
+          message.kind === "event" &&
+          "event" in message.data &&
+          message.data.event.type === "run_started",
       )
       .at(-1);
-    if (started?.kind === "event")
+    if (started?.kind === "event" && "event" in started.data)
       expect(started.data.event).toMatchObject({ permission: "readonly" });
     expect(await receipts()).toEqual([]);
   });

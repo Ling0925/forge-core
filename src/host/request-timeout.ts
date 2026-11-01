@@ -7,6 +7,10 @@ export function requestTimeout(
   timeoutMs = DEFAULT_REQUEST_TIMEOUT_MS,
 ): number | undefined {
   switch (request.method) {
+    case "decideOutbox":
+    case "decideSuggestion":
+    case "stopWorkItem":
+    case "resumeWorkItem":
     case "compactSession":
     case "listModels":
     case "modelAccess":

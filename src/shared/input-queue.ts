@@ -66,6 +66,7 @@ export interface InputQueueService {
 }
 export interface InputQueueRunner {
   isBusy(sessionId: SessionId): boolean;
+  settled?(sessionId: SessionId): Promise<void>;
   start(
     input: RunInput,
     runId: string,

@@ -2,6 +2,7 @@ import { createConnection } from "node:net";
 import {
   ForgeError,
   HOST_PROTOCOL_VERSION,
+  type HostEvent,
   type HostState,
   type RpcRequest,
   type RpcResponse,
@@ -27,7 +28,7 @@ export interface LocalHostClient {
   readonly recovery: readonly RunEvent[];
   readonly closed: Promise<void>;
   request(request: RpcRequest): Promise<RpcResponse>;
-  subscribe(listener: (event: RunEvent, cursor: number) => void): () => void;
+  subscribe(listener: (event: HostEvent, cursor: number) => void): () => void;
   close(): Promise<void>;
 }
 export async function connectLocalHost(options: {
@@ -36,7 +37,7 @@ export async function connectLocalHost(options: {
   cursor?: number;
   requestTimeoutMs?: number;
   /** Install before handshake/replay; RPC-only clients may explicitly discard events. */
-  onEvent?: (event: RunEvent, cursor: number) => void;
+  onEvent?: (event: HostEvent, cursor: number) => void;
 }): Promise<LocalHostClient> {
   if (options.cursor !== undefined && !options.hostId)
     throw hostError(
@@ -54,9 +55,9 @@ export async function connectLocalHost(options: {
   let settled = false;
   let disconnected = false;
   let error: Error | undefined;
-  const listeners = new Set<(event: RunEvent, cursor: number) => void>();
+  const listeners = new Set<(event: HostEvent, cursor: number) => void>();
   if (options.onEvent) listeners.add(options.onEvent);
-  const buffer: { data: RunEvent; cursor: number }[] = [];
+  const buffer: { data: HostEvent; cursor: number }[] = [];
   let bufferedBytes = 0;
   const used = new Set<string>();
   const pending = new Map<
@@ -100,7 +101,7 @@ export async function connectLocalHost(options: {
       ),
     5000,
   );
-  const deliver = (data: RunEvent, at: number) => {
+  const deliver = (data: HostEvent, at: number) => {
     if (!listeners.size) {
       buffer.push({ data, cursor: at });
       bufferedBytes += Buffer.byteLength(JSON.stringify(data));

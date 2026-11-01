@@ -9,10 +9,12 @@ import {
   type SessionSnapshot,
   type SettingsStore,
   type SteeringInput,
+  type Suggestion,
   type SuperAgentEvent,
   type Thread,
   type Trigger,
   type WorkItem,
+  type WorkItemQuery,
   type WorkItemStore,
   sessionIdSchema,
   toErrorInfo,
@@ -37,7 +39,10 @@ export interface SuperAgentSessions {
 
 export interface SuperAgentDeps {
   harness: HarnessService;
-  inputQueue: Pick<InputQueueHost, "notify" | "list" | "cancel" | "resume">;
+  inputQueue: Pick<
+    InputQueueHost,
+    "notify" | "list" | "cancel" | "pause" | "resume"
+  >;
   sessions: SuperAgentSessions;
   store: SuperAgentStore;
   workItems: WorkItemStore;
@@ -67,12 +72,12 @@ export function createSuperAgent(deps: SuperAgentDeps) {
   const config = async () => (await settings.getPublic()).superAgent;
   const requireConfig = async () => {
     const value = await config();
-    if (
-      !value?.enabled ||
-      !value.workspace ||
-      !value.routerProfileId ||
-      !value.workerProfileId
-    )
+    if (!value?.enabled)
+      throw new ForgeError(
+        "not_found",
+        "Super-agent is disabled on this host.",
+      );
+    if (!value.workspace || !value.routerProfileId || !value.workerProfileId)
       throw new ForgeError(
         "invalid_input",
         "Enable superagent and configure its workspace and profiles.",
@@ -188,6 +193,8 @@ export function createSuperAgent(deps: SuperAgentDeps) {
         id = session.id;
         await workItems.linkWorker(work.id, id, session.workspace);
       }
+      // Keep notify from starting a successful predecessor before resume acknowledges it.
+      if (work.workerSessionId) await inputQueue.pause(id);
       await enqueue(id, await workPrompt(work));
       if (work.workerSessionId) await inputQueue.resume(id);
       publishWork(await requireWork(work.id));
@@ -375,6 +382,23 @@ export function createSuperAgent(deps: SuperAgentDeps) {
   };
 
   return {
+    async getSuperAgentState() {
+      const current = await requireConfig();
+      return {
+        enabled: true as const,
+        workspace: current.workspace,
+        routerSessionId:
+          (await store.getCursor(routerKey(current.workspace))) ?? null,
+      };
+    },
+    listSuperAgentTriggers: (
+      query?: Parameters<SuperAgentStore["listTriggers"]>[0],
+    ) => store.listTriggers(query),
+    listWorkItems: (query?: WorkItemQuery) => workItems.list(query),
+    getWorkItem: requireWork,
+    listSuggestions: (state?: Suggestion["state"]) =>
+      store.listSuggestions(state),
+    listOutbox: (state?: OutboxItem["state"]) => store.listOutbox(state),
     start: () =>
       serial(async () => {
         await drainWorkers();
@@ -401,9 +425,13 @@ export function createSuperAgent(deps: SuperAgentDeps) {
             trigger.threadId.indexOf("#"),
           );
           const reason =
-            trigger.actor === current?.github?.login
+            trigger.actor.toLowerCase() ===
+            current?.github?.login?.toLowerCase()
               ? "Actor is the configured GitHub login."
-              : !current?.github?.repos?.includes(repo)
+              : !current?.github?.repos?.some(
+                    (configured) =>
+                      configured.toLowerCase() === repo.toLowerCase(),
+                  )
                 ? "Repository is not configured."
                 : null;
           await disposition(trigger, reason ? "ignored" : "backlog", reason);

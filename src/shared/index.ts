@@ -197,6 +197,8 @@ export {
   type RpcResponse,
   rpcResponseSchema,
   type RunEvent,
+  type HostEvent,
+  hostEventSchema,
   runEventSchema,
   type RunHandle,
   runHandleSchema,

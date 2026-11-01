@@ -1,12 +1,12 @@
 import { ForgeError } from "./errors";
 import {
   type ForgeBridge,
+  type HostEvent,
   type RpcRequest,
   type RpcResponse,
-  type RunEvent,
+  hostEventSchema,
   rpcRequestSchema,
   rpcResponseSchema,
-  runEventSchema,
 } from "./ipc";
 
 export interface BridgeTransport {
@@ -44,8 +44,8 @@ export function requestId(): string {
   return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
 }
 export function createTransportBridge(transport: BridgeTransport): ForgeBridge {
-  const listeners = new Set<(event: RunEvent) => void>();
-  const events: RunEvent[] = [];
+  const listeners = new Set<(event: HostEvent) => void>();
+  const events: HostEvent[] = [];
   let starting = 0;
   const deliver = (): void => {
     if (starting || !listeners.size) return;
@@ -59,7 +59,7 @@ export function createTransportBridge(transport: BridgeTransport): ForgeBridge {
       }
   };
   transport.onEvent((raw) => {
-    const parsed = runEventSchema.safeParse(raw);
+    const parsed = hostEventSchema.safeParse(raw);
     if (parsed.success) {
       events.push(parsed.data);
       setTimeout(deliver, 0);
@@ -97,6 +97,20 @@ export function createTransportBridge(transport: BridgeTransport): ForgeBridge {
   }
   return Object.freeze({
     getHostState: () => request("getHostState"),
+    getSuperAgentState: () => request("getSuperAgentState"),
+    listSuperAgentTriggers: (query) =>
+      request("listSuperAgentTriggers", { query }),
+    listWorkItems: (query) => request("listWorkItems", { query }),
+    getWorkItem: (workId) => request("getWorkItem", { workId }),
+    stopWorkItem: (workId, reason) =>
+      request("stopWorkItem", { workId, reason }),
+    resumeWorkItem: (workId) => request("resumeWorkItem", { workId }),
+    listSuggestions: (state) => request("listSuggestions", { state }),
+    decideSuggestion: (suggestionId, accept) =>
+      request("decideSuggestion", { suggestionId, accept }),
+    listOutbox: (state) => request("listOutbox", { state }),
+    decideOutbox: (outboxId, approve) =>
+      request("decideOutbox", { outboxId, approve }),
     inputQueue: {
       enqueue: (input) => request("enqueueInput", { input }),
       list: (sessionId) => request("listInputs", { sessionId }),

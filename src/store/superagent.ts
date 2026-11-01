@@ -377,8 +377,8 @@ export async function openSuperAgentStore(directory: string) {
       }),
     listTriggers: (
       query: {
-        disposition?: string | readonly string[];
-        threadIds?: readonly string[];
+        disposition?: string | readonly string[] | undefined;
+        threadIds?: readonly string[] | undefined;
       } = {},
     ) =>
       access((db) => {

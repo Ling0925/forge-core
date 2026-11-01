@@ -211,6 +211,7 @@ export async function fixture() {
       items[index] = { ...items[index]!, state: "cancelled" };
       return true;
     },
+    pause: async (sessionId) => inputQueue.list(sessionId),
     resume: async (sessionId) => inputQueue.list(sessionId),
   };
   const events: SuperAgentEvent[] = [];

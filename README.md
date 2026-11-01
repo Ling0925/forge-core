@@ -117,6 +117,18 @@ MCP 支持 **stdio、Streamable HTTP、Legacy SSE**。注册不会连接；启�
 - Host 选项 `createRuntimeHub(service, { requestTimeoutMs })` 和 `connectLocalHost({ requestTimeoutMs, ... })`：短 RPC 的传输超时（120000 毫秒）。压缩、模型发现/管理、浏览器、运行启动/插话、队列启动、会话取消、等待运行取消、MCP 健康检查/启停/删除、插件配置/检查和用量统计不设传输超时，沿用操作自己的期限及取消机制；请求断开会取消支持 `AbortSignal` 的操作，已接受的运行独立继续。
 - Vertex 来源：`vertex.models` 用自己的模型列表替换内置参考列表；`vertex.discoverModels: true` 会调用 Vertex `publishers.models.list` 获取 Gemini 模型，失败时回退到 `models` 或内置列表。
 
+## Super-agent（GitHub，可选）
+
+在 `updateSettings` RPC 的 `input.settings.superAgent` 中设置 `enabled: true`，或启动时传 `--super-agent`（仅本次强制启用），然后重启服务。必填项为 `workspace`（本地 Git 工作区）、`routerProfileId`、`workerProfileId`（已保存的智能体配置）、`github.login`、`github.repos`（如 `["owner/repo"]`）、`github.webhook.port` 和 `github.webhookSecret`；可选 `github.webhook.host`、`maxWorkers`。模型沿用两个 profile，Worker 在独立 worktree 中执行；并发默认值沿用 `maxActiveAgents` 的默认常量。
+
+通过 `updateSettings` 设置随机生成的 `github.webhookSecret`，并在 GitHub 仓库的 Webhook 配置中填入同一 Secret，Content type 选择 `application/json`。公共设置只返回 `hasWebhookSecret`。在宿主机先执行 `gh auth login`；启动补偿和审批后的发送执行器临时调用 `gh auth token`，凭据不进入会话或发送队列。
+
+Webhook 是独立 HTTP 监听器，向其根路径 POST。用 tunnel 或反向代理**只暴露 `github.webhook.port`**，Forge API 端口留在私网。GitHub 勾选 Issues、Issue comments、Pull requests、Pull request reviews、Pull request review comments；监听器验签并持久化后返回 202，重复 delivery 返回 409。接口字段见 [GitHub Webhook 文档](https://docs.github.com/en/webhooks/webhook-events-and-payloads)。
+
+启动时先恢复未处理的 delivery，再按仓库的 `github:<repo>:since` 游标补查 issue events 和 issue comments（分页、一次性，无轮询）；首次无游标时从当前时刻开始，不导入旧历史。评论使用对象 ID，指派/审阅请求使用线程、接收人和事件时间去重；REST 能恢复的历史以 [issue events API](https://docs.github.com/en/rest/issues/events) 为准。
+
+仅明确 @mention、指派或请求 `github.login` 审阅才直接创建 Worker；其他工作先生成 Suggestion。通过 `getSuperAgentState`、`listSuperAgentTriggers`、`listWorkItems`、`getWorkItem`、`stopWorkItem`、`resumeWorkItem`、`listSuggestions`、`listOutbox` 查看/管理；`decideSuggestion { suggestionId, accept }` 接受建议后创建 Worker。所有评论、标签、push 和 PR 都先进入 pending outbox，只有 `decideOutbox { outboxId, approve: true }` 才执行，false 则拒绝。工作项操作传 `workId`，停止还需 `reason`。WebSocket 和本地 socket 广播 `superagent_trigger`、`superagent_work`、`superagent_suggestion`、`superagent_outbox`；无专用 UI。
+
 ## 作为包使用
 
 包名为 `@forge/core`，当前标记为 `private`，本地客户端通过 `file:../forge-core` 依赖它：

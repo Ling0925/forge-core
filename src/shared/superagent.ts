@@ -265,3 +265,21 @@ export const superAgentEventSchema = z.discriminatedUnion("type", [
     .strict(),
 ]);
 export type SuperAgentEvent = z.infer<typeof superAgentEventSchema>;
+
+export const superAgentStateSchema = z
+  .object({
+    enabled: z.literal(true),
+    workspace: z.string(),
+    routerSessionId: z.string().nullable(),
+  })
+  .strict()
+  .readonly();
+export const triggerQuerySchema = z
+  .object({
+    disposition: z
+      .union([z.string(), z.array(z.string()).readonly()])
+      .optional(),
+    threadIds: idsSchema.optional(),
+  })
+  .strict()
+  .readonly();

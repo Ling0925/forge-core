@@ -25,6 +25,7 @@ import {
   workerMessageSchema,
   workerRequestSchema,
 } from "../shared";
+import type { createSuperAgent } from "../superagent";
 
 export const safeError = {
   code: "internal",
@@ -43,7 +44,22 @@ type Approval = {
 export function createWorkerController(
   service: HarnessService,
   send: (message: WorkerMessage) => void,
+  options: {
+    superAgent?:
+      | (() => ReturnType<typeof createSuperAgent> | undefined)
+      | undefined;
+  } = {},
 ) {
+  const superAgent = async () => {
+    const engine = options.superAgent?.();
+    if (!engine)
+      throw new ForgeError(
+        "not_found",
+        "Super-agent is disabled on this host.",
+      );
+    await engine.getSuperAgentState();
+    return engine;
+  };
   const hostId = randomUUID();
   const runs = new Map<
     RunId,
@@ -465,6 +481,9 @@ export function createWorkerController(
     start: (input, runId, binding, predecessor, origin) =>
       startRun(input, runIdSchema.parse(runId), binding, predecessor, origin)
         .operation,
+    settled: async () => {
+      if (!disposed) await options.superAgent?.()?.sessionSettled();
+    },
   });
   void queueReady?.catch(() => undefined);
   const queue = async () => {
@@ -512,6 +531,72 @@ export function createWorkerController(
     }
     try {
       switch (request.method) {
+        case "getSuperAgentState":
+          respond(request, await (await superAgent()).getSuperAgentState());
+          break;
+        case "listSuperAgentTriggers":
+          respond(
+            request,
+            await (await superAgent()).listSuperAgentTriggers(request.query),
+          );
+          break;
+        case "listWorkItems":
+          respond(
+            request,
+            await (await superAgent()).listWorkItems(request.query),
+          );
+          break;
+        case "getWorkItem":
+          respond(
+            request,
+            await (await superAgent()).getWorkItem(request.workId),
+          );
+          break;
+        case "stopWorkItem":
+          respond(
+            request,
+            await (await superAgent()).stopWorkItem(
+              request.workId,
+              request.reason,
+            ),
+          );
+          break;
+        case "resumeWorkItem":
+          respond(
+            request,
+            await (await superAgent()).resumeWorkItem(request.workId),
+          );
+          break;
+        case "listSuggestions":
+          respond(
+            request,
+            await (await superAgent()).listSuggestions(request.state),
+          );
+          break;
+        case "decideSuggestion":
+          respond(
+            request,
+            await (await superAgent()).decideSuggestion(
+              request.suggestionId,
+              request.accept,
+            ),
+          );
+          break;
+        case "listOutbox":
+          respond(
+            request,
+            await (await superAgent()).listOutbox(request.state),
+          );
+          break;
+        case "decideOutbox":
+          respond(
+            request,
+            await (await superAgent()).decideOutbox(
+              request.outboxId,
+              request.approve,
+            ),
+          );
+          break;
         case "getHostState":
           respond(request, hostState());
           break;

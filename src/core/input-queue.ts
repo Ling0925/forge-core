@@ -388,6 +388,7 @@ export async function openInputQueue(options: {
                 reason: `Previous run ${status}. Explicit resume is required.`,
               });
           });
+          await host.settled?.(sessionId);
           if (status !== "completed") return;
         }
       })
