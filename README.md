@@ -233,5 +233,5 @@ pnpm lint
 
 ## 许可证
 
-本仓没有项目级 `LICENSE` 文件，[package.json](package.json) 也未声明 `license`。
-[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) 保留了 Magpie 改编部分的来源和 MIT 许可文本；这不是 Forge Core 整仓的许可证声明。
+[MIT](LICENSE)。
+Magpie 改编部分的来源和原许可文本见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。
