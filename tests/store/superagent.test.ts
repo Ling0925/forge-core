@@ -1,7 +1,8 @@
 import { mkdtemp, readdir, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, beforeEach, expect, it } from "vitest";
+import { DatabaseSync } from "node:sqlite";
+import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import {
   type Trigger,
   type WorkItemStore,
@@ -56,8 +57,8 @@ const work = {
 };
 const outgoing = {
   workId: "wrk_example",
-  kind: "comment",
-  target: { threadId: thread.id },
+  kind: "comment" as const,
+  target: { thread: thread.id },
   body: { text: "Done" },
 };
 
@@ -85,6 +86,113 @@ it("opens lazily and atomically deduplicates deliveries across store handles", a
   await expect(store.getTrigger(trigger.id)).rejects.toMatchObject({
     code: "storage",
   });
+});
+
+it("filters triggers by disposition and threads without changing order or results", async () => {
+  const records = [
+    { ...trigger, id: "b", disposition: "backlog" },
+    { ...trigger, id: "a", disposition: "routing" },
+    {
+      ...trigger,
+      id: "older",
+      disposition: "backlog",
+      threadId: "other",
+      receivedAt: "2026-10-31T00:00:00.000Z",
+    },
+    { ...trigger, id: "ignored", disposition: "ignored" },
+    { ...trigger, id: "unset", threadId: "other" },
+  ];
+  for (const record of records) await store.putTrigger(record);
+  const all = await store.listTriggers();
+  expect(all.map((item) => item.id)).toEqual([
+    "older",
+    "a",
+    "b",
+    "ignored",
+    "unset",
+  ]);
+  for (const disposition of [
+    undefined,
+    "backlog",
+    ["backlog", "routing"],
+    [],
+    "' OR 1=1 --",
+  ])
+    for (const threadIds of [
+      undefined,
+      [thread.id],
+      [thread.id, "other"],
+      [],
+      ["missing"],
+    ]) {
+      const query = {
+        ...(disposition === undefined ? {} : { disposition }),
+        ...(threadIds === undefined ? {} : { threadIds }),
+      };
+      expect(await store.listTriggers(query)).toEqual(
+        all.filter(
+          (item) =>
+            (disposition === undefined ||
+              (typeof disposition === "string"
+                ? [disposition]
+                : disposition
+              ).includes(item.disposition ?? "")) &&
+            (threadIds === undefined || threadIds.includes(item.threadId)),
+        ),
+      );
+    }
+  await store.putTrigger({
+    ...records[0]!,
+    disposition: "ignored",
+    threadId: "moved",
+  });
+  expect(await store.listTriggers({ disposition: "backlog" })).toEqual([
+    records[2],
+  ]);
+  expect(await store.listTriggers({ threadIds: ["moved"] })).toMatchObject([
+    { id: "b", disposition: "ignored" },
+  ]);
+});
+
+it("adds usable trigger indexes when reopening an existing store", async () => {
+  await store.putTrigger(trigger);
+  await store.close();
+  const existing = new DatabaseSync(join(directory, "superagent.sqlite"));
+  try {
+    existing.exec(
+      "DROP INDEX triggers_disposition; DROP INDEX triggers_thread;",
+    );
+  } finally {
+    existing.close();
+  }
+  store = await openSuperAgentStore(directory);
+  opened.push(store);
+  expect(await store.listTriggers()).toEqual([trigger]);
+  const database = new DatabaseSync(join(directory, "superagent.sqlite"));
+  try {
+    const prepare = vi.spyOn(DatabaseSync.prototype, "prepare");
+    for (const query of [
+      { disposition: "backlog" },
+      { disposition: ["backlog", "routing"] },
+      { threadIds: [thread.id] },
+      { disposition: ["backlog", "routing"], threadIds: [thread.id] },
+    ]) {
+      await store.listTriggers(query);
+      const sql = prepare.mock.calls.at(-1)![0];
+      const plan = database.prepare(`EXPLAIN QUERY PLAN ${sql}`).all();
+      expect(plan, sql).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            detail: expect.stringMatching(
+              /SEARCH triggers USING INDEX triggers_(disposition|thread)/,
+            ),
+          }),
+        ]),
+      );
+    }
+  } finally {
+    database.close();
+  }
 });
 
 it("claims once, updates progress, and queries work by status and subscriptions", async () => {
@@ -150,7 +258,10 @@ it("keeps outbox writes pending until approved and enforces decision and complet
   await expect(store.markOutboxFailed(item.id, "error")).rejects.toMatchObject({
     code: "invalid_input",
   });
-  await store.updateOutboxItem(item.id, { ...outgoing, body: "Updated" });
+  await store.updateOutboxItem(item.id, {
+    ...outgoing,
+    body: { text: "Updated" },
+  });
   const decisions = await Promise.allSettled([
     store.decideOutbox(item.id, true),
     store.decideOutbox(item.id, false),

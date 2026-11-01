@@ -152,24 +152,20 @@ export function createSuperAgent(deps: SuperAgentDeps) {
   const flushBacklog = async () => {
     const current = await config();
     if (!current?.enabled) return;
-    const backlog = (await store.listTriggers()).filter(
-      (trigger) => trigger.disposition === "backlog",
-    );
+    const backlog = await store.listTriggers({ disposition: "backlog" });
     if (!backlog.length) return;
     const configured = await requireConfig();
     const id = await router(configured.workspace);
     if (await busy(id)) return;
     await enqueue(
       id,
-      `${routerInstructions}\n\nRoute this batch:\n${untrustedData(await triggerData(backlog))}`,
+      `Route this batch:\n${untrustedData(await triggerData(backlog))}`,
     );
     for (const trigger of backlog) await disposition(trigger, "routing");
   };
   const workPrompt = async (work: WorkItem) => {
-    const triggers = (await store.listTriggers()).filter((trigger) =>
-      work.threadIds.includes(trigger.threadId),
-    );
-    return `${workerInstructions}\n\nWork item: ${work.id}\nBrief:\n${work.brief}\n\n${untrustedData(await triggerData(triggers))}`;
+    const triggers = await store.listTriggers({ threadIds: work.threadIds });
+    return `Work item: ${work.id}\nBrief:\n${work.brief}\n\n${untrustedData(await triggerData(triggers))}`;
   };
   const workRouter = async (workId: string) =>
     sessionIdSchema.parse(await store.getCursor(workRouterKey(workId)));
@@ -315,11 +311,10 @@ export function createSuperAgent(deps: SuperAgentDeps) {
               work = await workItems.linkThread(work.id, thread);
             }
             publishWork(work);
-            const triggers = (await store.listTriggers()).filter(
-              (trigger) =>
-                decision.threads.includes(trigger.threadId) &&
-                ["backlog", "routing"].includes(trigger.disposition ?? ""),
-            );
+            const triggers = await store.listTriggers({
+              threadIds: decision.threads,
+              disposition: ["backlog", "routing"],
+            });
             if (work.workerSessionId && triggers.length) {
               await deliverWorker(work, triggers);
               for (const trigger of triggers)
@@ -373,7 +368,7 @@ export function createSuperAgent(deps: SuperAgentDeps) {
     triggers: readonly Trigger[],
   ) => {
     const id = sessionIdSchema.parse(work.workerSessionId);
-    const prompt = `${workerInstructions}\n\nUpdates for ${work.id}:\n${untrustedData(await triggerData(triggers))}`;
+    const prompt = `Updates for ${work.id}:\n${untrustedData(await triggerData(triggers))}`;
     if (sessions.isRunning(id) && (await sessions.steer(id, { prompt })))
       return;
     await enqueue(id, prompt);
@@ -503,14 +498,14 @@ export function createSuperAgent(deps: SuperAgentDeps) {
     sessionTools(session: SessionSnapshot) {
       const role = session.agentRole;
       if (!role) return undefined;
-      return createSuperAgentTools(role.kind, {
+      const registry = createSuperAgentTools(role.kind, {
         read: ({ ids }) => read(session, ids),
         list: async () => ({
           workItems: await workItems.list(),
           suggestions: await store.listSuggestions("pending"),
-          triggers: (await store.listTriggers()).filter((trigger) =>
-            ["backlog", "routing"].includes(trigger.disposition ?? ""),
-          ),
+          triggers: await store.listTriggers({
+            disposition: ["backlog", "routing"],
+          }),
         }),
         route: ({ decisions }) => route(session.id, decisions),
         report: ({ status, progress }) =>
@@ -523,7 +518,7 @@ export function createSuperAgent(deps: SuperAgentDeps) {
             );
             await enqueue(
               await workRouter(work.id),
-              `${routerInstructions}\n\nWorker report:\n${untrustedData(updated)}`,
+              `Worker report:\n${untrustedData(updated)}`,
             );
             return updated;
           }),
@@ -561,6 +556,11 @@ export function createSuperAgent(deps: SuperAgentDeps) {
             return item;
           }),
       });
+      return {
+        registry,
+        instructions:
+          role.kind === "router" ? routerInstructions : workerInstructions,
+      };
     },
   };
 }

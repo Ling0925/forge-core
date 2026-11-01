@@ -523,6 +523,8 @@ export {
   type Suggestion,
   suggestionSchema,
   type OutboxItem,
+  outboxKindSchema,
+  superAgentSendSchema,
   outboxItemSchema,
   type Delivery,
   deliverySchema,

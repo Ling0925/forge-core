@@ -239,7 +239,7 @@ it("keeps role metadata immutable in both snapshot and incremental writes and re
 });
 
 it.each(["workspace", "readonly"] as const)(
-  "merges host tools per session and enforces the %s ceiling",
+  "merges host tools and system instructions per session and enforces the %s ceiling",
   async (ceiling) => {
     const permissions: { name: string; permission: Permission }[] = [];
     const disposed: string[] = [];
@@ -254,16 +254,34 @@ it.each(["workspace", "readonly"] as const)(
       },
     });
     const seen: string[][] = [];
+    const systemContexts = new Map<string, string[]>();
+    const instructions = "Session role instructions";
     const calls = new Map<string, number>();
     const sessionTools = vi.fn<NonNullable<HarnessOptions["sessionTools"]>>(
-      (session) => (session.agentRole ? registry("host_tool") : undefined),
+      (session) =>
+        session.agentRole
+          ? { registry: registry("host_tool"), instructions }
+          : undefined,
     );
     const service = await harness({
       toolFactory: () => registry("base_tool"),
       sessionTools,
       providerFactory: () => ({
         listModels: async () => [],
-        complete: async (_messages, tools, options) => {
+        complete: async (messages, tools, options) => {
+          const contexts = systemContexts.get(options.sessionId!) ?? [];
+          contexts.push(
+            messages
+              .filter((message) => message.role === "system")
+              .map((message) => message.content)
+              .join("\n"),
+          );
+          systemContexts.set(options.sessionId!, contexts);
+          expect(
+            messages
+              .filter((message) => message.role === "user")
+              .every((message) => !message.content?.includes(instructions)),
+          ).toBe(true);
           const step = calls.get(options.sessionId!) ?? 0;
           calls.set(options.sessionId!, step + 1);
           if (step > 0)
@@ -325,9 +343,17 @@ it.each(["workspace", "readonly"] as const)(
     });
     await run(service, ordinary.id);
     expect(seen[1]).not.toContain("host_tool");
+    await run(service, session.id);
+    for (const context of systemContexts.get(session.id)!) {
+      expect(context.split(instructions)).toHaveLength(2);
+      expect(context).toContain(profile.instructions);
+    }
+    for (const context of systemContexts.get(ordinary.id)!)
+      expect(context).not.toContain(instructions);
     expect(sessionTools.mock.calls.map(([snapshot]) => snapshot.id)).toEqual([
       session.id,
       ordinary.id,
+      session.id,
     ]);
   },
 );

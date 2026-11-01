@@ -75,9 +75,18 @@ function decode<T>(schema: z.ZodType<T>, row: Record<string, unknown>): T {
 const suggestionInput = suggestionSchema
   .unwrap()
   .pick({ threadIds: true, brief: true, triggerIds: true });
-const outboxInput = outboxItemSchema
-  .unwrap()
-  .pick({ workId: true, kind: true, target: true, body: true });
+const outboxInputFields = {
+  workId: true,
+  kind: true,
+  target: true,
+  body: true,
+} as const;
+const outboxInput = z.discriminatedUnion("kind", [
+  outboxItemSchema.unwrap().options[0].pick(outboxInputFields),
+  outboxItemSchema.unwrap().options[1].pick(outboxInputFields),
+  outboxItemSchema.unwrap().options[2].pick(outboxInputFields),
+  outboxItemSchema.unwrap().options[3].pick(outboxInputFields),
+]);
 const missing = () =>
   new ForgeError("not_found", "Stored record was not found.");
 const conflict = () =>
@@ -126,6 +135,10 @@ export async function openSuperAgentStore(directory: string) {
                 throw error;
               }
             }
+            db.exec(`
+              CREATE INDEX IF NOT EXISTS triggers_disposition ON triggers (disposition, received_at, id);
+              CREATE INDEX IF NOT EXISTS triggers_thread ON triggers (thread_id, received_at, id);
+            `);
             database = db;
           } catch (error) {
             db.close();
@@ -362,13 +375,39 @@ export async function openSuperAgentStore(directory: string) {
         const row = db.prepare("SELECT * FROM triggers WHERE id = ?").get(id);
         return row ? decode(triggerSchema, row) : undefined;
       }),
-    listTriggers: () =>
-      access((db) =>
-        db
-          .prepare("SELECT * FROM triggers ORDER BY received_at, id")
-          .all()
-          .map((row) => decode(triggerSchema, row)),
-      ),
+    listTriggers: (
+      query: {
+        disposition?: string | readonly string[];
+        threadIds?: readonly string[];
+      } = {},
+    ) =>
+      access((db) => {
+        const conditions: string[] = [];
+        const params: SQLInputValue[] = [];
+        if (query.disposition !== undefined) {
+          const dispositions =
+            typeof query.disposition === "string"
+              ? [query.disposition]
+              : query.disposition;
+          conditions.push(
+            `disposition IN (${dispositions.map(() => "?").join(",")})`,
+          );
+          params.push(...dispositions);
+        }
+        if (query.threadIds !== undefined) {
+          conditions.push(
+            `thread_id IN (${query.threadIds.map(() => "?").join(",")})`,
+          );
+          params.push(...query.threadIds);
+        }
+        const where = conditions.length
+          ? `WHERE ${conditions.join(" AND ")}`
+          : "";
+        return db
+          .prepare(`SELECT * FROM triggers ${where} ORDER BY received_at, id`)
+          .all(...params)
+          .map((row) => decode(triggerSchema, row));
+      }),
     async upsertThread(raw: Thread) {
       const item = threadSchema.parse(raw);
       return access((db) => {

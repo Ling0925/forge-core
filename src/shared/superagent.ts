@@ -124,20 +124,65 @@ export const suggestionSchema = z
   .strict()
   .readonly();
 export type Suggestion = z.infer<typeof suggestionSchema>;
+export const outboxKindSchema = z.enum([
+  "comment",
+  "label",
+  "push",
+  "pull_request",
+]);
+export const superAgentSendSchema = z.discriminatedUnion("kind", [
+  z
+    .object({
+      kind: z.literal(outboxKindSchema.enum.comment),
+      target: z.object({ thread: idSchema }).strict(),
+      body: z.object({ text: z.string() }).strict(),
+    })
+    .strict(),
+  z
+    .object({
+      kind: z.literal(outboxKindSchema.enum.label),
+      target: z.object({ thread: idSchema }).strict(),
+      body: z.object({ labels: z.array(z.string()) }).strict(),
+    })
+    .strict(),
+  z
+    .object({
+      kind: z.literal(outboxKindSchema.enum.push),
+      target: z.object({}).strict(),
+      body: z.object({ branch: z.string() }).strict(),
+    })
+    .strict(),
+  z
+    .object({
+      kind: z.literal(outboxKindSchema.enum.pull_request),
+      target: z.object({}).strict(),
+      body: z
+        .object({
+          title: z.string(),
+          body: z.string(),
+          head: z.string(),
+          base: z.string(),
+        })
+        .strict(),
+    })
+    .strict(),
+]);
+const outboxFields = {
+  id: idSchema,
+  workId: idSchema,
+  state: z.enum(["pending", "approved", "rejected", "sent", "failed"]),
+  error: z.string().nullable(),
+  createdAt: timestampSchema,
+  decidedAt: timestampSchema.nullable(),
+  sentAt: timestampSchema.nullable(),
+};
 export const outboxItemSchema = z
-  .object({
-    id: idSchema,
-    workId: idSchema,
-    kind: z.string(),
-    target: jsonValueSchema,
-    body: jsonValueSchema,
-    state: z.enum(["pending", "approved", "rejected", "sent", "failed"]),
-    error: z.string().nullable(),
-    createdAt: timestampSchema,
-    decidedAt: timestampSchema.nullable(),
-    sentAt: timestampSchema.nullable(),
-  })
-  .strict()
+  .discriminatedUnion("kind", [
+    superAgentSendSchema.options[0].extend(outboxFields),
+    superAgentSendSchema.options[1].extend(outboxFields),
+    superAgentSendSchema.options[2].extend(outboxFields),
+    superAgentSendSchema.options[3].extend(outboxFields),
+  ])
   .readonly();
 export type OutboxItem = z.infer<typeof outboxItemSchema>;
 export const deliverySchema = z

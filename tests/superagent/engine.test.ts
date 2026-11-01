@@ -6,7 +6,19 @@ import {
   superAgentEventSchema,
 } from "../../src/shared";
 import { createSuperAgent } from "../../src/superagent";
-import { call, fixture, hold, newDecision, thread, trigger } from "./fixture";
+import {
+  routerInstructions,
+  workerInstructions,
+} from "../../src/superagent/prompts";
+import {
+  call,
+  done,
+  fixture,
+  hold,
+  newDecision,
+  thread,
+  trigger,
+} from "./fixture";
 
 let f: Awaited<ReturnType<typeof fixture>>;
 beforeEach(async () => {
@@ -14,6 +26,10 @@ beforeEach(async () => {
 });
 afterEach(async () => {
   await f.close();
+  for (const item of f.items) {
+    expect(item.input?.prompt).not.toContain(routerInstructions);
+    expect(item.input?.prompt).not.toContain(workerInstructions);
+  }
 });
 
 it("persists idempotently and records deterministic filter reasons", async () => {
@@ -97,6 +113,33 @@ it("creates an isolated profile Worker only for an explicit new decision", async
   });
   expect(f.items[1]?.input?.prompt).toContain("<untrusted_data>");
   expect(f.items[1]?.input?.prompt).toContain(work.brief);
+  expect(
+    await f.runNext(session.id, [
+      async (messages) => {
+        expect(
+          messages
+            .filter((message) => message.role === "system")
+            .map((message) => message.content)
+            .join("\n"),
+        ).toContain(workerInstructions);
+        return done;
+      },
+    ]),
+  ).toMatchObject({ status: "completed" });
+  await f.ingest(trigger("2"));
+  expect(
+    await f.runNext((await f.router()).id, [
+      async (messages) => {
+        expect(
+          messages
+            .filter((message) => message.role === "system")
+            .map((message) => message.content)
+            .join("\n"),
+        ).toContain(routerInstructions);
+        return done;
+      },
+    ]),
+  ).toMatchObject({ status: "completed" });
 });
 
 it("creates a Suggestion for non-explicit work and accepts it exactly once", async () => {
@@ -153,6 +196,9 @@ it("steers a subscribed running Worker through the runtime steering handler", as
   const event = trigger("update", { threadId: work.threadIds[0]! });
   await f.ingest(event);
   expect(f.sessions.steer).toHaveBeenCalledTimes(1);
+  expect(f.sessions.steer).toHaveBeenCalledWith(id, {
+    prompt: expect.not.stringContaining(workerInstructions),
+  });
   expect(f.items).toHaveLength(2);
   expect(await f.store.getTrigger(event.id)).toMatchObject({
     disposition: "forwarded",
@@ -257,10 +303,118 @@ it("keeps outbox pending until approval and never executes a rejection", async (
   expect(f.outbox.execute).toHaveBeenCalledTimes(1);
 });
 
+it("validates each send kind and preserves its target and body in the outbox", async () => {
+  const work = await f.createWork();
+  const writes = [
+    {
+      kind: "comment",
+      target: { thread: work.threadIds[0]! },
+      body: { text: "Reply" },
+    },
+    {
+      kind: "label",
+      target: { thread: work.threadIds[0]! },
+      body: { labels: ["bug", "help wanted"] },
+    },
+    { kind: "push", target: {}, body: { branch: "fix" } },
+    {
+      kind: "pull_request",
+      target: {},
+      body: { title: "Fix", body: "Details", head: "fix", base: "main" },
+    },
+  ] as const;
+  const invalid = [
+    { ...writes[0], kind: "unknown" },
+    ...writes.flatMap((input, index) => [
+      { ...input, target: index < 2 ? {} : writes[0].target },
+      { ...input, body: {} },
+      { ...input, body: writes[(index + 1) % writes.length]!.body },
+    ]),
+    { ...writes[1], body: { labels: [1] } },
+    { ...writes[3], body: { title: "Fix", body: "Details", head: "fix" } },
+  ];
+  const id = sessionIdSchema.parse(work.workerSessionId);
+  const session = await f.harness.getSession(id);
+  const { registry } = f.engine.sessionTools(session)!;
+  expect(
+    registry.definitions.find(
+      (tool) => tool.function.name === "superagent_send",
+    ),
+  ).toMatchObject({
+    function: {
+      parameters: {
+        type: "object",
+        properties: { kind: { enum: writes.map((input) => input.kind) } },
+      },
+    },
+  });
+  for (const input of invalid) {
+    expect(
+      await registry.execute(
+        {
+          id: "send",
+          type: "function",
+          function: {
+            name: "superagent_send",
+            arguments: JSON.stringify(input),
+          },
+        },
+        {
+          sessionId: id,
+          toolCallId: "send",
+          workspace: session.workspace,
+          permission: "workspace",
+          signal: new AbortController().signal,
+          approve: async () => false,
+          onEvent: () => {},
+        },
+      ),
+    ).toMatchObject({ isError: true });
+  }
+  await registry.dispose();
+  const result = await f.runNext(id, [
+    ...writes.map((input) => call("superagent_send", input)),
+  ]);
+  expect(result.status).toBe("completed");
+  const items = await f.store.listOutbox();
+  expect(items).toHaveLength(writes.length);
+  for (const input of writes) {
+    const item = items.find((item) => item.kind === input.kind)!;
+    expect(item).toMatchObject({ ...input, workId: work.id, state: "pending" });
+    expect(await f.store.getOutboxItem(item.id)).toEqual(item);
+  }
+  const comment = items.find((item) => item.kind === "comment")!;
+  expect(comment.target.thread).toBe(work.threadIds[0]);
+  expect(comment.body.text).toBe("Reply");
+  const label = items.find((item) => item.kind === "label")!;
+  expect(label.body.labels).toEqual(writes[1].body.labels);
+  expect(items.find((item) => item.kind === "push")!.body.branch).toBe("fix");
+  expect(items.find((item) => item.kind === "pull_request")!.body.head).toBe(
+    "fix",
+  );
+  for (const input of invalid) {
+    await expect(
+      f.store.createOutboxItem({ ...input, workId: work.id } as never),
+    ).rejects.toThrow();
+    await expect(
+      f.store.updateOutboxItem(comment.id, {
+        ...input,
+        workId: work.id,
+      } as never),
+    ).rejects.toThrow();
+  }
+  expect(await f.store.getOutboxItem(comment.id)).toEqual(comment);
+  expect(f.outbox.execute).not.toHaveBeenCalled();
+});
+
 it("records outbox execution failure without replaying it on start", async () => {
   const work = await f.createWork();
   await f.runNext(sessionIdSchema.parse(work.workerSessionId), [
-    call("superagent_send", { kind: "comment", target: {}, body: "Reply" }),
+    call("superagent_send", {
+      kind: "comment",
+      target: { thread: work.threadIds[0] },
+      body: { text: "Reply" },
+    }),
   ]);
   const item = (await f.store.listOutbox())[0]!;
   f.outbox.execute.mockRejectedValue(
@@ -435,8 +589,8 @@ it("does not process deliveries or execute approved outbox items on restart", as
   const item = await f.store.createOutboxItem({
     workId: work.id,
     kind: "comment",
-    target: {},
-    body: "Reply",
+    target: { thread: work.threadIds[0]! },
+    body: { text: "Reply" },
   });
   await f.store.decideOutbox(item.id, true);
   const count = f.items.length;

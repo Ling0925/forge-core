@@ -1,4 +1,3 @@
-export type { WorkItemStore } from "../shared";
 export {
   createSuperAgent,
   type SuperAgentDeps,

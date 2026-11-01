@@ -3,8 +3,9 @@ import {
   type LocalToolRegistry,
   defineTool,
   invalidToolInput,
-  jsonValueSchema,
+  outboxKindSchema,
   recoverToolInputError,
+  superAgentSendSchema,
 } from "../shared";
 
 const ids = z.array(z.string().min(1));
@@ -39,9 +40,23 @@ const report = z
   .strict();
 const follow = z.object({ thread: z.string() }).strict();
 const handback = z.object({ triggers: ids, reason: z.string() }).strict();
+// Tool definitions require an object root; the shared union checks kind/shape pairs.
 const send = z
-  .object({ kind: z.string(), target: jsonValueSchema, body: jsonValueSchema })
-  .strict();
+  .object({
+    kind: outboxKindSchema,
+    target: z.union([
+      superAgentSendSchema.options[0].shape.target,
+      superAgentSendSchema.options[2].shape.target,
+    ]),
+    body: z.union([
+      superAgentSendSchema.options[0].shape.body,
+      superAgentSendSchema.options[1].shape.body,
+      superAgentSendSchema.options[2].shape.body,
+      superAgentSendSchema.options[3].shape.body,
+    ]),
+  })
+  .strict()
+  .transform((input) => superAgentSendSchema.parse(input));
 
 interface SuperAgentToolActions {
   read(input: z.infer<typeof read>): Promise<unknown>;
@@ -51,7 +66,7 @@ interface SuperAgentToolActions {
   follow(input: z.infer<typeof follow>): Promise<unknown>;
   unfollow(input: z.infer<typeof follow>): Promise<unknown>;
   handback(input: z.infer<typeof handback>): Promise<unknown>;
-  send(input: z.infer<typeof send>): Promise<unknown>;
+  send(input: z.infer<typeof superAgentSendSchema>): Promise<unknown>;
 }
 
 export function createSuperAgentTools(
@@ -61,7 +76,7 @@ export function createSuperAgentTools(
   const tool = <T>(
     name: string,
     description: string,
-    schema: z.ZodType<T>,
+    schema: z.ZodType<T, z.ZodTypeDef, unknown>,
     execute: (input: T) => Promise<unknown>,
   ) => ({
     definition: defineTool(name, description, schema),

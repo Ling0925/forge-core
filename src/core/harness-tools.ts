@@ -130,7 +130,7 @@ export const createHarnessTools = (deps: HarnessToolDeps) => {
     session?: SessionSnapshot,
   ) => {
     let local: LocalToolRegistry | undefined;
-    let sessionTools: LocalToolRegistry | undefined;
+    let sessionTools: ReturnType<NonNullable<HarnessOptions["sessionTools"]>>;
     let context: Awaited<ReturnType<typeof createProjectContext>> | undefined;
     let extensions: Awaited<ReturnType<typeof plugins.createTools>> | undefined;
     try {
@@ -155,7 +155,7 @@ export const createHarnessTools = (deps: HarnessToolDeps) => {
       sessionTools = session ? options.sessionTools?.(session) : undefined;
       const combined = createCombinedToolRegistry(
         local,
-        ...(sessionTools ? [sessionTools] : []),
+        ...(sessionTools ? [sessionTools.registry] : []),
         ...(!options.toolFactory
           ? [
               await createPublishedFileTool(workspace, publishedFiles, {
@@ -187,7 +187,11 @@ export const createHarnessTools = (deps: HarnessToolDeps) => {
       }
       let accessReleased = false;
       return {
-        instructions: [context.getSystemContext(), extensions?.instructions]
+        instructions: [
+          context.getSystemContext(),
+          extensions?.instructions,
+          sessionTools?.instructions,
+        ]
           .filter(Boolean)
           .join("\n\n"),
         tools: {
@@ -220,7 +224,7 @@ export const createHarnessTools = (deps: HarnessToolDeps) => {
     } catch (error) {
       await Promise.allSettled([
         local?.dispose(),
-        sessionTools?.dispose(),
+        sessionTools?.registry.dispose(),
         extensions?.registry.dispose(),
         context?.dispose(),
       ]);

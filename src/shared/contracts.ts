@@ -290,7 +290,7 @@ export interface HarnessOptions {
   readonly toolFactory?: ToolFactory;
   readonly sessionTools?: (
     session: SessionSnapshot,
-  ) => LocalToolRegistry | undefined;
+  ) => { registry: LocalToolRegistry; instructions: string } | undefined;
   readonly canReadSession?: (
     reader: SessionSnapshot,
     sessionId: SessionId,
