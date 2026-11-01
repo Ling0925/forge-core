@@ -62,6 +62,7 @@ export function createSuperAgent(deps: SuperAgentDeps) {
     deps;
   let operations: Promise<unknown> = Promise.resolve();
   let catchUp: { at: string; error: string } | undefined;
+  let boardEvents: { at: string; error: string } | undefined;
   const serial = <T>(action: () => Promise<T>): Promise<T> => {
     const operation = operations.then(action);
     operations = operation.then(
@@ -399,6 +400,7 @@ export function createSuperAgent(deps: SuperAgentDeps) {
         routerSessionId:
           (await store.getCursor(routerKey(current.workspace))) ?? null,
         ...(catchUp ? { catchUp } : {}),
+        ...(boardEvents ? { boardEvents } : {}),
       };
     },
     reportCatchUpFailure(error: unknown) {
@@ -407,6 +409,17 @@ export function createSuperAgent(deps: SuperAgentDeps) {
         error: toErrorInfo(error).message,
       };
       events.emit({ type: "superagent_catch_up", catchUp });
+    },
+    reportBoardEventsFailure(error: unknown) {
+      boardEvents = {
+        at: new Date().toISOString(),
+        error: toErrorInfo(
+          error instanceof Error && !(error instanceof ForgeError)
+            ? new ForgeError("storage", error.message)
+            : error,
+        ).message,
+      };
+      events.emit({ type: "superagent_board_events", boardEvents });
     },
     listSuperAgentTriggers: (
       query?: Parameters<SuperAgentStore["listTriggers"]>[0],
@@ -467,30 +480,28 @@ export function createSuperAgent(deps: SuperAgentDeps) {
       }),
     stopWorkItem,
     async workChanged(id: string) {
-      const stopped = await serial(async () => {
-        const work = publishWork(await requireWork(id));
-        if (work.status === "stopped") return work;
-        if (
-          work.status === "running" &&
-          work.pendingStatus === null &&
-          (!work.workerSessionId ||
-            !(await busy(sessionIdSchema.parse(work.workerSessionId))))
-        ) {
-          await launchWorker(work);
-          return;
-        }
+      const work = await serial(async () => publishWork(await requireWork(id)));
+      // Cancellation joins Worker tool calls that may be waiting on this queue.
+      if (work.status === "stopped") await haltWorker(work);
+      await serial(async () => {
         await enqueue(
           sessionIdSchema.parse(work.routerSessionId),
           `Work item changed:\n${untrustedData(work)}`,
         );
         await drainWorkers();
       });
-      if (stopped) {
-        // Cancellation joins Worker tool calls that may be waiting on this queue.
-        await haltWorker(stopped);
-        await serial(drainWorkers);
-      }
     },
+    workClaimApproved: (id: string) =>
+      serial(async () => {
+        const work = publishWork(await requireWork(id));
+        if (
+          work.status === "running" &&
+          work.pendingStatus === null &&
+          (!work.workerSessionId ||
+            !(await busy(sessionIdSchema.parse(work.workerSessionId))))
+        )
+          await launchWorker(work);
+      }),
     resumeWorkItem: (id: string) =>
       serial(async () => {
         const work = await requireWork(id);

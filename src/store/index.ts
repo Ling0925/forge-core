@@ -1,3 +1,5 @@
+export { createBoardWorkItemStore } from "./board";
+export { boardApprovalSchema, createBoardClient } from "./board-api";
 export {
   type CheckpointStore,
   createCheckpointStore,

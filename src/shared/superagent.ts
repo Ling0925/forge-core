@@ -280,6 +280,10 @@ const catchUpSchema = z
   .object({ at: timestampSchema, error: z.string() })
   .strict()
   .readonly();
+const boardEventsSchema = z
+  .object({ at: timestampSchema, error: z.string() })
+  .strict()
+  .readonly();
 
 export const superAgentEventSchema = z.discriminatedUnion("type", [
   z
@@ -303,6 +307,12 @@ export const superAgentEventSchema = z.discriminatedUnion("type", [
       catchUp: catchUpSchema,
     })
     .strict(),
+  z
+    .object({
+      type: z.literal("superagent_board_events"),
+      boardEvents: boardEventsSchema,
+    })
+    .strict(),
 ]);
 export type SuperAgentEvent = z.infer<typeof superAgentEventSchema>;
 
@@ -312,6 +322,7 @@ export const superAgentStateSchema = z
     workspace: z.string(),
     routerSessionId: z.string().nullable(),
     catchUp: catchUpSchema.optional(),
+    boardEvents: boardEventsSchema.optional(),
   })
   .strict()
   .readonly();

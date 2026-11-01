@@ -2,3 +2,4 @@ allowBuilds:
   '@biomejs/biome': true
   agent-browser: false
   esbuild: true
+  forge-board@https://codeload.github.com/Ling0925/forge-board/tar.gz/c510ad697104fdbf2126c0e9a638768c9b703904: true

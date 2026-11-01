@@ -152,6 +152,7 @@
     "@types/ws": "^8.18.2",
     "agent-browser-dev": "npm:agent-browser@0.39.2",
     "esbuild": "^0.25.3",
+    "forge-board": "github:Ling0925/forge-board#c510ad697104fdbf2126c0e9a638768c9b703904",
     "playwright": "^1.51.1",
     "typescript": "^5.8.3",
     "vitest": "^3.1.2"

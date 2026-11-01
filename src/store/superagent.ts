@@ -177,10 +177,10 @@ export async function openSuperAgentStore(directory: string) {
       }
     });
   const getWork = (db: DatabaseSync, id: string) => {
-    const row = db.prepare("SELECT * FROM work_items WHERE id = ?").get(id);
-    return row
-      ? decode(workItemSchema, { ...row, pending_status: null })
-      : undefined;
+    const row = db
+      .prepare("SELECT *, NULL AS pending_status FROM work_items WHERE id = ?")
+      .get(id);
+    return row ? decode(workItemSchema, row) : undefined;
   };
   const requireWork = (db: DatabaseSync, id: string) => {
     const item = getWork(db, id);
@@ -302,12 +302,10 @@ export async function openSuperAgentStore(directory: string) {
           : "";
         return db
           .prepare(
-            `SELECT w.* FROM work_items w ${where} ORDER BY created_at, id`,
+            `SELECT w.*, NULL AS pending_status FROM work_items w ${where} ORDER BY created_at, id`,
           )
           .all(...params)
-          .map((row) =>
-            decode(workItemSchema, { ...row, pending_status: null }),
-          );
+          .map((row) => decode(workItemSchema, row));
       });
     },
   };

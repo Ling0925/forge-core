@@ -101,9 +101,9 @@ it("launches an approved claim without claiming again and serializes concurrent 
       await release.promise;
       return create(input);
     });
-  const first = f.engine.workChanged(work.id);
+  const first = f.engine.workClaimApproved(work.id);
   await entered.promise;
-  const second = f.engine.workChanged(work.id);
+  const second = f.engine.workClaimApproved(work.id);
   release.resolve();
   await Promise.all([first, second]);
   expect(claim).not.toHaveBeenCalled();
@@ -118,10 +118,9 @@ it("launches an approved claim without claiming again and serializes concurrent 
     f.items.filter((item) => item.sessionId === launched.workerSessionId),
   ).toHaveLength(1);
   expect(f.events).toContainEqual({ type: "superagent_work", work: approved });
-  expect(f.items.at(-1)).toMatchObject({ sessionId: work.routerSessionId });
 });
 
-it("reuses an idle Worker for running work with no pending approval", async () => {
+it("reports a running item's change without relaunching its settled Worker", async () => {
   const work = await f.createWork();
   const id = sessionIdSchema.parse(work.workerSessionId);
   await f.runNext(id);
@@ -133,10 +132,13 @@ it("reuses an idle Worker for running work with no pending approval", async () =
   await f.engine.workChanged(work.id);
   expect(claim).not.toHaveBeenCalled();
   expect(create).not.toHaveBeenCalled();
-  expect(pause).toHaveBeenCalledWith(id);
-  expect(resume).toHaveBeenCalledWith(id);
+  expect(pause).not.toHaveBeenCalled();
+  expect(resume).not.toHaveBeenCalled();
   expect(f.items).toHaveLength(count + 1);
-  expect(f.items.at(-1)).toMatchObject({ sessionId: id, state: "queued" });
+  expect(f.items.at(-1)).toMatchObject({
+    sessionId: work.routerSessionId,
+    state: "queued",
+  });
 });
 
 it.each(["queued", "running"] as const)(
@@ -246,6 +248,8 @@ it("halts externally stopped work without writing it and cancels pending Worker 
   expect(update).not.toHaveBeenCalled();
   expect(await f.engine.getWorkItem(work.id)).toEqual(stopped);
   expect(f.events).toContainEqual({ type: "superagent_work", work: stopped });
+  expect(f.items.at(-1)).toMatchObject({ sessionId: work.routerSessionId });
+  expect(f.items.at(-1)?.input?.prompt).toContain('"status":"stopped"');
 });
 
 it("handles stopped work without a Worker and preserves launch failure classification", async () => {
@@ -257,7 +261,7 @@ it("handles stopped work without a Worker and preserves launch failure classific
   await f.store.workItems.update(work.id, { status: "running" });
   const failure = new ForgeError("tool", "Worker creation failed.");
   vi.spyOn(f.harness, "createSessionWithProfile").mockRejectedValue(failure);
-  await expect(f.engine.workChanged(work.id)).rejects.toBe(failure);
+  await expect(f.engine.workClaimApproved(work.id)).rejects.toBe(failure);
   expect(await f.engine.getWorkItem(work.id)).toMatchObject({
     status: "failed",
     progress: failure.message,
