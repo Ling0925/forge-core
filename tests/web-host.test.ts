@@ -1,5 +1,12 @@
 import { randomUUID } from "node:crypto";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import {
+  mkdir,
+  mkdtemp,
+  readFile,
+  rm,
+  symlink,
+  writeFile,
+} from "node:fs/promises";
 import { request } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -39,6 +46,7 @@ import { WebSocket } from "ws";
 import { z } from "zod";
 import { createHarness } from "../src/core/harness";
 import { type RunEvent, runEventSchema } from "../src/shared/ipc";
+import { openSessionStore } from "../src/store/sessions";
 import { createWebHost } from "../src/web/server";
 import { image } from "./fixtures/image";
 
@@ -76,7 +84,7 @@ async function connectEvents(
   return { ws, received, cursors };
 }
 
-async function setup(restrictWorkspace = true) {
+async function setup(restrictWorkspace = true, symlinkWorkspace = false) {
   const directory = await mkdtemp(join(tmpdir(), "forge-web-test-"));
   cleanup.push(() => rm(directory, { recursive: true, force: true }));
   const service = await createHarness({
@@ -142,9 +150,13 @@ async function setup(restrictWorkspace = true) {
     settings: { baseUrl: "http://localhost:1234/v1", model: "test-model" },
   });
   // Host is deliberately fixed; listen(0) below keeps tests independent of port availability.
+  const launchWorkspace = symlinkWorkspace
+    ? join(directory, "launch")
+    : directory;
+  if (symlinkWorkspace) await symlink(directory, launchWorkspace);
   const web = await createWebHost({
     service,
-    workspace: directory,
+    workspace: launchWorkspace,
     host: "127.0.0.1",
     port: 5173,
     restrictWorkspace,
@@ -178,10 +190,118 @@ async function setup(restrictWorkspace = true) {
       "X-Forge-Client": data.clientId as string,
     };
   }
-  return { web, service, directory, url, headers, login };
+  return { web, service, directory, launchWorkspace, url, headers, login };
 }
 
 describe("Web host with default personal LAN direct access", () => {
+  it.each([false, true])(
+    "includes owned worktree sessions and runs while rejecting foreign ownership (legacy: %s)",
+    async (legacy) => {
+      const { web, service, directory, url, login } = await setup();
+      const worktree = join(directory, "state-worktrees", "worker");
+      const other = join(directory, "other-workspace");
+      await mkdir(worktree, { recursive: true });
+      await mkdir(other);
+      const store = await openSessionStore(join(directory, "state"));
+      const worker = await store.create({
+        workspace: directory,
+        title: "Worker",
+        model: "test-model",
+        agentRole: { kind: "worker", ownerId: "work-item" },
+      });
+      await store.save({
+        ...worker,
+        workspace: worktree,
+        agentWorktree: {
+          repository: directory,
+          worktree,
+          baseRevision: "a".repeat(40),
+        },
+      });
+      const foreign = await service.createSession({ workspace: other });
+      await store.save({ ...foreign, workspace: directory });
+      if (legacy) {
+        const path = join(directory, "state", "sessions", `${worker.id}.json`);
+        const snapshot = {
+          ...(await store.get(worker.id)),
+          originWorkspace: undefined,
+        };
+        await writeFile(path, JSON.stringify(snapshot));
+      }
+      const auth = await login();
+      const rpc = (data: object) =>
+        fetch(`${url}/api/rpc`, {
+          method: "POST",
+          headers: auth,
+          body: JSON.stringify({ id: randomUUID(), ...data }),
+        });
+      const listed = await (await rpc({ method: "listSessions" })).json();
+      expect(
+        listed.result.map((session: { id: string }) => session.id),
+      ).toEqual([worker.id]);
+      const read = await rpc({ method: "getSession", sessionId: worker.id });
+      expect(read.status).toBe(200);
+      expect((await read.json()).result).toMatchObject({
+        workspace: worktree,
+        originWorkspace: directory,
+      });
+      expect(
+        (await rpc({ method: "getSession", sessionId: foreign.id })).status,
+      ).toBe(403);
+      expect(
+        (await rpc({ method: "createSession", input: { workspace: other } }))
+          .status,
+      ).toBe(403);
+      for (const session of [worker, foreign]) {
+        const started = await web.runtime.request({
+          id: randomUUID(),
+          method: "startRun",
+          input: {
+            sessionId: session.id,
+            prompt: "wait for cancellation",
+            permission: "readonly",
+          },
+        });
+        expect(started.ok).toBe(true);
+      }
+      const state = await (await rpc({ method: "getHostState" })).json();
+      expect(
+        state.result.runs.map((run: { sessionId: string }) => run.sessionId),
+      ).toEqual([worker.id]);
+    },
+  );
+
+  it.each([false, true])(
+    "lists sessions through a symlinked launch workspace (legacy: %s)",
+    async (legacy) => {
+      const { service, directory, launchWorkspace, url, login } = await setup(
+        true,
+        true,
+      );
+      const session = await service.createSession({
+        workspace: launchWorkspace,
+      });
+      expect(session.workspace).toBe(directory);
+      const summary = (await service.listSessions())[0]!;
+      vi.spyOn(service, "listSessions").mockResolvedValue([
+        {
+          ...summary,
+          workspace: launchWorkspace,
+          originWorkspace: legacy ? undefined : launchWorkspace,
+        },
+      ]);
+      const response = await fetch(`${url}/api/rpc`, {
+        method: "POST",
+        headers: await login(),
+        body: JSON.stringify({ id: randomUUID(), method: "listSessions" }),
+      });
+      expect(response.status).toBe(200);
+      expect(
+        (await response.json()).result.map((item: { id: string }) => item.id),
+      ).toEqual([session.id]);
+    },
+  );
+
   it("cancels request-scoped compaction when the HTTP caller disconnects", async () => {
     const { service, directory, url, login } = await setup();
     const auth = await login();

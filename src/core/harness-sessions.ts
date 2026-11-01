@@ -11,6 +11,7 @@ import {
   type SessionStore,
   createProfileSessionInputSchema,
   narrowestPermission,
+  sessionOriginWorkspace,
   settingsFields,
 } from "../shared";
 
@@ -88,6 +89,7 @@ export const forkSessionSnapshot = async (
   }
   const fork = await store.create({
     workspace: source.workspace,
+    originWorkspace: sessionOriginWorkspace(source),
     title: `Fork: ${source.title}`.slice(0, 256),
     model: source.model,
     ...(source.providerSourceId

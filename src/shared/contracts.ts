@@ -141,6 +141,7 @@ export interface SessionStore {
   create(
     input: Readonly<{
       workspace: string;
+      originWorkspace?: string;
       title: string;
       model: string;
       providerSourceId?: string;

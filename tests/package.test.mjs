@@ -44,13 +44,60 @@ test("package exports resolve every module barrel from dist", async () => {
   assert.equal(createHarness, (await import("@forge/core")).createHarness);
 });
 
+test("built module entries expose the client integration API", async () => {
+  const entries = {
+    shared: [
+      "MAX_IMAGES",
+      "PUBLISHED_HTML_PREVIEW_MAX_BYTES",
+      "PUBLISHED_PREVIEW_MAX_BYTES",
+      "SLASH_COMMANDS",
+      "advanceContextDisplay",
+      "browserImageSchema",
+      "compactTokens",
+      "contextDisplayLabel",
+      "createSlashActions",
+      "emptyContextDisplay",
+      "executionLabel",
+      "imageAttachmentsSchema",
+      "isHtmlLanguage",
+      "isPrimarySession",
+      "matchSlashCommands",
+      "parseSlashCommand",
+      "publishedFilesSchema",
+      "publishesPublishedFiles",
+      "reasoningEffortSchema",
+      "replayContextDisplay",
+      "sessionDeltaSchema",
+      "sessionOriginWorkspace",
+      "workspaceDirectoryPageSchema",
+      "accountPlatformSchema",
+      "editScript",
+    ],
+    host: ["hostError"],
+    core: ["projectSummary"],
+    store: ["openPromptHistory", "historyEligible"],
+  };
+  for (const [module, names] of Object.entries(entries)) {
+    const entry = await import(`@forge/core/${module}`);
+    for (const name of names)
+      assert.notEqual(entry[name], undefined, `${module}.${name}`);
+  }
+});
+
 test("package exports reject private implementation paths", async () => {
-  assert.throws(() => import.meta.resolve("@forge/core/store/io"), {
-    code: "ERR_PACKAGE_PATH_NOT_EXPORTED",
-  });
-  await assert.rejects(import("@forge/core/store/io"), {
-    code: "ERR_PACKAGE_PATH_NOT_EXPORTED",
-  });
+  for (const path of [
+    "@forge/core/store/io",
+    "@forge/core/shared/slash-commands",
+    "@forge/core/host/errors",
+    "@forge/core/store/prompt-history",
+  ]) {
+    assert.throws(() => import.meta.resolve(path), {
+      code: "ERR_PACKAGE_PATH_NOT_EXPORTED",
+    });
+    await assert.rejects(import(path), {
+      code: "ERR_PACKAGE_PATH_NOT_EXPORTED",
+    });
+  }
 });
 
 async function runNode(args, directory, env = {}) {

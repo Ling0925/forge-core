@@ -152,8 +152,13 @@ it("creates a top-level session with a frozen profile and the existing worktree 
     permissionCeiling: "workspace",
     agentRole: { kind: "worker", ownerId: "owner" },
     agentWorktree: { repository: workspace, baseRevision: head },
+    originWorkspace: workspace,
   });
   expect(session.workspace).toBe(session.agentWorktree?.worktree);
+  const fork = await service.forkSession(session.id);
+  expect(fork.workspace).toBe(session.workspace);
+  expect(fork.originWorkspace).toBe(workspace);
+  expect((await service.getSession(fork.id)).originWorkspace).toBe(workspace);
   expect(await readFile(join(session.workspace, "tracked.txt"), "utf8")).toBe(
     "committed",
   );
@@ -179,6 +184,7 @@ it("creates a top-level session with a frozen profile and the existing worktree 
     isolation: "shared",
   });
   expect(inherited.workspace).toBe(workspace);
+  expect(inherited.originWorkspace).toBe(workspace);
   expect(inherited.model).toBe("fixture");
   expect(inherited.agentWorktree).toBeUndefined();
   await expect(
@@ -225,6 +231,17 @@ it("keeps role metadata immutable in both snapshot and incremental writes and re
     }),
   ).rejects.toMatchObject({ code: "invalid_input" });
   const ordinary = await service.createSession({ workspace });
+  expect(ordinary.originWorkspace).toBe(workspace);
+  await expect(
+    service.createSession({ workspace, originWorkspace: directory } as never),
+  ).rejects.toThrow();
+  await expect(
+    service.createSessionWithProfile({
+      workspace,
+      profileId: profile.id,
+      originWorkspace: directory,
+    } as never),
+  ).rejects.toThrow();
   await expect(
     store.save({
       ...ordinary,

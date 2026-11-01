@@ -33,6 +33,7 @@ const summaryFields = {
   id: sessionIdSchema,
   title: sessionTitleSchema,
   workspace: z.string().min(1).max(4096),
+  originWorkspace: z.string().min(1).max(4096).optional(),
   model: settingsFields.model,
   createdAt: timestampSchema,
   providerSourceId: providerSourceIdSchema.optional(),

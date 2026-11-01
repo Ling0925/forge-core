@@ -99,6 +99,7 @@ it("runs signed GitHub work through Router, Worker, suggestions and approved out
     )!;
     expect(worker.agentRole?.kind).toBe("worker");
     expect(worker.workspace).not.toBe(f.workspace);
+    expect(worker.originWorkspace).toBe(f.workspace);
     await vi.waitFor(() =>
       expect(
         events.some(

@@ -54,6 +54,7 @@ export {
   chartFence,
   chartFenceBody,
   chartRawSchema,
+  type ChartSpec,
   type ChartValidation,
   parseChartFence,
   type RawJson,
@@ -72,6 +73,12 @@ export {
   isSensitivePath,
   redactMemoryText,
 } from "./content-safety";
+export {
+  advanceContextDisplay,
+  contextDisplayLabel,
+  emptyContextDisplay,
+  replayContextDisplay,
+} from "./context-display";
 export {
   budgetUsage,
   type ContextBudget,
@@ -123,6 +130,7 @@ export {
   MAX_PATCH_BYTES,
   unavailablePatch,
 } from "./diff";
+export { type EditOp, type EditStep, editScript } from "./edit-script";
 export {
   ForgeError,
   formatValidationError,
@@ -135,7 +143,11 @@ export {
   providerRetryReason,
   toErrorInfo,
 } from "./errors";
-export { executionTurns } from "./execution";
+export {
+  type ExecutionTurn,
+  executionLabel,
+  executionTurns,
+} from "./execution";
 export { MAX_EDITABLE_FILE_BYTES } from "./file-limits";
 export {
   BASELINE_HARNESS_STRATEGY,
@@ -169,11 +181,16 @@ export {
   HTML_PREVIEW_MAX_BYTES,
   htmlPreviewRequestSchema,
   htmlPreviewResponseSchema,
+  type HtmlPreviewResponse,
+  isHtmlLanguage,
   isHtmlPath,
 } from "./html-preview";
 export {
+  type ImageAttachment,
   imageAttachmentSchema,
+  imageAttachmentsSchema,
   MAX_IMAGE_BYTES,
+  MAX_IMAGES,
 } from "./images";
 export {
   enqueueInputSchema,
@@ -300,6 +317,7 @@ export {
   updateMemorySchema,
 } from "./memory";
 export {
+  accountPlatformSchema,
   type AccountTokens,
   accountTokensSchema,
   connectionInputSchema,
@@ -313,6 +331,9 @@ export {
   type ProviderAttempt,
   providerHeadersSchema,
   type ProviderProtocol,
+  type PublicAccountLogin,
+  type PublicProviderPreset,
+  reasoningEffortSchema,
   type RouteGroup,
   routeGroupSchema,
   type RouteMember,
@@ -357,6 +378,7 @@ export {
   type BrowserCommandResult,
   browserCommandResultSchema,
   browserCommandSchema,
+  browserImageSchema,
   type BrowserPluginConfig,
   browserPluginConfigSchema,
   type BrowserRequest,
@@ -391,6 +413,8 @@ export {
   PUBLISHED_FILE_MAX_BASE64_BYTES,
   PUBLISHED_FILE_MAX_BYTES,
   PUBLISHED_FILE_MAX_MIB,
+  PUBLISHED_HTML_PREVIEW_MAX_BYTES,
+  PUBLISHED_PREVIEW_MAX_BYTES,
   PUBLISHED_SESSION_MAX_BYTES,
   PUBLISHED_SESSION_MAX_FILES,
   type PublishedFile,
@@ -399,6 +423,8 @@ export {
   type PublishedFileResponse,
   publishedFileResponseSchema,
   publishedFileSchema,
+  publishedFilesSchema,
+  publishesPublishedFiles,
 } from "./published-files";
 export {
   type RootBudgetSnapshot,
@@ -500,13 +526,25 @@ export {
 export {
   applySessionDelta,
   type SessionDelta,
+  sessionDeltaSchema,
 } from "./session-delta";
 export {
   paginateSession,
+  type SessionPage,
+  type SessionPageInfo,
   sessionPageRequestSchema,
   sessionPageSchema,
+  type TranscriptSnapshot,
 } from "./session-page";
-export { sessionReviewInput } from "./session-review";
+export { type SessionReviewInput, sessionReviewInput } from "./session-review";
+export { isPrimarySession, sessionOriginWorkspace } from "./sessions";
+export { createSlashActions } from "./slash-actions";
+export {
+  SLASH_COMMANDS,
+  type SlashCommand,
+  matchSlashCommands,
+  parseSlashCommand,
+} from "./slash-commands";
 export {
   type Trigger,
   triggerSchema,
@@ -548,14 +586,17 @@ export type {
 } from "./session-store";
 export {
   appendSessionEvent,
+  compactTokens,
   seedSessionUsage,
   sessionUsage,
+  type SessionUsageState,
   sessionUsageStateSchema,
   summarizeUsageState,
 } from "./session-usage";
 export type {
   CommandTaskAccess,
   TaskDetail,
+  TaskPage,
   TaskService,
   TaskView,
 } from "./task-view";
@@ -617,4 +658,5 @@ export {
   WORKSPACE_DIRECTORY_LIMIT,
   workspaceBrowseRequestSchema,
   type WorkspaceDirectoryPage,
+  workspaceDirectoryPageSchema,
 } from "./workspaces";

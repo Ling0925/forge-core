@@ -25,6 +25,7 @@ import {
   paginateSession,
   pairingExchangeSchema,
   rpcRequestSchema,
+  sessionOriginWorkspace,
   workspaceBrowseRequestSchema,
 } from "../shared";
 
@@ -403,6 +404,12 @@ export async function createWebHost(
       return false;
     }
   };
+  const belongsToWorkspace = (
+    session: Pick<
+      SessionSnapshot,
+      "workspace" | "originWorkspace" | "agentWorktree"
+    >,
+  ): Promise<boolean> => inWorkspace(sessionOriginWorkspace(session));
 
   async function handle(
     request: IncomingMessage,
@@ -677,7 +684,7 @@ export async function createWebHost(
                 error: "The session could not be authorized",
               });
             authorizedSnapshot = session;
-            if (!(await inWorkspace(session.workspace)))
+            if (!(await belongsToWorkspace(session)))
               return json(response, 403, {
                 error: "Session belongs to another workspace",
               });
@@ -765,7 +772,7 @@ export async function createWebHost(
           const visible = await Promise.all(
             result.result.runs.map(async (run) => {
               const session = await snapshotOf(run.sessionId);
-              return session && (await inWorkspace(session.workspace))
+              return session && (await belongsToWorkspace(session))
                 ? run
                 : undefined;
             }),
@@ -780,11 +787,12 @@ export async function createWebHost(
           result.method === "listSessions" &&
           restrictWorkspace
         ) {
+          const visible = await Promise.all(
+            result.result.map(belongsToWorkspace),
+          );
           return json(response, 200, {
             ...result,
-            result: result.result.filter(
-              (session) => resolve(session.workspace) === workspace,
-            ),
+            result: result.result.filter((_session, index) => visible[index]),
           });
         }
         return json(response, 200, result);

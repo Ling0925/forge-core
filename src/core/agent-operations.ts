@@ -18,6 +18,7 @@ import {
   agentProfileIdSchema,
   providerSourceIdSchema,
   sessionIdSchema,
+  sessionOriginWorkspace,
   settingsFields,
 } from "../shared";
 
@@ -585,6 +586,7 @@ export async function executeAgentOperation(
         deps,
         {
           workspace: snapshot.workspace,
+          originWorkspace: sessionOriginWorkspace(snapshot),
           title: parsed.task.slice(0, 256),
           model,
           ...(sourceId ? { providerSourceId: sourceId } : {}),

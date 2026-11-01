@@ -4,6 +4,7 @@ import {
   type Message,
   type RecordDelta,
   type SessionSnapshot,
+  sessionOriginWorkspace,
   sessionSnapshotSchema,
 } from "../shared";
 
@@ -42,6 +43,8 @@ function advanceCalls(
 function relationships(snapshot: SessionSnapshot, persisted: boolean) {
   if (
     !isAbsolute(snapshot.workspace) ||
+    (snapshot.originWorkspace !== undefined &&
+      !isAbsolute(snapshot.originWorkspace)) ||
     snapshot.updatedAt < snapshot.createdAt
   )
     invalid(persisted);
@@ -99,6 +102,12 @@ export function validateChange(
     return invalid(persisted);
   if (
     metadata.data.id !== previous.id ||
+    (metadata.data.originWorkspace !== sessionOriginWorkspace(previous) &&
+      !(
+        persisted &&
+        metadata.data.originWorkspace === undefined &&
+        previous.originWorkspace === undefined
+      )) ||
     metadata.data.agentRole?.kind !== previous.agentRole?.kind ||
     metadata.data.agentRole?.ownerId !== previous.agentRole?.ownerId ||
     events.data.some((event) => event.sessionId !== previous.id)

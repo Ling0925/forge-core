@@ -8,6 +8,7 @@ import {
   type SessionId,
   type SessionMutation,
   type SessionSnapshot,
+  sessionOriginWorkspace,
   sessionSummarySchema,
 } from "../shared";
 
@@ -100,6 +101,18 @@ const hash = (value: unknown): string =>
 const same = (a: Stamp | null, b: Stamp | null): boolean =>
   JSON.stringify(a) === JSON.stringify(b);
 
+// Journal hashes must continue to cover the stored snapshot, without derived fields.
+function withOriginWorkspace<T extends SessionMutation["metadata"]>(
+  session: T,
+): T {
+  return session.originWorkspace === undefined
+    ? Object.freeze({
+        ...session,
+        originWorkspace: sessionOriginWorkspace(session),
+      })
+    : session;
+}
+
 async function stamp(path: string, directory = false): Promise<Stamp | null> {
   try {
     const info = await lstat(path);
@@ -171,7 +184,7 @@ export function createSessionJournal(
       events: _events,
       changes: _changes,
       ...metadata
-    } = loaded.snapshot;
+    } = withOriginWorkspace(loaded.snapshot);
     const shape = sessionSummarySchema.unwrap().shape;
     const summary = sessionSummarySchema.parse(
       Object.fromEntries(
@@ -506,11 +519,14 @@ export function createSessionJournal(
   };
   return {
     async get(id: SessionId) {
-      return (await load(id, true)).snapshot;
+      return withOriginWorkspace((await load(id, true)).snapshot);
     },
     async read(id: SessionId) {
       const loaded = await load(id, true);
-      return { revision: revision(loaded), snapshot: loaded.snapshot };
+      return {
+        revision: revision(loaded),
+        snapshot: withOriginWorkspace(loaded.snapshot),
+      };
     },
     async changesSince(id: SessionId, baseRevision: string) {
       const loaded = await load(id, true);
@@ -522,9 +538,15 @@ export function createSessionJournal(
       if (index >= 0)
         return {
           revision: current,
-          changes: loaded.records.slice(index).map((record) => record.change),
+          changes: loaded.records.slice(index).map((record) => ({
+            ...record.change,
+            metadata: withOriginWorkspace(record.change.metadata),
+          })),
         };
-      return { revision: current, snapshot: loaded.snapshot };
+      return {
+        revision: current,
+        snapshot: withOriginWorkspace(loaded.snapshot),
+      };
     },
     async commit(id: SessionId, mutation: SessionMutation) {
       const loaded = await commit(id, mutation);
@@ -559,6 +581,7 @@ export function createSessionJournal(
             : summaryIndexSchema.parse(await readJson(indexPath(id), 65536));
         if (
           index.summary.id === id &&
+          index.summary.originWorkspace !== undefined &&
           same(index.base, await stamp(basePath(id))) &&
           same(
             index.journal,

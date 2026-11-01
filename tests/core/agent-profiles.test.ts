@@ -303,6 +303,52 @@ it("inherits the exact parent selection and keeps a live parent permission gette
   );
 });
 
+it.each(["shared", "worktree"] as const)(
+  "keeps the owning workspace when a worktree parent spawns a %s child",
+  async (isolation) => {
+    const f = await fixture();
+    const parentWorktree = join(f.root.workspace, "parent-worktree");
+    const childWorktree = join(f.root.workspace, "child-worktree");
+    await mkdir(parentWorktree);
+    await mkdir(childWorktree);
+    f.env.snapshot = { ...f.root, workspace: parentWorktree };
+    await f.store.save(f.env.snapshot);
+    f.deps.childToolFactory = async () => empty;
+    f.deps.agentWorktrees = {
+      create: async (input) => {
+        expect(input.workspace).toBe(parentWorktree);
+        return {
+          workspace: childWorktree,
+          worktree: childWorktree,
+          repository: f.root.workspace,
+          baseRevision: "a".repeat(40),
+        };
+      },
+    };
+    f.env.runChild = async (input) => f.store.get(input.sessionId);
+    const started = JSON.parse(
+      (
+        await executeAgentOperation(
+          "spawn_agent",
+          { task: "work", isolation },
+          f.env,
+        )
+      ).content,
+    );
+    await f.env.children.get(started.childSessionId)?.work;
+    const child = await f.store.get(started.childSessionId);
+    expect(child.workspace).toBe(
+      isolation === "worktree" ? childWorktree : parentWorktree,
+    );
+    expect(child.originWorkspace).toBe(f.root.workspace);
+    expect(child.parentSessionId).toBe(f.root.id);
+    expect(
+      (await f.store.list()).find((session) => session.id === child.id)
+        ?.originWorkspace,
+    ).toBe(f.root.workspace);
+  },
+);
+
 it("fails a fixed-source child without silently constructing a fallback", async () => {
   let turn = 0;
   let constructions = 0;
