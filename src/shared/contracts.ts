@@ -155,6 +155,7 @@ export interface SessionStore {
 export interface SettingsStore {
   getPublic(): Promise<PublicSettings>;
   getWebhookSecret(): Promise<string | undefined>;
+  getBoardToken(): Promise<string | undefined>;
   /** Without an id: the active source (legacy top-level settings when none). */
   getProviderConfig(
     sourceId?: string,

@@ -54,7 +54,6 @@ export interface SuperAgentDeps {
 
 const activeStatuses = ["running", "waiting", "ready", "blocked"] as const;
 const routerKey = (workspace: string) => `superagent:router:${workspace}`;
-const workRouterKey = (workId: string) => `superagent:work-router:${workId}`;
 const pendingInput = (state: string) =>
   ["queued", "bound", "blocked", "uncertain"].includes(state);
 
@@ -63,6 +62,7 @@ export function createSuperAgent(deps: SuperAgentDeps) {
     deps;
   let operations: Promise<unknown> = Promise.resolve();
   let catchUp: { at: string; error: string } | undefined;
+  let boardEvents: { at: string; error: string } | undefined;
   const serial = <T>(action: () => Promise<T>): Promise<T> => {
     const operation = operations.then(action);
     operations = operation.then(
@@ -174,12 +174,8 @@ export function createSuperAgent(deps: SuperAgentDeps) {
     const triggers = await store.listTriggers({ threadIds: work.threadIds });
     return `Work item: ${work.id}\nBrief:\n${work.brief}\n\n${untrustedData(await triggerData(triggers))}`;
   };
-  const workRouter = async (workId: string) =>
-    sessionIdSchema.parse(await store.getCursor(workRouterKey(workId)));
-  const startWorker = async (work: WorkItem) => {
-    const routerId = await workRouter(work.id);
-    const claimed = await workItems.claim(work.id, routerId);
-    if (!claimed) return;
+  const launchWorker = async (work: WorkItem) => {
+    const routerId = sessionIdSchema.parse(work.routerSessionId);
     try {
       let id = work.workerSessionId
         ? sessionIdSchema.parse(work.workerSessionId)
@@ -210,6 +206,16 @@ export function createSuperAgent(deps: SuperAgentDeps) {
       throw error;
     }
   };
+  const startWorker = async (work: WorkItem) => {
+    const claimed = await workItems.claim(work.id, work.routerSessionId);
+    if (!claimed) return false;
+    if (claimed.pendingStatus !== null) {
+      publishWork(claimed);
+      return false;
+    }
+    await launchWorker(claimed);
+    return true;
+  };
   const drainWorkers = async () => {
     const current = await config();
     if (!current?.enabled) return;
@@ -224,9 +230,8 @@ export function createSuperAgent(deps: SuperAgentDeps) {
     }
     for (const work of works) {
       if (occupied >= (current.maxWorkers ?? DEFAULT_MAX_ACTIVE_AGENTS)) break;
-      if (work.status !== "queued") continue;
-      await startWorker(work);
-      occupied++;
+      if (work.status !== "queued" || work.pendingStatus !== null) continue;
+      if (await startWorker(work)) occupied++;
     }
   };
   const createWork = async ({
@@ -245,8 +250,8 @@ export function createSuperAgent(deps: SuperAgentDeps) {
       brief,
       threadIds,
       profileId: current.workerProfileId,
+      routerSessionId: routerId,
     });
-    await store.setCursor(workRouterKey(work.id), routerId);
     return publishWork(work);
   };
   const workerOwns = async (sessionId: SessionId, workId: string) => {
@@ -276,12 +281,7 @@ export function createSuperAgent(deps: SuperAgentDeps) {
     }
     return { untrustedData: records };
   };
-  const stopWorkItem = async (id: string, reason: string) => {
-    const work = await serial(async () =>
-      publishWork(
-        await workItems.update(id, { status: "stopped", progress: reason }),
-      ),
-    );
+  const haltWorker = async (work: WorkItem) => {
     if (work.workerSessionId) {
       const sessionId = sessionIdSchema.parse(work.workerSessionId);
       for (const item of (await inputQueue.list(sessionId)).items)
@@ -289,6 +289,14 @@ export function createSuperAgent(deps: SuperAgentDeps) {
           await inputQueue.cancel(sessionId, item.inputId);
       await harness.cancelSession(sessionId);
     }
+  };
+  const stopWorkItem = async (id: string, reason: string) => {
+    const work = await serial(async () =>
+      publishWork(
+        await workItems.update(id, { status: "stopped", progress: reason }),
+      ),
+    );
+    await haltWorker(work);
     await serial(drainWorkers);
     return requireWork(id);
   };
@@ -392,6 +400,7 @@ export function createSuperAgent(deps: SuperAgentDeps) {
         routerSessionId:
           (await store.getCursor(routerKey(current.workspace))) ?? null,
         ...(catchUp ? { catchUp } : {}),
+        ...(boardEvents ? { boardEvents } : {}),
       };
     },
     reportCatchUpFailure(error: unknown) {
@@ -400,6 +409,17 @@ export function createSuperAgent(deps: SuperAgentDeps) {
         error: toErrorInfo(error).message,
       };
       events.emit({ type: "superagent_catch_up", catchUp });
+    },
+    reportBoardEventsFailure(error: unknown) {
+      boardEvents = {
+        at: new Date().toISOString(),
+        error: toErrorInfo(
+          error instanceof Error && !(error instanceof ForgeError)
+            ? new ForgeError("storage", error.message)
+            : error,
+        ).message,
+      };
+      events.emit({ type: "superagent_board_events", boardEvents });
     },
     listSuperAgentTriggers: (
       query?: Parameters<SuperAgentStore["listTriggers"]>[0],
@@ -459,6 +479,29 @@ export function createSuperAgent(deps: SuperAgentDeps) {
         await flushBacklog();
       }),
     stopWorkItem,
+    async workChanged(id: string) {
+      const work = await serial(async () => publishWork(await requireWork(id)));
+      // Cancellation joins Worker tool calls that may be waiting on this queue.
+      if (work.status === "stopped") await haltWorker(work);
+      await serial(async () => {
+        await enqueue(
+          sessionIdSchema.parse(work.routerSessionId),
+          `Work item changed:\n${untrustedData(work)}`,
+        );
+        await drainWorkers();
+      });
+    },
+    workClaimApproved: (id: string) =>
+      serial(async () => {
+        const work = publishWork(await requireWork(id));
+        if (
+          work.status === "running" &&
+          work.pendingStatus === null &&
+          (!work.workerSessionId ||
+            !(await busy(sessionIdSchema.parse(work.workerSessionId))))
+        )
+          await launchWorker(work);
+      }),
     resumeWorkItem: (id: string) =>
       serial(async () => {
         const work = await requireWork(id);
@@ -517,7 +560,7 @@ export function createSuperAgent(deps: SuperAgentDeps) {
       if (reader.agentRole?.kind === "worker") {
         const work = await workItems.get(reader.agentRole.ownerId);
         if (work?.workerSessionId !== reader.id) return false;
-        return (await store.getCursor(workRouterKey(work.id))) === target;
+        return work.routerSessionId === target;
       }
       if (
         reader.agentRole?.kind !== "router" ||
@@ -528,10 +571,7 @@ export function createSuperAgent(deps: SuperAgentDeps) {
       const work = (await workItems.list()).find(
         (item) => item.workerSessionId === target,
       );
-      return (
-        work !== undefined &&
-        (await store.getCursor(workRouterKey(work.id))) === reader.id
-      );
+      return work !== undefined && work.routerSessionId === reader.id;
     },
     sessionTools(session: SessionSnapshot) {
       const role = session.agentRole;
@@ -555,7 +595,7 @@ export function createSuperAgent(deps: SuperAgentDeps) {
               await workItems.update(work.id, { status, progress }),
             );
             await enqueue(
-              await workRouter(work.id),
+              sessionIdSchema.parse(work.routerSessionId),
               `Worker report:\n${untrustedData(updated)}`,
             );
             return updated;

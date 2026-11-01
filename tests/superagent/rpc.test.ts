@@ -60,7 +60,13 @@ it("round-trips work controls and decisions via Web RPC and broadcasts to local 
       async () => {
         expect(await f.rpc({ method: "listWorkItems" })).toMatchObject({
           ok: true,
-          result: [{ workerSessionId: expect.any(String) }],
+          result: [
+            {
+              workerSessionId: expect.any(String),
+              routerSessionId: expect.any(String),
+              pendingStatus: null,
+            },
+          ],
         });
         expect(f.runtime.hostState().runs).toEqual([]);
       },
@@ -164,6 +170,37 @@ it("returns a clear existing error kind for every disabled RPC", async () => {
     await f.close();
   }
 });
+
+it.each(["url", "projectId", "accountable", "token"] as const)(
+  "requires board.%s when the board backend is selected",
+  async (field) => {
+    const board = {
+      url: "http://board.invalid",
+      projectId: "project",
+      accountable: "human",
+      token: "private-board-token",
+    };
+    const { [field]: _missing, ...configured } = board;
+    await expect(
+      hostFixture({
+        config: {
+          enabled: true,
+          workspace: ".",
+          routerProfileId: "router",
+          workerProfileId: "worker",
+          github: {
+            login: "forge-bot",
+            repos: ["owner/repo"],
+            webhookSecret: "fixture-secret",
+            webhook: { port: 0 },
+          },
+          workItems: { backend: "board" },
+          board: configured,
+        },
+      }),
+    ).rejects.toThrow(`Missing required settings: superAgent.board.${field}.`);
+  },
+);
 
 it("forces enablement for this host without persisting the flag", async () => {
   const f = await hostFixture({ enabled: false, force: true });

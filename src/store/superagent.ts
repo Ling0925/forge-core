@@ -40,7 +40,8 @@ const SCHEMA = `
   CREATE TABLE IF NOT EXISTS work_items (
     id TEXT PRIMARY KEY, status TEXT NOT NULL, title TEXT NOT NULL, brief TEXT NOT NULL,
     thread_ids TEXT NOT NULL, worker_session_id TEXT, profile_id TEXT NOT NULL,
-    worktree TEXT, progress TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, claimed_by TEXT
+    worktree TEXT, progress TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, claimed_by TEXT,
+    router_session_id TEXT NOT NULL
   );
   CREATE TABLE IF NOT EXISTS subscriptions (
     work_id TEXT NOT NULL REFERENCES work_items(id) ON DELETE CASCADE, thread_id TEXT NOT NULL,
@@ -55,7 +56,7 @@ const SCHEMA = `
     body TEXT NOT NULL, state TEXT NOT NULL, error TEXT, created_at TEXT NOT NULL, decided_at TEXT, sent_at TEXT
   );
   CREATE TABLE IF NOT EXISTS cursors (key TEXT PRIMARY KEY, value TEXT NOT NULL);
-  PRAGMA user_version = 1;
+  PRAGMA user_version = 2;
 `;
 
 function decode<T>(schema: z.ZodType<T>, row: Record<string, unknown>): T {
@@ -123,12 +124,21 @@ export async function openSuperAgentStore(directory: string) {
             const version = db
               .prepare("PRAGMA user_version")
               .get()?.user_version;
-            if (version !== 0 && version !== 1)
+            if (version !== 0 && version !== 1 && version !== 2)
               throw new ForgeError("storage", "Unsupported database version.");
-            if (version === 0) {
+            if (version === 0 || version === 1) {
               db.exec("BEGIN IMMEDIATE");
               try {
-                db.exec(SCHEMA);
+                if (version === 0) db.exec(SCHEMA);
+                else
+                  db.exec(`
+                    ALTER TABLE work_items ADD COLUMN router_session_id TEXT;
+                    UPDATE work_items SET router_session_id = (
+                      SELECT value FROM cursors WHERE key = 'superagent:work-router:' || work_items.id
+                    );
+                    DELETE FROM cursors WHERE key GLOB 'superagent:work-router:*';
+                    PRAGMA user_version = 2;
+                  `);
                 db.exec("COMMIT");
               } catch (error) {
                 db.exec("ROLLBACK");
@@ -167,7 +177,9 @@ export async function openSuperAgentStore(directory: string) {
       }
     });
   const getWork = (db: DatabaseSync, id: string) => {
-    const row = db.prepare("SELECT * FROM work_items WHERE id = ?").get(id);
+    const row = db
+      .prepare("SELECT *, NULL AS pending_status FROM work_items WHERE id = ?")
+      .get(id);
     return row ? decode(workItemSchema, row) : undefined;
   };
   const requireWork = (db: DatabaseSync, id: string) => {
@@ -176,7 +188,7 @@ export async function openSuperAgentStore(directory: string) {
     return item;
   };
   const saveWork = (db: DatabaseSync, item: WorkItem) => {
-    db.prepare(`INSERT INTO work_items VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
+    db.prepare(`INSERT INTO work_items VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)
       ON CONFLICT(id) DO UPDATE SET status=excluded.status, thread_ids=excluded.thread_ids,
       worker_session_id=excluded.worker_session_id, worktree=excluded.worktree,
       progress=excluded.progress, updated_at=excluded.updated_at, claimed_by=excluded.claimed_by`).run(
@@ -192,6 +204,7 @@ export async function openSuperAgentStore(directory: string) {
       item.createdAt,
       item.updatedAt,
       item.claimedBy,
+      item.routerSessionId,
     );
     db.prepare("DELETE FROM subscriptions WHERE work_id = ?").run(item.id);
     const insert = db.prepare(
@@ -218,6 +231,7 @@ export async function openSuperAgentStore(directory: string) {
         ...input,
         id: `wrk_${randomUUID()}`,
         status: "queued",
+        pendingStatus: null,
         workerSessionId: null,
         worktree: input.worktree ?? null,
         progress: null,
@@ -288,7 +302,7 @@ export async function openSuperAgentStore(directory: string) {
           : "";
         return db
           .prepare(
-            `SELECT w.* FROM work_items w ${where} ORDER BY created_at, id`,
+            `SELECT w.*, NULL AS pending_status FROM work_items w ${where} ORDER BY created_at, id`,
           )
           .all(...params)
           .map((row) => decode(workItemSchema, row));

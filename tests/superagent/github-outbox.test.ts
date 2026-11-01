@@ -47,6 +47,7 @@ it("executes each approved write with private credentials and sanitizes failures
       brief: "fixture",
       threadIds: ["gh:owner/repo#1"],
       profileId: "worker",
+      routerSessionId: "router-session",
     });
     work = await store.workItems.linkWorker(
       work.id,

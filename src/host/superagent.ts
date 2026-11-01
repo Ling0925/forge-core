@@ -7,14 +7,22 @@ import {
   type PublicSuperAgentSettings,
   type RuntimeHost,
   type SuperAgentEvent,
+  type WorkItemStore,
 } from "../shared";
-import { openSettingsStore, openSuperAgentStore } from "../store";
+import {
+  createBoardClient,
+  createBoardWorkItemStore,
+  createCompositeWorkItemStore,
+  openSettingsStore,
+  openSuperAgentStore,
+} from "../store";
 import {
   type OutboxExecutor,
   createGithubOutboxExecutor,
   createGithubSource,
   createSuperAgent,
 } from "../superagent";
+import { subscribeBoardEvents } from "./board-events";
 import { createGithubWebhook } from "./github-webhook";
 import { createRuntimeHub } from "./runtime";
 
@@ -26,15 +34,16 @@ function requireConfiguration(
   const login = config.github?.login;
   const repos = config.github?.repos;
   const port = config.github?.webhook?.port;
-  if (
-    !workspace ||
-    !routerProfileId ||
-    !workerProfileId ||
-    !login ||
-    !repos?.length ||
-    !secret ||
-    port === undefined
-  ) {
+  const requiredBoard =
+    config.board || config.workItems?.backend === "board"
+      ? {
+          "board.url": config.board?.url,
+          "board.projectId": config.board?.projectId,
+          "board.accountable": config.board?.accountable,
+          "board.token": config.board?.hasToken,
+        }
+      : {};
+  const missingConfiguration = () => {
     const missing = Object.entries({
       workspace,
       routerProfileId,
@@ -43,15 +52,40 @@ function requireConfiguration(
       "github.repos": repos?.length,
       "github.webhookSecret": secret,
       "github.webhook.port": port !== undefined,
+      ...requiredBoard,
     })
       .filter(([, value]) => !value)
       .map(([key]) => `superAgent.${key}`);
-    throw new ForgeError(
+    return new ForgeError(
       "invalid_input",
       `Missing required settings: ${missing.join(", ")}.`,
     );
+  };
+  if (
+    !workspace ||
+    !routerProfileId ||
+    !workerProfileId ||
+    !login ||
+    !repos?.length ||
+    !secret ||
+    port === undefined
+  )
+    throw missingConfiguration();
+  let board:
+    | {
+        url: string;
+        projectId: string;
+        accountable: string;
+      }
+    | undefined;
+  if (config.board || config.workItems?.backend === "board") {
+    const { url, projectId, accountable, hasToken } = config.board ?? {};
+    if (!url || !projectId || !accountable || !hasToken)
+      throw missingConfiguration();
+    board = { url, projectId, accountable };
   }
   return {
+    board,
     workspace,
     routerProfileId,
     workerProfileId,
@@ -106,9 +140,11 @@ export async function createHostRuntime(
   });
   let store: Awaited<ReturnType<typeof openSuperAgentStore>> | undefined;
   let webhook: Awaited<ReturnType<typeof createGithubWebhook>> | undefined;
+  let boardEvents: ReturnType<typeof subscribeBoardEvents> | undefined;
   let runtime: RuntimeHost;
   const dispose = async () => {
     try {
+      await boardEvents?.close();
       if (runtime) await runtime.dispose();
       else await harness.dispose();
     } finally {
@@ -117,8 +153,30 @@ export async function createHostRuntime(
   };
   try {
     const listeners = new Set<(event: SuperAgentEvent) => void>();
+    const board = config?.board;
+    const client =
+      config && board
+        ? createBoardClient({ url: board.url, settings })
+        : undefined;
+    let boardStore: WorkItemStore | undefined;
     if (config) {
       store = await openSuperAgentStore(directory);
+      boardStore =
+        client && board
+          ? createBoardWorkItemStore({
+              client,
+              projectId: board.projectId,
+              accountable: board.accountable,
+            })
+          : undefined;
+      const workItems = boardStore
+        ? createCompositeWorkItemStore({
+            local: store.workItems,
+            board: boardStore,
+            backend: async () =>
+              (await getPublic()).superAgent?.workItems?.backend ?? "local",
+          })
+        : store.workItems;
       if (!harness.inputQueue)
         throw new ForgeError(
           "not_found",
@@ -129,9 +187,9 @@ export async function createHostRuntime(
         harness,
         inputQueue: harness.inputQueue,
         store,
-        workItems: store.workItems,
+        workItems,
         settings: { getPublic },
-        outbox: options.outbox ?? createGithubOutboxExecutor(store.workItems),
+        outbox: options.outbox ?? createGithubOutboxExecutor(workItems),
         events: {
           emit: (event) => {
             for (const listener of listeners) listener(event);
@@ -183,6 +241,15 @@ export async function createHostRuntime(
         ingest: engine.ingest,
       });
       await engine.start();
+      if (client && board && boardStore)
+        boardEvents = subscribeBoardEvents({
+          client,
+          url: board.url,
+          projectId: board.projectId,
+          store,
+          workItems: boardStore,
+          engine,
+        });
       await source.recover();
       webhook = await createGithubWebhook({
         host: config.host,

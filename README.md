@@ -123,6 +123,8 @@ MCP 支持 **stdio、Streamable HTTP、Legacy SSE**。注册不会连接；启�
 
 修改 `superAgent` 设置后需重启 host 才能完整生效；引擎与 Webhook 监听器在启动时装配。
 
+`superAgent.workItems.backend` 默认为 `local`，设为 `board` 后仅新工作项写入 Board，已有本地工作项仍留在本地。`superAgent.board` 必填 `url`、`projectId`、`accountable`，并通过 `updateSettings` 的 `input.settings.superAgent.board.token` 写入只写 token（公共设置只返回 `hasToken`）。事件流断线后从 1 秒开始指数退避重连，连续失败时翻倍至最多 1 分钟，连接成功即重置为 1 秒。forge-core 使用的 Board 项目须设置 `allowAgentCancel: true`（Board 默认为 false），否则从 Forge 停止工作项会失败；可在 `forge-board project create` 时传 `--settings`，或用 `forge-board project settings <id> --settings '<JSON>'` 修改（提交的是整份项目设置，需带上已有项）。审批等待期间的任何任务修改（包括进度报告）都会使该审批失效，批准过期审批会返回版本冲突。
+
 通过 `updateSettings` 设置随机生成的 `github.webhookSecret`，并在 GitHub 仓库的 Webhook 配置中填入同一 Secret，Content type 选择 `application/json`。公共设置只返回 `hasWebhookSecret`。在宿主机先执行 `gh auth login`；启动补偿和审批后的发送执行器临时调用 `gh auth token`，凭据不进入会话或发送队列。仅 Worker 的前台、后台命令及其子进程使用私有空目录作为 `GH_CONFIG_DIR`，移除 GitHub token/host 环境变量并清空 git credential helpers、关闭交互凭据提示；保留用户 git 身份及其他配置。Router 和普通会话沿用原有命令环境。
 
 Webhook 是独立 HTTP 监听器，向其根路径 POST。用 tunnel 或反向代理**只暴露 `github.webhook.port`**，Forge API 端口留在私网。GitHub 勾选 Issues、Issue comments、Pull requests、Pull request reviews、Pull request review comments；监听器验签并持久化后返回 202，重复 delivery 返回 409。`superAgent.github.webhook.maxBodyBytes` 默认 26214400（25 MB，与 GitHub 最大载荷一致）；Content-Length 或流式累计字节数超出时立即返回 413 并关闭请求，不持久化。接口字段见 [GitHub Webhook 文档](https://docs.github.com/en/webhooks/webhook-events-and-payloads)。

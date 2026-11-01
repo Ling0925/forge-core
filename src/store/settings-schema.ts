@@ -79,6 +79,7 @@ export type StoredState = Readonly<{
   settings: StoredSettings;
   apiKey: string;
   webhookSecret?: string;
+  boardToken?: string;
   sources: readonly StoredSource[];
   activeSourceId?: string;
 }>;
@@ -91,6 +92,7 @@ export const transactionSchema = z
     apiKey: credentialValueSchema,
     sources: z.array(storedSourceSchema).optional(),
     webhookSecret: z.string().optional(),
+    boardToken: z.string().optional(),
     routeGroups: z.array(routeGroupSchema).readonly().optional(),
     // Absent in every older transaction: migrated to an empty collection.
     agentProfiles: agentProfilesSchema.optional(),

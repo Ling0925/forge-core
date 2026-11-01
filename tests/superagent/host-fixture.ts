@@ -7,9 +7,9 @@ import { join } from "node:path";
 import { vi } from "vitest";
 import { createHostRuntime } from "../../src/host";
 import {
+  type ConfigureInput,
   type HarnessOptions,
   type RpcRequest,
-  type SuperAgentSettings,
   agentProfileTemplates,
   rpcRequestSchema,
   rpcResponseSchema,
@@ -45,9 +45,14 @@ export async function hostFixture(
     providerFactory?: HarnessOptions["providerFactory"];
     enabled?: boolean;
     force?: boolean;
-    config?: SuperAgentSettings;
+    config?: NonNullable<ConfigureInput["settings"]>["superAgent"];
     since?: string;
     maxBodyBytes?: number;
+    board?: NonNullable<
+      NonNullable<ConfigureInput["settings"]>["superAgent"]
+    >["board"];
+    localTools?: boolean;
+    beforeStart?: (stateDir: string) => Promise<void>;
   } = {},
 ) {
   const directory = await mkdtemp(join(tmpdir(), "forge-superagent-host-"));
@@ -90,6 +95,9 @@ export async function hostFixture(
         workspace,
         routerProfileId: "router",
         workerProfileId: "worker",
+        ...(options.board
+          ? { board: options.board, workItems: { backend: "board" } }
+          : {}),
         github: {
           login: "forge-bot",
           repos: ["owner/repo"],
@@ -123,6 +131,7 @@ export async function hostFixture(
   const outbox = { execute: vi.fn<OutboxExecutor["execute"]>(async () => {}) };
   let hosted: Awaited<ReturnType<typeof createHostRuntime>>;
   try {
+    await options.beforeStart?.(stateDir);
     if (options.since) {
       const store = await openSuperAgentStore(stateDir);
       try {
@@ -143,13 +152,17 @@ export async function hostFixture(
             message: { role: "assistant", content: "Done." },
           }),
         })),
-      toolFactory: () => ({
-        definitions: [],
-        execute: async () => {
-          throw new Error("Unexpected tool");
-        },
-        dispose: async () => {},
-      }),
+      ...(options.localTools
+        ? {}
+        : {
+            toolFactory: () => ({
+              definitions: [],
+              execute: async () => {
+                throw new Error("Unexpected tool");
+              },
+              dispose: async () => {},
+            }),
+          }),
     });
   } catch (error) {
     await rm(directory, { recursive: true, force: true });
