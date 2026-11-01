@@ -28,6 +28,8 @@
 | Azure | 对照 `azure.go` 的 `/openai/v1`、`api-key`、精确部署名称。用户填写资源地址；不声称 classic `api-version` 或 Entra 自动发现/登录 |
 | Bedrock | 对照固定预设的 API-key bearer 与 Chat/Responses/Anthropic 兼容端点、区域和静态参考模型；**不是 IAM SigV4 凭据链**。模型目录不证明该区域/账号有资格使用 |
 
+上下文窗口的解析顺序：设置里的 `modelContextWindows[模型]` → 来源的模型元数据（`modelSelection.overrides[模型].contextWindowTokens` 或手动目录）/ 上游报告的值 → 内置的少量已知模型表 → 设置 `defaultContextWindowTokens` → 默认 128000 Token。
+
 ## 请求速度与费用估算
 
 - 请求表将缓存命中 Token 合并到「输入 / 输出」单元格的第二行，以淡灰色显示；未知缓存为 `缓存 —`，明确零命中为 `缓存 0`。思考等级在列表与详情中展示，新请求的直连/路由起止事件保存当时配置的 `reasoningEffort`（`default` 显示「模型默认」）；未记录的旧请求明确显示「未记录」，不从当前设置倒填。生成请求的 Web/CLI 宿主需要更新并重启；只刷新网页不会让仍运行的旧宿主开始保存该字段，也不能恢复旧事件。该字段表示请求时的配置，不保证供应商实际采用的推理等级或预算。

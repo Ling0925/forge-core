@@ -79,4 +79,6 @@ CLI can embed the Harness or attach to a local host. HTTP/WebSocket Core owns ta
 
 Core builds with `pnpm build` to `dist/`; it does not build React, CLI, Android or Electron. Use the owning repository for client validation. Historical Electron worker, packaging and installation instructions remain in the monolith history, not in the current Core build contract.
 
+On Linux and macOS, the build uses `/usr/bin/cc` to compile the native file-lock addon at `dist/native/forge-flock.node`. If the addon is missing at runtime, Linux falls back to system `flock`, and macOS to `dist/native/forge-flock`. Locks are released when the last descriptor closes or the owning process exits. Embedders can use absolute paths in `FORGE_FLOCK_ADDON` to override the addon and, on macOS, `FORGE_FLOCK_EXECUTABLE` to override the helper.
+
 [Authorship](AUTHORSHIP.md) records provenance; [third-party notices](../THIRD_PARTY_NOTICES.md) preserve license attribution.
