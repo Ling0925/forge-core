@@ -56,7 +56,9 @@ export const sessionSnapshotSchema = z
     pendingSteering: z
       .array(
         messageSchema.refine(
-          (message) => message.role === "user" && !message.origin,
+          (message) =>
+            message.role === "user" &&
+            message.origin !== "agent_reconciliation",
         ),
       )
       .max(1000)

@@ -4,6 +4,7 @@ import type {
   RpcResponse,
   RuntimeHost,
   SuperAgentEvent,
+  SuperAgentMessageRef,
   WorkerMessage,
 } from "../shared";
 
@@ -65,6 +66,7 @@ export function createRuntimeHub(
   const request = (
     rpc: RpcRequest,
     signal?: AbortSignal,
+    superagent?: SuperAgentMessageRef,
   ): Promise<RpcResponse> => {
     if (disposed)
       return Promise.reject(new Error("The shared runtime is closed."));
@@ -99,15 +101,19 @@ export function createRuntimeHub(
         resolve: resolveResponse,
         cleanup,
       });
-      void controller.handle(rpc, signal).catch((error: unknown) => {
-        const entry = pending.get(rpc.id);
-        if (!entry) return;
-        pending.delete(rpc.id);
-        cleanup();
-        reject(
-          error instanceof Error ? error : new Error("Runtime request failed."),
-        );
-      });
+      void controller
+        .handle(rpc, signal, superagent)
+        .catch((error: unknown) => {
+          const entry = pending.get(rpc.id);
+          if (!entry) return;
+          pending.delete(rpc.id);
+          cleanup();
+          reject(
+            error instanceof Error
+              ? error
+              : new Error("Runtime request failed."),
+          );
+        });
     });
   };
   const dispose = (): Promise<void> => {

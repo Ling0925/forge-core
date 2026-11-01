@@ -1,5 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
 import { join } from "node:path";
+import { isDeepStrictEqual } from "node:util";
 import { z } from "zod";
 import {
   ForgeError,
@@ -346,6 +347,7 @@ export async function openInputQueue(options: {
               item.providerBinding,
               item.acknowledgedPredecessor,
               item.origin,
+              item.superagent,
             );
             if (
               result === "completed" ||
@@ -412,6 +414,7 @@ export async function openInputQueue(options: {
   const accept = async (
     raw: unknown,
     origin?: QueuedInput["origin"],
+    superagent?: QueuedInput["superagent"],
   ): Promise<QueuedInput> => {
     const request = enqueueInputSchema.parse(raw);
     // Legacy-compatible hash: origin is compared separately so a notification
@@ -425,6 +428,7 @@ export async function openInputQueue(options: {
         if (
           existing.sessionId !== request.input.sessionId ||
           existing.origin !== origin ||
+          !isDeepStrictEqual(existing.superagent, superagent) ||
           existing.requestHash !== requestHash
         )
           throw new ForgeError(
@@ -472,6 +476,7 @@ export async function openInputQueue(options: {
         inputId: request.inputId,
         sessionId: input.sessionId,
         ...(origin ? { origin } : {}),
+        ...(superagent ? { superagent } : {}),
         sequence: ledger.nextSequence++,
         state: "queued",
         acceptedAt: timestamp,
@@ -517,7 +522,8 @@ export async function openInputQueue(options: {
   };
   return {
     enqueue: (raw) => accept(raw),
-    notify: (raw, origin = "background_task") => accept(raw, origin),
+    notify: (raw, origin, superagent) =>
+      accept(raw, origin ?? "background_task", superagent),
     async list(id) {
       const sessionId = sessionIdSchema.parse(id);
       await options.validateSession(sessionId);

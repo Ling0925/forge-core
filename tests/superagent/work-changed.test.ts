@@ -138,6 +138,8 @@ it("reports a running item's change without relaunching its settled Worker", asy
   expect(f.items.at(-1)).toMatchObject({
     sessionId: work.routerSessionId,
     state: "queued",
+    origin: "superagent",
+    superagent: { kind: "work_changed", workId: work.id },
   });
 });
 

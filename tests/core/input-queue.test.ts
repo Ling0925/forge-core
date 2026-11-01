@@ -103,6 +103,20 @@ it("admits the host origin only through notify and preserves it across reopen an
   const queue = await create();
   await queue.pause(sessionId);
   const request = { inputId: randomUUID(), input: input("host work") };
+  const superagent = {
+    kind: "work_updates" as const,
+    workId: "work",
+    triggerIds: ["trigger"],
+  };
+  await expect(
+    queue.enqueue({ ...request, superagent } as never),
+  ).rejects.toThrow();
+  await expect(
+    queue.enqueue({
+      ...request,
+      input: { ...request.input, superagent },
+    } as never),
+  ).rejects.toThrow();
   await expect(
     queue.enqueue({ ...request, origin: "superagent" } as never),
   ).rejects.toThrow();
@@ -112,8 +126,23 @@ it("admits the host origin only through notify and preserves it across reopen an
       input: { ...request.input, origin: "superagent" },
     } as never),
   ).rejects.toThrow();
-  const accepted = await queue.notify(request, "superagent");
+  const accepted = await queue.notify(request, "superagent", superagent);
   expect(accepted.origin).toBe("superagent");
+  expect(accepted.superagent).toEqual(superagent);
+  expect(await queue.notify(request, "superagent", { ...superagent })).toEqual(
+    accepted,
+  );
+  for (const ref of [
+    undefined,
+    { ...superagent, kind: "work_brief" as const },
+    { ...superagent, workId: "other" },
+    { ...superagent, triggerIds: ["other"] },
+  ])
+    await expect(
+      queue.notify(request, "superagent", ref),
+    ).rejects.toMatchObject({
+      code: "invalid_input",
+    });
   await expect(queue.enqueue(request)).rejects.toMatchObject({
     code: "invalid_input",
   });
@@ -123,17 +152,32 @@ it("admits the host origin only through notify and preserves it across reopen an
   await queue.dispose();
   const reopened = await create();
   expect((await reopened.list(sessionId)).items[0]?.origin).toBe("superagent");
+  expect((await reopened.list(sessionId)).items[0]?.superagent).toEqual(
+    superagent,
+  );
   const origins: QueuedInput["origin"][] = [];
+  const refs: QueuedInput["superagent"][] = [];
   await reopened.attach({
     isBusy: () => false,
-    start: async (_input, _runId, _binding, _ack, origin) => {
+    start: async (_input, _runId, _binding, _ack, origin, ref) => {
       origins.push(origin);
+      refs.push(ref);
       return "completed";
     },
   });
   await reopened.resume(sessionId);
   await settled(reopened, 1);
   expect(origins).toEqual(["superagent"]);
+  expect(refs).toEqual([superagent]);
+  expect(
+    await reopened.notify(request, "superagent", superagent),
+  ).toMatchObject({
+    state: "consumed",
+    superagent,
+  });
+  await expect(
+    reopened.notify(request, "superagent", { ...superagent, workId: "other" }),
+  ).rejects.toMatchObject({ code: "invalid_input" });
 });
 
 it("wakes a finished session exactly once and queues serially behind a busy run", async () => {

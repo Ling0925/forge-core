@@ -38,7 +38,9 @@ export function executionTurns(
     (starts.find(({ event }) => event.messageIndex !== undefined)?.event
       .messageIndex ?? offset + snapshot.messages.length) - offset;
   const users = snapshot.messages.flatMap((message, index) =>
-    message.role === "user" && !message.origin && index < firstAnchor
+    message.role === "user" &&
+    message.origin !== "agent_reconciliation" &&
+    index < firstAnchor
       ? [index]
       : [],
   );

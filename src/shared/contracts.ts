@@ -6,6 +6,7 @@ import type { AgentEvent } from "./schemas/events";
 import type {
   Message,
   ProviderResponse,
+  SuperAgentMessageRef,
   ToolCall,
   ToolDefinition,
 } from "./schemas/messages";
@@ -27,7 +28,11 @@ export type ApprovalHandler = (
   request: ApprovalRequest,
   signal: AbortSignal,
 ) => Promise<boolean>;
-export type SteeringInput = string | Pick<RunInput, "prompt" | "images">;
+export type SteeringInput =
+  | string
+  | (Pick<RunInput, "prompt" | "images"> & {
+      superagent?: SuperAgentMessageRef;
+    });
 /** Resolves after the message is saved, independently of model/tool progress. */
 export type SteeringHandler = (input: SteeringInput) => Promise<void>;
 export interface RunControl {
@@ -37,6 +42,7 @@ export interface RunControl {
   readonly acknowledgedPredecessor?: string;
   /** Trusted durable completion notification; never a public RunInput field. */
   readonly inputOrigin?: import("./input-queue").QueuedInput["origin"];
+  readonly superagent?: SuperAgentMessageRef;
   readonly getPermission?: () => Permission | undefined;
   /** Freeze host permission changes before persisting the terminal permission. */
   readonly onFinalizing?: () => void;

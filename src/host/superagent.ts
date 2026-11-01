@@ -203,12 +203,18 @@ export async function createHostRuntime(
               .hostState()
               .runs.find((run) => run.sessionId === id);
             if (!run) return false;
-            const response = await runtime.request({
-              id: randomUUID(),
-              method: "steerRun",
-              runId: run.runId,
-              ...(typeof input === "string" ? { prompt: input } : input),
-            });
+            const { superagent, ...steering } =
+              typeof input === "string" ? { prompt: input } : input;
+            const response = await runtime.request(
+              {
+                id: randomUUID(),
+                method: "steerRun",
+                runId: run.runId,
+                ...steering,
+              },
+              undefined,
+              superagent,
+            );
             if (response.ok) return true;
             if (
               response.error.code === "not_found" ||

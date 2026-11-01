@@ -186,11 +186,12 @@ export async function fixture(
   const running = new Set<SessionId>();
   const handlers = new Map<SessionId, SteeringHandler>();
   const inputQueue: SuperAgentDeps["inputQueue"] = {
-    notify: vi.fn(async (request, origin) => {
+    notify: vi.fn(async (request, origin, superagent) => {
       const item = queuedInputSchema.parse({
         ...request,
         sessionId: request.input.sessionId,
         origin,
+        superagent,
         sequence: items.length + 1,
         state: "queued",
         acceptedAt: new Date().toISOString(),
@@ -264,6 +265,7 @@ export async function fixture(
         new AbortController().signal,
         {
           inputOrigin: item.origin,
+          ...(item.superagent ? { superagent: item.superagent } : {}),
           drainSteering: () => [],
           setSteeringHandler: (handler) => {
             if (handler) handlers.set(sessionId, handler);

@@ -472,6 +472,8 @@ export {
   assistantMessageSchema,
   type Message,
   messageSchema,
+  type SuperAgentMessageRef,
+  superAgentMessageRefSchema,
   type ProviderResponse,
   providerResponseSchema,
   type ProviderState,

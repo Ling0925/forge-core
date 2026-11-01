@@ -66,6 +66,21 @@ export const providerStateSchema = z
   .strict()
   .readonly();
 export type ProviderState = z.infer<typeof providerStateSchema>;
+export const superAgentMessageRefSchema = z
+  .object({
+    kind: z.enum([
+      "route_batch",
+      "work_brief",
+      "work_updates",
+      "work_changed",
+      "worker_report",
+    ]),
+    workId: z.string().min(1).optional(),
+    triggerIds: z.array(z.string().min(1)).readonly().optional(),
+  })
+  .strict()
+  .readonly();
+export type SuperAgentMessageRef = z.infer<typeof superAgentMessageRefSchema>;
 export const assistantMessageSchema = z
   .object({
     role: z.literal("assistant"),
@@ -92,7 +107,8 @@ export const messageSchema = z
         role: z.literal("user"),
         content: z.string().max(2000000),
         images: imageAttachmentsSchema.optional(),
-        origin: z.literal("agent_reconciliation").optional(),
+        origin: z.enum(["agent_reconciliation", "superagent"]).optional(),
+        superagent: superAgentMessageRefSchema.optional(),
       })
       .strict(),
     // Discriminated union needs the underlying object, before readonly wrapping.
@@ -105,6 +121,16 @@ export const messageSchema = z
       })
       .strict(),
   ])
+  .refine(
+    (message) =>
+      message.role !== "user" ||
+      message.superagent === undefined ||
+      message.origin === "superagent",
+    {
+      path: ["superagent"],
+      message: "Super-agent metadata requires its origin.",
+    },
+  )
   .readonly();
 export type Message = z.infer<typeof messageSchema>;
 export const providerResponseSchema = z

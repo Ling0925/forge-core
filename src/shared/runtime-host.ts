@@ -1,5 +1,6 @@
 import type { HostState } from "./host";
 import type { RpcRequest, RpcResponse, RunEvent, WorkerMessage } from "./ipc";
+import type { SuperAgentMessageRef } from "./schemas/messages";
 
 /**
  * One controller/service for every host (desktop renderer IPC, LAN Web pages),
@@ -15,7 +16,12 @@ import type { RpcRequest, RpcResponse, RunEvent, WorkerMessage } from "./ipc";
  */
 export interface RuntimeHost {
   handle(raw: unknown): Promise<void>;
-  request(request: RpcRequest, signal?: AbortSignal): Promise<RpcResponse>;
+  request(
+    request: RpcRequest,
+    signal?: AbortSignal,
+    /** Trusted steering metadata, outside the externally parsed RPC. */
+    superagent?: SuperAgentMessageRef,
+  ): Promise<RpcResponse>;
   subscribe(listener: (message: WorkerMessage) => void): () => void;
   recoveryEvents(): RunEvent[];
   hostState(): HostState;

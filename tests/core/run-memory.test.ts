@@ -50,6 +50,38 @@ const original = sessionSnapshotSchema.parse({
   },
 });
 
+it("treats super-agent deliveries as user turns and excludes reconciliation messages", () => {
+  const snapshot = sessionSnapshotSchema.parse({
+    ...original,
+    messages: [
+      ...original.messages,
+      {
+        role: "user",
+        content: "Investigate the delivered work",
+        origin: "superagent",
+        superagent: { kind: "work_brief", workId: "work" },
+      },
+      {
+        role: "user",
+        content: "Internal reconciliation",
+        origin: "agent_reconciliation",
+      },
+    ],
+  });
+  const memory = buildRunMemory(snapshot)!;
+  const state = JSON.parse(memory.content.split("\n")[1]!);
+  expect(state.latestRequest).toMatchObject({
+    ref: "m6",
+    text: JSON.stringify({
+      role: "user",
+      content: "Investigate the delivered work",
+    }),
+  });
+  expect(JSON.parse(state.initialRequest.text).content).toBe(
+    "preserve user files",
+  );
+});
+
 it("persists a local checkpoint without changing warm context and restores long cold sessions", async () => {
   const directory = await mkdtemp(join(tmpdir(), "forge-run-memory-"));
   try {

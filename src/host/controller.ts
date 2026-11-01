@@ -14,6 +14,7 @@ import {
   type RunId,
   type RunInput,
   type SteeringHandler,
+  type SuperAgentMessageRef,
   type WorkerMessage,
   approvalRequestSchema,
   paginateSession,
@@ -40,6 +41,14 @@ type Approval = {
   consumed: boolean;
   claimed: boolean;
 };
+type SteeringRequest = Extract<RpcRequest, { method: "steerRun" }> & {
+  superagent?: SuperAgentMessageRef | undefined;
+};
+const steeringInput = (request: SteeringRequest) => ({
+  prompt: request.prompt,
+  ...(request.images?.length ? { images: request.images } : {}),
+  ...(request.superagent ? { superagent: request.superagent } : {}),
+});
 
 export function createWorkerController(
   service: HarnessService,
@@ -73,8 +82,8 @@ export function createWorkerController(
       permissionChanged: boolean;
       acceptingPermission: boolean;
       recovery: Map<string, AgentEvent>;
-      steering: Extract<RpcRequest, { method: "steerRun" }>[];
-      applyingSteering: Extract<RpcRequest, { method: "steerRun" }>[];
+      steering: SteeringRequest[];
+      applyingSteering: SteeringRequest[];
       acceptingSteering: boolean;
       acceptSteering: SteeringHandler | undefined;
       terminal?: Extract<AgentEvent, { type: "run_finished" }>;
@@ -336,6 +345,7 @@ export function createWorkerController(
     providerBinding?: string,
     acknowledgedPredecessor?: string,
     inputOrigin?: import("../shared").QueuedInput["origin"],
+    superagent?: SuperAgentMessageRef,
   ) => {
     if (
       [...runs.values()].some((run) => run.input.sessionId === input.sessionId)
@@ -423,8 +433,8 @@ export function createWorkerController(
               run.applyingSteering.push(...requests);
               if (final && requests.length === 0) run.acceptingSteering = false;
               return requests.map((request) =>
-                request.images?.length
-                  ? { prompt: request.prompt, images: request.images }
+                request.images?.length || request.superagent
+                  ? steeringInput(request)
                   : request.prompt,
               );
             },
@@ -441,10 +451,7 @@ export function createWorkerController(
               // Requests received during startup join the runtime's sole writer
               // as soon as it is ready, not at the next provider boundary.
               for (const request of run.steering.splice(0)) {
-                void handler({
-                  prompt: request.prompt,
-                  ...(request.images?.length ? { images: request.images } : {}),
-                }).then(
+                void handler(steeringInput(request)).then(
                   () => respond(request, null),
                   (error) => respond(request, null, toErrorInfo(error)),
                 );
@@ -457,6 +464,7 @@ export function createWorkerController(
             ...(providerBinding ? { providerBinding } : {}),
             ...(acknowledgedPredecessor ? { acknowledgedPredecessor } : {}),
             ...(inputOrigin ? { inputOrigin } : {}),
+            ...(superagent ? { superagent } : {}),
           },
         ),
       )
@@ -478,9 +486,15 @@ export function createWorkerController(
   const queueReady = service.inputQueue?.attach({
     isBusy: (sessionId) =>
       [...runs.values()].some((run) => run.input.sessionId === sessionId),
-    start: (input, runId, binding, predecessor, origin) =>
-      startRun(input, runIdSchema.parse(runId), binding, predecessor, origin)
-        .operation,
+    start: (input, runId, binding, predecessor, origin, superagent) =>
+      startRun(
+        input,
+        runIdSchema.parse(runId),
+        binding,
+        predecessor,
+        origin,
+        superagent,
+      ).operation,
     settled: async () => {
       if (!disposed) await options.superAgent?.()?.sessionSettled();
     },
@@ -512,7 +526,11 @@ export function createWorkerController(
       };
     }),
   });
-  const handle = async (raw: unknown, signal?: AbortSignal): Promise<void> => {
+  const handle = async (
+    raw: unknown,
+    signal?: AbortSignal,
+    superagent?: SuperAgentMessageRef,
+  ): Promise<void> => {
     const parsed = workerRequestSchema.safeParse(raw);
     if (!parsed.success) return;
     const request = parsed.data;
@@ -826,10 +844,7 @@ export function createWorkerController(
               "当前运行已结束或正在收尾，草稿已保留。请手动发送下一轮。",
             );
           if (run.acceptSteering) {
-            await run.acceptSteering({
-              prompt: request.prompt,
-              ...(request.images?.length ? { images: request.images } : {}),
-            });
+            await run.acceptSteering(steeringInput({ ...request, superagent }));
             respond(request, null);
             break;
           }
@@ -852,7 +867,7 @@ export function createWorkerController(
               16 * 1024 * 1024
           )
             throw new ForgeError("invalid_input", "插话队列已满，草稿已保留。");
-          run.steering.push(request);
+          run.steering.push({ ...request, superagent });
           break;
         }
         case "setRunPermission": {
@@ -958,8 +973,12 @@ export function createWorkerController(
     });
     return closing;
   };
-  const dispatch = (raw: unknown, signal?: AbortSignal): Promise<void> => {
-    const operation = handle(raw, signal);
+  const dispatch = (
+    raw: unknown,
+    signal?: AbortSignal,
+    superagent?: SuperAgentMessageRef,
+  ): Promise<void> => {
+    const operation = handle(raw, signal, superagent);
     operations.add(operation);
     void operation
       .finally(() => operations.delete(operation))

@@ -1,7 +1,7 @@
 import { expect, it, vi } from "vitest";
 import { WebSocket } from "ws";
 import { type HostEvent, hostEventSchema } from "../../src/shared";
-import { call, done } from "./fixture";
+import { call, done, hold } from "./fixture";
 import { payload } from "./github-fixture";
 import { hostFixture } from "./host-fixture";
 
@@ -192,3 +192,98 @@ it("runs signed GitHub work through Router, Worker, suggestions and approved out
     await f.close();
   }
 }, 45000);
+
+it("carries queued and steered delivery metadata through the real host", async () => {
+  let routed = false;
+  const gate = hold();
+  const f = await hostFixture({
+    providerFactory: () => ({
+      listModels: async () => ["fixture"],
+      complete: async (...args) => {
+        const [messages, tools] = args;
+        if (
+          tools.some((tool) => tool.function.name === "superagent_route") &&
+          !routed
+        ) {
+          routed = true;
+          expect(messages).toContainEqual(
+            expect.objectContaining({
+              role: "user",
+              origin: "superagent",
+              superagent: {
+                kind: "route_batch",
+                triggerIds: ["gh:comment:201"],
+              },
+            }),
+          );
+          return call("superagent_route", {
+            decisions: [
+              {
+                type: "new",
+                threads: ["gh:owner/repo#1"],
+                triggers: ["gh:comment:201"],
+                brief: "Investigate",
+              },
+            ],
+          });
+        }
+        if (tools.some((tool) => tool.function.name === "superagent_report"))
+          return gate.step(...args);
+        return done;
+      },
+    }),
+  });
+  try {
+    expect((await f.send(payload)).status).toBe(202);
+    await gate.entered;
+    const works = await f.rpc({ method: "listWorkItems" });
+    if (!works.ok || works.method !== "listWorkItems")
+      throw new Error("Missing work items");
+    const work = works.result[0]!;
+    const worker = (await f.harness.listSessions()).find(
+      (session) => session.id === work.workerSessionId,
+    )!;
+    expect((await f.harness.getSession(worker.id)).messages).toContainEqual(
+      expect.objectContaining({
+        role: "user",
+        origin: "superagent",
+        superagent: {
+          kind: "work_brief",
+          workId: work.id,
+          triggerIds: ["gh:comment:201"],
+        },
+      }),
+    );
+    expect(
+      (
+        await f.send({
+          ...payload,
+          comment: { ...payload.comment, id: 202, body: "More details" },
+        })
+      ).status,
+    ).toBe(202);
+    const update = expect.objectContaining({
+      role: "user",
+      origin: "superagent",
+      superagent: {
+        kind: "work_updates",
+        workId: work.id,
+        triggerIds: ["gh:comment:202"],
+      },
+    });
+    await vi.waitFor(async () =>
+      expect((await f.harness.getSession(worker.id)).pendingSteering).toEqual([
+        update,
+      ]),
+    );
+    gate.release();
+    await vi.waitFor(async () => {
+      const session = await f.harness.getSession(worker.id);
+      expect(session.status).toBe("completed");
+      expect(session.messages).toContainEqual(update);
+    });
+  } finally {
+    gate.release();
+    await f.close();
+  }
+});

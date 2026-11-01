@@ -300,7 +300,9 @@ export const createAgentRuntime = (
         content: input.prompt,
         ...(control?.inputOrigin === "background_task"
           ? { origin: "agent_reconciliation" as const }
-          : {}),
+          : control?.inputOrigin === "superagent"
+            ? { origin: "superagent" as const, superagent: control.superagent }
+            : {}),
         ...(input.images?.length ? { images: input.images } : {}),
       };
       run.contextScale = seedContextScale(
