@@ -4,6 +4,7 @@ import { permissionSchema, sessionIdSchema } from "./schemas/base";
 import type { SessionId } from "./schemas/base";
 import { errorInfoSchema, errorMessageSchema } from "./schemas/events";
 import type { SessionStatus } from "./schemas/events";
+import { superAgentMessageRefSchema } from "./schemas/messages";
 import { runInputSchema } from "./schemas/sessions";
 import type { RunInput } from "./schemas/sessions";
 
@@ -16,6 +17,7 @@ export const queuedInputSchema = z
     sessionId: sessionIdSchema,
     /** Trusted host lifecycle marker; external enqueue input can never set it. */
     origin: z.enum(["background_task", "superagent"]).optional(),
+    superagent: superAgentMessageRefSchema.optional(),
     sequence: z.number().int().positive().safe(),
     state: z.enum([
       "queued",
@@ -73,6 +75,7 @@ export interface InputQueueRunner {
     providerBinding: string,
     acknowledgedPredecessor?: string,
     origin?: QueuedInput["origin"],
+    superagent?: QueuedInput["superagent"],
   ): Promise<SessionStatus>;
 }
 /** Trusted host lifecycle, never a public RPC accepting callbacks or bindings. */
@@ -81,6 +84,7 @@ export interface InputQueueHost extends InputQueueService {
   notify(
     request: z.infer<typeof enqueueInputSchema>,
     origin?: QueuedInput["origin"],
+    superagent?: QueuedInput["superagent"],
   ): Promise<QueuedInput>;
   attach(runner: InputQueueRunner): Promise<void>;
   finished(sessionId: SessionId, status: SessionStatus): Promise<void>;

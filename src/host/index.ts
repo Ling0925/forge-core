@@ -4,6 +4,7 @@ export {
   type LocalHostClient,
 } from "./local-client";
 export { EventRing } from "./event-ring";
+export { hostError } from "./errors";
 export { createLocalHost } from "./local-server";
 export { createRuntimeHub } from "./runtime";
 export { createGithubWebhook } from "./github-webhook";

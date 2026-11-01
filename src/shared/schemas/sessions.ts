@@ -33,6 +33,7 @@ const summaryFields = {
   id: sessionIdSchema,
   title: sessionTitleSchema,
   workspace: z.string().min(1).max(4096),
+  originWorkspace: z.string().min(1).max(4096).optional(),
   model: settingsFields.model,
   createdAt: timestampSchema,
   providerSourceId: providerSourceIdSchema.optional(),
@@ -55,7 +56,9 @@ export const sessionSnapshotSchema = z
     pendingSteering: z
       .array(
         messageSchema.refine(
-          (message) => message.role === "user" && !message.origin,
+          (message) =>
+            message.role === "user" &&
+            message.origin !== "agent_reconciliation",
         ),
       )
       .max(1000)

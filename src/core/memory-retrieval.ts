@@ -188,7 +188,9 @@ export async function retrieveMemoryEvidence(options: {
         },
         score:
           positions.length * 10 +
-          (message.role === "user" && !message.origin ? 2 : 0),
+          (message.role === "user" && message.origin !== "agent_reconciliation"
+            ? 2
+            : 0),
       };
       const insertAt = candidates.findIndex(
         (item) => item.score < candidate.score,

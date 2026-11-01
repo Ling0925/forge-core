@@ -9,6 +9,7 @@ import {
   type SteeringInput,
   advisorRequestSchema,
   agentEventSchema,
+  messageSchema,
   runInputSchema,
 } from "../shared";
 
@@ -58,7 +59,8 @@ export function createRuntimeJournal(
     }
   };
   const message = (entry: SteeringInput): Message => {
-    const steering = typeof entry === "string" ? { prompt: entry } : entry;
+    const { superagent, ...steering } =
+      typeof entry === "string" ? { prompt: entry } : entry;
     const parsed = runInputSchema.safeParse({
       ...input,
       images: undefined,
@@ -69,11 +71,12 @@ export function createRuntimeJournal(
         "invalid_input",
         "Steering prompt failed validation.",
       );
-    return {
+    return messageSchema.parse({
       role: "user",
       content: parsed.data.prompt,
+      ...(superagent ? { origin: "superagent", superagent } : {}),
       ...(parsed.data.images?.length ? { images: parsed.data.images } : {}),
-    };
+    });
   };
 
   return {

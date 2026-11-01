@@ -18,6 +18,7 @@ export {
 } from "./io";
 export { fileLock } from "./lock";
 export { openMemoryStore } from "./memory";
+export { historyEligible, openPromptHistory } from "./prompt-history";
 export {
   modelCatalogCacheKey,
   type ModelCatalogStore,

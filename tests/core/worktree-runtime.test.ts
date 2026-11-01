@@ -113,7 +113,9 @@ it("routes an isolated child and its real file tools to the retained worktree wi
     );
     expect(child).toBeDefined();
     if (!child) throw new Error("Missing child session");
+    expect(child.originWorkspace).toBe(repo);
     const saved = await harness.getSession(child.id);
+    expect(saved.originWorkspace).toBe(repo);
     expect(saved.workspace).toBe(join(`${home}-worktrees`, child.id));
     expect(saved.agentWorktree?.worktree).toBe(saved.workspace);
     expect(await readFile(join(saved.workspace, "child.txt"), "utf8")).toBe(

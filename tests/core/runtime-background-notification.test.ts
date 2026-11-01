@@ -160,6 +160,37 @@ it("defaults a notification with no run history to readonly", async () => {
   expect(f.permissions).toEqual(["readonly"]);
 });
 
+it("persists super-agent metadata without applying the background notification permission cap", async () => {
+  const f = await setup();
+  const superagent = {
+    kind: "work_brief" as const,
+    workId: "work",
+    triggerIds: ["trigger"],
+  };
+  const result = await f.runtime.run(
+    {
+      sessionId: f.root.id,
+      prompt: "Work item: work",
+      permission: "workspace",
+    },
+    () => {},
+    async () => false,
+    new AbortController().signal,
+    control({ inputOrigin: "superagent", superagent }),
+  );
+  expect(result.status).toBe("completed");
+  const message = {
+    role: "user",
+    content: "Work item: work",
+    origin: "superagent",
+    superagent,
+  };
+  expect(result.messages).toContainEqual(message);
+  expect((await f.store.get(f.root.id)).messages).toContainEqual(message);
+  expect(f.requests[0]).toContainEqual(message);
+  expect(f.permissions).toEqual(["workspace"]);
+});
+
 it("caps a late notification at the last actual run permission", async () => {
   const f = await setup();
   await seed(f.store, f.root, [

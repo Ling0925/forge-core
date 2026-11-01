@@ -25,6 +25,7 @@ import {
   paginateSession,
   pairingExchangeSchema,
   rpcRequestSchema,
+  sessionOriginWorkspace,
   workspaceBrowseRequestSchema,
 } from "../shared";
 
@@ -65,6 +66,18 @@ const desktopOnly = new Set([
   "openExternal",
   "exportSession",
   "savePublishedFile",
+]);
+const superAgentMethods = new Set<RpcRequest["method"]>([
+  "getSuperAgentState",
+  "listSuperAgentTriggers",
+  "listWorkItems",
+  "getWorkItem",
+  "stopWorkItem",
+  "resumeWorkItem",
+  "listSuggestions",
+  "decideSuggestion",
+  "listOutbox",
+  "decideOutbox",
 ]);
 
 async function body(
@@ -164,10 +177,23 @@ export async function createWebHost(
   const injected = options.runtime;
   const runtime: RuntimeHost = injected ?? createRuntimeHub(options.service);
   const ownsRuntime = injected === undefined;
+  let superAgentEvents = Promise.resolve();
   const unsubscribe = runtime.subscribe((message) => {
     if (message.kind !== "event") return;
-    const entry = events.append(message.data);
-    sendEvents(`[${entry.json}]`);
+    const append = () => {
+      const entry = events.append(message.data);
+      sendEvents(`[${entry.json}]`);
+    };
+    if (
+      restrictWorkspace &&
+      "type" in message.data &&
+      message.data.type.startsWith("superagent_")
+    ) {
+      const match = superAgentInWorkspace();
+      superAgentEvents = superAgentEvents.then(async () => {
+        if ((await match) === true) append();
+      });
+    } else append();
   });
   const sendTo = (
     socket: WebSocket,
@@ -402,6 +428,20 @@ export async function createWebHost(
     } catch {
       return false;
     }
+  };
+  const belongsToWorkspace = (
+    session: Pick<
+      SessionSnapshot,
+      "workspace" | "originWorkspace" | "agentWorktree"
+    >,
+  ): Promise<boolean> => inWorkspace(sessionOriginWorkspace(session));
+  const superAgentInWorkspace = async (): Promise<boolean | undefined> => {
+    const response = await runtime
+      .request({ id: randomUUID(), method: "getSuperAgentState" })
+      .catch(() => undefined);
+    return response?.ok && response.method === "getSuperAgentState"
+      ? inWorkspace(response.result.workspace)
+      : undefined;
   };
 
   async function handle(
@@ -652,6 +692,20 @@ export async function createWebHost(
           return json(response, 403, { error: "Desktop-only operation" });
         let authorizedSnapshot: SessionSnapshot | undefined;
         if (restrictWorkspace) {
+          if (
+            superAgentMethods.has(rpc.method) &&
+            (await superAgentInWorkspace()) === false
+          )
+            return json(response, 200, {
+              id: rpc.id,
+              method: rpc.method,
+              ok: false,
+              error: {
+                code: "not_found",
+                message: "Super-agent is disabled on this host.",
+                retryable: false,
+              },
+            } satisfies RpcResponse);
           const sessionIdOf = ():
             | Parameters<HarnessService["getSession"]>[0]
             | undefined => {
@@ -677,7 +731,7 @@ export async function createWebHost(
                 error: "The session could not be authorized",
               });
             authorizedSnapshot = session;
-            if (!(await inWorkspace(session.workspace)))
+            if (!(await belongsToWorkspace(session)))
               return json(response, 403, {
                 error: "Session belongs to another workspace",
               });
@@ -765,7 +819,7 @@ export async function createWebHost(
           const visible = await Promise.all(
             result.result.runs.map(async (run) => {
               const session = await snapshotOf(run.sessionId);
-              return session && (await inWorkspace(session.workspace))
+              return session && (await belongsToWorkspace(session))
                 ? run
                 : undefined;
             }),
@@ -780,11 +834,12 @@ export async function createWebHost(
           result.method === "listSessions" &&
           restrictWorkspace
         ) {
+          const visible = await Promise.all(
+            result.result.map(belongsToWorkspace),
+          );
           return json(response, 200, {
             ...result,
-            result: result.result.filter(
-              (session) => resolve(session.workspace) === workspace,
-            ),
+            result: result.result.filter((_session, index) => visible[index]),
           });
         }
         return json(response, 200, result);

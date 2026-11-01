@@ -11,6 +11,7 @@ import {
   type SteeringInput,
   type Suggestion,
   type SuperAgentEvent,
+  type SuperAgentMessageRef,
   type Thread,
   type Trigger,
   type WorkItem,
@@ -121,13 +122,18 @@ export function createSuperAgent(deps: SuperAgentDeps) {
     await store.putTrigger(next);
     events.emit({ type: "superagent_trigger", trigger: next });
   };
-  const enqueue = (sessionId: SessionId, prompt: string) =>
+  const enqueue = (
+    sessionId: SessionId,
+    prompt: string,
+    ref: SuperAgentMessageRef,
+  ) =>
     inputQueue.notify(
       {
         inputId: randomUUID(),
         input: { sessionId, prompt },
       },
       "superagent",
+      ref,
     );
   const busy = async (id: SessionId) =>
     sessions.isRunning(id) ||
@@ -167,12 +173,20 @@ export function createSuperAgent(deps: SuperAgentDeps) {
     await enqueue(
       id,
       `Route this batch:\n${untrustedData(await triggerData(backlog))}`,
+      { kind: "route_batch", triggerIds: backlog.map((trigger) => trigger.id) },
     );
     for (const trigger of backlog) await disposition(trigger, "routing");
   };
   const workPrompt = async (work: WorkItem) => {
     const triggers = await store.listTriggers({ threadIds: work.threadIds });
-    return `Work item: ${work.id}\nBrief:\n${work.brief}\n\n${untrustedData(await triggerData(triggers))}`;
+    return {
+      prompt: `Work item: ${work.id}\nBrief:\n${work.brief}\n\n${untrustedData(await triggerData(triggers))}`,
+      ref: {
+        kind: "work_brief" as const,
+        workId: work.id,
+        triggerIds: triggers.map((trigger) => trigger.id),
+      },
+    };
   };
   const launchWorker = async (work: WorkItem) => {
     const routerId = sessionIdSchema.parse(work.routerSessionId);
@@ -193,7 +207,8 @@ export function createSuperAgent(deps: SuperAgentDeps) {
       }
       // Keep notify from starting a successful predecessor before resume acknowledges it.
       if (work.workerSessionId) await inputQueue.pause(id);
-      await enqueue(id, await workPrompt(work));
+      const { prompt, ref } = await workPrompt(work);
+      await enqueue(id, prompt, ref);
       if (work.workerSessionId) await inputQueue.resume(id);
       publishWork(await requireWork(work.id));
     } catch (error) {
@@ -386,9 +401,20 @@ export function createSuperAgent(deps: SuperAgentDeps) {
   ) => {
     const id = sessionIdSchema.parse(work.workerSessionId);
     const prompt = `Updates for ${work.id}:\n${untrustedData(await triggerData(triggers))}`;
-    if (sessions.isRunning(id) && (await sessions.steer(id, { prompt })))
+    const ref: SuperAgentMessageRef = {
+      kind: "work_updates",
+      workId: work.id,
+      triggerIds: triggers.map((trigger) => trigger.id),
+    };
+    if (
+      sessions.isRunning(id) &&
+      (await sessions.steer(id, {
+        prompt,
+        superagent: ref,
+      }))
+    )
       return;
-    await enqueue(id, prompt);
+    await enqueue(id, prompt, ref);
   };
 
   return {
@@ -487,6 +513,7 @@ export function createSuperAgent(deps: SuperAgentDeps) {
         await enqueue(
           sessionIdSchema.parse(work.routerSessionId),
           `Work item changed:\n${untrustedData(work)}`,
+          { kind: "work_changed", workId: work.id },
         );
         await drainWorkers();
       });
@@ -597,6 +624,7 @@ export function createSuperAgent(deps: SuperAgentDeps) {
             await enqueue(
               sessionIdSchema.parse(work.routerSessionId),
               `Worker report:\n${untrustedData(updated)}`,
+              { kind: "worker_report", workId: work.id },
             );
             return updated;
           }),

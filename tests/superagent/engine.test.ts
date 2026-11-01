@@ -85,6 +85,7 @@ it("batches all backlog after the busy Router finishes", async () => {
   expect(f.items[1]).toMatchObject({
     sessionId: router.id,
     origin: "superagent",
+    superagent: { kind: "route_batch", triggerIds: ["gh:2", "gh:3"] },
   });
   expect(f.items[1]?.input?.prompt).toContain('"id":"gh:2"');
   expect(f.items[1]?.input?.prompt).toContain('"id":"gh:3"');
@@ -111,6 +112,7 @@ it("creates an isolated profile Worker only for an explicit new decision", async
   expect(f.items[1]).toMatchObject({
     origin: "superagent",
     input: { sessionId: session.id },
+    superagent: { kind: "work_brief", workId: work.id, triggerIds: ["gh:1"] },
   });
   expect(f.items[1]?.input?.prompt).toContain("<untrusted_data>");
   expect(f.items[1]?.input?.prompt).toContain(work.brief);
@@ -199,6 +201,11 @@ it("steers a subscribed running Worker through the runtime steering handler", as
   expect(f.sessions.steer).toHaveBeenCalledTimes(1);
   expect(f.sessions.steer).toHaveBeenCalledWith(id, {
     prompt: expect.not.stringContaining(workerInstructions),
+    superagent: {
+      kind: "work_updates",
+      workId: work.id,
+      triggerIds: [event.id],
+    },
   });
   expect(f.items).toHaveLength(2);
   expect(await f.store.getTrigger(event.id)).toMatchObject({
@@ -207,6 +214,16 @@ it("steers a subscribed running Worker through the runtime steering handler", as
   expect(
     JSON.stringify((await f.harness.getSession(id)).pendingSteering),
   ).toContain(event.id);
+  expect((await f.harness.getSession(id)).pendingSteering).toEqual([
+    expect.objectContaining({
+      origin: "superagent",
+      superagent: {
+        kind: "work_updates",
+        workId: work.id,
+        triggerIds: [event.id],
+      },
+    }),
+  ]);
   gate.release();
   const result = await run;
   expect(
@@ -215,6 +232,17 @@ it("steers a subscribed running Worker through the runtime steering handler", as
         message.role === "user" && message.content?.includes(event.id),
     ),
   ).toBe(true);
+  expect(result.messages).toContainEqual(
+    expect.objectContaining({
+      role: "user",
+      origin: "superagent",
+      superagent: {
+        kind: "work_updates",
+        workId: work.id,
+        triggerIds: [event.id],
+      },
+    }),
+  );
 });
 
 it("enqueues trusted input for a subscribed idle Worker", async () => {
@@ -225,6 +253,11 @@ it("enqueues trusted input for a subscribed idle Worker", async () => {
     sessionId: work.workerSessionId,
     origin: "superagent",
     state: "queued",
+    superagent: {
+      kind: "work_updates",
+      workId: work.id,
+      triggerIds: ["gh:update"],
+    },
   });
   expect(f.sessions.steer).not.toHaveBeenCalled();
 });
@@ -269,6 +302,7 @@ it.each(["ready", "blocked", "failed", "done"])(
     expect(f.items.at(-1)).toMatchObject({
       sessionId: (await f.router()).id,
       origin: "superagent",
+      superagent: { kind: "worker_report", workId: work.id },
     });
     expect(f.items.at(-1)?.input?.prompt).toContain("Result details");
   },
@@ -640,6 +674,7 @@ it("explicitly resumes a failed session through the real durable input queue", a
       providerBinding,
       acknowledgedPredecessor,
       inputOrigin,
+      superagent,
     ) {
       const result = await f.harness.run(
         input,
@@ -651,6 +686,7 @@ it("explicitly resumes a failed session through the real durable input queue", a
           providerBinding,
           ...(acknowledgedPredecessor ? { acknowledgedPredecessor } : {}),
           ...(inputOrigin ? { inputOrigin } : {}),
+          ...(superagent ? { superagent } : {}),
         },
       );
       complete(result);

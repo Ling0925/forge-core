@@ -48,8 +48,9 @@ export function claimAutoTitle(
   )
     return snapshot;
   const user =
-    snapshot.messages.find((m) => m.role === "user" && !m.origin)?.content ??
-    "";
+    snapshot.messages.find(
+      (m) => m.role === "user" && m.origin !== "agent_reconciliation",
+    )?.content ?? "";
   if (!user.trim()) return snapshot;
   const title =
     cleanTitle(user.trim().split(/\r?\n/)[0] ?? "", secrets) ||
@@ -68,8 +69,9 @@ export async function autoTitle(options: {
 }): Promise<string | undefined> {
   const { snapshot, provider, signal, secrets } = options;
   const user =
-    snapshot.messages.find((m) => m.role === "user" && !m.origin)?.content ??
-    "";
+    snapshot.messages.find(
+      (m) => m.role === "user" && m.origin !== "agent_reconciliation",
+    )?.content ?? "";
   if (signal.aborted || !user.trim()) return;
   let observed = false;
   let observation: ((usage: Usage | undefined) => void) | undefined;
