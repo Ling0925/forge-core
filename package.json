@@ -3,6 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "description": "Forge agent runtime, stores, tools, host transports and shared client contracts",
+  "license": "MIT",
   "type": "module",
   "main": "./dist/index.js",
   "types": "./src/index.ts",

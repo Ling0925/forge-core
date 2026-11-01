@@ -1,25 +1,27 @@
 # Forge Core
 
-Forge 的任务运行时。负责模型调用、工具执行、权限审批、会话存储和实时事件，为终端、浏览器与 Android 客户端提供同一套执行能力。
+Forge 是用于执行模型与工具任务的 TypeScript/Node.js 运行时，管理会话、权限审批、上下文和持久化状态。本仓提供 `@forge/core` 包与独立 HTTP/WebSocket 服务，终端、Web 和 Android 客户端通过公共契约连接运行时。
 
-Core 可以作为独立 HTTP/WebSocket 服务运行，也可以作为 TypeScript/Node 包嵌入应用。运行任务不需要 Web UI；客户端断开连接也不等于取消任务。
+[Forge 装配主仓](https://github.com/Ling0925/forge) · [交互式 CLI](https://github.com/Ling0925/forge-cli) · [Web UI](https://github.com/Ling0925/forge-web-ui) · [Android](https://github.com/Ling0925/forge-android)
 
-[Forge 主仓](https://github.com/Ling0925/forge) · [CLI](https://github.com/Ling0925/forge-cli) · [Web](https://github.com/Ling0925/forge-web-ui) · [Android](https://github.com/Ling0925/forge-android)
+## 主要功能
 
-## Core 提供什么
+- 流式模型输出、工具执行、权限审批、取消、持久输入队列与运行中插话。
+- OpenAI Chat Completions / Responses、Anthropic Messages、Gemini 协议，以及模型来源、凭据和显式路由管理。
+- 工作区文件搜索与编辑、命令执行、Git 检查、文件检查点和改动记录。
+- 子代理、角色配置、独立 Git worktree 与代理间答疑。
+- 会话历史与分页、上下文压缩、工作记忆和长期记忆；通用后台工具任务由 `async_task` 管理，完成后可通过 host 唤醒主会话。
+- `AGENTS.md` 与技能发现、LSP、[MCP](docs/MCP.md)（stdio、Streamable HTTP、Legacy SSE）；可选 `browser` 和 `officecli` 插件。
+- HTTP RPC、WebSocket 事件与重放、本地 Unix socket；可选 GitHub Super-agent 和 Board 工作项后端。
 
-- **任务执行**：流式输出、工具调用、子代理、排队与插话、取消和审批；支持跨轮后台工具任务与主会话完成唤醒。
-- **模型接入**：OpenAI Chat Completions / Responses、Anthropic Messages、Gemini，以及来源、凭据与路由管理。
-- **本地工作区**：文件搜索与编辑、命令执行、检查点和改动记录；浏览器、LSP 与 MCP 按配置启用。
-- **官方插件**：统一清单、配置、启停和诊断；首个 `browser` 插件接入 agent-browser，支持同会话截图预览与人工接管，默认禁用。见[插件与浏览器](docs/PLUGINS.md)。
-- **持久化上下文**：会话历史、分页读取、上下文压缩、工作记忆与长期记忆。
-- **客户端连接**：HTTP RPC、WebSocket 事件与恢复游标，以及 Linux、macOS 本地 Unix socket。
+## 环境要求
 
-本仓是 TypeScript/Node 实现，不包含 CLI、React 界面、Electron 或 Android 应用。
+- Node.js 22，版本范围为 `>=22.23.1 <23`。
+- pnpm `11.18.0`，与 [package.json](package.json) 一致。
+- Linux 或 macOS。Windows 不受支持。
+- 源码构建需要 `/usr/bin/cc` 和 Node 头文件，用于编译原生文件锁；使用 Git worktree 时需要 `git`。
 
-## 快速开始
-
-支持 **Linux 和 macOS**，不支持 Windows。需要 **Node.js `>=22.23.1 <23`** 和 **pnpm `11.18.0`**，版本约束见 [package.json](package.json)。
+## 安装、构建与运行
 
 ```sh
 git clone https://github.com/Ling0925/forge-core.git
@@ -28,188 +30,208 @@ pnpm install --frozen-lockfile
 pnpm build
 ```
 
-Linux 和 macOS 构建均需 C 编译器 `/usr/bin/cc`，生成 `dist/native/forge-flock.node`，
-在进程内对已验证的文件描述符加锁。运行时若 addon 缺失，Linux 回退到系统 `flock`，macOS 回退到 `dist/native/forge-flock`。
-锁随最后一个描述符关闭/进程退出释放，不靠超时删锁。
-嵌入打包时可用绝对路径 `FORGE_FLOCK_EXECUTABLE` 和 `FORGE_FLOCK_ADDON` 分别指定随包提供的可信 helper 和 addon。
-构建后的聚焦验证：`node --test tests/store/posix-lock.test.mjs`。
-
-将下面的工作区替换成实际存在的绝对路径，再启动 API 服务：
+将工作区替换为实际存在的目录，启动 Core host：
 
 ```sh
-node dist/web/serve.js \
-  --host 127.0.0.1 \
-  --port 5175 \
-  --workspace /absolute/path/to/project
+pnpm serve --workspace /absolute/path/to/project
 ```
 
-此时 `http://127.0.0.1:5175` 是 **API 地址**，根路径没有工作台页面。需要界面时连接 [Forge Web](https://github.com/Ling0925/forge-web-ui#readme)；需要手机原生客户端时连接 [Forge Android](https://github.com/Ling0925/forge-android#readme)。首次运行还需通过客户端配置模型来源和凭据，启动服务本身不会完成模型配置。
+默认地址是 `http://127.0.0.1:5173`。`pnpm serve` 执行 `node dist/web/serve.js`；包也声明了指向同一入口的 `forge-core` bin。
+该入口提供 HTTP RPC 和 WebSocket，未传 `--renderer` 时根路径返回 404，没有 Web UI。
 
-### 启动选项
+| 参数 | 作用 |
+| --- | --- |
+| `--workspace PATH` | 必填；默认将客户端限制在该工作区 |
+| `--host IP` | 监听具体 IPv4/IPv6 地址，默认 `127.0.0.1` |
+| `--port PORT` | HTTP/WebSocket 端口，默认 `5173` |
+| `--multi-workspace` | 允许客户端切换工作区 |
+| `--socket PATH` | 为同一运行时增加 Unix socket；使用私有目录内的绝对路径 |
+| `--renderer PATH` | 提供已构建 Web UI 的目录，须包含 `index.html` |
+| `--super-agent` | 本次启动强制启用 Super-agent，仍须配置其必填项 |
+| `--help` | 显示入口帮助 |
 
-- `--workspace PATH`：必填，默认把客户端限制在该工作区。
-- `--multi-workspace`：允许个人工作台切换工作区。
-- `--host IP` / `--port PORT`：默认 `127.0.0.1:5173`；接受具体的 IPv4 或 IPv6 地址（如 `::1`、`[::1]`、`fd00::20`）和 `1024–65535` 端口，不接受 `0.0.0.0` / `::` 通配地址、主机名或带 zone 的链路本地地址。IPv6 页面地址形如 `http://[::1]:5175`。
-- `--socket PATH`：给同一个运行时增加本地 attach 入口；使用当前用户拥有的私有目录和绝对 socket 路径。
-- `--renderer PATH`：可选，同时提供已构建的 Web UI；省略时只提供 API。
-
-完整帮助：`node dist/web/serve.js --help`。
-
-## 与 Web 独立运行
-
-推荐让 Core 持有任务，Web 只提供页面与同源转发。两个仓库放在同一级，并先按各自说明完成构建：
+需要网页时，先按 [Web UI 仓库](https://github.com/Ling0925/forge-web-ui)的说明构建，再启动：
 
 ```sh
-# 终端 A，在 forge-core 中运行
-node dist/web/serve.js --host 127.0.0.1 --port 5175 \
-  --workspace /absolute/path/to/project --multi-workspace
+pnpm serve --workspace /absolute/path/to/project \
+  --renderer /absolute/path/to/built-web-ui
 ```
+
+交互式 `forge` 命令由 [forge-cli](https://github.com/Ling0925/forge-cli) 提供。要操作同一个 host 的活动任务，Core 启动时传入 `--socket`，再由 CLI 的 `attach` 连接。
+客户端断开不会取消已接受的任务；停止 Core 会停止它持有的任务。共享 `FORGE_HOME` 不等于连接同一运行时。
+
+命令行 host 使用可信局域网直连模式：访问监听地址无需设备配对，HTTP 不加密。默认监听回环地址，服务校验 Host / Origin。
+
+包目前标记为 `private`；本地消费者可通过 `file:../forge-core` 依赖构建后的包。嵌入入口是 `createHarness`，host 装配入口是 `@forge/core/host` 的 `createHostRuntime`；公开导出以 [package.json](package.json) 为准。
+
+## 配置要点
+
+默认状态目录是 `~/.local/share/forge`，环境变量 `FORGE_HOME` 可覆盖；嵌入时显式传入的 `stateDir` 优先。
+
+| 相对状态目录的路径 | 内容 |
+| --- | --- |
+| `settings/state.json` | 权威设置事务，包含模型来源、凭据、路由、角色配置及 Super-agent 设置 |
+| `settings/config.json`、`settings/credential.json` | 旧格式兼容文件；已有 `state.json` 时不再从它们读取设置 |
+| `mcp/servers.json` | MCP 注册及私密环境变量、请求头 |
+| `plugins.json` | 插件配置与启用状态 |
+
+服务可以在未配置模型时启动。开始模型任务前，通过客户端或 `HarnessService.updateSettings` 保存 endpoint、模型和凭据；RPC 方法为 `updateSettings`，配置对象放在 `input` 中。
+
+| 键 / 输入 | 用途 |
+| --- | --- |
+| `settings.baseUrl`、`settings.model` | 模型服务地址与精确模型 ID |
+| `settings.apiMode` | 可选：`chat-completions`、`responses`、`anthropic` 或 `gemini` |
+| `apiKey` | 与 `settings` 同级的私密输入；无需认证的服务可使用空值 |
+| `source` / `sources`、`route`、`agent` | 与 `settings` 同级的操作输入：单个/批量来源操作、路由组操作、角色操作 |
+| `settings.defaultPermission` | `readonly`、`workspace`、`unrestricted`，新配置默认为 `workspace` |
+| `settings.reasoningEffort`、`settings.maxOutputTokens` | 模型推理与输出配置 |
+| `settings.requestTimeoutMs`、`settings.contextBudgetTokens` | 模型请求超时与上下文预算 |
+| `settings.modelContextWindows`、`settings.defaultContextWindowTokens` | 显式上下文窗口及未知模型的回退窗口 |
+| `settings.maxActiveAgents`、`settings.maxAgentDepth`、`settings.lspServers` | 子代理调度与 LSP 配置 |
+| `settings.superAgent` | 下节的 Router、Worker、GitHub 与 Board 配置 |
+
+`FORGE_BASE_URL`、`FORGE_MODEL`、`FORGE_API_KEY` 可覆盖默认模型配置；显式绑定到来源的会话继续使用该来源。公开设置返回凭据是否存在，不返回密钥。
+配置字段见 [settings schema](src/shared/schemas/settings.ts)，来源与账号设置见[模型接入](docs/MODEL_ACCESS_PORT_STATUS.md)，角色见[智能体协作](docs/AGENT_COLLABORATION.md)，插件见[插件文档](docs/PLUGINS.md)。
+
+## 架构
+
+| 模块 | 职责 |
+| --- | --- |
+| `src/core` | Harness 装配、模型与工具运行循环、子代理、队列、压缩与记忆 |
+| `src/provider` | 模型协议适配、目录、凭据接入与路由 |
+| `src/store` | 设置、会话、检查点、记忆及工作项持久化；Board HTTP 适配 |
+| `src/tools` | 文件、命令、Git、Web、LSP、MCP 等工具注册与执行 |
+| `src/context` | 项目指令与技能发现、读取 |
+| `src/mcp` | MCP 服务注册、传输、连接与调用 |
+| `src/plugins` | 插件宿主及 browser / officecli 适配 |
+| `src/superagent` | Router/Worker 调度、GitHub 事件归一化、启动补查与 outbox 执行 |
+| `src/host` | controller、运行时 hub、本地传输；Super-agent/Webhook/Board 事件装配 |
+| `src/web` | HTTP/WebSocket host、静态资源与 Web 网关 |
+| `src/shared` | 浏览器可用的类型、schema 与客户端/服务接口契约 |
+
+箭头表示源码的跨模块导入方向；各模块均依赖 `shared`，图中统一省略这些连线。Super-agent 通过注入的 `HarnessService` 接口使用运行时。
+
+```mermaid
+flowchart TD
+  web --> host
+  web --> core
+  web --> store
+  host --> core
+  host --> superagent
+  host --> store
+  core --> provider
+  core --> tools
+  core --> context
+  core --> mcp
+  core --> plugins
+  core --> store
+  plugins --> tools
+  plugins --> mcp
+  plugins --> store
+  tools --> context
+  tools --> mcp
+  tools --> store
+  provider --> store
+  context --> store
+  mcp --> store
+  superagent --> store
+```
+
+`shared` 不反向依赖 Node 或运行时实现；浏览器客户端使用包中明确导出的共享子路径。详细边界见[架构文档](docs/ARCHITECTURE.md)和[契约归属](docs/CONTRACT_BOUNDARIES.md)。
+
+## Super-agent 模式
+
+Super-agent 由 Router 会话和 Worker 会话组成。Router 将 GitHub 触发分配为新工作项、附加到已有工作项、忽略或停止；Worker 在独立 worktree 中执行并汇报结果。
+Router 新建工作项时，只有关联触发中包含对 `github.login` 的 @mention、指派或审阅请求，才可直接创建工作；其余新工作先成为 Suggestion，由 `decideSuggestion` 接受后创建。
+
+### 启用与设置
+
+先配置模型来源并保存两个已启用的角色，分别填入 `routerProfileId`、`workerProfileId`。角色可固定来源/模型或继承默认选择；Worker 的有效权限须允许创建 worktree。
+通过 `updateSettings` 的 `input.settings.superAgent` 设置下表字段；工作区、角色和 GitHub 接入信息均须配置：
+
+| 键（相对 `superAgent`） | 用途 |
+| --- | --- |
+| `enabled` | 持久启用开关；或用 `--super-agent` 仅在本次启动启用 |
+| `workspace` | 本地 Git 工作区，独立于 HTTP 入口的 `--workspace` 参数 |
+| `routerProfileId`、`workerProfileId` | 已保存的 Router / Worker 角色 ID |
+| `github.login`、`github.repos` | 接收任务的 GitHub 用户及仓库列表，如 `["owner/repo"]` |
+| `github.webhook.port`、`github.webhookSecret` | Webhook 独立监听端口与验签 Secret，均必填 |
+| `github.webhook.host`、`github.webhook.maxBodyBytes` | 可选监听地址和请求体配置 |
+| `maxWorkers` | 可选 Worker 并发数 |
+
+保存设置后重启 host，使引擎和监听器按新配置装配：
 
 ```sh
-# 终端 B，在 forge-web-ui 中运行
-pnpm serve -- --host 127.0.0.1 --port 5173 \
-  --core-url http://127.0.0.1:5175
+pnpm serve --workspace /absolute/path/to/project --super-agent
 ```
 
-浏览器打开 `http://127.0.0.1:5173`。Web 重启期间，Core 中已接受的任务继续执行；页面重连后补发保留窗口内的事件，必要时重新读取持久化状态。**停止 Core 会停止它持有的任务**，因此只更新界面时不要联动停止 Core。
+### GitHub Webhook
 
-这不是全局单实例服务：普通 CLI 会创建自己的运行时。要控制同一批活动任务，需显式连接同一个 host，例如在 Core 启动时传入 `--socket`，再使用 CLI 的 `attach`。共享数据目录不能替代连接，也不要启动多个服务同时持有同一份状态。
+在宿主机安装 GitHub CLI 并执行 `gh auth login`。启动补查及审批后的发送执行器通过 `gh auth token` 获取凭据。
+在 GitHub Webhook 中填写指向独立监听器根路径的 URL，Content type 选 `application/json`，Secret 与 `github.webhookSecret` 相同；公开设置仅返回 `hasWebhookSecret`。
 
-## 数据、权限与网络
+- 接收 Issues、Issue comments、Pull requests、Pull request reviews、Pull request review comments。
+- 使用原始请求体和 Secret 校验 `X-Hub-Signature-256` 的 HMAC-SHA256；持久化后返回 202，同一 `X-GitHub-Delivery` 重复投递返回 409。
+- 启动先恢复未处理 delivery，再按每仓库游标分页补查 issue events 和 issue comments；这是一次性补查，没有定时轮询。首次没有游标时从当前时间开始，不导入旧历史。
 
-默认数据目录是 `~/.local/share/forge`，可用 `FORGE_HOME` 指定另一份独立状态：
+Webhook 与 Forge API 是两个监听器；对外转发 Webhook 时使用 `github.webhook.port`。
+
+### Outbox 审批
+
+Worker 调用 `superagent_send` 提议的评论、标签、push 和 PR 创建先保存为 pending outbox。
+通过 `listOutbox` 查看，调用 `decideOutbox { outboxId, approve: true }` 后才执行；`approve: false` 拒绝发送。执行结果记录为 `sent` 或 `failed`。
+Worker 的命令使用独立 `GH_CONFIG_DIR`，移除 GitHub token/host 环境变量并清空 Git credential helpers；Router 和普通会话保留原有命令环境。
+
+`getSuperAgentState`、`listSuperAgentTriggers`、`listWorkItems`、`getWorkItem`、`listSuggestions` 提供状态查询；`stopWorkItem { workId, reason }`、`resumeWorkItem { workId }` 管理工作项。字段与事件契约见 [superagent](src/shared/superagent.ts) 和 [RPC schema](src/shared/ipc.ts)。
+
+### 可选 forge-board 后端
+
+默认使用本地工作项存储；[forge-board](https://github.com/Ling0925/forge-board) 可通过 HTTP 接管新工作项：
+
+- 将 `superAgent.workItems.backend` 设为 `board`。
+- 配置 `superAgent.board.url`、`projectId`、`accountable`（负责人 ID），通过 `updateSettings` 的 `input.settings.superAgent.board.token` 写入 token；公开设置仅返回 `hasToken`。新增 Board 配置后重启 host。
+- Board 项目须启用 `allowAgentCancel: true` 才允许 Forge 直接取消工作项；取消仍受 Board 的审批策略约束。
+- host 订阅 Board SSE，将外部审批与任务变更同步给引擎；断线后从 1 秒开始指数退避重连，每次连接失败后延迟翻倍，上限为 1 分钟，连接成功后重置为 1 秒。
+- 切换后端只影响新工作项；已有本地工作项仍留在本地，由原存储继续处理，不自动迁移。
+
+Board 的任务状态审批与 GitHub outbox 发送审批分别处理。实现见 [Board 适配器](src/store/board.ts)、[后端选择](src/store/work-items.ts)与[事件订阅](src/host/board-events.ts)。
+
+## 开发
 
 ```sh
-FORGE_HOME=/absolute/path/to/private-state \
-  node dist/web/serve.js --workspace /absolute/path/to/project --port 5175
-```
-
-模型凭据、会话与配置由 Core 管理。测试和实验使用临时状态目录，不复用日常会话。
-
-- `readonly`、`workspace`、`unrestricted` 与 plan/build 模式共同约束工具能力；审批策略不提升权限。命令和外部工具不是操作系统沙箱。
-- 当前命令行 HTTP 入口采用可信局域网直连：**能够访问监听地址的人就能使用工作台能力，不需要配对**（`trustedLan` 默认开启；只有嵌入方以编程方式传入 `trustedLan: false` 时，才启用设备配对：通过 `/api/pair` 兑换邀请后每个请求都要带设备凭据，命令行没有开关）。默认回环监听；HTTP 没有加密，不应无保护地暴露到公网。
-- 服务校验 Host / Origin；客户端应使用实际监听地址。反向代理需要正确处理这些头与 WebSocket，而不是绕过校验。
-- 发布附件单文件上限为 **50 MiB（52,428,800 字节）**，每会话最多 **128 个、合计 64 MiB**。文本编辑和图片输入使用各自的限制。
-
-## 模型与 MCP
-
-模型协议由来源或逐模型配置明确选择，不会在协议失败后自动切换到 Chat Completions。适配器支持各协议的流式结果和受支持的完整响应形式；截断响应、冲突工具调用和缺少完成信号仍作为错误处理。用量缺失时保留未知状态，不记成零消耗。兼容性回归位于 [tests/provider](tests/provider)。错误阶段、重试决策和运行构建识别见 [错误诊断](docs/ERROR_DIAGNOSTICS.md)；子代理可独立选择其他供应商，规则见 [跨供应商派发](docs/AGENT_COLLABORATION.md#不带角色的跨供应商模型选择)。
-
-上下文窗口的解析顺序：设置里的 `modelContextWindows[模型]` → 来源的模型元数据（`modelSelection.overrides[模型].contextWindowTokens` 或手动目录）/ 上游报告的值 → 内置的少量已知模型表 → 设置 `defaultContextWindowTokens` → 默认 128K（保守值，未知模型宁可早压缩也不溢出）。
-
-MCP 支持 **stdio、Streamable HTTP、Legacy SSE**。注册不会连接；启用后才允许发现和调用，连接测试会握手并发送 ping。模型通过 `mcp_list_servers` → `mcp_list_tools` → `mcp_call_tool` 发现并使用工具，大目录按 `nextOffset` 分页。
-
-私密环境变量和请求头由注册接口显式传入，保存在 `FORGE_HOME/mcp/servers.json` 的私有权限文件中；公共列表不返回凭据，也不允许用 `envNames` 任意读取宿主环境。API key 应放入私密请求头或环境变量，不放在 URL、命令参数或仓库文件里。
-
-只读模式可查询服务器目录，但不能连接或调用；workspace 模式每次发现与调用均需审批。服务器 annotations 不授予权限。调用支持文本、结构化结果、图片、音频与资源块；结果递归脱敏且有大小限制，不自动重发工具调用。
-
-无需外部服务的示例：[examples/mcp/echo-server.mjs](examples/mcp/echo-server.mjs)。
-
-### 可调限制（设置项）
-
-下列设置均为可选，不填即用括号里的默认值：
-
-- `defaultContextWindowTokens`：未知模型的上下文窗口（128000）。
-- `gitInspectionTimeoutMs`：`git_status` / `git_diff` / `git_log` 每个 git 进程的超时（未设置时 status/diff 30 秒，探测与 log 10 秒）。
-- `maxActiveAgents`：每个父运行同时活跃的子 Agent 数（4，范围 1–32）。
-- `maxAgentDepth`：委派深度（1 = 只有主 Agent 能派子任务，最大 4）。
-- `maxSessionPlans`：每个会话的计划数（10000；持久化格式上限也是 10000，只能调低）。
-- Host 选项 `createRuntimeHub(service, { requestTimeoutMs })` 和 `connectLocalHost({ requestTimeoutMs, ... })`：短 RPC 的传输超时（120000 毫秒）。压缩、模型发现/管理、浏览器、运行启动/插话、队列启动、会话取消、等待运行取消、MCP 健康检查/启停/删除、插件配置/检查和用量统计不设传输超时，沿用操作自己的期限及取消机制；请求断开会取消支持 `AbortSignal` 的操作，已接受的运行独立继续。
-- Vertex 来源：`vertex.models` 用自己的模型列表替换内置参考列表；`vertex.discoverModels: true` 会调用 Vertex `publishers.models.list` 获取 Gemini 模型，失败时回退到 `models` 或内置列表。
-
-## Super-agent（GitHub，可选）
-
-在 `updateSettings` RPC 的 `input.settings.superAgent` 中设置 `enabled: true`，或启动时传 `--super-agent`（仅本次强制启用），然后重启服务。必填项为 `workspace`（本地 Git 工作区）、`routerProfileId`、`workerProfileId`（已保存的智能体配置）、`github.login`、`github.repos`（如 `["owner/repo"]`）、`github.webhook.port` 和 `github.webhookSecret`；可选 `github.webhook.host`、`github.webhook.maxBodyBytes`、`maxWorkers`。模型沿用两个 profile，Worker 在独立 worktree 中执行；并发默认值沿用 `maxActiveAgents` 的默认常量。
-
-修改 `superAgent` 设置后需重启 host 才能完整生效；引擎与 Webhook 监听器在启动时装配。
-
-`superAgent.workItems.backend` 默认为 `local`，设为 `board` 后仅新工作项写入 Board，已有本地工作项仍留在本地。`superAgent.board` 必填 `url`、`projectId`、`accountable`，并通过 `updateSettings` 的 `input.settings.superAgent.board.token` 写入只写 token（公共设置只返回 `hasToken`）。事件流断线后从 1 秒开始指数退避重连，连续失败时翻倍至最多 1 分钟，连接成功即重置为 1 秒。forge-core 使用的 Board 项目须设置 `allowAgentCancel: true`（Board 默认为 false），否则从 Forge 停止工作项会失败；可在 `forge-board project create` 时传 `--settings`，或用 `forge-board project settings <id> --settings '<JSON>'` 修改（提交的是整份项目设置，需带上已有项）。审批等待期间的任何任务修改（包括进度报告）都会使该审批失效，批准过期审批会返回版本冲突。
-
-通过 `updateSettings` 设置随机生成的 `github.webhookSecret`，并在 GitHub 仓库的 Webhook 配置中填入同一 Secret，Content type 选择 `application/json`。公共设置只返回 `hasWebhookSecret`。在宿主机先执行 `gh auth login`；启动补偿和审批后的发送执行器临时调用 `gh auth token`，凭据不进入会话或发送队列。仅 Worker 的前台、后台命令及其子进程使用私有空目录作为 `GH_CONFIG_DIR`，移除 GitHub token/host 环境变量并清空 git credential helpers、关闭交互凭据提示；保留用户 git 身份及其他配置。Router 和普通会话沿用原有命令环境。
-
-Webhook 是独立 HTTP 监听器，向其根路径 POST。用 tunnel 或反向代理**只暴露 `github.webhook.port`**，Forge API 端口留在私网。GitHub 勾选 Issues、Issue comments、Pull requests、Pull request reviews、Pull request review comments；监听器验签并持久化后返回 202，重复 delivery 返回 409。`superAgent.github.webhook.maxBodyBytes` 默认 26214400（25 MB，与 GitHub 最大载荷一致）；Content-Length 或流式累计字节数超出时立即返回 413 并关闭请求，不持久化。接口字段见 [GitHub Webhook 文档](https://docs.github.com/en/webhooks/webhook-events-and-payloads)。
-
-启动时先恢复未处理的 delivery，再按仓库的 `github:<repo>:since` 游标补查 issue events 和 issue comments（分页、一次性，无轮询）；首次无游标时从当前时刻开始，不导入旧历史。评论使用对象 ID，指派/审阅请求使用线程、接收人和事件时间去重；REST 能恢复的历史以 [issue events API](https://docs.github.com/en/rest/issues/events) 为准。
-
-仅明确 @mention、指派或请求 `github.login` 审阅才直接创建 Worker；其他工作先生成 Suggestion。通过 `getSuperAgentState`、`listSuperAgentTriggers`、`listWorkItems`、`getWorkItem`、`stopWorkItem`、`resumeWorkItem`、`listSuggestions`、`listOutbox` 查看/管理；`decideSuggestion { suggestionId, accept }` 接受建议后创建 Worker。所有评论、标签、push 和 PR 都先进入 pending outbox，只有 `decideOutbox { outboxId, approve: true }` 才执行，false 则拒绝。工作项操作传 `workId`，停止还需 `reason`。WebSocket 和本地 socket 广播 `superagent_trigger`、`superagent_work`、`superagent_suggestion`、`superagent_outbox`；无专用 UI。
-
-## 作为包使用
-
-包名为 `@forge/core`，当前标记为 `private`，本地客户端通过 `file:../forge-core` 依赖它：
-
-```text
-workspace/
-├── forge-core/
-├── forge-cli/
-└── forge-web-ui/
-```
-
-先构建 Core，再安装消费者依赖。Core 重新构建后，在消费者仓执行 `pnpm install --no-frozen-lockfile` 刷新文件包；由 Forge 主仓装配时使用主仓提供的构建与链接脚本。
-
-```ts
-import { createHarness } from "@forge/core";
-
-const service = await createHarness({ stateDir: "/absolute/path/to/private-state" });
-try {
-  const sessions = await service.listSessions();
-  console.log(sessions);
-} finally {
-  await service.dispose();
-}
-```
-
-运行时使用构建后的 `dist`，类型来自 `src`。客户端只通过公开包路径导入，不跨仓引用源码；浏览器使用 `@forge/core/shared/*` 契约，不能导入 Node 运行时根入口。HTTP/RPC 契约仍随项目演进，升级客户端与 Core 时应一起验证。
-
-## Harness² 策略预检（可选）
-
-在 `service.run` / RPC `startRun` 的输入中显式传入 `harness: {}`，可在正式执行前运行有界的 **基线 → 提案 → 只读试跑 → 组合 → 复测 → 选择**。获选内容只作为本轮规划、工具指导与验证策略的参考；不会改写权限、工具实现或全局 system prompt。
-
-```ts
-// 其余参数沿用原有 onEvent、approve、signal。
-const input = {
-  sessionId,
-  prompt: "修复问题并验证",
-  permission: "workspace" as const,
-  harness: { domain: "coding", candidates: 2, experience: "read-write" as const },
-};
-```
-
-默认不启用。启用会增加模型调用及费用；预检不执行写文件、命令或网络操作，正式任务只走一次原有执行流程。只有明确允许、正式任务成功且非 readonly/plan 时才记录经验，按工作区、模型、领域隔离。完整用法、限制与证据说明见 [Harness² 策略预检](docs/HARNESS_ADAPTATION.md)。
-
-## 开发与检查
-
-```sh
+pnpm install --frozen-lockfile
 pnpm build
 pnpm test:package
-pnpm exec vitest run tests/shared/contract-boundaries.test.ts \
-  tests/core/integration.test.ts tests/web-host.test.ts tests/web-static.test.ts
+pnpm exec vitest run tests/shared/contract-boundaries.test.ts tests/web-host.test.ts tests/web-static.test.ts
+pnpm typecheck
+pnpm lint
 ```
 
-包测试覆盖浏览器安全导出、离线模型回合、持久化和 API-only HTTP/RPC 启动，使用临时状态，不需要真实 Provider 密钥。修改特定模块时追加对应测试；`pnpm test`、`pnpm typecheck`、`pnpm lint` 是更大范围的检查入口。
+`pnpm test` 运行完整 Vitest 套件；日常修改按模块选取测试。`pnpm lint` 使用 Biome 检查代码与格式。
+启动和集成检查使用临时 `FORGE_HOME` 与临时工作区，结束后清理；包测试使用离线 Provider。
 
-```text
-src/core/       运行协调、子代理、输入队列与记忆
-src/provider/   模型协议、来源与路由
-src/store/      配置、会话和持久化
-src/tools/      工作区与外部工具
-src/context/    项目指令与技能
-src/mcp/        MCP 连接与调用
-src/plugins/    插件宿主与官方浏览器适配
-src/host/       共享 controller、运行时与本地传输
-src/web/        HTTP/WebSocket host、静态资源与网关
-src/shared/     公共类型、schema 与客户端契约
-```
+## 文档
 
-## 深入阅读
+- [ROADMAP.md](ROADMAP.md)：路线图与待决事项。
+- [ARCHITECTURE.md](docs/ARCHITECTURE.md)：模块职责与运行时架构。
+- [CONTRACT_BOUNDARIES.md](docs/CONTRACT_BOUNDARIES.md)：共享契约与浏览器边界。
+- [PROJECT_CONTEXT.md](docs/PROJECT_CONTEXT.md)：项目指令与技能发现规则。
+- [AGENT_COLLABORATION.md](docs/AGENT_COLLABORATION.md)：角色、跨供应商派发与答疑。
+- [RUNTIME_LIFECYCLE.md](docs/RUNTIME_LIFECYCLE.md)：运行、取消与资源所有权。
+- [SESSION_STORAGE.md](docs/SESSION_STORAGE.md)：增量会话存储与恢复。
+- [INPUT_QUEUE.md](docs/INPUT_QUEUE.md)：持久输入队列与恢复语义。
+- [MEMORY.md](docs/MEMORY.md)：长期记忆与聚焦整理。
+- [ASYNC_TOOLS.md](docs/ASYNC_TOOLS.md)：后台工具任务及完成通知。
+- [MCP.md](docs/MCP.md)：传输、注册与启用、工具发现、权限和结果处理。
+- [PLUGINS.md](docs/PLUGINS.md)：browser、officecli 插件配置与使用。
+- [HARNESS_ADAPTATION.md](docs/HARNESS_ADAPTATION.md)：可选 Harness² 策略预检。
+- [MODEL_ACCESS_PORT_STATUS.md](docs/MODEL_ACCESS_PORT_STATUS.md)：模型接入实现、迁移与验证范围。
+- [MODEL_ACCESS_TS_PLAN.md](docs/MODEL_ACCESS_TS_PLAN.md)：2026-10-20 模型接入历史设计。
+- [ERROR_DIAGNOSTICS.md](docs/ERROR_DIAGNOSTICS.md)：模型、客户端和工具错误诊断。
+- [TEST_OWNERSHIP.md](docs/TEST_OWNERSHIP.md)：测试归属与跨仓边界。
+- [AUTHORSHIP.md](docs/AUTHORSHIP.md)：作者与来源记录。
 
-- [架构与模块职责](docs/ARCHITECTURE.md)
-- [项目指令与技能](docs/PROJECT_CONTEXT.md)
-- [模型接入、迁移与支持范围](docs/MODEL_ACCESS_PORT_STATUS.md)
-- [契约归属与浏览器边界](docs/CONTRACT_BOUNDARIES.md)
-- [运行生命周期与取消](docs/RUNTIME_LIFECYCLE.md)
-- [会话存储](docs/SESSION_STORAGE.md) · [持久输入队列](docs/INPUT_QUEUE.md)
-- [长期记忆与聚焦整理](docs/MEMORY.md) · [通用异步工具与主会话唤醒](docs/ASYNC_TOOLS.md)
-- [测试归属](docs/TEST_OWNERSHIP.md)
-- [作者说明](docs/AUTHORSHIP.md) · [第三方声明](THIRD_PARTY_NOTICES.md)
+## 许可证
 
-本仓保留从原 `desktop-harness` 提取的路径历史，在 Forge 主仓中位于 `repos/forge-core` 子模块。代码在本仓独立提交，主仓单独记录所使用的提交版本。
+[MIT](LICENSE)。
+Magpie 改编部分的来源和原许可文本见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。
