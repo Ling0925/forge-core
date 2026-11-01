@@ -15,7 +15,11 @@ import {
   agentArgumentSchemas,
   executeAgentOperation,
 } from "./agent-operations";
-import { executeHistory, historyDefinitions } from "./history";
+import {
+  executeHistory,
+  historyDefinitions,
+  historyReadSchema,
+} from "./history";
 import {
   createSessionPlan,
   planArgumentSchemas,
@@ -168,8 +172,18 @@ async function executeNativeUnchecked(
   const { deps } = env;
   switch (name) {
     case "history_search":
-    case "history_read":
       return executeHistory(name, args, env.snapshot);
+    case "history_read": {
+      const parsed = historyReadSchema.safeParse(args);
+      if (!parsed.success) return invalidToolInput(parsed.error);
+      const target = parsed.data.sessionId;
+      if (target && target !== env.snapshot.id) {
+        if (!(await deps.canReadSession?.(env.snapshot, target)))
+          return invalidToolInput("Session history access is not authorized.");
+        return executeHistory(name, parsed.data, await deps.store.get(target));
+      }
+      return executeHistory(name, parsed.data, env.snapshot);
+    }
     case "list_models": {
       const parsed = modelListArgs.safeParse(args);
       if (!parsed.success) return invalidToolInput(parsed.error);

@@ -51,6 +51,9 @@ export async function openSettingsStore(
     version: hasExtendedState(state) ? (2 as const) : (1 as const),
     settings: state.settings,
     apiKey: state.apiKey,
+    ...(state.webhookSecret === undefined
+      ? {}
+      : { webhookSecret: state.webhookSecret }),
     sources: [...state.sources],
     ...(state.routeGroups === undefined
       ? {}
@@ -109,6 +112,9 @@ export async function openSettingsStore(
         : { agentProfilesRevision: parsed.data.agentProfilesRevision }),
       settings: parsed.data.settings,
       apiKey: parsed.data.apiKey,
+      ...(parsed.data.webhookSecret === undefined
+        ? {}
+        : { webhookSecret: parsed.data.webhookSecret }),
       sources: (parsed.data.sources ?? []).map((source) => ({
         ...source,
         revision: source.revision ?? 1,
@@ -175,6 +181,9 @@ export async function openSettingsStore(
       return (await effective()).public;
     },
     getProviderSnapshot: providerSnapshot,
+    async getWebhookSecret() {
+      return (await load()).webhookSecret;
+    },
     async getProviderConfig(sourceId, credentialId, model) {
       const snapshot = await providerSnapshot(sourceId, credentialId, model);
       if (snapshot.source && !snapshot.source.credentials) {

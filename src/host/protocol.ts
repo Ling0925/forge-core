@@ -1,6 +1,7 @@
 import { z } from "zod";
 import {
   HOST_PROTOCOL_VERSION,
+  hostEventSchema,
   hostStateSchema,
   rpcRequestSchema,
   rpcResponseSchema,
@@ -25,7 +26,7 @@ export const localRequestSchema = z
   })
   .strict();
 const eventSchema = z
-  .object({ cursor: z.number().int().positive().safe(), data: runEventSchema })
+  .object({ cursor: z.number().int().positive().safe(), data: hostEventSchema })
   .strict();
 export const localMessageSchema = z.discriminatedUnion("kind", [
   z

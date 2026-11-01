@@ -76,7 +76,7 @@ export async function openSessionStore(
       }
     },
     async create(input) {
-      const { titleSource, ...creation } = input;
+      const { titleSource, agentRole, ...creation } = input;
       const parsed = createSessionInputSchema.safeParse(creation);
       if (!parsed.success || !parsed.data.model || !parsed.data.title)
         throw new ForgeError(
@@ -101,6 +101,7 @@ export async function openSessionStore(
           workspace,
           title: parsed.data.title,
           ...(titleSource ? { titleSource } : {}),
+          ...(agentRole === undefined ? {} : { agentRole }),
           model: parsed.data.model,
           ...(parsed.data.providerSourceId
             ? { providerSourceId: parsed.data.providerSourceId }

@@ -79,6 +79,21 @@ import {
   sessionPageRequestSchema,
   sessionPageSchema,
 } from "./session-page";
+import {
+  type OutboxItem,
+  type Suggestion,
+  type Trigger,
+  type WorkItem,
+  type WorkItemQuery,
+  outboxItemSchema,
+  suggestionSchema,
+  superAgentEventSchema,
+  superAgentStateSchema,
+  triggerQuerySchema,
+  triggerSchema,
+  workItemQuerySchema,
+  workItemSchema,
+} from "./superagent";
 import type { WorkspaceDirectoryPage } from "./workspaces";
 
 export const IPC_CHANNELS = Object.freeze({
@@ -360,6 +375,75 @@ export const rpcRequestSchema = z
       })
       .strict(),
     z.object({ ...requestBase, method: z.literal("getSettings") }).strict(),
+    z
+      .object({ ...requestBase, method: z.literal("getSuperAgentState") })
+      .strict(),
+    z
+      .object({
+        ...requestBase,
+        method: z.literal("listSuperAgentTriggers"),
+        query: triggerQuerySchema.optional(),
+      })
+      .strict(),
+    z
+      .object({
+        ...requestBase,
+        method: z.literal("listWorkItems"),
+        query: workItemQuerySchema.optional(),
+      })
+      .strict(),
+    z
+      .object({
+        ...requestBase,
+        method: z.literal("getWorkItem"),
+        workId: z.string().min(1),
+      })
+      .strict(),
+    z
+      .object({
+        ...requestBase,
+        method: z.literal("stopWorkItem"),
+        workId: z.string().min(1),
+        reason: z.string(),
+      })
+      .strict(),
+    z
+      .object({
+        ...requestBase,
+        method: z.literal("resumeWorkItem"),
+        workId: z.string().min(1),
+      })
+      .strict(),
+    z
+      .object({
+        ...requestBase,
+        method: z.literal("listSuggestions"),
+        state: suggestionSchema.unwrap().shape.state.optional(),
+      })
+      .strict(),
+    z
+      .object({
+        ...requestBase,
+        method: z.literal("decideSuggestion"),
+        suggestionId: z.string().min(1),
+        accept: z.boolean(),
+      })
+      .strict(),
+    z
+      .object({
+        ...requestBase,
+        method: z.literal("listOutbox"),
+        state: outboxItemSchema.unwrap().options[0].shape.state.optional(),
+      })
+      .strict(),
+    z
+      .object({
+        ...requestBase,
+        method: z.literal("decideOutbox"),
+        outboxId: z.string().min(1),
+        approve: z.boolean(),
+      })
+      .strict(),
     z
       .object({
         ...requestBase,
@@ -665,6 +749,16 @@ const success = <M extends RpcRequest["method"], S extends z.ZodTypeAny>(
     .strict()
     .readonly();
 export const rpcResponseSchema = z.union([
+  success("getSuperAgentState", superAgentStateSchema),
+  success("listSuperAgentTriggers", z.array(triggerSchema).readonly()),
+  success("listWorkItems", z.array(workItemSchema).readonly()),
+  success("getWorkItem", workItemSchema),
+  success("stopWorkItem", workItemSchema),
+  success("resumeWorkItem", workItemSchema),
+  success("listSuggestions", z.array(suggestionSchema).readonly()),
+  success("decideSuggestion", suggestionSchema),
+  success("listOutbox", z.array(outboxItemSchema).readonly()),
+  success("decideOutbox", outboxItemSchema),
   success("getHostState", hostStateSchema),
   success("getSettings", publicSettingsSchema),
   success("updateSettings", publicSettingsSchema),
@@ -730,6 +824,16 @@ export const rpcResponseSchema = z.union([
       id: requestBase.id,
       ok: z.literal(false),
       method: z.enum([
+        "getSuperAgentState",
+        "listSuperAgentTriggers",
+        "listWorkItems",
+        "getWorkItem",
+        "stopWorkItem",
+        "resumeWorkItem",
+        "listSuggestions",
+        "decideSuggestion",
+        "listOutbox",
+        "decideOutbox",
         "getHostState",
         "getSettings",
         "updateSettings",
@@ -788,19 +892,33 @@ export const runEventSchema = z
   .strict()
   .readonly();
 export type RunEvent = z.infer<typeof runEventSchema>;
+export const hostEventSchema = z.union([runEventSchema, superAgentEventSchema]);
+export type HostEvent = z.infer<typeof hostEventSchema>;
 export const workerMessageSchema = z
   .discriminatedUnion("kind", [
     z.object({ kind: z.literal("ready") }).strict(),
     z
       .object({ kind: z.literal("response"), response: rpcResponseSchema })
       .strict(),
-    z.object({ kind: z.literal("event"), data: runEventSchema }).strict(),
+    z.object({ kind: z.literal("event"), data: hostEventSchema }).strict(),
   ])
   .readonly();
 export type WorkerMessage = z.infer<typeof workerMessageSchema>;
 
 export interface ForgeBridge {
   getHostState?(): Promise<import("./host").HostState>;
+  getSuperAgentState?(): Promise<z.infer<typeof superAgentStateSchema>>;
+  listSuperAgentTriggers?(
+    query?: z.infer<typeof triggerQuerySchema>,
+  ): Promise<readonly Trigger[]>;
+  listWorkItems?(query?: WorkItemQuery): Promise<readonly WorkItem[]>;
+  getWorkItem?(workId: string): Promise<WorkItem>;
+  stopWorkItem?(workId: string, reason: string): Promise<WorkItem>;
+  resumeWorkItem?(workId: string): Promise<WorkItem>;
+  listSuggestions?(state?: Suggestion["state"]): Promise<readonly Suggestion[]>;
+  decideSuggestion?(suggestionId: string, accept: boolean): Promise<Suggestion>;
+  listOutbox?(state?: OutboxItem["state"]): Promise<readonly OutboxItem[]>;
+  decideOutbox?(outboxId: string, approve: boolean): Promise<OutboxItem>;
   readonly inputQueue?: import("./input-queue").InputQueueService;
   /** Web launch-workspace policy; absent on desktop and older hosts. */
   readonly restrictWorkspace?: boolean;
@@ -885,7 +1003,7 @@ export interface ForgeBridge {
     approvalId: string,
     approved: boolean,
   ): Promise<void>;
-  onEvent(listener: (event: RunEvent) => void): () => void;
+  onEvent(listener: (event: HostEvent) => void): () => void;
   /**
    * Web-only sandboxed HTML preview. Absent on hosts without an authenticated
    * preview endpoint (the desktop bridge), so callers must probe for it.

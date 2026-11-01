@@ -1,4 +1,4 @@
-import type { RunEvent } from "../shared";
+import type { HostEvent } from "../shared";
 
 export class EventRing {
   private readonly entries = new Map<
@@ -17,7 +17,7 @@ export class EventRing {
     return this.entries.keys().next().value ?? this.cursor + 1;
   }
 
-  append(data: RunEvent) {
+  append(data: HostEvent) {
     const json = JSON.stringify(data);
     const entry = {
       cursor: ++this.cursor,

@@ -3,7 +3,21 @@ import {
   type AgentToolGroup,
   ForgeError,
   type RunInput,
+  agentProfileSchema,
 } from "../shared";
+
+export function resolveAgentProfile(
+  profiles: readonly AgentProfile[],
+  id: string,
+): AgentProfile {
+  const profile = profiles.find((item) => item.id === id);
+  if (!profile?.enabled)
+    throw new ForgeError(
+      "invalid_input",
+      "Agent profile is missing or disabled. Rediscover profiles; no task was started.",
+    );
+  return agentProfileSchema.parse(profile);
+}
 
 export function assertAgentModel(
   profile: AgentProfile | undefined,

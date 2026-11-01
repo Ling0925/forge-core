@@ -20,6 +20,7 @@ test("package exports resolve every module barrel from dist", async () => {
     "core",
     "provider",
     "store",
+    "superagent",
     "tools",
     "context",
     "mcp",
@@ -112,7 +113,7 @@ test("only the bin enables compile caching before loading the runtime", async ()
     assert.equal(help.stderr, "");
     assert.equal(
       help.stdout,
-      "Forge Core: --host <IPv4|IPv6> --port <1024..65535> --workspace <directory> [--socket <private Unix socket>] [--renderer <built Web UI directory>] [--multi-workspace]\nDefaults: host 127.0.0.1, port 5173. API-only unless --renderer is supplied. Personal LAN direct access; no device pairing required. HTTP has no transport secrecy.\n",
+      "Forge Core: --host <IPv4|IPv6> --port <1024..65535> --workspace <directory> [--socket <private Unix socket>] [--renderer <built Web UI directory>] [--multi-workspace] [--super-agent]\nDefaults: host 127.0.0.1, port 5173. API-only unless --renderer is supplied. Personal LAN direct access; no device pairing required. HTTP has no transport secrecy.\n",
     );
     assert((await readdir(cache, { recursive: true })).length > 0);
     const disabled = await runNode([...entry, "--help"], directory, {
@@ -124,6 +125,10 @@ test("only the bin enables compile caching before loading the runtime", async ()
     for (const [args, error] of [
       [[], "Missing --workspace."],
       [["--port"], "Missing value for --port."],
+      [
+        ["--workspace", directory, "--super-agent"],
+        "Missing required settings: superAgent.workspace",
+      ],
       [
         ["--workspace", directory, "--port", "invalid"],
         "Use one concrete IPv4 or IPv6 address (not 0.0.0.0 or ::) and a port between 1024 and 65535.",

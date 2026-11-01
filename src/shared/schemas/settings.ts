@@ -17,6 +17,10 @@ import {
   sourceAccessFields,
 } from "../model-access";
 import { rootTimeoutSchema, rootToolLimitSchema } from "../run-budget";
+import {
+  publicSuperAgentSettingsSchema,
+  superAgentSettingsInputSchema,
+} from "../superagent";
 import { jsonObjectSchema, permissionSchema } from "./base";
 
 export const lspServerSchema = z
@@ -179,6 +183,7 @@ export type PublicProviderSource = z.infer<typeof publicProviderSourceSchema>;
 export const publicSettingsSchema = z
   .object({
     ...configurableSettingsFields,
+    superAgent: publicSuperAgentSettingsSchema.optional(),
     hasApiKey: z.boolean(),
     isConfigured: z.boolean(),
     providerSources: z.array(publicProviderSourceSchema).readonly().optional(),
@@ -265,7 +270,10 @@ export const configureInputSchema = z
     route: routeOperationSchema.optional(),
     agent: agentProfileOperationSchema.optional(),
     settings: z
-      .object(configurableSettingsFields)
+      .object({
+        ...configurableSettingsFields,
+        superAgent: superAgentSettingsInputSchema.optional(),
+      })
       .partial()
       .strict()
       .readonly()

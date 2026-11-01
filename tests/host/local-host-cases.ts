@@ -62,6 +62,7 @@ function service(overrides: Partial<HarnessService> = {}): HarnessService {
     listModels: async () => [],
     listSessions: async () => [],
     createSession: async () => snapshot,
+    createSessionWithProfile: async () => snapshot,
     getSession: async () => snapshot,
     run: async () => snapshot,
     compactSession: async () => snapshot,
@@ -385,7 +386,8 @@ export function registerLocalHostTests() {
       });
       const messages: RunEvent[] = [];
       f.runtime.subscribe((message) => {
-        if (message.kind === "event") messages.push(message.data);
+        if (message.kind === "event")
+          messages.push(runEventSchema.parse(message.data));
       });
       await f.runtime.request(
         rpcRequestSchema.parse({
@@ -540,9 +542,11 @@ export function registerLocalHostTests() {
     const firstEvents: RunEvent[] = [];
     const secondEvents: RunEvent[] = [];
     const first = await f.connect({
-      onEvent: (event) => firstEvents.push(event),
+      onEvent: (event) => firstEvents.push(runEventSchema.parse(event)),
     });
-    await f.connect({ onEvent: (event) => secondEvents.push(event) });
+    await f.connect({
+      onEvent: (event) => secondEvents.push(runEventSchema.parse(event)),
+    });
     await request(first, {
       method: "startRun",
       input: { sessionId, prompt: "stream" },
@@ -559,7 +563,7 @@ export function registerLocalHostTests() {
     await f.connect({
       hostId: f.runtime.hostState().hostId,
       cursor: 0,
-      onEvent: (event) => replay.push(event),
+      onEvent: (event) => replay.push(runEventSchema.parse(event)),
     });
     expect(replay).toEqual(firstEvents);
     expect(secondEvents).toEqual(firstEvents);
@@ -761,7 +765,7 @@ export function registerLocalHostTests() {
     const b = await f.connect({ hostId, cursor });
     expect(b.reset).toBe(false);
     const events: RunEvent[] = [];
-    b.subscribe((event) => events.push(event));
+    b.subscribe((event) => events.push(runEventSchema.parse(event)));
     expect(
       events.some(
         (item) =>

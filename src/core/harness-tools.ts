@@ -3,6 +3,7 @@ import type { McpService } from "../mcp";
 import type { createPluginHost } from "../plugins";
 import type {
   AsyncTaskService,
+  CommandEnvironmentTransform,
   CommandTaskAccess,
   HarnessOptions,
   LocalToolRegistry,
@@ -10,6 +11,7 @@ import type {
   Permission,
   PublicSettings,
   SessionId,
+  SessionSnapshot,
 } from "../shared";
 
 import {
@@ -39,7 +41,7 @@ import { createHarnessMemoryTools } from "./harness-memory-tools";
 /** Harness-owned state shared by every per-run tool registry. */
 export type HarnessToolDeps = {
   directory: string;
-  options: Pick<HarnessOptions, "toolFactory">;
+  options: Pick<HarnessOptions, "toolFactory" | "sessionTools">;
   plugins: Awaited<ReturnType<typeof createPluginHost>>;
   publishedFiles: Awaited<ReturnType<typeof openPublishedFileStore>>;
   memories: Awaited<ReturnType<typeof openMemoryStore>>;
@@ -68,12 +70,14 @@ const createDefaultTools = async (
   extensions: Awaited<
     ReturnType<Awaited<ReturnType<typeof createPluginHost>>["createTools"]>
   >,
+  transformCommandEnv: CommandEnvironmentTransform | undefined,
 ): Promise<LocalToolRegistry> => {
   const registries: LocalToolRegistry[] = [extensions.registry];
   try {
     const local = await createLocalToolRegistry(workspace, {
       redactValues: [apiKey],
       protectedRoots: [stateDirectory],
+      transformCommandEnv,
       ...(settings.gitInspectionTimeoutMs === undefined
         ? {}
         : { gitTimeoutMs: settings.gitInspectionTimeoutMs }),
@@ -126,11 +130,14 @@ export const createHarnessTools = (deps: HarnessToolDeps) => {
     apiKey: string,
     provider: ModelProvider,
     uiHost?: "web",
+    session?: SessionSnapshot,
   ) => {
     let local: LocalToolRegistry | undefined;
+    let sessionTools: ReturnType<NonNullable<HarnessOptions["sessionTools"]>>;
     let context: Awaited<ReturnType<typeof createProjectContext>> | undefined;
     let extensions: Awaited<ReturnType<typeof plugins.createTools>> | undefined;
     try {
+      sessionTools = session ? options.sessionTools?.(session) : undefined;
       if (options.toolFactory) local = await options.toolFactory(workspace);
       else {
         extensions = await plugins.createTools(workspace, [apiKey]);
@@ -143,6 +150,7 @@ export const createHarnessTools = (deps: HarnessToolDeps) => {
           mcp,
           lspPool,
           extensions,
+          sessionTools?.transformCommandEnv,
         );
       }
       context = await createProjectContext(workspace, {
@@ -151,6 +159,7 @@ export const createHarnessTools = (deps: HarnessToolDeps) => {
       await context.refresh();
       const combined = createCombinedToolRegistry(
         local,
+        ...(sessionTools ? [sessionTools.registry] : []),
         ...(!options.toolFactory
           ? [
               await createPublishedFileTool(workspace, publishedFiles, {
@@ -182,7 +191,11 @@ export const createHarnessTools = (deps: HarnessToolDeps) => {
       }
       let accessReleased = false;
       return {
-        instructions: [context.getSystemContext(), extensions?.instructions]
+        instructions: [
+          context.getSystemContext(),
+          extensions?.instructions,
+          sessionTools?.instructions,
+        ]
           .filter(Boolean)
           .join("\n\n"),
         tools: {
@@ -215,6 +228,7 @@ export const createHarnessTools = (deps: HarnessToolDeps) => {
     } catch (error) {
       await Promise.allSettled([
         local?.dispose(),
+        sessionTools?.registry.dispose(),
         extensions?.registry.dispose(),
         context?.dispose(),
       ]);

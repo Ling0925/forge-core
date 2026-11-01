@@ -10,6 +10,7 @@ import {
   providerSourceRevisionSchema,
   providerSourceSchema,
   routeGroupSchema,
+  superAgentSettingsSchema,
 } from "../shared";
 
 // One authoritative transaction holds sources, private credentials and routes.
@@ -25,6 +26,7 @@ const fieldsSchema = configureInputSchema
   .shape.settings.unwrap()
   .unwrap()
   .extend({
+    superAgent: superAgentSettingsSchema.optional(),
     webSearch: z.enum(["disabled", "cached", "live"]).optional(),
     browserAllowedOrigins: z.unknown().optional(),
     browserExecutablePath: z.unknown().optional(),
@@ -76,6 +78,7 @@ export type StoredState = Readonly<{
   agentProfilesRevision?: number;
   settings: StoredSettings;
   apiKey: string;
+  webhookSecret?: string;
   sources: readonly StoredSource[];
   activeSourceId?: string;
 }>;
@@ -87,6 +90,7 @@ export const transactionSchema = z
     settings: fieldsSchema,
     apiKey: credentialValueSchema,
     sources: z.array(storedSourceSchema).optional(),
+    webhookSecret: z.string().optional(),
     routeGroups: z.array(routeGroupSchema).readonly().optional(),
     // Absent in every older transaction: migrated to an empty collection.
     agentProfiles: agentProfilesSchema.optional(),

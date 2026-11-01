@@ -10,6 +10,7 @@ import type {
   ToolDefinition,
 } from "./schemas/messages";
 import type {
+  CreateProfileSessionInput,
   CreateSessionInput,
   RunInput,
   SessionSnapshot,
@@ -35,7 +36,7 @@ export interface RunControl {
   /** Trusted predecessor acknowledgment; never a public RunInput field. */
   readonly acknowledgedPredecessor?: string;
   /** Trusted durable completion notification; never a public RunInput field. */
-  readonly inputOrigin?: "background_task";
+  readonly inputOrigin?: import("./input-queue").QueuedInput["origin"];
   readonly getPermission?: () => Permission | undefined;
   /** Freeze host permission changes before persisting the terminal permission. */
   readonly onFinalizing?: () => void;
@@ -145,6 +146,7 @@ export interface SessionStore {
       providerSourceId?: string;
       routeGroupId?: string;
       titleSource?: "default" | "user";
+      agentRole?: SessionSnapshot["agentRole"];
     }>,
   ): Promise<SessionSnapshot>;
   save(snapshot: SessionSnapshot): Promise<void>;
@@ -152,6 +154,7 @@ export interface SessionStore {
 }
 export interface SettingsStore {
   getPublic(): Promise<PublicSettings>;
+  getWebhookSecret(): Promise<string | undefined>;
   /** Without an id: the active source (legacy top-level settings when none). */
   getProviderConfig(
     sourceId?: string,
@@ -208,6 +211,9 @@ export interface HarnessService {
   ): Promise<number | null>;
   listSessions(): Promise<readonly SessionSummary[]>;
   createSession(input: CreateSessionInput): Promise<SessionSnapshot>;
+  createSessionWithProfile(
+    input: CreateProfileSessionInput,
+  ): Promise<SessionSnapshot>;
   getSession(id: SessionId): Promise<SessionSnapshot>;
   getPublishedFile?(
     sessionId: SessionId,
@@ -278,10 +284,26 @@ export type ProviderFactory = (config: ProviderConfig) => ModelProvider;
 export type ToolFactory = (
   workspace: string,
 ) => LocalToolRegistry | Promise<LocalToolRegistry>;
+export type CommandEnvironmentTransform = (
+  env: Record<string, string | undefined>,
+) =>
+  | Record<string, string | undefined>
+  | Promise<Record<string, string | undefined>>;
 export interface HarnessOptions {
   readonly stateDir?: string;
   readonly providerFactory?: ProviderFactory;
   readonly toolFactory?: ToolFactory;
+  readonly sessionTools?: (session: SessionSnapshot) =>
+    | {
+        registry: LocalToolRegistry;
+        instructions: string;
+        transformCommandEnv?: CommandEnvironmentTransform;
+      }
+    | undefined;
+  readonly canReadSession?: (
+    reader: SessionSnapshot,
+    sessionId: SessionId,
+  ) => boolean | Promise<boolean>;
 }
 export interface AgentRuntimeDependencies {
   readonly rootBudget?: import("./run-budget").RootRunBudget;
@@ -308,6 +330,7 @@ export interface AgentRuntimeDependencies {
   readonly store: SessionStore;
   readonly provider: ModelProvider;
   readonly tools: LocalToolRegistry;
+  readonly canReadSession?: HarnessOptions["canReadSession"];
   readonly toolHooks?: import("./tool-hooks").ToolHooksConfig;
   readonly agentWorktrees?: import("./agent-worktrees").AgentWorktreeService;
   readonly settings: PublicSettings;

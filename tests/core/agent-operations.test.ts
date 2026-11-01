@@ -4,7 +4,6 @@ import { join } from "node:path";
 import { afterEach, expect, it } from "vitest";
 import {
   type AgentEnvironment,
-  DEFAULT_MAX_ACTIVE_AGENTS,
   DEFAULT_MAX_AGENT_DEPTH,
   agentDepth,
   executeAgentOperation,
@@ -14,6 +13,7 @@ import {
   DEFAULT_MAX_SESSION_PLANS,
   createSessionPlan,
 } from "../../src/core/plans";
+import { DEFAULT_MAX_ACTIVE_AGENTS } from "../../src/shared/agent-profiles";
 import type { RunControl } from "../../src/shared/contracts";
 import {
   type SessionSnapshot,

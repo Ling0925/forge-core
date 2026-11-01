@@ -1,5 +1,6 @@
 import { z } from "zod";
 import {
+  type CommandEnvironmentTransform,
   MAX_EDITABLE_FILE_BYTES as FILE_LIMIT,
   ForgeError,
   type LocalToolRegistry,
@@ -32,6 +33,7 @@ export interface LocalToolOptions {
   readonly checkpointStore?: CheckpointStore;
   /** Overrides the git inspection deadlines (see DEFAULT_GIT_*_TIMEOUT_MS). */
   readonly gitTimeoutMs?: number;
+  readonly transformCommandEnv?: CommandEnvironmentTransform | undefined;
 }
 export async function createLocalToolRegistry(
   workspace: string,
@@ -71,7 +73,11 @@ export async function createLocalToolRegistry(
     readReceipts,
     policy,
   });
-  const commands = createLocalCommands({ guard, policy });
+  const commands = createLocalCommands({
+    guard,
+    policy,
+    transformCommandEnv: options.transformCommandEnv,
+  });
   async function executeInner(
     call: ToolCall,
     context: ToolContext,

@@ -15,7 +15,7 @@ export const queuedInputSchema = z
     inputId: z.string().uuid(),
     sessionId: sessionIdSchema,
     /** Trusted host lifecycle marker; external enqueue input can never set it. */
-    origin: z.literal("background_task").optional(),
+    origin: z.enum(["background_task", "superagent"]).optional(),
     sequence: z.number().int().positive().safe(),
     state: z.enum([
       "queued",
@@ -66,18 +66,22 @@ export interface InputQueueService {
 }
 export interface InputQueueRunner {
   isBusy(sessionId: SessionId): boolean;
+  settled?(sessionId: SessionId): Promise<void>;
   start(
     input: RunInput,
     runId: string,
     providerBinding: string,
     acknowledgedPredecessor?: string,
-    origin?: "background_task",
+    origin?: QueuedInput["origin"],
   ): Promise<SessionStatus>;
 }
 /** Trusted host lifecycle, never a public RPC accepting callbacks or bindings. */
 export interface InputQueueHost extends InputQueueService {
   /** Trusted completion notification; origin is fixed by the host. */
-  notify(request: z.infer<typeof enqueueInputSchema>): Promise<QueuedInput>;
+  notify(
+    request: z.infer<typeof enqueueInputSchema>,
+    origin?: QueuedInput["origin"],
+  ): Promise<QueuedInput>;
   attach(runner: InputQueueRunner): Promise<void>;
   finished(sessionId: SessionId, status: SessionStatus): Promise<void>;
   stop(): void;

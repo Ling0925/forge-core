@@ -3,7 +3,7 @@ export {
   createCheckpointStore,
   workspaceCheckpointDirectory,
 } from "./checkpoints";
-export { minimalEnv } from "./child-env";
+export { isolateGithubCredentials, minimalEnv } from "./child-env";
 export { openDeviceAuthorization } from "./devices";
 export { openHarnessExperienceStore } from "./harness-experiences";
 export {
@@ -44,4 +44,5 @@ export {
 } from "./published-files";
 export { openSessionStore } from "./sessions";
 export { openSettingsStore } from "./settings";
+export { openSuperAgentStore, type SuperAgentStore } from "./superagent";
 export { openToolHooksStore } from "./tool-hooks";

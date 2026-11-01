@@ -3,6 +3,7 @@ import type {
   RpcRequest,
   RpcResponse,
   RuntimeHost,
+  SuperAgentEvent,
   WorkerMessage,
 } from "../shared";
 
@@ -11,7 +12,15 @@ import { requestTimeout } from "./request-timeout";
 
 export function createRuntimeHub(
   service: HarnessService,
-  options: { requestTimeoutMs?: number } = {},
+  options: {
+    requestTimeoutMs?: number;
+    superAgent?:
+      | (() =>
+          | ReturnType<typeof import("../superagent").createSuperAgent>
+          | undefined)
+      | undefined;
+    superAgentEvents?: (emit: (event: SuperAgentEvent) => void) => () => void;
+  } = {},
 ): RuntimeHost {
   const listeners = new Set<(message: WorkerMessage) => void>();
   const pending = new Map<
@@ -34,18 +43,25 @@ export function createRuntimeHub(
       }
     }
   };
-  const controller = createWorkerController(service, (message) => {
-    if (message.kind === "response") {
-      const entry = pending.get(message.response.id);
-      if (entry) {
-        pending.delete(message.response.id);
-        entry.cleanup();
-        entry.resolve(message.response);
-        return;
+  const controller = createWorkerController(
+    service,
+    (message) => {
+      if (message.kind === "response") {
+        const entry = pending.get(message.response.id);
+        if (entry) {
+          pending.delete(message.response.id);
+          entry.cleanup();
+          entry.resolve(message.response);
+          return;
+        }
       }
-    }
-    publish(message);
-  });
+      publish(message);
+    },
+    { superAgent: options.superAgent },
+  );
+  const unsubscribe = options.superAgentEvents?.((event) =>
+    publish({ kind: "event", data: event }),
+  );
   const request = (
     rpc: RpcRequest,
     signal?: AbortSignal,
@@ -97,6 +113,7 @@ export function createRuntimeHub(
   const dispose = (): Promise<void> => {
     if (closing) return closing;
     disposed = true;
+    unsubscribe?.();
     // The controller answers its own in-flight requests with a safe error while
     // it tears down; any request that raced past that point is settled here.
     closing = controller.dispose().finally(() => {

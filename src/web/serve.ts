@@ -5,13 +5,11 @@ import { resolve } from "node:path";
 enableCompileCache();
 
 const [
-  { createHarness },
-  { createLocalHost, createRuntimeHub },
+  { createLocalHost, createHostRuntime },
   { coreBuildInfo },
   { ENDPOINT_REQUIREMENT, canonicalIpHost, validListenEndpoint },
   { createWebHost },
 ] = await Promise.all([
-  import("../core"),
   import("../host"),
   import("../shared"),
   import("./endpoint"),
@@ -29,7 +27,7 @@ function argument(name: string, fallback?: string): string | undefined {
 }
 if (args.includes("--help")) {
   console.log(
-    "Forge Core: --host <IPv4|IPv6> --port <1024..65535> --workspace <directory> [--socket <private Unix socket>] [--renderer <built Web UI directory>] [--multi-workspace]\nDefaults: host 127.0.0.1, port 5173. API-only unless --renderer is supplied. Personal LAN direct access; no device pairing required. HTTP has no transport secrecy.",
+    "Forge Core: --host <IPv4|IPv6> --port <1024..65535> --workspace <directory> [--socket <private Unix socket>] [--renderer <built Web UI directory>] [--multi-workspace] [--super-agent]\nDefaults: host 127.0.0.1, port 5173. API-only unless --renderer is supplied. Personal LAN direct access; no device pairing required. HTTP has no transport secrecy.",
   );
 } else {
   const requestedHost = argument("--host") ?? "127.0.0.1";
@@ -42,7 +40,10 @@ if (args.includes("--help")) {
   const host = canonicalIpHost(requestedHost) ?? requestedHost;
   const renderer = argument("--renderer");
   const rendererRoot = renderer === undefined ? undefined : resolve(renderer);
-  const runtime = createRuntimeHub(await createHarness());
+  const hosted = await createHostRuntime({
+    superAgent: args.includes("--super-agent"),
+  });
+  const { runtime } = hosted;
   let local: Awaited<ReturnType<typeof createLocalHost>> | undefined;
   let web!: Awaited<ReturnType<typeof createWebHost>>;
   try {
@@ -58,15 +59,19 @@ if (args.includes("--help")) {
     if (socketPath) local = await createLocalHost({ runtime, socketPath });
   } catch (error) {
     try {
-      await web?.close();
+      await Promise.all([web?.close(), hosted.webhook?.close()]);
     } finally {
-      await runtime.dispose();
+      await hosted.dispose();
     }
     throw error;
   }
   const close = async () => {
     try {
-      const results = await Promise.allSettled([web.close(), local?.close()]);
+      const results = await Promise.allSettled([
+        web.close(),
+        local?.close(),
+        hosted.webhook?.close(),
+      ]);
       const errors = results.filter(
         (result): result is PromiseRejectedResult =>
           result.status === "rejected",
@@ -77,7 +82,7 @@ if (args.includes("--help")) {
           "Host listeners did not close cleanly.",
         );
     } finally {
-      await runtime.dispose();
+      await hosted.dispose();
     }
   };
   web.server.on("request", (request, response) => {
