@@ -141,7 +141,6 @@ export async function boardFixture() {
         projectId: project.id,
         accountable: human.principal.id,
         token: token.secret,
-        reconnectDelay: 10,
       },
       request,
       task: async (id: string) =>

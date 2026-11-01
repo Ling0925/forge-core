@@ -119,7 +119,6 @@ it("persists only handled events, skips our own and unknown tasks, and resumes a
       client,
       url,
       projectId,
-      reconnectDelay: 10,
       store,
       workItems,
       engine,
@@ -169,7 +168,7 @@ it("persists only handled events, skips our own and unknown tasks, and resumes a
 });
 
 it.each(["end", "error", "handler", "forge"] as const)(
-  "reports %s failure and reconnects after the configured delay without advancing an unhandled event",
+  "reports %s failure, backs off reconnects up to 60s, and resets to 1s after connecting without advancing an unhandled event",
   async (failure) => {
     const f = await fixture();
     vi.useFakeTimers();
@@ -193,12 +192,10 @@ it.each(["end", "error", "handler", "forge"] as const)(
       "reportBoardEventsFailure",
     );
     const reportCatchUpFailure = vi.spyOn(engine, "reportCatchUpFailure");
-    const reconnectDelay = 1000;
     const subscription = subscribeBoardEvents({
       client,
       url,
       projectId,
-      reconnectDelay,
       store,
       workItems: { get: async () => work },
       engine,
@@ -215,9 +212,8 @@ it.each(["end", "error", "handler", "forge"] as const)(
         connections[0]!.controller.enqueue(
           new TextEncoder().encode(frame(8, event())),
         );
-      await vi.waitFor(() =>
-        expect(reportBoardEventsFailure).toHaveBeenCalledOnce(),
-      );
+      await vi.advanceTimersByTimeAsync(0);
+      expect(reportBoardEventsFailure).toHaveBeenCalledOnce();
       const boardEvents = {
         at: expect.any(String),
         error: {
@@ -254,26 +250,49 @@ it.each(["end", "error", "handler", "forge"] as const)(
       expect((await engine.getSuperAgentState()).boardEvents).toEqual(
         boardEvents,
       );
-      await vi.advanceTimersByTimeAsync(reconnectDelay);
+      const request = vi
+        .spyOn(client, "request")
+        .mockRejectedValue(new Error("Connection failed."));
+      const delays = [1000, 2000, 4000, 8000, 16000, 32000, 60000, 60000];
+      for (const [index, delay] of delays.entries()) {
+        await vi.advanceTimersByTimeAsync(delay - 1);
+        expect(request).toHaveBeenCalledTimes(index);
+        await vi.advanceTimersByTimeAsync(1);
+        expect(request).toHaveBeenCalledTimes(index + 1);
+        expect(reportBoardEventsFailure).toHaveBeenCalledTimes(index + 2);
+      }
+      expect(connections).toHaveLength(1);
+      request.mockRestore();
+      await vi.advanceTimersByTimeAsync(60000);
       expect(connections).toHaveLength(2);
       expect(connections[1]!.headers.get("Last-Event-ID")).toBe("7");
-      connections[1]!.controller.close();
-      await vi.waitFor(() =>
-        expect(reportBoardEventsFailure).toHaveBeenCalledTimes(2),
-      );
+      if (failure === "error")
+        connections[1]!.controller.error(new Error("Stream connection lost."));
+      else connections[1]!.controller.close();
+      await vi.advanceTimersByTimeAsync(0);
+      expect(reportBoardEventsFailure).toHaveBeenCalledTimes(delays.length + 2);
       const reconnectedState = await engine.getSuperAgentState();
       expect(reconnectedState).toMatchObject({
         catchUp,
         boardEvents: {
           at: expect.any(String),
-          error: "Board event stream ended.",
+          error:
+            failure === "error"
+              ? "Stream connection lost."
+              : "Board event stream ended.",
         },
       });
       expect(reconnectedState.boardEvents?.at).not.toBe(state.boardEvents?.at);
       expect(reportCatchUpFailure).toHaveBeenCalledOnce();
-      await subscription.close();
-      await vi.advanceTimersByTimeAsync(reconnectDelay);
+      await vi.advanceTimersByTimeAsync(999);
       expect(connections).toHaveLength(2);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(connections).toHaveLength(3);
+      connections[2]!.controller.close();
+      await vi.advanceTimersByTimeAsync(0);
+      await subscription.close();
+      await vi.advanceTimersByTimeAsync(1000);
+      expect(connections).toHaveLength(3);
     } finally {
       await subscription.close();
       vi.useRealTimers();

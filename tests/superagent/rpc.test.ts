@@ -171,13 +171,7 @@ it("returns a clear existing error kind for every disabled RPC", async () => {
   }
 });
 
-it.each([
-  "url",
-  "projectId",
-  "accountable",
-  "token",
-  "reconnectDelay",
-] as const)(
+it.each(["url", "projectId", "accountable", "token"] as const)(
   "requires board.%s when the board backend is selected",
   async (field) => {
     const board = {
@@ -185,7 +179,6 @@ it.each([
       projectId: "project",
       accountable: "human",
       token: "private-board-token",
-      reconnectDelay: 1500,
     };
     const { [field]: _missing, ...configured } = board;
     await expect(

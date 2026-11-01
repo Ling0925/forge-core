@@ -114,7 +114,6 @@ it("stores the board token privately and preserves it across partial settings up
             url: "http://board.invalid",
             projectId: "project",
             accountable: "human",
-            reconnectDelay: 1500,
             token,
           },
         },
@@ -125,7 +124,6 @@ it("stores the board token privately and preserves it across partial settings up
       url: "http://board.invalid",
       projectId: "project",
       accountable: "human",
-      reconnectDelay: 1500,
       hasToken: true,
     });
     expect(publicSettingsSchema.parse(saved)).toEqual(saved);
@@ -187,8 +185,8 @@ it("stores the board token privately and preserves it across partial settings up
   }
 });
 
-it("does not invent a board reconnect delay", async () => {
-  const directory = await mkdtemp(join(tmpdir(), "forge-board-delay-"));
+it("preserves partial board settings without adding required fields", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "forge-board-settings-"));
   try {
     const store = await openSettingsStore(directory);
     expect(

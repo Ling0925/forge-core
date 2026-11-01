@@ -220,7 +220,6 @@ const boardFields = {
   url: z.string().optional(),
   projectId: z.string().optional(),
   accountable: z.string().optional(),
-  reconnectDelay: z.number().int().nonnegative().optional(),
 };
 export const superAgentSettingsSchema = z
   .object({

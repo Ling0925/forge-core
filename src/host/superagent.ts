@@ -41,7 +41,6 @@ function requireConfiguration(
           "board.projectId": config.board?.projectId,
           "board.accountable": config.board?.accountable,
           "board.token": config.board?.hasToken,
-          "board.reconnectDelay": config.board?.reconnectDelay !== undefined,
         }
       : {};
   const missingConfiguration = () => {
@@ -77,21 +76,13 @@ function requireConfiguration(
         url: string;
         projectId: string;
         accountable: string;
-        reconnectDelay: number;
       }
     | undefined;
   if (config.board || config.workItems?.backend === "board") {
-    const { url, projectId, accountable, reconnectDelay, hasToken } =
-      config.board ?? {};
-    if (
-      !url ||
-      !projectId ||
-      !accountable ||
-      !hasToken ||
-      reconnectDelay === undefined
-    )
+    const { url, projectId, accountable, hasToken } = config.board ?? {};
+    if (!url || !projectId || !accountable || !hasToken)
       throw missingConfiguration();
-    board = { url, projectId, accountable, reconnectDelay };
+    board = { url, projectId, accountable };
   }
   return {
     board,
@@ -255,7 +246,6 @@ export async function createHostRuntime(
           client,
           url: board.url,
           projectId: board.projectId,
-          reconnectDelay: board.reconnectDelay,
           store,
           workItems: boardStore,
           engine,

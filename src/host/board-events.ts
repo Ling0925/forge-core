@@ -6,6 +6,9 @@ import {
   type createBoardClient,
 } from "../store";
 
+const INITIAL_RECONNECT_DELAY_MS = 1000;
+const MAX_RECONNECT_DELAY_MS = 60000;
+
 const eventSchema = z.object({
   taskId: z.string().nullable(),
   type: z.string(),
@@ -17,7 +20,6 @@ export function subscribeBoardEvents({
   client,
   url,
   projectId,
-  reconnectDelay,
   store,
   workItems,
   engine,
@@ -25,7 +27,6 @@ export function subscribeBoardEvents({
   client: ReturnType<typeof createBoardClient>;
   url: string;
   projectId: string;
-  reconnectDelay: number;
   store: Pick<SuperAgentStore, "getCursor" | "setCursor">;
   workItems: Pick<WorkItemStore, "get">;
   engine: {
@@ -41,6 +42,7 @@ export function subscribeBoardEvents({
   let wake: (() => void) | undefined;
   const run = async () => {
     let principal: string | undefined;
+    let reconnectDelay = INITIAL_RECONNECT_DELAY_MS;
     while (!signal.aborted) {
       try {
         if (!principal)
@@ -58,6 +60,7 @@ export function subscribeBoardEvents({
             },
           },
         );
+        reconnectDelay = INITIAL_RECONNECT_DELAY_MS;
         if (response.body) {
           const reader = response.body
             .pipeThrough(new TextDecoderStream())
@@ -123,11 +126,13 @@ export function subscribeBoardEvents({
       } catch (error) {
         if (!signal.aborted) engine.reportBoardEventsFailure(error);
       }
-      if (!signal.aborted)
+      if (!signal.aborted) {
         await new Promise<void>((resolve) => {
           wake = resolve;
           reconnect = setTimeout(resolve, reconnectDelay);
         });
+        reconnectDelay = Math.min(reconnectDelay * 2, MAX_RECONNECT_DELAY_MS);
+      }
     }
   };
   const operation = run();
