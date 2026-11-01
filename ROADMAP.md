@@ -47,7 +47,7 @@
 ## 之后
 
 - **Worker 的 MCP 访问**：Worker 的 profile 已经可以用 `tools.mode: "restricted"` 加 `mcpServers` 白名单限制它能用哪些 MCP 服务（`src/core/agent-profiles.ts`），并且对 Worker 会话生效。剩下要做的是：在 README 里给出推荐的 Worker profile，再补一个测试证明白名单对 Worker 有效。远程 MCP 服务配置的请求头属于你的显式配置，进程环境隔离覆盖不到。
-- 拆分 `provider/responses-stream.ts`：一个约 718 行的工厂函数，基本是搬代码。
+- 拆分 `provider/responses-stream.ts`：文件共 718 行，主体是一个大工厂函数，拆分基本是搬代码。
 - 已有上限的去留：插件作用域、异步任务容量、事件回放、controller 预览和插话，见 #8 的“保留的上限”一节。逐项决定是删除，还是保留为附带理由的设置。
 - 中英文错误信息统一：先定策略（统一一种语言，还是做本地化）。
 - 计算、状态、环境分离（远程 Worker、BYOM）：需要单独设计。
