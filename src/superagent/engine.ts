@@ -61,6 +61,7 @@ export function createSuperAgent(deps: SuperAgentDeps) {
   const { harness, inputQueue, sessions, store, workItems, settings, events } =
     deps;
   let operations: Promise<unknown> = Promise.resolve();
+  let catchUp: { at: string; error: string } | undefined;
   const serial = <T>(action: () => Promise<T>): Promise<T> => {
     const operation = operations.then(action);
     operations = operation.then(
@@ -389,7 +390,15 @@ export function createSuperAgent(deps: SuperAgentDeps) {
         workspace: current.workspace,
         routerSessionId:
           (await store.getCursor(routerKey(current.workspace))) ?? null,
+        ...(catchUp ? { catchUp } : {}),
       };
+    },
+    reportCatchUpFailure(error: unknown) {
+      catchUp = {
+        at: new Date().toISOString(),
+        error: toErrorInfo(error).message,
+      };
+      events.emit({ type: "superagent_catch_up", catchUp });
     },
     listSuperAgentTriggers: (
       query?: Parameters<SuperAgentStore["listTriggers"]>[0],

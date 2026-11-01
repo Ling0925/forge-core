@@ -14,7 +14,7 @@ import {
   rpcRequestSchema,
   rpcResponseSchema,
 } from "../../src/shared";
-import { openSettingsStore } from "../../src/store";
+import { openSettingsStore, openSuperAgentStore } from "../../src/store";
 import type { OutboxExecutor } from "../../src/superagent";
 import { createWebHost } from "../../src/web";
 
@@ -46,6 +46,7 @@ export async function hostFixture(
     enabled?: boolean;
     force?: boolean;
     config?: SuperAgentSettings;
+    since?: string;
   } = {},
 ) {
   const directory = await mkdtemp(join(tmpdir(), "forge-superagent-host-"));
@@ -115,6 +116,14 @@ export async function hostFixture(
   const outbox = { execute: vi.fn<OutboxExecutor["execute"]>(async () => {}) };
   let hosted: Awaited<ReturnType<typeof createHostRuntime>>;
   try {
+    if (options.since) {
+      const store = await openSuperAgentStore(stateDir);
+      try {
+        await store.setCursor("github:owner/repo:since", options.since);
+      } finally {
+        await store.close();
+      }
+    }
     hosted = await createHostRuntime({
       stateDir,
       superAgent: options.force ?? false,

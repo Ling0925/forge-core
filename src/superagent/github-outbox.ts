@@ -13,10 +13,15 @@ function threadTarget(thread: string) {
   return { repo: match[1], number: match[2] };
 }
 
-function git(worktree: string, args: string[]): Promise<string> {
+function git(
+  worktree: string,
+  args: string[],
+  env?: NodeJS.ProcessEnv,
+): Promise<string> {
   return new Promise((resolve, reject) => {
     const child = spawn("git", ["-C", worktree, ...args], {
       stdio: ["ignore", "pipe", "ignore"],
+      env,
     });
     const chunks: Buffer[] = [];
     child.stdout.on("data", (chunk: Buffer) => chunks.push(chunk));
@@ -69,15 +74,20 @@ export function createGithubOutboxExecutor(
       const authorization = Buffer.from(`x-access-token:${token}`).toString(
         "base64",
       );
-      await git(work.worktree, [
-        "-c",
-        `http.https://github.com/.extraheader=AUTHORIZATION: basic ${authorization}`,
-        "-c",
-        `remote.origin.pushurl=https://github.com/${repo}.git`,
-        "push",
-        "origin",
-        `HEAD:refs/heads/${item.body.branch}`,
-      ]);
+      const configCount = Number(process.env.GIT_CONFIG_COUNT ?? 0);
+      await git(
+        work.worktree,
+        ["push", "origin", `HEAD:refs/heads/${item.body.branch}`],
+        {
+          ...process.env,
+          GIT_CONFIG_COUNT: String(configCount + 2),
+          [`GIT_CONFIG_KEY_${configCount}`]:
+            "http.https://github.com/.extraheader",
+          [`GIT_CONFIG_VALUE_${configCount}`]: `AUTHORIZATION: basic ${authorization}`,
+          [`GIT_CONFIG_KEY_${configCount + 1}`]: "remote.origin.pushurl",
+          [`GIT_CONFIG_VALUE_${configCount + 1}`]: `https://github.com/${repo}.git`,
+        },
+      );
     },
   };
 }

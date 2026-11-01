@@ -193,7 +193,11 @@ export async function createHostRuntime(
             "GitHub delivery processing failed; the persisted delivery will be retried at startup.",
           ),
       });
-      await source.catchUp();
+      try {
+        await source.catchUp();
+      } catch (error) {
+        engine.reportCatchUpFailure(error);
+      }
     }
     return { harness, runtime, webhook, dispose };
   } catch (error) {

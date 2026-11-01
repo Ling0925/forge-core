@@ -121,6 +121,8 @@ MCP 支持 **stdio、Streamable HTTP、Legacy SSE**。注册不会连接；启�
 
 在 `updateSettings` RPC 的 `input.settings.superAgent` 中设置 `enabled: true`，或启动时传 `--super-agent`（仅本次强制启用），然后重启服务。必填项为 `workspace`（本地 Git 工作区）、`routerProfileId`、`workerProfileId`（已保存的智能体配置）、`github.login`、`github.repos`（如 `["owner/repo"]`）、`github.webhook.port` 和 `github.webhookSecret`；可选 `github.webhook.host`、`maxWorkers`。模型沿用两个 profile，Worker 在独立 worktree 中执行；并发默认值沿用 `maxActiveAgents` 的默认常量。
 
+修改 `superAgent` 设置后需重启 host 才能完整生效；引擎与 Webhook 监听器在启动时装配。
+
 通过 `updateSettings` 设置随机生成的 `github.webhookSecret`，并在 GitHub 仓库的 Webhook 配置中填入同一 Secret，Content type 选择 `application/json`。公共设置只返回 `hasWebhookSecret`。在宿主机先执行 `gh auth login`；启动补偿和审批后的发送执行器临时调用 `gh auth token`，凭据不进入会话或发送队列。
 
 Webhook 是独立 HTTP 监听器，向其根路径 POST。用 tunnel 或反向代理**只暴露 `github.webhook.port`**，Forge API 端口留在私网。GitHub 勾选 Issues、Issue comments、Pull requests、Pull request reviews、Pull request review comments；监听器验签并持久化后返回 202，重复 delivery 返回 409。接口字段见 [GitHub Webhook 文档](https://docs.github.com/en/webhooks/webhook-events-and-payloads)。

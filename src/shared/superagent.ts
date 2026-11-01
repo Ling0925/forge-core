@@ -247,6 +247,11 @@ export type PublicSuperAgentSettings = z.infer<
   typeof publicSuperAgentSettingsSchema
 >;
 
+const catchUpSchema = z
+  .object({ at: timestampSchema, error: z.string() })
+  .strict()
+  .readonly();
+
 export const superAgentEventSchema = z.discriminatedUnion("type", [
   z
     .object({ type: z.literal("superagent_trigger"), trigger: triggerSchema })
@@ -263,6 +268,12 @@ export const superAgentEventSchema = z.discriminatedUnion("type", [
   z
     .object({ type: z.literal("superagent_outbox"), item: outboxItemSchema })
     .strict(),
+  z
+    .object({
+      type: z.literal("superagent_catch_up"),
+      catchUp: catchUpSchema,
+    })
+    .strict(),
 ]);
 export type SuperAgentEvent = z.infer<typeof superAgentEventSchema>;
 
@@ -271,6 +282,7 @@ export const superAgentStateSchema = z
     enabled: z.literal(true),
     workspace: z.string(),
     routerSessionId: z.string().nullable(),
+    catchUp: catchUpSchema.optional(),
   })
   .strict()
   .readonly();

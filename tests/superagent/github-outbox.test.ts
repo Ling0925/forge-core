@@ -12,6 +12,7 @@ const mocks = vi.hoisted(() => ({ spawn: vi.fn() }));
 vi.mock("node:child_process", () => ({ spawn: mocks.spawn }));
 afterEach(() => {
   vi.unstubAllGlobals();
+  vi.unstubAllEnvs();
   vi.resetAllMocks();
 });
 
@@ -19,6 +20,9 @@ it("executes each approved write with private credentials and sanitizes failures
   const directory = await mkdtemp(join(tmpdir(), "forge-outbox-"));
   const store = await openSuperAgentStore(directory);
   const token = "fixture-token-never-public";
+  vi.stubEnv("GIT_CONFIG_COUNT", "1");
+  vi.stubEnv("GIT_CONFIG_KEY_0", "http.proxy");
+  vi.stubEnv("GIT_CONFIG_VALUE_0", "http://fixture-proxy.invalid");
   let failGit = false;
   mocks.spawn.mockImplementation((command: string, args: string[]) => {
     const child = new EventEmitter();
@@ -103,15 +107,31 @@ it("executes each approved write with private credentials and sanitizes failures
     expect(push[1]).toEqual([
       "-C",
       work.worktree,
-      "-c",
-      `http.https://github.com/.extraheader=AUTHORIZATION: basic ${Buffer.from(`x-access-token:${token}`).toString("base64")}`,
-      "-c",
-      "remote.origin.pushurl=https://github.com/owner/repo.git",
       "push",
       "origin",
       "HEAD:refs/heads/worker",
     ]);
-    expect(push[2].env).toBeUndefined();
+    const authorization = Buffer.from(`x-access-token:${token}`).toString(
+      "base64",
+    );
+    expect(push[2].env).toEqual({
+      ...process.env,
+      GIT_CONFIG_COUNT: "3",
+      GIT_CONFIG_KEY_1: "http.https://github.com/.extraheader",
+      GIT_CONFIG_VALUE_1: `AUTHORIZATION: basic ${authorization}`,
+      GIT_CONFIG_KEY_2: "remote.origin.pushurl",
+      GIT_CONFIG_VALUE_2: "https://github.com/owner/repo.git",
+    });
+    expect(push[2].env).not.toBe(process.env);
+    expect(process.env.GIT_CONFIG_COUNT).toBe("1");
+    expect(process.env.GIT_CONFIG_VALUE_1).not.toBe(
+      `AUTHORIZATION: basic ${authorization}`,
+    );
+    for (const [, args, options] of mocks.spawn.mock.calls) {
+      expect(args.join(" ")).not.toContain(token);
+      expect(args.join(" ")).not.toContain(authorization);
+      if (!args.includes("push")) expect(options.env).toBeUndefined();
+    }
     expect(
       mocks.spawn.mock.calls.some(([, args]) => args.includes("config")),
     ).toBe(false);

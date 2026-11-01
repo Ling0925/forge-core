@@ -1,5 +1,8 @@
 import { afterEach, expect, it, vi } from "vitest";
-import { createGithubSource } from "../../src/superagent";
+import {
+  createGithubSource,
+  normalizeGithubDelivery,
+} from "../../src/superagent";
 import * as api from "../../src/superagent/github-api";
 import { fixture } from "./fixture";
 import { comment, delivery, issue, payload, timestamp } from "./github-fixture";
@@ -174,6 +177,78 @@ it("reprocesses persisted deliveries and leaves the catch-up cursor unchanged on
     await f.store.setCursor("github:owner/repo:since", timestamp);
     await expect(source.catchUp()).rejects.toThrow("HTTP 503");
     expect(await f.store.getCursor("github:owner/repo:since")).toBe(timestamp);
+  } finally {
+    await f.close();
+  }
+});
+
+it("fetches each comment parent once across pages and refreshes it on the next pass", async () => {
+  const f = await fixture();
+  vi.spyOn(api, "githubToken").mockResolvedValue("fixture-private-token");
+  const issueUrl = "https://api.github.com/repos/owner/repo/issues/1";
+  const otherUrl = "https://api.github.com/repos/owner/repo/issues/2";
+  const parents = new Map([
+    [issueUrl, issue],
+    [otherUrl, { ...issue, id: 102, number: 2, title: "Another issue" }],
+  ]);
+  const comments = [
+    { ...comment, issue_url: issueUrl },
+    { ...comment, id: 202, issue_url: issueUrl },
+    { ...comment, id: 203, issue_url: issueUrl },
+    { ...comment, id: 204, issue_url: otherUrl },
+  ];
+  const fetch = vi.fn<typeof globalThis.fetch>(async (input) => {
+    const url = new URL(String(input));
+    if (parents.has(url.href))
+      return new Response(JSON.stringify(parents.get(url.href)));
+    if (url.pathname.endsWith("/events")) return new Response("[]");
+    if (url.searchParams.has("page"))
+      return new Response(JSON.stringify(comments.slice(2)));
+    return new Response(JSON.stringify(comments.slice(0, 2)), {
+      headers: {
+        link: '<https://api.github.com/repos/owner/repo/issues/comments?page=2>; rel="next"',
+      },
+    });
+  });
+  vi.stubGlobal("fetch", fetch);
+  const ingest = vi.fn(async () => {});
+  const source = createGithubSource({
+    login: "forge-bot",
+    repos: ["owner/repo"],
+    store: f.store,
+    ingest,
+  });
+  try {
+    await f.store.setCursor("github:owner/repo:since", timestamp);
+    for (const title of [issue.title, "Updated issue title"]) {
+      parents.set(issueUrl, { ...issue, title });
+      fetch.mockClear();
+      ingest.mockClear();
+      await source.catchUp();
+      expect(fetch).toHaveBeenCalledTimes(5);
+      for (const url of parents.keys())
+        expect(
+          fetch.mock.calls.filter(([input]) => input === url),
+        ).toHaveLength(1);
+      expect(ingest.mock.calls).toEqual(
+        comments.map((comment) => {
+          const normalized = normalizeGithubDelivery(
+            delivery({
+              id: `gh:comment:${comment.id}`,
+              receivedAt: new Date(comment.updated_at).toISOString(),
+              payload: {
+                ...payload,
+                sender: comment.user,
+                issue: parents.get(comment.issue_url)!,
+                comment,
+              },
+            }),
+            "forge-bot",
+          );
+          return [normalized.triggers, normalized.threads];
+        }),
+      );
+    }
   } finally {
     await f.close();
   }

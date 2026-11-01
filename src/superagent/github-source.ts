@@ -37,6 +37,7 @@ export function createGithubSource(options: {
     },
     async catchUp() {
       let token: string | undefined;
+      const issues = new Map<string, z.infer<typeof githubIssueSchema>>();
       for (const repo of options.repos) {
         const key = `github:${repo}:since`;
         const until = new Date().toISOString();
@@ -101,10 +102,14 @@ export function createGithubSource(options: {
             .array(githubCommentSchema)
             .parse(await response.json());
           for (const comment of comments) {
-            const issuePath = new URL(comment.issue_url).pathname;
-            const issue = githubIssueSchema.parse(
-              await (await githubRequest(issuePath, token)).json(),
-            );
+            let issue = issues.get(comment.issue_url);
+            if (!issue) {
+              const issuePath = new URL(comment.issue_url).pathname;
+              issue = githubIssueSchema.parse(
+                await (await githubRequest(issuePath, token)).json(),
+              );
+              issues.set(comment.issue_url, issue);
+            }
             await ingest({
               id: `gh:comment:${comment.id}`,
               event: "issue_comment",
