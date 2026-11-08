@@ -62,6 +62,15 @@ Raw history remains retrievable. Context projection and semantic compaction chan
 
 See [runtime lifecycle](RUNTIME_LIFECYCLE.md), [session storage](SESSION_STORAGE.md), [input queue](INPUT_QUEUE.md), [memory](MEMORY.md), [async tools](ASYNC_TOOLS.md) and [optional Harness² preflight](HARNESS_ADAPTATION.md) for their owned contracts.
 
+### Board 通知与取消契约
+
+- **持久去重（R4）**：Board Router 的 `work_changed` 通知按来源（URL、projectId）、SSE event ID 和 work ID 持久去重。首次请求在入队或取消 Worker 前保存，重放沿用其 UUID、Router 和通知内容；即使任务数据已变、通知已消费或队列回执已移入 `input-queue/receipts/`，也不重复入队。Worker 处理完成后保存 `handled` 标记，已完成的处理不因重放再次取消或排空 Worker；标记写入失败时，未完成的 Worker 处理仍可能重试。最后在同一 SQLite 事务中提交游标并删除对应的已处理记录，队列项和回执不随之删除。
+- **迁移与降级**：现有 v2 数据库通过新增 `board_notifications` 表升级，`user_version` 仍为 2，原有数据和队列格式保留。旧版 v2 兼容程序可忽略新表，但不提供上述去重或记录清理；未完成处理期间降级可能产生重复通知，且无自动清理或破坏性转换。升级前的匿名通知无法可靠关联历史事件，已有重复项不会自动合并或删除。
+- **来源与回执边界**：不同 URL/projectId 使用独立的游标和去重空间；停用来源的待处理记录保留至该来源恢复并提交游标。同一 URL/projectId 须保持事件序列身份稳定，原地重置或替换 Board 需显式处理来源代际与游标迁移，Core 不自动猜测或重置。手动删除或恢复队列回执、回退游标均超出此契约；通知入队去重不保证外部副作用恰好一次，也不构成跨存储的 Worker 事务。
+- **待审批取消**：取消请求待审批时立即停止 Worker 执行，但不提前将 Board 任务标记为已取消；审批拒绝后不自动恢复 Worker，恢复须显式触发。
+- **晚到取消**：终态已选定后到达的取消请求保留既定完成结果；`wait=true` 等待运行清理结束，不保证最终状态为已取消。
+- **客户端兼容**：公共 RPC、事件和消息结构不变，Web/CLI 无需迁移。
+
 ## Tools and extensions
 
 - Trusted read-only groups may run concurrently, with ordered result commits and joined cancellation. Unknown, native and remote tools remain serial; mutations are barriers.

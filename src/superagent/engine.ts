@@ -505,17 +505,44 @@ export function createSuperAgent(deps: SuperAgentDeps) {
         await flushBacklog();
       }),
     stopWorkItem,
-    async workChanged(id: string) {
-      const work = await serial(async () => publishWork(await requireWork(id)));
+    async workChanged(
+      id: string,
+      event?: { cursorKey: string; eventId: string },
+    ) {
+      const identity = event && { ...event, workId: id };
+      const change = await serial(async () => {
+        const saved =
+          identity && (await store.boardNotifications.get(identity));
+        if (saved?.handled) return;
+        const work = publishWork(await requireWork(id));
+        const notification =
+          saved ??
+          (identity &&
+            (await store.boardNotifications.prepare(identity, {
+              inputId: randomUUID(),
+              input: {
+                sessionId: sessionIdSchema.parse(work.routerSessionId),
+                prompt: `Work item changed:\n${untrustedData(work)}`,
+              },
+            })));
+        return { work, notification };
+      });
+      if (!change) return;
+      const { work, notification } = change;
       // Cancellation joins Worker tool calls that may be waiting on this queue.
       if (work.status === "stopped") await haltWorker(work);
       await serial(async () => {
-        await enqueue(
-          sessionIdSchema.parse(work.routerSessionId),
-          `Work item changed:\n${untrustedData(work)}`,
-          { kind: "work_changed", workId: work.id },
-        );
+        const ref = { kind: "work_changed" as const, workId: work.id };
+        if (notification)
+          await inputQueue.notify(notification.request, "superagent", ref);
+        else
+          await enqueue(
+            sessionIdSchema.parse(work.routerSessionId),
+            `Work item changed:\n${untrustedData(work)}`,
+            ref,
+          );
         await drainWorkers();
+        if (identity) await store.boardNotifications.complete(identity);
       });
     },
     workClaimApproved: (id: string) =>

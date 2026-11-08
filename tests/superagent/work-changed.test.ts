@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import {
   ForgeError,
+  type WorkItem,
   type WorkItemStatus,
   sessionIdSchema,
 } from "../../src/shared";
@@ -319,3 +320,64 @@ it("allows a pending Worker report to finish while joining external cancellation
     status: "stopped",
   });
 });
+
+it.each(["approved", "rejected"] as const)(
+  "halts execution while cancellation approval is pending and does not restart after it is %s",
+  async (decision) => {
+    const work = await f.createWork();
+    const id = sessionIdSchema.parse(work.workerSessionId);
+    const gate = hold();
+    const run = f.runNext(id, [gate.step]);
+    await gate.entered;
+    const inputId = randomUUID();
+    await f.inputQueue.notify(
+      { inputId, input: { sessionId: id, prompt: "Follow-up" } },
+      "superagent",
+    );
+    let current: WorkItem = { ...work, pendingStatus: "stopped" };
+    const get = f.store.workItems.get.bind(f.store.workItems);
+    vi.spyOn(f.store.workItems, "get").mockImplementation(async (workId) =>
+      workId === work.id ? current : get(workId),
+    );
+    const requested = deferred();
+    const release = deferred();
+    vi.spyOn(f.store.workItems, "update").mockImplementationOnce(
+      async (workId, update) => {
+        expect(workId).toBe(work.id);
+        expect(update).toEqual({ status: "stopped", progress: "Stop" });
+        requested.resolve();
+        await release.promise;
+        return current;
+      },
+    );
+    const stop = f.engine.stopWorkItem(work.id, "Stop");
+    try {
+      await requested.promise;
+      expect((await f.harness.getSession(id)).status).toBe("running");
+      release.resolve();
+      expect(await stop).toEqual(current);
+      expect((await run).status).toBe("cancelled");
+      expect(f.items.find((item) => item.inputId === inputId)?.state).toBe(
+        "cancelled",
+      );
+      current = {
+        ...current,
+        status: decision === "approved" ? "stopped" : "running",
+        pendingStatus: null,
+      };
+      await f.engine.workChanged(work.id);
+      expect(await f.engine.getWorkItem(work.id)).toEqual(current);
+      expect((await f.harness.getSession(id)).status).toBe("cancelled");
+      expect(
+        f.items.filter(
+          (item) => item.sessionId === id && item.state === "queued",
+        ),
+      ).toEqual([]);
+    } finally {
+      release.resolve();
+      gate.release();
+      await stop;
+      await run;
+    }
+  },
+);

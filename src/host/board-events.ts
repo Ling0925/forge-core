@@ -30,7 +30,10 @@ export function subscribeBoardEvents({
   store: Pick<SuperAgentStore, "getCursor" | "setCursor">;
   workItems: Pick<WorkItemStore, "get">;
   engine: {
-    workChanged(id: string): Promise<void>;
+    workChanged(
+      id: string,
+      event: { cursorKey: string; eventId: string },
+    ): Promise<void>;
     workClaimApproved(id: string): Promise<void>;
     reportBoardEventsFailure(error: unknown): void;
   };
@@ -106,7 +109,11 @@ export function subscribeBoardEvents({
                         );
                       }
                       if (claim) await engine.workClaimApproved(event.taskId);
-                      else await engine.workChanged(event.taskId);
+                      else
+                        await engine.workChanged(event.taskId, {
+                          cursorKey,
+                          eventId: id,
+                        });
                     }
                     await store.setCursor(cursorKey, id);
                   }

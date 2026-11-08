@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { mkdtemp, readdir, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -7,6 +8,7 @@ import {
   type Trigger,
   type WorkItemStore,
   createWorkItemSchema,
+  sessionIdSchema,
   workItemStatusSchema,
 } from "../../src/shared";
 import { type SuperAgentStore, openSuperAgentStore } from "../../src/store";
@@ -63,6 +65,141 @@ const outgoing = {
   target: { thread: thread.id },
   body: { text: "Done" },
 };
+
+const boardIdentity = {
+  cursorKey: `superagent:board:${JSON.stringify(["http://board.invalid", "project"])}`,
+  eventId: "8",
+  workId: "task",
+};
+const notificationRequest = () => ({
+  inputId: randomUUID(),
+  input: {
+    sessionId: sessionIdSchema.parse(randomUUID()),
+    prompt: "Original notification",
+  },
+});
+
+it("adds Board notification state to version 2 without changing existing records or the version", async () => {
+  await store.recordDelivery(delivery);
+  await store.putTrigger(trigger);
+  const item = await store.workItems.create(work);
+  await store.setCursor(boardIdentity.cursorKey, "7");
+  await store.close();
+  const legacy = new DatabaseSync(join(directory, "superagent.sqlite"));
+  try {
+    legacy.exec("DROP TABLE board_notifications");
+  } finally {
+    legacy.close();
+  }
+  store = await openSuperAgentStore(directory);
+  opened.push(store);
+  const request = notificationRequest();
+  await store.boardNotifications.prepare(boardIdentity, request);
+  await store.close();
+  store = await openSuperAgentStore(directory);
+  opened.push(store);
+  expect(await store.boardNotifications.get(boardIdentity)).toEqual({
+    request,
+    handled: false,
+  });
+  expect(await store.unprocessedDeliveries()).toEqual([
+    { ...delivery, processedAt: null },
+  ]);
+  expect(await store.getTrigger(trigger.id)).toEqual(trigger);
+  expect(await store.workItems.get(item.id)).toEqual(item);
+  expect(await store.getCursor(boardIdentity.cursorKey)).toBe("7");
+  const database = new DatabaseSync(join(directory, "superagent.sqlite"));
+  try {
+    expect(database.prepare("PRAGMA user_version").get()?.user_version).toBe(2);
+    expect(
+      database
+        .prepare("SELECT value FROM cursors WHERE key = ?")
+        .get(boardIdentity.cursorKey)?.value,
+    ).toBe("7");
+  } finally {
+    database.close();
+  }
+});
+
+it("keeps the first Board notification request across handles and scopes identity to source, project, event and task", async () => {
+  const other = await openSuperAgentStore(directory);
+  opened.push(other);
+  const first = notificationRequest();
+  const replacement = notificationRequest();
+  await store.boardNotifications.prepare(boardIdentity, first);
+  expect(
+    await Promise.all([
+      store.boardNotifications.prepare(boardIdentity, replacement),
+      other.boardNotifications.prepare(boardIdentity, replacement),
+    ]),
+  ).toEqual([
+    { request: first, handled: false },
+    { request: first, handled: false },
+  ]);
+  const identities = [
+    {
+      ...boardIdentity,
+      cursorKey: `superagent:board:${JSON.stringify(["http://other-board.invalid", "project"])}`,
+    },
+    {
+      ...boardIdentity,
+      cursorKey: `superagent:board:${JSON.stringify(["http://board.invalid", "other-project"])}`,
+    },
+    { ...boardIdentity, eventId: "9" },
+    { ...boardIdentity, workId: "other-task" },
+  ];
+  for (const identity of identities) {
+    const request = notificationRequest();
+    expect(await other.boardNotifications.prepare(identity, request)).toEqual({
+      request,
+      handled: false,
+    });
+  }
+  expect(await other.boardNotifications.get(boardIdentity)).toEqual({
+    request: first,
+    handled: false,
+  });
+});
+
+it("retires only the handled notification with its cursor and rolls back both on retirement failure", async () => {
+  await store.setCursor(boardIdentity.cursorKey, "7");
+  const request = notificationRequest();
+  await store.boardNotifications.prepare(boardIdentity, request);
+  const unhandled = { ...boardIdentity, workId: "unhandled-task" };
+  const otherEvent = { ...boardIdentity, eventId: "9" };
+  const otherSource = { ...boardIdentity, cursorKey: "another-source" };
+  for (const identity of [unhandled, otherEvent, otherSource])
+    await store.boardNotifications.prepare(identity, notificationRequest());
+  for (const identity of [boardIdentity, otherEvent, otherSource])
+    await store.boardNotifications.complete(identity);
+  const database = new DatabaseSync(join(directory, "superagent.sqlite"));
+  try {
+    database.exec(
+      "CREATE TRIGGER fail_retirement BEFORE DELETE ON board_notifications BEGIN SELECT RAISE(ABORT, 'injected retirement failure'); END",
+    );
+    await expect(
+      store.setCursor(boardIdentity.cursorKey, "8"),
+    ).rejects.toMatchObject({ code: "storage" });
+    expect(await store.getCursor(boardIdentity.cursorKey)).toBe("7");
+    expect(await store.boardNotifications.get(boardIdentity)).toEqual({
+      request,
+      handled: true,
+    });
+    database.exec("DROP TRIGGER fail_retirement");
+    await store.setCursor(boardIdentity.cursorKey, "8");
+    expect(await store.getCursor(boardIdentity.cursorKey)).toBe("8");
+    expect(await store.boardNotifications.get(boardIdentity)).toBeUndefined();
+    expect(await store.boardNotifications.get(unhandled)).toMatchObject({
+      handled: false,
+    });
+    for (const identity of [otherEvent, otherSource])
+      expect(await store.boardNotifications.get(identity)).toMatchObject({
+        handled: true,
+      });
+  } finally {
+    database.close();
+  }
+});
 
 it("opens lazily and atomically deduplicates deliveries across store handles", async () => {
   expect(await readdir(directory)).toEqual([]);

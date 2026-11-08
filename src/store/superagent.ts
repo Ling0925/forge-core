@@ -14,6 +14,7 @@ import {
   type WorkItemStore,
   createWorkItemSchema,
   deliverySchema,
+  enqueueInputSchema,
   outboxItemSchema,
   suggestionSchema,
   threadSchema,
@@ -96,6 +97,19 @@ const conflict = () =>
     "The record is no longer in the required state.",
   );
 
+type BoardNotificationIdentity = {
+  cursorKey: string;
+  eventId: string;
+  workId: string;
+};
+
+function boardNotification(row: Record<string, unknown>) {
+  return {
+    request: enqueueInputSchema.parse(JSON.parse(String(row.request))),
+    handled: row.handled === 1,
+  };
+}
+
 export async function openSuperAgentStore(directory: string) {
   let database: DatabaseSync | undefined;
   let closed = false;
@@ -148,6 +162,11 @@ export async function openSuperAgentStore(directory: string) {
             db.exec(`
               CREATE INDEX IF NOT EXISTS triggers_disposition ON triggers (disposition, received_at, id);
               CREATE INDEX IF NOT EXISTS triggers_thread ON triggers (thread_id, received_at, id);
+              CREATE TABLE IF NOT EXISTS board_notifications (
+                cursor_key TEXT NOT NULL, event_id TEXT NOT NULL, work_id TEXT NOT NULL,
+                request TEXT NOT NULL, handled INTEGER NOT NULL DEFAULT 0,
+                PRIMARY KEY (cursor_key, event_id, work_id)
+              );
             `);
             database = db;
           } catch (error) {
@@ -448,11 +467,48 @@ export async function openSuperAgentStore(directory: string) {
         return row ? z.string().parse(row.value) : undefined;
       }),
     setCursor: (key: string, value: string) =>
-      access((db) => {
+      transaction((db) => {
         db.prepare(
           "INSERT INTO cursors VALUES (?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
         ).run(key, value);
+        db.prepare(
+          "DELETE FROM board_notifications WHERE cursor_key = ? AND event_id = ? AND handled = 1",
+        ).run(key, value);
       }),
+    boardNotifications: {
+      get: ({ cursorKey, eventId, workId }: BoardNotificationIdentity) =>
+        access((db) => {
+          const row = db
+            .prepare(
+              "SELECT request, handled FROM board_notifications WHERE cursor_key = ? AND event_id = ? AND work_id = ?",
+            )
+            .get(cursorKey, eventId, workId);
+          return row ? boardNotification(row) : undefined;
+        }),
+      prepare: (
+        { cursorKey, eventId, workId }: BoardNotificationIdentity,
+        request: z.infer<typeof enqueueInputSchema>,
+      ) =>
+        transaction((db) => {
+          const row = db
+            .prepare(
+              "SELECT request, handled FROM board_notifications WHERE cursor_key = ? AND event_id = ? AND work_id = ?",
+            )
+            .get(cursorKey, eventId, workId);
+          if (row) return boardNotification(row);
+          const parsed = enqueueInputSchema.parse(request);
+          db.prepare(
+            "INSERT INTO board_notifications (cursor_key, event_id, work_id, request) VALUES (?,?,?,?)",
+          ).run(cursorKey, eventId, workId, JSON.stringify(parsed));
+          return { request: parsed, handled: false };
+        }),
+      complete: ({ cursorKey, eventId, workId }: BoardNotificationIdentity) =>
+        access((db) => {
+          db.prepare(
+            "UPDATE board_notifications SET handled = 1 WHERE cursor_key = ? AND event_id = ? AND work_id = ?",
+          ).run(cursorKey, eventId, workId);
+        }),
+    },
     async createSuggestion(raw: z.infer<typeof suggestionInput>) {
       const item: Suggestion = {
         ...suggestionInput.parse(raw),
